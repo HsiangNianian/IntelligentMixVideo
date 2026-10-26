@@ -440,10 +440,12 @@ function visibleWindow(canvas, output) {
  * latter sticks out of a box that holds the line exactly, although no glyph is cut. Returns `null` when no part of
  * the text is shown at this frame (not yet shown), otherwise the `problems` (empty when all of it is shown and fits)
  * and the `area` of the shown lines, which tells the frames that show the text at its full size. `extent` is the canvas
- * rectangle of all shown text after the transform and `view` the window of the canvas the video shows.
+ * rectangle of all shown text after the transform and `view` the window of the canvas the video shows. Render
+ * preflight (`mode: fit`) also counts laid-out transparent text toward completeness: an operator may set one
+ * tier's opacity to zero. Only painted text contributes geometry; generation still requires visible text.
  */
 function textFitProblems(page, needle, placement) {
-  return page.evaluate((needle, minLine, tolerance, placement) => {
+  return page.evaluate((needle, minLine, tolerance, placement, countTransparentText) => {
     const canvasNode = document.querySelector("[data-imv-validation-canvas]");
     const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
     if (!canvasNode || !layer) return null;
@@ -456,9 +458,8 @@ function textFitProblems(page, needle, placement) {
       const [dx, dy] = [left - canvas.left - placement.cx, top - canvas.top - placement.cy];
       return [placement.x + dx * cos - dy * sin, placement.y + dx * sin + dy * cos];
     };
-    /** Whether `element` is painted: not `visibility: hidden` and not faded out by its own or an ancestor's opacity. */
+    /** Whether `element` is painted rather than faded out by its own or an ancestor's opacity. */
     const painted = (element) => {
-      if (getComputedStyle(element).visibility !== "visible") return false;
       let opacity = 1;
       for (let item = element; item && layer.contains(item); item = item.parentElement) opacity *= Number(getComputedStyle(item).opacity);
       return opacity > 0.01;
@@ -493,17 +494,22 @@ function textFitProblems(page, needle, placement) {
     let extent = null; // canvas rectangle of all shown text after the transform
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const shown = compact(node.nodeValue);
-      if (!shown || !(wanted.includes(shown) || shown.includes(wanted)) || !node.parentElement || !painted(node.parentElement)) continue;
+      if (!shown || !(wanted.includes(shown) || shown.includes(wanted)) || !node.parentElement || getComputedStyle(node.parentElement).visibility !== "visible") continue;
+      const isPainted = painted(node.parentElement);
+      if (!isPainted && !countTransparentText) continue;
       const range = document.createRange();
       range.selectNodeContents(node);
       const lines = lineBoxes(range, node.parentElement);
       // Text without a box (display: none, an empty or collapsed element) is not shown.
       if (!lines.length) continue;
+      // Opacity can deliberately hide a tier without removing any text from its layout. Count it for render
+      // preflight, but do not let its invisible boxes affect the full-size frames, clipping, or placement shift.
+      joined += shown;
+      if (!isPainted) continue;
       const bounds = {
         left: Math.min(...lines.map((rect) => rect.left)), right: Math.max(...lines.map((rect) => rect.right)),
         top: Math.min(...lines.map((rect) => rect.top)), bottom: Math.max(...lines.map((rect) => rect.bottom)),
       };
-      joined += shown;
       area += lines.reduce((sum, rect) => sum + (rect.right - rect.left) * rect.height, 0);
       const smallest = Math.min(...lines.map((rect) => rect.height));
       if (smallest < minLine) problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
@@ -529,10 +535,10 @@ function textFitProblems(page, needle, placement) {
           problems.add(`it is cut off by a ${Math.round(box.width)}x${Math.round(box.height)} box with ${contained ? `contain: ${style.contain}` : `overflow ${clipsX ? style.overflowX : style.overflowY}`}`);
       }
     }
-    if (!joined) return null;
+    if (!extent) return null;
     if (!joined.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
     return { problems: [...problems], area, extent, view };
-  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement);
+  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, request.mode === "fit");
 }
 
 /** No host transform: generation checks mount the Sprite over the whole canvas where it was laid out. */

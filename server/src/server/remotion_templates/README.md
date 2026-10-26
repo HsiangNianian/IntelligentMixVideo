@@ -174,7 +174,10 @@ last frame, a loop stays at 1, and every length is at most half of the frames it
 frozen on its middle frame still shows in full. The text block of a new work records `still`: the host then holds
 each tier Preset on the middle frame of the frames the tier plays (`compose.mjs` `__Hold`), so motion of its own
 never plays and a stored animated text Preset is reused as it is, look kept; compose requires at least one enter and
-one exit effect (kept with `enabled: false` for still text), so a block never ends up without motion. The keyword
+one exit effect (kept with `enabled: false` for still text), so a block never ends up without motion. Transparency of
+a target — the whole text or one tier showing the video through — is a loop effect Preset that multiplies opacity and
+binds its factor as a numeric style parameter, so users adjust the transparency itself; tier colours (`color`,
+`line1Color`, `line2Color`) stay opaque, and the generation path refuses an alpha default there. The keyword
 hits inside a held tier get its live frame back (`__Live`), so a keyword Preset, the switchable keyword effect, and
 the effects at `keyword` keep playing. Edits of a text effect made before effects (no `still`, or boxes) keep playing
 their tier Presets' own motion and need no effects. The workspace parameter panel shows such a block as two sections,
@@ -372,7 +375,7 @@ worker's `readableFontSize`), so a small
 lead tier stays readable. Assets published with 3 or 4 lines keep their line count downstream. Such a multi-line text keeps the single `text` parameter, with its lines separated by `\n`, and also
 binds `lineStartFrames`, an integer array of exactly N items (`minItems` = `maxItems` = N, each 0 to 3600), so that
 line i appears from frame `lineStartFrames[i]` of the instance. A line with no text or no start is not rendered.
-All lines are stacked in one column (the text block's host, or one Preset instance of an older text) spaced by `lineGap` (pixels, minimum 0, maximum 200 to
+All lines are stacked in one column (the text block's host, or one Preset instance of an older text) spaced by `lineGap` (pixels; its minimum may be as low as -600 so the lower tier moves up over the upper one, and its maximum 200 to
 600), which templates may override per placement like `fontSize`, and they share the entrance and exit: line i
 enters from its own start and all lines exit together, timed from `durationInFrames`.
 `categories.category_problems` accepts it when the default text has exactly N non-empty lines, the default
@@ -650,7 +653,11 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves,
   scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
   text at its full size. Placements that differ only in length or transform are measured separately; the
-  transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
+  transform's opacity does not move text and is ignored. In render preflight, text that still has a layout box and
+  `visibility: visible` counts toward completeness even when its own or an ancestor's opacity is at most 0.01,
+  so making one tier transparent does not produce `text_too_long`. Only painted text contributes clipping,
+  size and placement measurements; missing text, `display: none` and `visibility: hidden` are still excluded.
+  Generation's `text_fit` check continues to require visible text. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum but never below 24 (smaller lines count as unreadable), at which it is shown in full
   (binary search; the size is logged, the template and the sealed source are untouched). A `keywordSize` above 0 is
   an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's

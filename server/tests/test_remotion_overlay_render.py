@@ -2095,6 +2095,47 @@ def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[O
     return overlay
 
 
+# 两段文字都保留排版框，第二段的不透明度由外层特效控制；首段可见，用来复现透明部分被误判为缺字。
+PARTLY_TRANSPARENT_TEXT = """import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+    <div style={{ width: 972, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, color: "#fff" }}>
+      <span>{props.text.slice(0, 2)}</span>
+      <div style={{opacity: OPACITY}}><span>{props.text.slice(2)}</span></div>
+    </div>
+  </AbsoluteFill>;
+}
+"""
+
+
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_fit_accepts_transparent_text_without_shrinking(tmp_path: Path) -> None:
+    """PR259：半透明、位于可见阈值、完全透明的一栏，以及全部透明的文字都通过预检；字号和实际文字保持不变。"""
+    codes = {name: PARTLY_TRANSPARENT_TEXT.replace("OPACITY", str(opacity)) for name, opacity in (("half", 0.5), ("threshold", 0.01), ("zero", 0))}
+    codes["whole"] = codes["zero"].replace("<span>", '<span style={{opacity: 0}}>')
+    placements = [titled("上栏下栏", sprite_id=name) for name in codes]
+    overlay = fit_for_real(tmp_path, codes, placements, 1.0)
+    assert [(item["config"]["text"], item["config"]["fontSize"]) for item in overlay.instances] == [("上栏下栏", 128)] * len(codes)
+
+
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+@pytest.mark.parametrize("damage", ["display-none", "visibility-hidden", "truncated", "visible-clipped"])
+def test_real_browser_transparency_does_not_hide_missing_or_clipped_text(tmp_path: Path, damage: str) -> None:
+    """透明文字只在仍参与排版时计入完整性；不在 DOM、display:none、visibility:hidden 的缺字，以及可见部分的裁切仍以 text_too_long 失败。"""
+    code = PARTLY_TRANSPARENT_TEXT.replace("OPACITY", "0")
+    if damage == "display-none":
+        code = code.replace("opacity: 0", 'opacity: 0, display: "none"')
+    elif damage == "visibility-hidden":
+        code = code.replace("opacity: 0", 'opacity: 0, visibility: "hidden"')
+    elif damage == "truncated":
+        code = code.replace("props.text.slice(2)", "props.text.slice(2, -1)")
+    else:
+        code = code.replace("<span>{props.text.slice(0, 2)}", '<span style={{display: "inline-block", width: 10, overflow: "hidden", whiteSpace: "nowrap"}}>{props.text.slice(0, 2)}')
+    with pytest.raises(OverlayError) as failure:
+        fit_for_real(tmp_path, code, [titled("上栏下栏")], 1.0)
+    assert failure.value.code == "text_too_long"
+
+
 # 场景（issue #119）：真实浏览器里，100 字标题放进 972x360 的固定框时，宿主把 128 的字号缩到放得下的最大值；短标题不动；
 # 一个不换行的组件缩到最小字号也放不下，任务以 text_too_long 失败。
 @pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
