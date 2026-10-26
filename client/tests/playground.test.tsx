@@ -1,4 +1,4 @@
-/** 操练场行为测试：隔离 HTTP 与桌面存储，覆盖模板选择、提交查询、成片恢复和查询失败；执行 bun run test playground.test.tsx。 */
+/** 操练场行为测试：隔离 HTTP 与桌面存储，覆盖合成、持久化及查询/本地记录故障恢复；执行 bun run test playground.test.tsx。 */
 import { expect, jest, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PlaygroundWorkspace } from "@/features/video_composition/PlaygroundWorkspace";
@@ -20,6 +20,24 @@ async function selectTemplate() {
   await waitFor(() => expect(control.disabled).toBe(false));
   fireEvent.keyDown(control, { key: "ArrowDown" });
   fireEvent.click(await screen.findByRole("option", { name: `${template.template_id}（${template.name}）` }));
+}
+
+/** 桌面替换设置 IPC；浏览器使用实际 localStorage，允许检查原始损坏记录是否被覆盖。 */
+function playgroundStorage(kind: "browser" | "desktop") {
+  const settings: Record<string, Record<string, unknown>> = { ims: { region: "keep" } };
+  if (kind === "desktop") mockDesktop(async (command, args) => {
+    expect(command).toBe("local_settings");
+    if (args.id) settings[String(args.id)] = args.values as Record<string, unknown>;
+    return structuredClone(settings);
+  });
+  return {
+    settings,
+    read: (key: string) => kind === "desktop" ? settings[key]?.state : localStorage.getItem(key),
+    write: (key: string, value: string) => {
+      if (kind === "desktop") settings[key] = { state: value };
+      else localStorage.setItem(key, value);
+    },
+  };
 }
 
 // 场景：模板下拉提交唯一请求、原 GET 取得成片，重新挂载恢复选择与视频，不再次合成。
@@ -49,8 +67,8 @@ test("模板选择后只提交一次，完成后重开恢复视频", async () =>
   expect(requests.filter((item) => item.body)).toHaveLength(1);
 });
 
-// 场景：查询断线不把任务改为失败，继续查询不重发 POST；任务失败仍保留上一条成片。
-test("查询失败可继续查询，任务失败保留最近成片", async () => {
+// 场景：断线与 503 不允许清除任务，继续查询不重发 POST；任务失败仍保留上一条成片。
+test.each(["network", "503"])("查询失败可继续查询，任务失败保留最近成片：%s", async (failure) => {
   const previous = completed("old-task");
   const { key } = await loadPlayground(apiBase());
   await savePlayground(key, { ...emptyPlayground(), styleId: savedTemplate().template_id,
@@ -61,17 +79,65 @@ test("查询失败可继续查询，任务失败保留最近成片", async () =>
   fetchMock.mockImplementation((async (url, init) => {
     expect(init?.method).not.toBe("POST");
     if (String(url).endsWith("/template")) return jsonListResponse([savedTemplate()]);
-    if (++reads === 1) throw new Error("测试网络断开");
+    if (++reads === 1) {
+      if (failure === "network") throw new Error("测试查询不可用");
+      return Response.json({ detail: "测试查询不可用" }, { status: 503 });
+    }
     return Response.json({ ...previous, taskId: "pending", status: "failed", stage: "failed", result: null, error: { code: "ims_failed", stage: "rendering", message: "测试渲染失败" } });
   }) as typeof fetch);
   render(<PlaygroundWorkspace />);
-  await screen.findByText(/测试网络断开/);
+  await screen.findByText(/测试查询不可用/);
+  expect(screen.queryByRole("button", { name: "清除失效任务" })).toBeNull();
   expect((await loadPlayground(apiBase())).state.task?.status).toBe("processing");
   fireEvent.click(screen.getByRole("button", { name: "查询进度" }));
   await screen.findByText("测试渲染失败");
   expect(screen.getByLabelText<HTMLVideoElement>("合成视频播放器").src).toBe(previous.result!.videoUrl);
   expect(reads).toBe(2);
   expect(screen.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("失败于正在 IMS 渲染");
+});
+
+// 场景：旧任务 404 后由用户清除任务，保留选择与成片，重开不再查询旧任务且可以重新合成。
+test.each([
+  ["browser", "queued"], ["browser", "processing"], ["desktop", "queued"], ["desktop", "processing"],
+] as const)("失效任务可清除并重新合成：%s / %s", async (kind, status) => {
+  playgroundStorage(kind);
+  const template = savedTemplate();
+  const { key } = await loadPlayground(apiBase());
+  const previous = { taskId: "previous", styleId: template.template_id, templateName: template.name,
+    videoUrl: "https://media.test/previous.mp4", durationSeconds: 8 };
+  await savePlayground(key, { ...emptyPlayground(), styleId: template.template_id,
+    task: { ...completed("missing"), status, stage: status === "queued" ? "queued" : "rendering", result: null },
+    taskStyleId: template.template_id, taskTemplateName: template.name, video: previous });
+  let missingQueries = 0;
+  let posts = 0;
+  fetchMock.mockImplementation((async (url, init) => {
+    if (String(url).endsWith("/template")) return jsonListResponse([template]);
+    if (String(url).endsWith("/missing")) {
+      missingQueries += 1;
+      return Response.json({ detail: "合成任务不存在" }, { status: 404 });
+    }
+    if (init?.method === "POST") {
+      posts += 1;
+      return Response.json({ code: 200, data: "new-task" });
+    }
+    return Response.json(completed("new-task"));
+  }) as typeof fetch);
+  const view = render(<PlaygroundWorkspace />);
+  fireEvent.click(await screen.findByRole("button", { name: "清除失效任务" }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始合成" }).disabled).toBe(false));
+  const restored = (await loadPlayground(apiBase())).state;
+  expect(restored.task).toBeNull();
+  expect(restored.styleId).toBe(template.template_id);
+  expect(restored.video).toEqual(previous);
+  expect(posts).toBe(0);
+  view.unmount();
+  render(<PlaygroundWorkspace />);
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始合成" }).disabled).toBe(false));
+  expect(screen.getByLabelText<HTMLVideoElement>("合成视频播放器").src).toBe(previous.videoUrl);
+  expect(missingQueries).toBe(1);
+  fireEvent.click(screen.getByRole("button", { name: "开始合成" }));
+  await waitFor(async () => expect((await loadPlayground(apiBase())).state.video?.taskId).toBe("new-task"));
+  expect(posts).toBe(1);
 });
 
 // 场景：恢复进行中任务时显示阶段；状态推进不会额外查询，15 秒轮询与手动查询串行，成功后停止轮询。

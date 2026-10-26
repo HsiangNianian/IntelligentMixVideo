@@ -35,7 +35,7 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
   const [templateError, setTemplateError] = useState("");
   const [error, setError] = useState("");
   const [storageError, setStorageError] = useState("");
-  const [queryError, setQueryError] = useState("");
+  const [queryError, setQueryError] = useState<{ message: string; missing: boolean } | null>(null);
   const [querying, setQuerying] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
@@ -71,7 +71,7 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
     setSaved(current.current);
     setKey("");
     setError("");
-    setQueryError("");
+    setQueryError(null);
     setQuerying(false);
     setQueryAttempt(0);
     setStorageError("");
@@ -100,7 +100,7 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
     const taskId = saved.task.taskId;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    setQueryError("");
+    setQueryError(null);
     /** 上一次查询完成后再排下一次，卸载、切换任务或服务时停止。 */
     async function poll() {
       setQuerying(true);
@@ -114,7 +114,7 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
         if (JSON.stringify(next) !== JSON.stringify(current.current)) await persist(next, key);
         if (!controller.signal.aborted && (task.status === "queued" || task.status === "processing")) timer = setTimeout(poll, 15000);
       } catch (reason) {
-        if (!controller.signal.aborted) setQueryError(message(reason));
+        if (!controller.signal.aborted) setQueryError({ message: message(reason), missing: reason instanceof Error && "status" in reason && reason.status === 404 });
       } finally {
         if (!controller.signal.aborted) setQuerying(false);
       }
@@ -190,7 +190,12 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
           {mediaError && <p role="alert" className="mt-3 text-sm text-danger">视频暂时无法播放，请检查网络后<Button variant="link" size="sm" onClick={() => { setMediaError(false); video.current?.load(); }}>重试播放</Button></p>}
         </div> : <div className="flex min-h-[420px] flex-col items-center justify-center px-6 text-center text-fg-subtle"><Film className="mb-5 size-10 stroke-1" /><p className="text-sm text-fg-muted">{running ? `${stages[saved.task?.stage || ""] || "视频正在合成"}，完成后会显示在这里` : "选择模板，生成第一条视频"}</p><p className="mt-2 text-xs">支持播放、拖动进度与全屏查看</p></div>}
         {saved.task?.error && <p role="alert" className="border-t border-line px-6 py-4 text-sm text-danger">{saved.task.error.message}</p>}
-        {queryError && <div role="alert" className="border-t border-line px-6 py-4 text-sm text-danger">暂时无法查询：{queryError}</div>}
+        {queryError && <div role="alert" className="border-t border-line px-6 py-4 text-sm text-danger">暂时无法查询：{queryError.message}
+          {queryError.missing && <Button variant="outline" size="sm" className="ml-3" disabled={querying} onClick={() => {
+            setQueryError(null);
+            void persist({ ...current.current, task: null, taskStyleId: "", taskTemplateName: "" });
+          }}>清除失效任务</Button>}
+        </div>}
       </section>
     </div>
   </div>;

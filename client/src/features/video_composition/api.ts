@@ -29,7 +29,7 @@ async function request<T>(path: string, body?: Record<string, unknown>, signal?:
   if (!response.ok) {
     const error = await response.json().catch(() => null);
     const detail = typeof error?.detail === "string" ? error.detail : typeof error?.message === "string" ? error.message : "视频合成请求失败";
-    throw new Error(`${detail}（${response.status}）`);
+    throw Object.assign(new Error(`${detail}（${response.status}）`), { status: response.status });
   }
   return response.json();
 }
