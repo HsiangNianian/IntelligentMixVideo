@@ -412,13 +412,15 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
             ]
             started = perf_counter()
+            max_attempts = 2 if stage == "boundaries" else 3
             try:
-                for attempt in range(6):
+                for attempt in range(max_attempts):
                     response = client.chat.completions.create(
                         model=model,
                         messages=messages,
                         temperature=0.2,
                         response_format={"type": "json_object"},
+                        timeout=config.llm_timeout_seconds if attempt == 0 else min(config.llm_timeout_seconds, 30),
                     )
                     raw = response.choices[0].message.content if response.choices else None
                     logging.getLogger("uvicorn.error").info(
@@ -451,7 +453,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                                     "不能带前导零；无关键词可省略该编号。")
                         break
                     except RuntimeError as exc:
-                        if attempt == 5:
+                        if attempt == max_attempts - 1:
                             raise
                         messages = [*messages,
                                     {"role": "assistant", "content": raw if isinstance(raw, str) else ""},
