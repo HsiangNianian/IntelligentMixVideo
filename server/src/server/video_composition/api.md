@@ -33,7 +33,7 @@
 
 受理返回原 `AcceptedResponse` 和 `Location`，状态仍通过 `GET /api/v1/video-compositions/{taskId}` 查询。样本未初始化、未成功、模式不符或准备结果不完整返回 409，模板不存在返回 404，环境不可用返回 503；不自动回退完整合成。每次 POST 都建立新任务，没有新增幂等键。
 
-操练场成片与第 3 帧封面分别为 `imv/playground/{taskId}.mp4`、`.png`，可选透明叠加视频为 `imv/playground/{taskId}/overlay.webm`。目录选择依据持久化的任务来源，普通任务保持原目录；GET 直接返回保存的公开地址，与前缀无关。 ZOS S3 客户端使用直连，不继承进程 HTTP 代理；大文件保留分片但串行发送，避免并行上传与代理断流，TLS 证书校验保持开启。
+操练场成片与第 3 帧封面分别为 `imv/playground/{taskId}.mp4`、`.png`，可选透明叠加视频为 `imv/playground/{taskId}/overlay.webm`。目录选择依据持久化的任务来源，普通任务保持原目录；GET 直接返回保存的公开地址，与前缀无关。 ZOS S3 客户端遵循进程环境 `HTTP_PROXY`／`HTTPS_PROXY`／`NO_PROXY`：有代理时使用代理，无代理或命中 `NO_PROXY` 时直连。大文件保留串行分片上传，TLS 证书校验保持开启；需要绕过代理时，将 ZOS API 与公开访问域名加入 `NO_PROXY`。
 
 ## 2. 创建任务
 
