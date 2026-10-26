@@ -2,6 +2,7 @@
 import { useRef } from "react";
 import { Upload } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
+import { toast } from "sonner";
 import { FontSelect } from "./FontSelect";
 import { previewUrl } from "./api";
 import { useFonts, type Previewer } from "./useFonts";
@@ -18,11 +19,12 @@ export function FontPicker({ id, label, value, disabled, onChange, previewer, cl
 }) {
   const { fonts: library, loadError, problem, uploading, upload } = useFonts();
   const input = useRef<HTMLInputElement>(null);
-  /** 上传成功（或库里本来就有这个文件）后选中该字体并关闭浮层；失败的原因留在浮层里。 */
+  /** 上传成功（或库里本来就有这个文件）后选中该字体并关闭浮层；失败的原因留在浮层里，新建卡片且上传前修过文件时用轻提示说明。 */
   async function addFont(file: File, close: () => void) {
     const uploaded = await upload(file, previewer);
     if (input.current) input.current.value = "";
     if (!uploaded) return;
+    if (uploaded.created && uploaded.repairs.length) toast.info(`已自动修复字体文件后上传：${uploaded.repairs.join("；")}`);
     onChange(uploaded.font.family);
     close();
   }
