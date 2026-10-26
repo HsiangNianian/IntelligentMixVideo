@@ -33,6 +33,6 @@ def create_segmentation(
     """调用切片函数，由共用入口记录日志；响应保持原有字段与状态码。"""
     try:
         return segment(payload.model_dump(exclude={"config"}), config=payload.config)
-    except (APIError, ValueError, RuntimeError, AssertionError) as exc:
+    except (APIError, TimeoutError, ValueError, RuntimeError, AssertionError) as exc:
         message, status = segmentation_error(exc)
     return JSONResponse({"error": {"message": message}}, status_code=status)
