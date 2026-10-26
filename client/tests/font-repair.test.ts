@@ -114,9 +114,18 @@ test("修复是幂等的", () => {
   expect(repairFont(first.bytes)).not.toHaveProperty("bytes");
 });
 
-// 场景：字体本身没有零长度表——不重写文件，摘要与预览继续用原字节。
+// 场景：字体本身没有零长度表——即使头部字段、表校验和或尾部字节与规范不符，也不重写；摘要与预览继续用原字节。
 test("没有零长度表时不做任何改动", () => {
   expect(repairFont(soundFont().buffer)).toEqual({ kind: "unchanged" });
+  const bytes = soundFont();
+  new DataView(bytes.buffer).setUint16(6, 0);
+  new DataView(bytes.buffer).setUint16(10, 0);
+  const index = directory(bytes.buffer).findIndex((entry) => entry.tag === "name");
+  new DataView(bytes.buffer).setUint32(12 + 16 * index + 4, 1);
+  const extended = new Uint8Array(bytes.length + 4);
+  extended.set(bytes);
+  extended.set([1, 2, 3, 4], bytes.length);
+  expect(repairFont(extended.buffer)).toEqual({ kind: "unchanged" });
 });
 
 // 场景：不是认得的 sfnt（任意字节、字体集合）——不猜，交给浏览器的解码检查。
@@ -128,6 +137,20 @@ test("不认识的格式原样返回", () => {
 test("必需表为空时说明原因", () => {
   const result = repairFont(soundFont(empty("loca")).buffer);
   expect(result).toEqual({ kind: "damaged", detail: "「loca」表是空的" });
+});
+
+// 场景：OTS 同样要求 OS/2 与 post——空的这两张表不能当可选表删掉，否则浏览器仍解不出来。
+test("OTS 要求的 OS/2 与 post 为空时说明原因", () => {
+  expect(repairFont(soundFont(empty("OS/2")).buffer)).toEqual({ kind: "damaged", detail: "「OS/2」表是空的" });
+  expect(repairFont(soundFont(empty("post")).buffer)).toEqual({ kind: "damaged", detail: "「post」表是空的" });
+});
+
+// 场景：某张表的偏移落进表目录（表与目录重叠）——数据位置不可信，不尝试修复。
+test("表与表目录重叠时说明原因", () => {
+  const bytes = soundFont();
+  const index = directory(bytes.buffer).findIndex((entry) => entry.tag === "name");
+  new DataView(bytes.buffer).setUint32(12 + 16 * index + 8, 12);
+  expect(repairFont(bytes.buffer)).toEqual({ kind: "damaged", detail: "「name」表与表目录重叠" });
 });
 
 // 场景：目录里某张表的长度超出文件末尾——数据根本不在文件里，不能裁成一份看似合法的字体。
@@ -172,51 +195,51 @@ test("head 不完整或格式无效时说明原因", () => {
   });
 });
 
-// 场景：目录的二分查找字段与表数量不符（重排目录的工具常见）——写出正确字段，表数据不动。
+// 场景：目录的二分查找字段与表数量不符（重排目录的工具常见）——在因零长度表重写时写出正确字段，表数据不动。
 test("修正目录的二分查找字段", () => {
-  const bytes = soundFont();
+  const bytes = soundFont(empty("cvt "));
   new DataView(bytes.buffer).setUint16(6, 0);
   new DataView(bytes.buffer).setUint16(10, 0);
   resign(bytes);
   const result = repairFont(bytes.buffer);
   expect(result.kind).toBe("repaired");
   if (result.kind !== "repaired") return;
-  expect(result.repairs).toEqual(["修正了表目录的头部字段"]);
+  expect(result.repairs).toEqual(["移除了空的「cvt」表", "修正了表目录的头部字段"]);
   const view = new DataView(result.bytes);
   expect([view.getUint16(4), view.getUint16(6), view.getUint16(8), view.getUint16(10)]).toEqual([5, 64, 2, 16]);
   expect(tableOf(result.bytes, "name")).toEqual(tableOf(bytes.buffer, "name"));
 });
 
-// 场景：目录里某张表的校验和与实际数据不符——按数据重算（浏览器本来看不到，但文件应当是自洽的）。
+// 场景：目录里某张表的校验和与实际数据不符——在因零长度表重写时按数据重算。
 test("重算与实际数据不符的表校验和", () => {
-  const bytes = soundFont();
+  const bytes = soundFont(empty("cvt "));
   const index = directory(bytes.buffer).findIndex((entry) => entry.tag === "name");
   new DataView(bytes.buffer).setUint32(12 + 16 * index + 4, 1);
   resign(bytes);
   const result = repairFont(bytes.buffer);
   expect(result.kind).toBe("repaired");
   if (result.kind !== "repaired") return;
-  expect(result.repairs).toEqual(["修正了字体校验和"]);
+  expect(result.repairs).toEqual(["移除了空的「cvt」表", "修正了字体校验和"]);
   const nameIndex = directory(result.bytes).findIndex((entry) => entry.tag === "name");
   expect(new DataView(result.bytes).getUint32(12 + 16 * nameIndex + 4)).toBe(checksum(tableOf(result.bytes, "name")));
 });
 
-// 场景：head 的 checkSumAdjustment 与文件内容不符——重算，让整份文件的校验和回到常数。
+// 场景：head 的 checkSumAdjustment 与文件内容不符——在因零长度表重写时重算，让整份文件的校验和回到常数。
 test("重算 head 的校验和调整值", () => {
-  const bytes = soundFont();
+  const bytes = soundFont(empty("cvt "));
   const head = directory(bytes.buffer).find((entry) => entry.tag === "head")!;
   new DataView(bytes.buffer).setUint32(head.offset + 8, 0x12345678);
   const result = repairFont(bytes.buffer);
   expect(result.kind).toBe("repaired");
   if (result.kind !== "repaired") return;
-  expect(result.repairs).toEqual(["修正了字体校验和"]);
+  expect(result.repairs).toEqual(["移除了空的「cvt」表", "修正了字体校验和"]);
   const repairedHead = directory(result.bytes).find((entry) => entry.tag === "head")!;
   expect(new DataView(result.bytes).getUint32(repairedHead.offset + 8)).toBe(expectedAdjustment(result.bytes));
 });
 
-// 场景：文件末尾多出不属于任何表的数据——裁掉，重新校正 head 的调整值，得到与原来一致的文件。
+// 场景：文件末尾多出不属于任何表的数据——在因零长度表重写时裁掉，重新校正 head 的调整值。
 test("裁掉文件末尾多出的字节", () => {
-  const bytes = soundFont();
+  const bytes = soundFont(empty("cvt "));
   const extended = new Uint8Array(bytes.length + 4);
   extended.set(bytes);
   extended.set([1, 2, 3, 4], bytes.length);
@@ -224,6 +247,9 @@ test("裁掉文件末尾多出的字节", () => {
   const result = repairFont(extended.buffer);
   expect(result.kind).toBe("repaired");
   if (result.kind !== "repaired") return;
-  expect(result.repairs).toEqual(["裁掉了文件末尾多出的 4 字节"]);
-  expect(new Uint8Array(result.bytes)).toEqual(bytes);
+  expect(result.repairs).toEqual(["移除了空的「cvt」表", "裁掉了文件末尾多出的 4 字节"]);
+  const withoutTrailing = repairFont(bytes.buffer);
+  expect(withoutTrailing.kind).toBe("repaired");
+  if (withoutTrailing.kind !== "repaired") return;
+  expect(new Uint8Array(result.bytes)).toEqual(new Uint8Array(withoutTrailing.bytes));
 });

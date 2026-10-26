@@ -6,6 +6,7 @@ import type { FontFaceInfo, FontInfo } from "@/features/fonts/api";
 import { FontLibrary } from "@/features/fonts/FontLibrary";
 import HomePage from "@/pages/HomePage";
 import { FontPicker } from "@/features/fonts/FontPicker";
+import { repairFont } from "@/features/fonts/repair";
 import type { FaceLoader } from "@/features/fonts/FontSpecimen";
 import { Toaster } from "@/components/ui/sonner";
 import { english, fontFile } from "./font-files";
@@ -161,6 +162,19 @@ test("结构损坏的字体不会被上传", async () => {
   expect(server.uploads).toEqual([]);
 });
 
+// 场景：选择器上传前修过文件——用轻提示说明修了什么，同时照常选中。
+test("选择器上传前修复字体时提示并选中", async () => {
+  fontServer(() => Response.json(UPLOADED, { status: 201 }));
+  const changes: string[] = [];
+  render(<><Toaster /><FontPicker label="字体" value="Noto Sans CJK SC" onChange={(family) => changes.push(family)} previewer={async () => null} /></>);
+  await screen.findByRole("img", { name: "思源黑体（默认）" });
+  fireEvent.click(screen.getByRole("combobox", { name: "字体" }));
+  await screen.findByRole("option", { name: /马善政毛笔楷书/ });
+  fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [fontFile("fixed.ttf", [english("Zed Display")], [["cvt ", new Uint8Array(0)]])] } });
+  expect(await screen.findByText(/已自动修复字体文件后上传：移除了空的「cvt」表/)).toBeTruthy();
+  expect(changes).toEqual(["Zed Display"]);
+});
+
 // 场景：读不出字体名称但浏览器能解码——只做解码检查，不保留预览条、不用文件名当显示名，由服务端判断并展示它给出的原因。
 test("读不出名称的文件交给服务端判断", async () => {
   const server = fontServer(() => Response.json({ detail: "只支持 TrueType / OpenType 字体文件（.ttf、.otf）" }, { status: 422 }));
@@ -212,6 +226,24 @@ test("上传请求失败但服务端已登记时选中该字体", async () => {
 test("字体库里已有同一个文件时直接选中，不再上传", async () => {
   const file = uploadFile();
   const existing = font("u-1", "Zed Display", "我的字体", { source: "upload", faces: [face("u-1", "regular", { sha256: await digestOf(file) })] });
+  const server = fontServer(() => Response.json(UPLOADED, { status: 201 }), [...LIBRARY, existing]);
+  const changes: string[] = [];
+  const drawn: string[] = [];
+  await open((family) => changes.push(family), async (_file, text) => { drawn.push(text); return null; });
+  fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [file] } });
+  await waitFor(() => expect(changes).toEqual(["Zed Display"]));
+  expect(server.uploads).toEqual([]);
+  expect(drawn).toEqual([]);
+});
+
+// 场景：字体库里已有的是修复后的字节——按修复后的摘要去重，不再上传，也不必画预览条。
+test("字体库里已有修复后的文件时直接选中，不再上传", async () => {
+  const file = fontFile("fixed.ttf", [english("Zed Display"), [3, 1, 0x0804, 1, "我的字体"]], [["cvt ", new Uint8Array(0)]]);
+  const repaired = repairFont(await file.arrayBuffer());
+  expect(repaired.kind).toBe("repaired");
+  if (repaired.kind !== "repaired") return;
+  const digest = Buffer.from(await crypto.subtle.digest("SHA-256", repaired.bytes)).toString("hex");
+  const existing = font("u-1", "Zed Display", "我的字体", { source: "upload", faces: [face("u-1", "regular", { sha256: digest })] });
   const server = fontServer(() => Response.json(UPLOADED, { status: 201 }), [...LIBRARY, existing]);
   const changes: string[] = [];
   const drawn: string[] = [];

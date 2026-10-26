@@ -1,8 +1,9 @@
 /**
  * 上传前的字体目录级修复：浏览器（OTS）会拒绝含零长度表的字体，而不少做字、裁剪或合并工具导出的中文字体会带上长度为 0 的
- * `cvt `、`fpgm`、`DSIG` 等表，这类文件在系统里能安装、浏览器却解不出来。这里只改表目录与校验和——删除没有数据的表、
- * 重排目录并补正二分查找字段、按实际数据重算各表校验和与 `head` 的 checkSumAdjustment、裁掉尾部垃圾；`glyf`、`cmap`、
- * `name` 等表的数据一个字节都不动，所以不需要字体库。
+ * `cvt `、`fpgm`、`DSIG` 等表，这类文件在系统里能安装、浏览器却解不出来。只有目录里确实存在长度为 0 的可选表时才重写：
+ * 删除没有数据的表、重排目录并补正二分查找字段、按实际数据重算各表校验和与 `head` 的 checkSumAdjustment、裁掉尾部垃圾；
+ * `glyf`、`cmap`、`name` 等表的数据一个字节都不动，所以不需要字体库。没有零长度表时原样返回，不因头部字段、校验和或
+ * 尾部字节与规范不符就改变摘要，避免按内容去重与已有字体库条目对不上。
  * 认出的结构问题（目录或表超出文件末尾、表与目录重叠、必需表为空、`loca` 与 `glyf` 不自洽）不猜着修，交给调用方拒绝并说明原因。
  * 修过的文件再修一次结果不变（幂等），同一份原文件总是得到同一份修复结果，按内容去重不会漂移。
  */
@@ -13,9 +14,12 @@ const SFNT_VERSIONS = [0x00010000, 0x4f54544f, 0x74727565];
 const TAG = {
   head: 0x68656164, hhea: 0x68686561, maxp: 0x6d617870, hmtx: 0x686d7478, cmap: 0x636d6170,
   name: 0x6e616d65, glyf: 0x676c7966, loca: 0x6c6f6361, cff: 0x43464620, cff2: 0x43464632,
+  os2: 0x4f532f32, post: 0x706f7374,
 } as const;
-/** 长度为 0 就说明字体真坏了、不能靠删表变成可用的字体：删掉它们只会得到另一份解不出来的文件。 */
-const REQUIRED_TABLES = new Set<number>([TAG.head, TAG.hhea, TAG.maxp, TAG.hmtx, TAG.cmap, TAG.name, TAG.glyf, TAG.loca, TAG.cff, TAG.cff2]);
+/** 长度为 0 就说明字体真坏了、不能靠删表变成可用的字体：浏览器（OTS）要求这些表都在，删掉它们只会得到另一份解不出来的文件。 */
+const REQUIRED_TABLES = new Set<number>([
+  TAG.head, TAG.hhea, TAG.maxp, TAG.hmtx, TAG.cmap, TAG.name, TAG.glyf, TAG.loca, TAG.cff, TAG.cff2, TAG.os2, TAG.post,
+]);
 /** `head` 表的固定长度；其中的 checkSumAdjustment 在表内偏移 8。 */
 const HEAD_LENGTH = 54;
 const CHECKSUM_ADJUSTMENT = 8;
@@ -73,21 +77,20 @@ export function repairFont(bytes: ArrayBuffer): FontRepair {
   const kept = entries.filter((entry) => entry.length > 0).sort((left, right) => left.tag - right.tag);
   if (kept.length === 0) return { kind: "damaged", detail: "字体没有可用的表" };
 
-  // 原文件本身是否自洽：这三项用来说明“原文件哪一处有问题”，与我们自己重建目录造成的字段变化区分开。
+  // 没有零长度表就没有浏览器会拒绝的目录问题：不重写，摘要、预览与上传继续用原字节。
+  if (empty.length === 0) return { kind: "unchanged" };
+
+  // 重写时顺便把原文件里陈旧的字段纠正过来；这些检查只用于说明“原文件哪一处有问题”，与我们自己重建目录造成的字段变化区分开。
   const fields = expectedHeader(count);
   const headerWrong = view.getUint16(6) !== fields.searchRange
     || view.getUint16(8) !== fields.entrySelector
     || view.getUint16(10) !== fields.rangeShift;
-  const badChecksums = kept.filter((entry) => tableChecksum(source, entry) !== entry.checksum);
-  const adjustment = head ? view.getUint32(head.offset + CHECKSUM_ADJUSTMENT) : null;
-  const adjustmentWrong = head !== undefined && adjustment !== null
-    && (sumWithoutAdjustment(source, head) + adjustment) % 0x100000000 !== CHECKSUM_MAGIC;
+  // head 的 checkSumAdjustment 已计入整份文件校验和，直接与常数比较即可，不必复制整份文件把该字段置零。
+  const adjustmentWrong = head !== undefined && checksum(source) !== CHECKSUM_MAGIC;
   // 最后一张表之后、补齐到四字节之外的字节不属于任何表，可以裁掉。
   const contentEnd = kept.reduce((end, entry) => Math.max(end, entry.offset + entry.length), directoryEnd);
   const alignedEnd = Math.ceil(contentEnd / 4) * 4;
   const trailing = bytes.byteLength > alignedEnd ? bytes.byteLength - alignedEnd : 0;
-
-  if (empty.length === 0 && !headerWrong && badChecksums.length === 0 && !adjustmentWrong && trailing === 0) return { kind: "unchanged" };
 
   const outputLength = Math.max(alignedEnd, 12 + 16 * kept.length);
   const out = new Uint8Array(outputLength);
@@ -100,10 +103,14 @@ export function repairFont(bytes: ArrayBuffer): FontRepair {
   target.setUint16(6, header.searchRange);
   target.setUint16(8, header.entrySelector);
   target.setUint16(10, header.rangeShift);
+  // 重建目录时顺便按实际数据算出校验和，并与原目录登记的值比较，作为“原文件哪里有问题”的说明。
+  const badChecksums: TableEntry[] = [];
   kept.forEach((entry, index) => {
     const at = 12 + 16 * index;
+    const checksum = tableChecksum(out, entry);
+    if (checksum !== entry.checksum) badChecksums.push(entry);
     target.setUint32(at, entry.tag);
-    target.setUint32(at + 4, tableChecksum(out, entry));
+    target.setUint32(at + 4, checksum);
     target.setUint32(at + 8, entry.offset);
     target.setUint32(at + 12, entry.length);
   });
@@ -158,13 +165,6 @@ function tableChecksum(bytes: Uint8Array, entry: TableEntry): number {
   if (entry.tag !== TAG.head || entry.length < CHECKSUM_ADJUSTMENT + 4) return checksum(data);
   const copy = data.slice();
   new DataView(copy.buffer).setUint32(CHECKSUM_ADJUSTMENT, 0);
-  return checksum(copy);
-}
-
-/** 把 `head` 的 checkSumAdjustment 当作 0 后整份文件的校验和。 */
-function sumWithoutAdjustment(bytes: Uint8Array, head: TableEntry): number {
-  const copy = bytes.slice();
-  new DataView(copy.buffer).setUint32(head.offset + CHECKSUM_ADJUSTMENT, 0);
   return checksum(copy);
 }
 
