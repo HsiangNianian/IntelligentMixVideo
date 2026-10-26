@@ -14,14 +14,14 @@ from copy import deepcopy
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 
 from ..template.schema import RemotionTrackEditor, RemotionTransform
-from .categories import FONT_PARAMETERS, KEYWORD_SIZE_MIN, transform_fields, transform_ranges
-from .fonts import require_family
+from .categories import KEYWORD_SIZE_MIN, transform_fields, transform_ranges
+from .fonts import is_font_parameter, open_font_schema, require_family
 from .sprites import KIND_NAMES, box_json, operator_parameters, sampled
 from .tools.schema import validate_parameters
 
 
-def _checked(declared: pb.SpriteParameter, value):
-    """按发布时的参数声明检查一个覆盖值，返回可写入配置的值。"""
+def _checked(declared: pb.SpriteParameter, value, *, allowed: bool = True):
+    """按发布时的参数声明检查一个覆盖值，返回可写入配置的值；字体可跳过冻结枚举。"""
     key = declared.key
     expected = declared.default_value.WhichOneof("value")
     actual = (
@@ -43,8 +43,8 @@ def _checked(declared: pb.SpriteParameter, value):
             raise ValueError(f"参数 {key} 的文字长度超出允许范围")
     if actual == "string_list_value" and declared.HasField("max_items") and len(value) > declared.max_items:
         raise ValueError(f"参数 {key} 最多 {declared.max_items} 项")
-    allowed = [getattr(item, item.WhichOneof("value")) for item in declared.allowed_values if item.WhichOneof("value") == actual]
-    if declared.allowed_values and value not in allowed:
+    choices = [getattr(item, item.WhichOneof("value")) for item in declared.allowed_values if item.WhichOneof("value") == actual]
+    if allowed and declared.allowed_values and value not in choices:
         raise ValueError(f"参数 {key} 不是允许的取值")
     return value
 
@@ -65,10 +65,14 @@ def resolve(sprite: pb.PublishedSprite, editor: RemotionTrackEditor | None) -> t
                 if not sampled(sprite):
                     raise ValueError(f"参数 {override.key} 不可修改：该资产发布于参数边界检查之前，请在字效工作区改出新版本后保存为新资产")
                 raise ValueError(f"参数 {override.key} 不可修改")
-            value = _checked(parameter, override.value())
-            if override.key in FONT_PARAMETERS:
-                # The library grows after publication, so a font is checked against it live, not against the schema.
+            font = is_font_parameter(sprite.kind, override.key)
+            if font:
+                # A font's published enum only contains families known then; validate its type and length here,
+                # then check the value against the growing live library instead of the frozen enum.
+                value = _checked(parameter, override.value(), allowed=False)
                 require_family(value, override.key)
+            else:
+                value = _checked(parameter, override.value())
             # Overridable parameters are top-level (only sampled publications take overrides, and they bind top-level).
             definition = schema.get("properties", {}).get(override.key, {})
             if isinstance(value, float) and value.is_integer() and isinstance(definition, dict) and definition.get("type") == "integer":
@@ -79,7 +83,9 @@ def resolve(sprite: pb.PublishedSprite, editor: RemotionTrackEditor | None) -> t
         if sprite.kind == pb.SPRITE_KIND_TEXT and isinstance(size, (int, float)) and not isinstance(size, bool) and 0 < size < KEYWORD_SIZE_MIN:
             raise ValueError(f"参数 keywordSize 只能是 0（沿用文字字号）或 {KEYWORD_SIZE_MIN}～300")
         try:
-            validate_parameters(schema, config)
+            # A stored old publication may still contain the frozen font enum. Fonts were already checked live
+            # above; use the published schema's open form for the final merged-config validation.
+            validate_parameters(open_font_schema(schema), config)
         except Exception as exc:
             raise ValueError(f"参数覆盖不符合发布契约：{str(exc)[:200]}") from None
     transform = (editor.transform or RemotionTransform()).model_dump(exclude_none=True)

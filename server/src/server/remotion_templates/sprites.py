@@ -29,6 +29,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import boundary, sprite_store
 from .categories import FONT_PARAMETERS, HEX_COLOR, LINE_STARTS_PROP, category_problems, line_count, operator_message
+from .fonts import is_font_parameter, open_font_schema
 from .publication import current_bundle
 from .models import TemplateVersion
 from .object_store import PREFIX, ObjectStoreError
@@ -227,8 +228,9 @@ def sampled(sprite: pb.PublishedSprite) -> bool:
 def operator_parameters(sprite: pb.PublishedSprite) -> list[pb.SpriteParameter]:
     """The parameters operators see; an unsampled publication's editable ones become read-only.
 
-    Font parameters are the exception: their values come from the shared font library and are checked live when a
-    placement is saved, so changing a font does not rely on the boundary samples an older publication never rendered.
+    A text Sprite's font parameters are the exception: their values are checked against the live font library when a
+    placement is saved, so changing a font does not rely on boundary samples an older publication never rendered. A
+    parameter that merely uses a font-like name on another kind stays read-only.
     """
     if sampled(sprite):
         return list(sprite.parameters)
@@ -236,7 +238,7 @@ def operator_parameters(sprite: pb.PublishedSprite) -> list[pb.SpriteParameter]:
     for parameter in sprite.parameters:
         copy = pb.SpriteParameter()
         copy.CopyFrom(parameter)
-        if copy.access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE and copy.key not in FONT_PARAMETERS:
+        if copy.access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE and not is_font_parameter(sprite.kind, copy.key):
             copy.access = pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
         result.append(copy)
     return result
@@ -524,7 +526,8 @@ async def _sample(service, version: TemplateVersion, kind: int) -> None:
 
 def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVersion, bundle: bytes) -> pb.SpriteSummary:
     """Record a new publication with its own copy of the player bundle; losing a race to an identical one returns the winner."""
-    schema = version.candidate.config_schema
+    # Published font parameters are open strings: their enum can only name fonts known at generation time.
+    schema = open_font_schema(version.candidate.config_schema)
     composition = version.spec.composition
     sprite_id = str(uuid4())
     published_at = datetime.now(UTC)

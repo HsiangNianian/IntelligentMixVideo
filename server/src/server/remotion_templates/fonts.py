@@ -227,6 +227,13 @@ def open_font_schema(schema: dict) -> dict:
     return {**schema, "properties": {**properties, **opened}} if opened else schema
 
 
+def is_font_parameter(kind: int, name: str) -> bool:
+    """Whether `name` is a font parameter for `kind`; only text Sprites expose library fonts."""
+    from generated.imv.sprite.v1 import sprite_pb2 as pb
+
+    return kind == pb.SPRITE_KIND_TEXT and name in FONT_PARAMETERS
+
+
 def require_family(family: object, name: str = "fontFamily") -> None:
     """Raise a user-facing ValueError unless `family` (the value of font parameter `name`) is a family of the live font
     library (when a library is attached)."""
@@ -616,9 +623,10 @@ class FontStore:
         return [registry_font(record) for record in font_store.listing()]
 
     def families(self) -> list[str]:
-        """Family names of the whole library, one per card: the enum the Agent chooses from and `fontFamily` values are
-        checked against."""
-        return list(cards(self.known.values()))
+        """Snapshot the whole library's family names so registration cannot mutate a traversal."""
+        with self._lock:
+            known = list(self.known.values())
+        return list(cards(known))
 
     def path(self, font_id: str) -> Path | None:
         """Cached file of an available font, or None (also for the system default, which has no file here)."""
