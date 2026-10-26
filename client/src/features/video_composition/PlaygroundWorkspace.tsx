@@ -35,6 +35,8 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
   const [templateError, setTemplateError] = useState("");
   const [error, setError] = useState("");
   const [storageError, setStorageError] = useState("");
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
+  const [resetting, setResetting] = useState(false);
   const [queryError, setQueryError] = useState<{ message: string; missing: boolean } | null>(null);
   const [querying, setQuerying] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -63,6 +65,21 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
     }
   }
 
+  /** 仅重置已识别的损坏记录，写入成功后再恢复页面；切换服务后的旧结果不更新界面。 */
+  async function resetStored() {
+    const scope = currentKey.current;
+    if (!scope || resetting) return;
+    setResetting(true);
+    try {
+      await savePlayground(scope, emptyPlayground());
+      if (mounted.current && currentKey.current === scope) setRestoreAttempt((value) => value + 1);
+    } catch (reason) {
+      if (mounted.current && currentKey.current === scope) setStorageError(`无法重置操练场：${message(reason)}`);
+    } finally {
+      if (mounted.current) setResetting(false);
+    }
+  }
+
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     let cancelled = false;
@@ -81,9 +98,13 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
       current.current = restored.state;
       setSaved(restored.state);
       setKey(restored.key);
-    }).catch((reason) => { if (!cancelled) setStorageError(`无法恢复操练场：${message(reason)}`); });
+    }).catch((reason) => {
+      if (cancelled) return;
+      if (reason instanceof Error && "key" in reason && typeof reason.key === "string") currentKey.current = reason.key;
+      setStorageError(`无法恢复操练场：${message(reason)}`);
+    });
     return () => { cancelled = true; };
-  }, [address]);
+  }, [address, restoreAttempt]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -173,6 +194,11 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
         </Button>
         {error && <p role="alert" className="mt-3 text-sm text-danger">{error}</p>}
         {storageError && <p role="alert" className="mt-3 text-sm text-danger">{storageError}</p>}
+        {storageError && !key && <div className="mt-3 space-y-2">
+          {currentKey.current && <p className="text-xs text-fg-muted">重置将清除当前服务的模板选择、任务和最近成片记录。</p>}
+          <Button variant="outline" size="sm" disabled={resetting} onClick={() => setRestoreAttempt((value) => value + 1)}>重试读取</Button>
+          {currentKey.current && <Button variant="outline" size="sm" className="ml-2" disabled={resetting} onClick={() => { void resetStored(); }}>{resetting ? "正在重置…" : "重置操练场记录"}</Button>}
+        </div>}
       </section>
       <section aria-label="合成视频" className="min-w-0 overflow-hidden rounded-2xl border border-line bg-surface">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-6 py-4"><h2 className="font-semibold">合成视频</h2>

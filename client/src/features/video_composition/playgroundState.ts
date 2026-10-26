@@ -23,9 +23,14 @@ export async function loadPlayground(address: string): Promise<{ key: string; st
   const key = `$playground:${scope}`;
   const serialized = isTauri() ? settings[key]?.state : localStorage.getItem(key);
   if (!serialized) return { key, state: emptyPlayground() };
-  const saved = JSON.parse(String(serialized)) as PlaygroundState;
-  if (typeof saved.styleId !== "string" || !("task" in saved) || !("video" in saved)) throw new Error("操练场本地记录无法读取");
-  return { key, state: saved };
+  try {
+    const saved = JSON.parse(String(serialized)) as PlaygroundState;
+    if (typeof saved.styleId !== "string" || !("task" in saved) || !("video" in saved)) throw new Error();
+    return { key, state: saved };
+  } catch {
+    // 保留原始记录；只将已确定的作用域交给页面，供用户主动重置。
+    throw Object.assign(new Error("操练场本地记录无法读取"), { key });
+  }
 }
 
 // 同一页面中的选择与查询可同时保存；按触发顺序落盘，旧请求不能覆盖新选择。

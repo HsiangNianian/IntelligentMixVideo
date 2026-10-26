@@ -140,6 +140,81 @@ test.each([
   expect(posts).toBe(1);
 });
 
+// 场景：坏 JSON 或缺字段的记录一直保留到用户主动重置，重试不会删除；重置不影响其他服务和 IMS 设置。
+test.each([
+  ["browser", "{"], ["browser", '{"styleId":"saved"}'],
+  ["desktop", "{"], ["desktop", '{"styleId":"saved"}'],
+] as const)("损坏记录可主动重置：%s / %s", async (kind, serialized) => {
+  const storage = playgroundStorage(kind);
+  const { key } = await loadPlayground(apiBase());
+  storage.write(key, serialized);
+  storage.write("$playground:other", "untouched");
+  fetchMock.mockImplementation((async (url) => {
+    expect(String(url)).toEndWith("/template");
+    return jsonListResponse([savedTemplate()]);
+  }) as typeof fetch);
+  const view = render(<PlaygroundWorkspace />);
+  await screen.findByText(/无法恢复操练场/);
+  expect(storage.read(key)).toBe(serialized);
+  expect(screen.getByRole<HTMLButtonElement>("combobox").disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "重试读取" }));
+  await screen.findByText(/无法恢复操练场/);
+  expect(storage.read(key)).toBe(serialized);
+  fireEvent.click(screen.getByRole("button", { name: "重置操练场记录" }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("combobox").disabled).toBe(false));
+  expect((await loadPlayground(apiBase())).state).toEqual(emptyPlayground());
+  expect(storage.read("$playground:other")).toBe("untouched");
+  expect(storage.settings.ims).toEqual({ region: "keep" });
+  view.unmount();
+  render(<PlaygroundWorkspace />);
+  await selectTemplate();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始合成" }).disabled).toBe(false);
+  expect(screen.queryByText(/无法恢复操练场/)).toBeNull();
+});
+
+// 场景：重置写入失败时保留原记录与禁用状态，明确报错；存储恢复后可以再次重置。
+test("重置写入失败可再次尝试", async () => {
+  let serialized = "{";
+  let writable = false;
+  mockDesktop(async (command, args) => {
+    expect(command).toBe("local_settings");
+    if (args.id) {
+      expect(args.id).toBe("$playground:embedded");
+      if (!writable) throw new Error("测试存储不可写");
+      serialized = String((args.values as Record<string, unknown>).state);
+    }
+    return { "$playground:embedded": { state: serialized } };
+  });
+  fetchMock.mockResolvedValue(jsonListResponse([savedTemplate()]));
+  render(<PlaygroundWorkspace />);
+  await screen.findByText(/无法恢复操练场/);
+  fireEvent.click(screen.getByRole("button", { name: "重置操练场记录" }));
+  await screen.findByText(/无法重置操练场：测试存储不可写/);
+  expect(serialized).toBe("{");
+  expect(screen.getByRole<HTMLButtonElement>("combobox").disabled).toBe(true);
+  writable = true;
+  fireEvent.click(screen.getByRole("button", { name: "重置操练场记录" }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("combobox").disabled).toBe(false));
+});
+
+// 场景：设置文件暂时读不到时只提供重试，不猜作用域或重置整个设置；读取恢复后原选择仍在。
+test("本地读取失败可重试且不显示重置入口", async () => {
+  let reads = 0;
+  mockDesktop(async (command, args) => {
+    expect(command).toBe("local_settings");
+    expect(args.id).toBeUndefined();
+    if (++reads === 1) throw new Error("测试读取失败");
+    return { "$playground:embedded": { state: JSON.stringify({ ...emptyPlayground(), styleId: savedTemplate().template_id }) } };
+  });
+  fetchMock.mockResolvedValue(jsonListResponse([savedTemplate()]));
+  render(<PlaygroundWorkspace />);
+  await screen.findByText(/无法恢复操练场：测试读取失败/);
+  expect(screen.queryByRole("button", { name: "重置操练场记录" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "重试读取" }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始合成" }).disabled).toBe(false));
+  expect(screen.getByRole("combobox").textContent).toContain(savedTemplate().name);
+});
+
 // 场景：恢复进行中任务时显示阶段；状态推进不会额外查询，15 秒轮询与手动查询串行，成功后停止轮询。
 test("展示 IMS 渲染进度，15 秒自动查询并支持手动刷新", async () => {
   const task: CompositionTask = { ...completed(), status: "queued", stage: "queued", result: null };
