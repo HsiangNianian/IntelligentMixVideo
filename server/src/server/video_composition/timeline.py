@@ -71,6 +71,7 @@ def build_timeline(
     duration_ms: int | float, *, width: int, height: int, fps: int,
     material_durations: list[float] | None = None, title_keyword: str = "", transition_seed: str = "",
     title_en: str | None = None, title_keyword_en: str = "",
+    frame_mask_url: str | None = None,
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
     request = CompositionRequest.from_snapshot(request)
@@ -192,6 +193,14 @@ def build_timeline(
         }]})
     timeline = {"VideoTracks": [{"VideoTrackClips": clips}], "AudioTracks": audio_tracks,
                 "SubtitleTracks": subtitle_tracks}
+    if template.frame_mask and any(bar.enabled and floor(height * bar.height / 100 + 0.5) > 0 for bar in (template.frame_mask.top, template.frame_mask.bottom)):
+        if not frame_mask_url:
+            raise ValueError("上下蒙版图片尚未准备完成")
+        # 蒙版在主体视频上、全局效果与文字下；后续 Remotion 透明视频仍追加在其上。
+        timeline["VideoTracks"].append({"VideoTrackClips": [{
+            "Type": "Image", "MediaURL": frame_mask_url, "TimelineIn": 0, "TimelineOut": duration,
+            "Duration": duration, "X": 0, "Y": 0, "Width": width, "Height": height, "AdaptMode": "Fill",
+        }]})
     effects = []
     # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验；
     # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。

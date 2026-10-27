@@ -1,0 +1,7 @@
+[
+  {"height": 1920, "top": 18.4, "bottom": 16.6, "expected": [[0, 353], [1601, 319]]},
+  {"height": 1280, "top": 18.4, "bottom": 16.6, "expected": [[0, 236], [1068, 212]]},
+  {"height": 101, "top": 50, "bottom": 0, "expected": [[0, 51]]},
+  {"height": 1280, "top": 0, "bottom": 10, "expected": [[1152, 128]]},
+  {"height": 100, "top": 0.01, "bottom": 0, "expected": []}
+]

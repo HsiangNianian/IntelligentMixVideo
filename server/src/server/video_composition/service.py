@@ -24,6 +24,7 @@ from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, MatchedSegment, PlaygroundRequest, PositiveSeconds, Segment, TaskResponse
 from .settings import ClientSettings, Settings, ZosSettings
 from .timeline import build_timeline, validate_segments
+from .frame_mask import upload_mask
 
 logger = logging.getLogger(__name__)
 
@@ -569,6 +570,13 @@ class Job:
         """组装只读业务快照，提交前持久化完整请求、稳定 ClientToken 和总截止时间。"""
         data = self.record["data"]
         request = CompositionRequest.from_snapshot(data["request"])
+        if data["template"].get("frame_mask") and "frame_mask_url" not in data:
+            mask_url = await self.runtime.step(self.record, "frame_mask_upload", lambda: self.runtime.sync(
+                upload_mask, data["template"]["frame_mask"], data["output"]["width"], data["output"]["height"],
+                self.record["task_id"], ZosSettings(), self.settings.composition_http_timeout_seconds, zos.object_prefix(data),
+            ), {"frame_mask": data["template"]["frame_mask"]})
+            await self.save("assembling", frame_mask_url=mask_url)
+            data = self.record["data"]
         if request.composition_mode != "standard" and "material_durations" not in data:
             durations = await self.runtime.step(self.record, "material_probe", lambda: media.material_durations(
                 request.materials, data["duration_ms"] / 1000, self.settings.composition_http_timeout_seconds,
@@ -576,6 +584,7 @@ class Job:
             await self.save("assembling", material_durations=durations)
             data = self.record["data"]
         inputs = dict(request=data["request"], template=data["template"], transition_seed=self.record["task_id"], segments=data.get("segmentation", {}).get("segments", []),
+                      frame_mask_url=data.get("frame_mask_url"),
                       title_keyword=data.get("segmentation", {}).get("title_keyword", ""),
                       title_en=data.get("segmentation", {}).get("title_en"),
                       title_keyword_en=data.get("segmentation", {}).get("title_keyword_en", ""),
