@@ -41,6 +41,7 @@ class SplitScreen(BaseModel):
 
     model_config = ConfigDict(extra="forbid", alias_generator=to_camel, populate_by_name=True)
     enabled: StrictBool = False
+    layout: Literal["split", "overlay", "circle"] = "split"
     background_color: str = Field(default="#000000", pattern=r"^#[0-9a-fA-F]{6}$")
     material: ScreenWindow = Field(default_factory=lambda: ScreenWindow(x=8, y=12, width=84, height=48))
     avatar: ScreenWindow = Field(default_factory=lambda: ScreenWindow(x=35, y=68, width=30, height=21, radius=30, border_width=6))

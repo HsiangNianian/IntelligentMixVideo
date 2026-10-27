@@ -15,6 +15,7 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 from .split_screen import SplitScreen
+from .avatar import AvatarEffects
 
 EffectCategory = Literal[
     "flower",
@@ -360,6 +361,7 @@ class TemplateData(BaseModel):
     transition_mode: Literal["sequence", "random"] | None = Field(default=None, exclude_if=lambda value: value is None)
     transition_enabled: bool = Field(default=True, strict=True)
     split_screen: SplitScreen | None = Field(default=None, exclude_if=lambda value: value is None)
+    avatar_effects: AvatarEffects | None = Field(default=None, exclude_if=lambda value: value is None)
     tracks: list[EffectTrack] = Field(max_length=100)
 
     @model_validator(mode="after")
