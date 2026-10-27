@@ -61,7 +61,9 @@ GET 与 POST 成功响应默认使用 `application/json`，采用 Protobuf JSON 
 
 列表返回逐条校验的 `TemplateSummary`，包含名称、ID、更新时间、有效模板的标题/字幕及对象数量，无效记录通过 `validationError` 说明原因。无效记录的详情读取返回 409，删除仍按 ID 执行，不影响同库有效模板。保存必须包含中文标题和中文字幕各一个；双语模板另有对应的英文对象。列表消息与转场字段需要客户端、服务端一起升级；已有记录不自动转换。
 
-`SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
+`SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存对象参数；缺省参数由业务校验补齐。模板更新完整替换配置（下述省略的蒙版字段除外）。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
+
+上下纯色蒙版单独保存在模板级 `frame_mask`（Protobuf JSON 为 `frameMask`），含 `top`、`bottom`，各自必须提供 `enabled`、`height`（画布高度百分比，有限数 0～50）与 `color`（`#RRGGBB`）。新建省略不启用；旧客户端更新省略该字段时保留原配置，显式关闭两栏即可停用。使用蒙版需升级两端，无新增表或接口。合成按任务快照生成全画布透明 PNG，两栏像素高为 `floor(height * percent / 100 + 0.5)`；在线程池生成并经现有 ZOS 上传/公开读取校验，保存 `frame_mask_url` 供任务恢复复用。两栏全关或像素高度为零不上传；上传失败不提交 IMS。图片通过 `VideoTracks` 的 `Type=Image` 全程叠在主体视频上，后续 Remotion、全局效果和文字仍在其上方，不改视频构图或文字内容。对象路径为 `imv/video_composition/<taskId>-mask.png`，操练场使用 `imv/playground/`。
 
 顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成调用切片时传入请求 `title`，标题局部样式仅作用于返回的 `title_keyword` 首次出现的位置；返回值缺失或为空时保留标题原文，不回退模板 `titleKeyword` 或标题前两个字。旧快照缺少标题词时不高亮；无声模式通过仅标题提词取得关键词；模板预览仍沿用原规则。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
 
