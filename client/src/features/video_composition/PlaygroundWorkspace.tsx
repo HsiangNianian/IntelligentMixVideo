@@ -244,7 +244,7 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
 
       {/* 中等宽度时画面与任务上下排列、整列滚动；宽屏时这一层不生成盒子，两者各占一栏。 */}
       <div className="flex flex-col lg:min-h-0 lg:overflow-y-auto xl:contents">
-        <Stage saved={saved} running={running} videoRef={video} mediaError={mediaError}
+        <Stage saved={saved} busy={running || submitting} videoRef={video} mediaError={mediaError}
           onMediaError={() => setMediaError(true)} onRetryMedia={() => { setMediaError(false); video.current?.load(); }} />
         <TaskPanel task={saved.task} templateName={saved.taskTemplateName} running={running} step={step} hasKey={!!key}
           querying={querying} queryError={queryError} onQuery={() => setQueryAttempt((value) => value + 1)}
@@ -310,16 +310,16 @@ function TemplatePicker({ templates, loading, error, value, disabled, onRefresh,
 }
 
 /**
- * 画面：按竖屏比例在可用空间里放播放器，宽高都不超出。新任务合成中仍显示的旧成片标为「上一条成片」，
- * 新任务结束后（失败也一样）它就是最新可用的成片；
+ * 画面：按竖屏比例在可用空间里放播放器，宽高都不超出。`busy` 表示新任务正在提交或合成：只有成功的任务才保存成片，
+ * 所以这时画面上的成片一定来自更早的任务，标为「上一条成片」；新任务结束后（失败也一样）它就是最新可用的成片。
  * 没有成片时显示同比例的虚线空画框。
  */
-function Stage({ saved, running, videoRef, mediaError, onMediaError, onRetryMedia }: {
-  saved: PlaygroundState; running: boolean; videoRef: RefObject<HTMLVideoElement | null>; mediaError: boolean;
+function Stage({ saved, busy, videoRef, mediaError, onMediaError, onRetryMedia }: {
+  saved: PlaygroundState; busy: boolean; videoRef: RefObject<HTMLVideoElement | null>; mediaError: boolean;
   onMediaError: () => void; onRetryMedia: () => void;
 }) {
   const shown = saved.video;
-  const previous = running && !!shown && shown.taskId !== saved.task?.taskId;
+  const previous = busy && !!shown;
   const frame = "relative w-[min(100cqw,calc(100cqh*9/16))] aspect-[9/16] overflow-hidden rounded-[14px]";
   return <section aria-label="合成视频" className="flex min-h-[560px] flex-1 flex-col xl:min-h-0">
     <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface px-5">
@@ -337,9 +337,9 @@ function Stage({ saved, running, videoRef, mediaError, onMediaError, onRetryMedi
           {mediaError && <div role="alert" className="absolute inset-x-3 bottom-14 rounded-xl bg-black/70 p-3 text-center text-[12.5px] text-white backdrop-blur-md">视频暂时无法播放，请检查网络后
             <button type="button" onClick={onRetryMedia} className="ml-1 font-medium underline underline-offset-2">重试播放</button></div>}
         </div> : <div className={cn(frame, "flex flex-col items-center justify-center border-[1.5px] border-dashed border-line-strong bg-surface/60 px-6 text-center")}>
-          {running ? <Spinner className="size-6 text-brand" /> : <Icon name="video-frame-play-vertical" className="size-7 text-fg-subtle" />}
-          <p className="mt-3 text-[13px] font-medium">{running ? "视频正在合成" : "还没有成片"}</p>
-          <p className="mt-1 text-[11.5px] leading-relaxed text-fg-subtle">{running ? "完成后会在这里播放" : "在左侧选择模板，生成第一条视频"}</p>
+          {busy ? <Spinner className="size-6 text-brand" /> : <Icon name="video-frame-play-vertical" className="size-7 text-fg-subtle" />}
+          <p className="mt-3 text-[13px] font-medium">{busy ? "视频正在合成" : "还没有成片"}</p>
+          <p className="mt-1 text-[11.5px] leading-relaxed text-fg-subtle">{busy ? "完成后会在这里播放" : "在左侧选择模板，生成第一条视频"}</p>
         </div>}
       </div>
     </div>

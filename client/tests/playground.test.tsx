@@ -103,6 +103,34 @@ test.each(["network", "503"])("查询失败可继续查询，任务失败保留�
   expect(screen.queryByText("上一条成片")).toBeNull();
 });
 
+// 场景：提交请求还没返回时，已有成片标为「上一条成片」，没有成片时空画框显示正在合成；返回后照常记录新任务。
+test.each([["有旧成片", true], ["没有成片", false]] as const)("提交等待中画面显示新任务：%s", async (_name, hasVideo) => {
+  const old = completed("old-task");
+  const { key } = await loadPlayground(apiBase());
+  await savePlayground(key, { ...emptyPlayground(), styleId: savedTemplate().template_id,
+    ...(hasVideo ? { task: old, taskStyleId: savedTemplate().template_id, taskTemplateName: savedTemplate().name,
+      video: { ...old.result!, taskId: old.taskId, styleId: savedTemplate().template_id, templateName: savedTemplate().name } } : {}) });
+  let respond!: (response: Response) => void;
+  fetchMock.mockImplementation((async (url) => {
+    if (String(url).endsWith("/template")) return jsonListResponse([savedTemplate()]);
+    if (String(url).endsWith("/playground")) return new Promise<Response>((resolve) => { respond = resolve; });
+    return Response.json({ ...completed("new-task"), status: "processing", stage: "rendering", result: null });
+  }) as typeof fetch);
+  render(<PlaygroundWorkspace />);
+  const submit = await screen.findByRole<HTMLButtonElement>("button", { name: "开始合成" });
+  await waitFor(() => expect(submit.disabled).toBe(false));
+  expect(screen.queryByText(hasVideo ? "最新成片" : "还没有成片")).toBeTruthy();
+  fireEvent.click(submit);
+  await screen.findByRole("button", { name: "正在提交…" });
+  if (hasVideo) {
+    expect(screen.getByText("上一条成片")).toBeTruthy();
+    expect(screen.getByText("新视频合成中，完成后替换")).toBeTruthy();
+  } else expect(screen.getByText("视频正在合成")).toBeTruthy();
+  respond(Response.json({ code: 200, data: "new-task" }));
+  await waitFor(async () => expect((await loadPlayground(apiBase())).state.task?.taskId).toBe("new-task"));
+  expect(screen.getByText(hasVideo ? "上一条成片" : "视频正在合成")).toBeTruthy();
+});
+
 // 场景：操练场的模板已在受理时固定，template 阶段失败是 Remotion 环境检查，显示在「生成画面与字效」步骤下。
 test("模板阶段失败显示在生成画面与字效步骤", async () => {
   const { key } = await loadPlayground(apiBase());
@@ -329,7 +357,10 @@ test("后端切换恢复各自的选择", async () => {
   try {
     setApiBase("https://other-backend.test");
     view.rerender(<PlaygroundWorkspace />);
-    await waitFor(async () => expect((await templateRadio()).checked).toBe(false));
+    // 切换瞬间会先清空选择；等新服务的记录读完、列表可选后再断言，避免旧选择迟到恢复也被放过。
+    const radio = await templateRadio();
+    await waitFor(() => expect(radio.disabled).toBe(false));
+    expect(radio.checked).toBe(false);
   } finally {
     setApiBase(original);
   }
