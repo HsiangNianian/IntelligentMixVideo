@@ -324,16 +324,16 @@ async function transparencyCheck(page) {
 }
 
 /**
- * Capture `request.capture.frames` of the component as it is configured, composited onto neutral #808080 gray (the
- * gray the model is told is not content) and cut to `request.capture.box` at `request.capture.scale`, as
- * `frames/frame-<n>.png` for the Agent to compare with what was asked. The checks before may leave other values or
- * another render length mounted, so the configured ones are put back first.
+ * Capture `request.capture.frames` of the component as it is configured (with `request.capture.parameters` over it,
+ * such as sample keywords), composited onto neutral #808080 gray (the gray the model is told is not content) and cut
+ * to `request.capture.box` at `request.capture.scale`, as `frames/frame-<n>.png` for the Agent to compare with what was
+ * asked. The checks before may leave other values or another render length mounted, so these are put back first.
  */
 async function captureFrames(page) {
   const { frames, box, scale } = request.capture;
   await fs.mkdir(`${root}/frames`, { recursive: true });
   await page.evaluate((frames) => window.__imvTool.setDuration(frames), request.composition.duration_frames);
-  await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
+  await page.evaluate((values) => window.__imvTool.setParameters(values), { ...(request.parameters ?? {}), ...(request.capture.parameters ?? {}) });
   const client = page._client();
   await client.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 128, g: 128, b: 128, a: 1 } });
   try {
@@ -386,14 +386,14 @@ async function lengthsCheck(page) {
 /**
  * Sample values of the props the host passes a text-block Preset (`ROLE_PROPS` in contracts.py), for the type check's
  * call site: a text Preset draws one tier from the host's line (`children`) or from its text, keyword segments and
- * `Keyword` itself, in its fonts; a keyword Preset draws one hit; an effect Preset wraps children in the host's Box at a
- * progress, as unit `index` of `count`. Props a Preset may leave undeclared are spread: TypeScript checks the type of
+ * `Keyword` itself, in its fonts; a keyword Preset draws one hit from the host's glyphs (`children`) or its `text`; an
+ * effect Preset wraps children in the host's Box at a progress, as unit `index` of `count`. Props a Preset may leave undeclared are spread: TypeScript checks the type of
  * a spread prop the component declares (and its absence when required) but not an extra one, as at runtime, where the
  * host passes them all.
  */
 const ROLE_HOST_PROPS = {
   text: 'fontFamily={"Noto Sans CJK SC"} fontWeight={700} fontSize={96} {...{text: "示例文字", segments: [{text: "示例", keyword: true}, {text: "文字", keyword: false}], Keyword: (keyword: {text: string}) => <span>{keyword.text}</span>, children: <span>示例文字</span>}}',
-  keyword: 'text={"示例"}',
+  keyword: '{...{text: "示例", children: <span>示例</span>}}',
   effect: 'progress={1} Box={(box: {style?: React.CSSProperties; children?: React.ReactNode}) => <div style={box.style}>{box.children}</div>} children={<span>示例文字</span>} {...{index: 0, count: 1}}',
 };
 

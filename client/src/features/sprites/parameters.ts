@@ -58,10 +58,11 @@ export const TEXT_LAYOUT_PARAMETERS = [
 ];
 
 /**
- * 字效特效的配置参数：第 k 个特效的开关 `effect{k}`、作用位置 `effect{k}Target` 与入场、出场的时长 `effect{k}Seconds`（秒），
- * 名称与服务端 `categories.EFFECT_PARAMETER` 一致。字效工作区单列为「特效」组，模板编辑按摆放调整。
+ * 字效特效的配置参数：第 k 个特效的开关 `effect{k}`、作用位置 `effect{k}Target`、入场与出场等的时长 `effect{k}Seconds`（秒）及
+ * 入场与下栏出现推迟开始的 `effect{k}Delay`（秒），名称与服务端 `categories.EFFECT_PARAMETER` 一致。字效工作区单列为「特效」组，
+ * 模板编辑按摆放调整。
  */
-export const EFFECT_PARAMETER = /^effect[1-9][0-9]*(?:Target|Seconds)?$/;
+export const EFFECT_PARAMETER = /^effect[1-9][0-9]*(?:Target|Seconds|Delay)?$/;
 
 /**
  * 模板编辑里开放的资产参数：字效的排版参数、特效的开关、位置与时长以及关键词样式；颜色、特效与关键词效果的外观等属于资产本身，

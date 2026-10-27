@@ -5,8 +5,9 @@
  * A text effect's text block (`input.text`) is laid out by the host instead: it splits `text` into one tier or an
  * upper and a lower tier, cuts each tier at the keyword hits, stacks the tiers in one column of the block and hands
  * each tier to its text Preset, keyword hits to the keyword Preset, and wraps the block, the tiers and the keyword
- * hits in the effect Presets bound there (see `textEntry`). It writes `{code, children}`: the Sprite source and, for each
- * tier, whether its text Preset takes the host-rendered line as `children` (see `takesChildren`).
+ * hits in the effect Presets bound there (see `textEntry`). It writes `{code, children, keyword_children}`: the Sprite
+ * source, for each tier whether its text Preset takes the host-rendered line as `children`, and whether the keyword
+ * Preset (if any) takes the hit's glyphs as `children` (see `takesChildren`).
  */
 import { build } from "esbuild";
 import fs from "node:fs";
@@ -18,9 +19,10 @@ const instances = block ? [...block.tiers, ...(block.keyword ? [block.keyword] :
 // Instances of the same Preset share one bundled module, so repeated instances do not repeat its source.
 const modules = [...new Set(instances.map((item) => item.code))];
 /**
- * Whether a text Preset draws the line the host renders and passes as `children` rather than drawing the `segments`
- * itself: such a Preset names `children` somewhere in its code (its props type, `props.children` or a destructured
- * binding), which a Preset written for `segments` has no reason to do. Comments and strings do not count.
+ * Whether a text or keyword Preset draws what the host renders and passes as `children` (a tier's line, a keyword hit's
+ * glyphs) rather than drawing its `segments` or `text` itself: such a Preset names `children` somewhere in its code (its
+ * props type, `props.children` or a destructured binding), which a Preset written for `segments` or `text` has no reason
+ * to do. Comments and strings do not count.
  */
 function takesChildren(code) {
   const source = ts.createSourceFile("Preset.tsx", code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -30,6 +32,8 @@ function takesChildren(code) {
   return found;
 }
 const children = block ? block.tiers.map((item) => takesChildren(item.code)) : [];
+// Without a keyword Preset the host draws each hit itself, so its glyphs can always be units.
+const keywordChildren = block?.keyword ? takesChildren(block.keyword.code) : true;
 /** The object of this instance's Preset props that top-level parameters bind, read from `props`. */
 function boundProps(item) {
   return `{${(item.bindings ?? []).map(({ name, parameter }) => `${JSON.stringify(parameter)}: props[${JSON.stringify(name)}]`).join(", ")}}`;
@@ -60,22 +64,25 @@ const prelude = [
  * there measures in its em.
  *
  * A tier whose text Preset takes `children` gets its line from the host: the text with each keyword hit drawn by the
- * host's `__Keyword`; while an effect at `chars` is on, every glyph (a grapheme; a keyword hit counts as one, spaces
- * none) is a unit of its own. Other text Presets draw the `segments` themselves and offer no `chars` position.
+ * host's `__Keyword`; while an effect at a glyph position is on, every glyph (a grapheme, spaces none) is a unit of its
+ * own, the glyphs of a keyword hit inside it too when the keyword Preset takes them as `children` (otherwise the hit is
+ * one unit). Other text Presets draw the `segments` themselves and offer no glyph position.
  *
  * Effect k (from 1, in the block's order, the first innermost) wraps every position its `effect{k}Target` names while
- * its switch `effect{k}` is on: `block` the whole column, `tiers` each tier, `line1`/`line2` one tier, `chars` each
- * unit of a tier's line and `keyword` each keyword hit. A tier and its keyword hits play inside the tier's Sequence, so their frames count from the tier's
+ * its switch `effect{k}` is on: `block` the whole column, `tiers` each tier, `line1`/`line2` one tier, the glyph
+ * positions `chars` (every unit of a tier's line), `keywordChars` (the glyphs of its keyword hits) and `plainChars` (its
+ * other glyphs), and `keyword` each keyword hit. A tier and its keyword hits play inside the tier's Sequence, so their frames count from the tier's
  * start and the Sequence ends with the Sprite. The effect Preset receives the wrapped children, the host's Box (a
  * full-width block, or an inline block for a keyword hit) and `progress`, how far the position is shown: an entrance
  * rises from 0 at the position's first frame to 1 after `effect{k}Seconds`, an exit falls to 0 on the last frame, a
  * looping effect stays at 1, and a cue effect stays at 0 until the lower tier appears and then rises to 1 over its
- * length (it never rises while the lower tier has no text). Each length is at most half of the frames the position plays less one, so short renders
- * and a text frozen on its middle frame (`D // 2` or `(D - 1) // 2` of D frames) still show it in full there. At `chars`
- * the units share that length in turn: unit i of n shows `clamp(P * n - i)` of the position's progress P, so an
+ * length (it never rises while the lower tier has no text). An entrance or cue effect starts `effect{k}Delay` seconds
+ * later, so effects can follow one another. Each length (with its delay) is at most half of the frames the position plays less one, so short renders
+ * and a text frozen on its middle frame (`D // 2` or `(D - 1) // 2` of D frames) still show it in full there. At a glyph
+ * position the units share that length in turn: unit i of n shows `clamp(P * n - i)` of the position's progress P, so an
  * entrance reveals them in reading order, an exit removes the last one first, and a longer text goes faster. Every
- * effect Preset also receives `index` and `count`: the unit's place in its tier at `chars`, the tier's place at `tiers`
- * and `line1`/`line2`, and 0 of 1 elsewhere.
+ * effect Preset also receives `index` and `count`: the unit's place among that glyph position's units in its tier, the
+ * tier's place at `tiers` and `line1`/`line2`, and 0 of 1 elsewhere.
  *
  * A still block (`block.still`, a work made with effects) holds each tier Preset on the middle frame of the frames the
  * tier plays, so any motion of its own never plays and the effects alone move it; the keyword hits and the units inside
@@ -124,25 +131,36 @@ function textEntry() {
     // A held tier's live frame, for the keyword hits and units drawn inside it; null outside a held tier.
     `const __Live = React.createContext(null);`,
     `function __Hold({children}) { const frame = useCurrentFrame(); const {durationInFrames} = useVideoConfig(); return <__Live.Provider value={frame}><Freeze frame={Math.max(0, Math.floor((durationInFrames - 1) / 2))}>{children}</Freeze></__Live.Provider>; }`,
-    `function __Effects({at, inline, index = 0, count = 1, children}) { const {props, cue} = React.useContext(__Context); const origin = React.useContext(__Origin); const frame = useCurrentFrame(); const {fps, durationInFrames} = useVideoConfig(); let node = children; `
-      + `for (const item of __effects) { if (props["effect" + item.k] === false || !at.includes(props["effect" + item.k + "Target"])) continue; `
-      + `const length = Math.max(1, Math.min(Math.round((Number(props["effect" + item.k + "Seconds"]) || 0.5) * fps), Math.floor((durationInFrames - 1) / 2))); `
-      + `const shown = item.slot === "enter" ? __clamp(frame / length) : item.slot === "exit" ? __clamp((durationInFrames - 1 - frame) / length) : item.slot === "cue" ? (cue === null ? 0 : __clamp((frame - (cue - origin)) / length)) : 1; `
-      // The units of a line take the position's progress in turn.
-      + `const progress = item.slot !== "loop" && at.includes("chars") ? __clamp(shown * count - index) : shown; `
-      + `node = <item.Preset {...item.props(props)} progress={progress} index={index} count={count} Box={inline ? __InlineBox : __BlockBox}>{node}</item.Preset>; } return node; }`,
-    // Whether an effect at `chars` is on: only then is a line cut into units, so its text otherwise shapes as one run.
-    `const __glyphsOn = (props) => __effects.some((item) => props["effect" + item.k] !== false && props["effect" + item.k + "Target"] === "chars");`,
+    // A glyph unit passes `units`, its [index, count] at each glyph position it belongs to.
+    `function __Effects({at, inline, index = 0, count = 1, units, children}) { const {props, cue} = React.useContext(__Context); const origin = React.useContext(__Origin); const frame = useCurrentFrame(); const {fps, durationInFrames} = useVideoConfig(); let node = children; `
+      + `for (const item of __effects) { const target = props["effect" + item.k + "Target"]; if (props["effect" + item.k] === false || !at.includes(target)) continue; `
+      + `const half = Math.floor((durationInFrames - 1) / 2); const length = Math.max(1, Math.min(Math.round((Number(props["effect" + item.k + "Seconds"]) || 0.5) * fps), half)); `
+      + `const delay = item.slot === "enter" || item.slot === "cue" ? Math.min(Math.round((Number(props["effect" + item.k + "Delay"]) || 0) * fps), Math.max(0, half - length)) : 0; `
+      + `const shown = item.slot === "enter" ? __clamp((frame - delay) / length) : item.slot === "exit" ? __clamp((durationInFrames - 1 - frame) / length) : item.slot === "cue" ? (cue === null ? 0 : __clamp((frame - (cue - origin) - delay) / length)) : 1; `
+      // The units of a glyph position take its progress in turn.
+      + `const [i, n] = units?.[target] ?? [index, count]; const progress = item.slot !== "loop" && units?.[target] ? __clamp(shown * n - i) : shown; `
+      + `node = <item.Preset {...item.props(props)} progress={progress} index={i} count={n} Box={inline ? __InlineBox : __BlockBox}>{node}</item.Preset>; } return node; }`,
+    // Whether an effect at a glyph position is on: only then is a line cut into units, so its text otherwise shapes as one run.
+    `const __glyphsOn = (props) => __effects.some((item) => props["effect" + item.k] !== false && ["chars", "keywordChars", "plainChars"].includes(props["effect" + item.k + "Target"]));`,
     `const __split = (text) => typeof Intl.Segmenter === "function" ? Array.from(new Intl.Segmenter(undefined, {granularity: "grapheme"}).segment(text), (part) => part.segment) : Array.from(text);`,
-    // One unit of a line at the position `chars`, at its held tier's live frame like a keyword hit.
-    `function __Unit({index, count, children}) { const live = React.useContext(__Live); const inner = <__Effects at={["chars"]} inline index={index} count={count}>{children}</__Effects>; return live === null ? inner : <Freeze frame={live}>{inner}</Freeze>; }`,
-    // The line handed to a text Preset as children: its plain text, each keyword hit drawn by the host and, while
-    // an effect at `chars` is on, every glyph and every hit a unit (spaces stay plain text between units).
+    // One unit of a line at the glyph positions in `units`, at its held tier's live frame like a keyword hit.
+    `function __Unit({units, children}) { const live = React.useContext(__Live); const inner = <__Effects at={Object.keys(units)} inline units={units}>{children}</__Effects>; return live === null ? inner : <Freeze frame={live}>{inner}</Freeze>; }`,
+    // Whether a keyword hit's glyphs can be units: the keyword Preset takes them as children, or the host draws the hit.
+    `const __keywordGlyphs = ${keywordChildren};`,
+    // The line handed to a text Preset as children: its plain text and each keyword hit drawn by the host. While an
+    // effect at a glyph position is on every glyph is a unit, counted at `chars` and at `keywordChars` or
+    // `plainChars` (a hit whose glyphs cannot be units is one unit at `chars`); spaces stay plain text between units.
     `function __line(segments, glyphs) { if (!glyphs) return segments.map((segment, at) => segment.keyword ? <__Keyword key={at} text={segment.text} /> : segment.text); `
-      + `const parts = segments.flatMap((segment) => segment.keyword ? [segment] : __split(segment.text).map((text) => ({text, keyword: false}))); const count = parts.filter((part) => part.keyword || part.text.trim()).length; let index = 0; `
-      + `return parts.map((part, at) => part.keyword ? <__Unit key={at} index={index++} count={count}><__Keyword text={part.text} /></__Unit> : part.text.trim() ? <__Unit key={at} index={index++} count={count}><span data-imv-glyph="">{part.text}</span></__Unit> : part.text); }`,
+      + `const parts = segments.map((segment) => ({...segment, glyphs: segment.keyword && !__keywordGlyphs ? [segment.text] : __split(segment.text)})); const shown = (text) => text.trim() !== ""; `
+      + `const total = (keyword) => parts.filter((part) => keyword === undefined || part.keyword === keyword).reduce((sum, part) => sum + part.glyphs.filter(shown).length, 0); `
+      + `const all = total(), keywords = __keywordGlyphs ? total(true) : 0, plain = total(false); let i = 0, j = 0, k = 0; `
+      + `const glyph = (text, at, keyword) => shown(text) ? <__Unit key={at} units={{chars: [i++, all], ...(keyword ? {keywordChars: [j++, keywords]} : {plainChars: [k++, plain]})}}><span data-imv-glyph="">{text}</span></__Unit> : text; `
+      + `return parts.map((part, at) => !part.keyword ? part.glyphs.map((text, index) => glyph(text, at + ":" + index, false)) `
+      + `: __keywordGlyphs ? <__Keyword key={at} text={part.text} glyphs={part.glyphs.map((text, index) => glyph(text, index, true))} /> : <__Unit key={at} units={{chars: [i++, all]}}><__Keyword text={part.text} /></__Unit>); }`,
     // The six keyword options of the bus's IMS text: bold, italic, underline, strikeout, colour ("" keeps the text's) and size (0 keeps it).
-    `function __Keyword({text}) { const {props, effect} = React.useContext(__Context); const style = {fontWeight: props.keywordBold ? 700 : undefined, fontStyle: props.keywordItalic ? "italic" : undefined, textDecorationLine: [props.keywordUnderline && "underline", props.keywordStrikeout && "line-through"].filter(Boolean).join(" ") || undefined, color: props.keywordColor || undefined, fontSize: props.keywordSize > 0 ? props.keywordSize : undefined}; const live = React.useContext(__Live); const inner = <__Effects at={["keyword"]} inline>{${keyword >= 0 ? `props.keywordEffect !== false ? <Preset${keyword} {...effect} text={text} /> : text` : "text"}}</__Effects>; return <span data-imv-keyword="" style={style}>{live === null ? inner : <Freeze frame={live}>{inner}</Freeze>}</span>; }`,
+    // A hit drawn with `glyphs` shows them in place of its text; a keyword Preset that takes children draws them.
+    `function __Keyword({text, glyphs}) { const {props, effect} = React.useContext(__Context); const style = {fontWeight: props.keywordBold ? 700 : undefined, fontStyle: props.keywordItalic ? "italic" : undefined, textDecorationLine: [props.keywordUnderline && "underline", props.keywordStrikeout && "line-through"].filter(Boolean).join(" ") || undefined, color: props.keywordColor || undefined, fontSize: props.keywordSize > 0 ? props.keywordSize : undefined}; const content = glyphs ?? text; const live = React.useContext(__Live); `
+      + `const inner = <__Effects at={["keyword"]} inline>{${keyword >= 0 ? `props.keywordEffect !== false ? <Preset${keyword} {...effect} text={text}>${keywordChildren ? "{content}" : ""}</Preset${keyword}> : content` : "content"}}</__Effects>; return <span data-imv-keyword="" style={style}>{live === null ? inner : <Freeze frame={live}>{inner}</Freeze>}</span>; }`,
     `export default function Sprite(inputProps = {}) { const props = __merge(__defaults, inputProps); const __frame = useCurrentFrame(); const {durationInFrames: __total} = useVideoConfig(); `
       + `const __glyphs = __glyphsOn(props); const __text = typeof props.text === "string" ? props.text : ""; const __lines = ${tiers === 1 ? "[__text]" : "__text.split(\"\\n\").slice(0, 2)"}; const __offsets = __lines.map((_, index) => __lines.slice(0, index).reduce((sum, line) => sum + line.length + 1, 0)); const __found = __hits(__text, props.keywords); `
       // The block frame the lower tier appears at, for cue effects; none while the lower tier has no text.
@@ -248,4 +266,4 @@ const transformed = ts.transform(source, [(context) => {
 }]);
 const code = ts.createPrinter().printFile(transformed.transformed[0]);
 transformed.dispose();
-process.stdout.write(JSON.stringify({ code, children }));
+process.stdout.write(JSON.stringify({ code, children, keyword_children: keywordChildren }));

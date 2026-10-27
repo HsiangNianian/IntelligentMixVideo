@@ -141,7 +141,9 @@ frames once every check has passed (`FrameCapture`, `captureFrames` in the valid
 the Sprite's own timing (`review_frames`: for a text block the middle frame, half way into its longest entrance, just
 before the lower tier appears, half way into its cue effects and half way out of its longest exit), cut to the text
 block with room around it, at most 720 pixels on the long side, composited onto the neutral #808080 gray the model is
-told is not content. The receipt lists them in `review.frames` with what each should show, and they follow the
+told is not content; a text effect whose defaults have no keywords is captured with the workspace preview's sample
+keyword (`sample_keywords`), listed in `review.keywords`, so keyword effects show. The receipt lists the frames in
+`review.frames` with what each should show (each entrance gets its own, so their order shows), and they follow the
 reference images in every Executor turn of the step (`candidate_frames` in the snapshot maps them) until the step
 ends; a later save replaces them. The rules have the Executor compare them with the request and the reference images
 and change only what is clearly missing or wrong. The host draws no verdict from them.
@@ -191,13 +193,19 @@ Motion is split out of the tiers (contract v4): `text.effects` lists `effect` Pr
 slot (`enter`, `exit` or `loop`), a default position and, entering or exiting, a length in seconds (0.1–3, default
 0.5). An effect Preset receives `children`, the host's `Box` and `progress` (0 not shown, 1 fully shown) and only
 restyles what it wraps. The host leaves a wrap point at every position — `block` (the whole column), each tier
-(`tiers` for both, `line1`/`line2` for one; two tiers only), each glyph (`chars`, an inline box) and each keyword hit
-(`keyword`, an inline box) — so
+(`tiers` for both, `line1`/`line2` for one; two tiers only), each glyph (`chars`, or only the glyphs of the keyword
+hits `keywordChars` or only the others `plainChars`, each an inline box) and each keyword hit as a whole (`keyword`,
+an inline box) — so
 effect k's configuration parameters `effect{k}` (switch), `effect{k}Target` (position) and `effect{k}Seconds` move it
-or retime it without regenerating (`categories.EFFECT_PARAMETER`; titles from the effect's title). An entrance rises
+or retime it without regenerating (`categories.EFFECT_PARAMETER`; titles from the effect's title); an entrance or cue
+effect also gets `effect{k}Delay`, the seconds it waits before it starts, so effects at different positions can follow
+one another (the keyword's glyphs typing in first, the rest of the line after them). An entrance rises
 from the position's first frame (a tier and its keyword hits count from the tier's start), an exit falls to 0 on the
 last frame, a loop stays at 1, and every length is at most half of the frames its position plays less one, so a text
-frozen on its middle frame still shows in full. A cue effect (two tiers only) stays at 0 until the lower tier appears
+frozen on its middle frame still shows in full (a delay counts towards that half). A keyword Preset may take the hit's
+glyphs as `children` too, like a text Preset takes its line; then the glyphs inside a hit are units of their own (with
+an older keyword Preset that draws `text` the hit is one unit and `keywordChars` is not offered). Each glyph position
+numbers its own units. A cue effect (two tiers only) stays at 0 until the lower tier appears
 and then rises to 1 over its length, whatever position it wraps, so the upper tier can make way for the lower one; it
 stays at 0 while a placement has no lower text. An effect may draw `children` more than once inside its Box (clipped
 slices, echoes), and the element around each tier carries the tier's font size, so motion can be measured in em. Two

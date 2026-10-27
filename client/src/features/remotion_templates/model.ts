@@ -160,7 +160,7 @@ export interface EffectCard {
 /**
  * 文字组合字效的两块参数。「文字」是文字本身：内容、字号、字体与字重、双栏排版、各栏外观（Agent 绑定在各栏上的颜色、描边、
  * 字间距等）、关键词选项，以及各栏 Preset 的内部参数（`instances`）。「特效」按特效列出卡片：开关 `effect{k}`、位置
- * `effect{k}Target`、时长 `effect{k}Seconds`、绑定在这个特效实例上的样式参数及其内部参数；关键词字效（关键词 Preset）也是一张
+ * `effect{k}Target`、时长 `effect{k}Seconds`、延迟 `effect{k}Delay`、绑定在这个特效实例上的样式参数及其内部参数；关键词字效（关键词 Preset）也是一张
  * 卡片，开关为 `keywordEffect`。顶层参数按绑定目标归入实例；没有文字组合的版本返回 null，沿用 `schemaGroups`。
  */
 export function textSections(version: Version): {
@@ -189,7 +189,7 @@ export function textSections(version: Version): {
     return { id: instance, title, toggle: field(toggle), fields: names.flatMap((name) => field(name) ?? []), instance: nested(instance) };
   };
   const effects = (block.effects ?? []).map((effect, index) =>
-    card(effect.instance_id, properties[`effect${index + 1}`]?.title || effect.title, `effect${index + 1}`, [`effect${index + 1}Target`, `effect${index + 1}Seconds`]));
+    card(effect.instance_id, properties[`effect${index + 1}`]?.title || effect.title, `effect${index + 1}`, [`effect${index + 1}Target`, `effect${index + 1}Seconds`, `effect${index + 1}Delay`]));
   if (block.keyword) effects.push(card(block.keyword, "关键词字效", "keywordEffect", []));
   const text: ParameterField[] = [];
   const keyword: ParameterField[] = [];

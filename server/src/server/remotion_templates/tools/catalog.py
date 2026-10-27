@@ -67,7 +67,7 @@ def _deferred(name: str):
     "preset.create",
     constraints=[
         "The complete source, parameter schema and defaults are saved as a new immutable record.",
-        "role text, keyword or effect marks a Preset for a text effect's text block. The host passes a text Preset children (the line it renders), fontFamily, fontWeight and fontSize, and still text, segments and Keyword for Presets that draw the line themselves, a keyword Preset text and an effect Preset children, progress, Box, index and count; it is type-checked with those props, and its parameter_schema declares only its own style parameters, never these.",
+        "role text, keyword or effect marks a Preset for a text effect's text block. The host passes a text Preset children (the line it renders), fontFamily, fontWeight and fontSize, and still text, segments and Keyword for Presets that draw the line themselves, a keyword Preset text and children (the hit's glyphs) and an effect Preset children, progress, Box, index and count; it is type-checked with those props, and its parameter_schema declares only its own style parameters, never these.",
         "An effect Preset records usage {title, slot, target, seconds}: its short Chinese name and the slot, position and length it is used with by default. text.effects entries may leave those out and take them from it, so a later work reuses the effect by listing only its instance_id and source. Only effect Presets take a usage; a loop has no seconds.",
         "In a new work the host holds each text Preset on its middle frame, so motion of its own never plays: the text's motion belongs in effect Presets, while keyword Presets keep playing.",
     ],
@@ -86,7 +86,7 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
 
 @tool(
     "sprite.compose",
-    contract_version=7,
+    contract_version=8,
     constraints=[
         "The host canvas is fixed at 1080x1920, 30 FPS. When the snapshot has target_duration_frames (a new work), the Sprite must last exactly that long (the last instance's end, or the text block's duration_frames), otherwise the call is refused.",
         "Contract v4: kind is required (text, filter_overlay, video_overlay or transition_overlay). A text effect is composed from text {layout, text, font_size, tiers, line_gap, line_starts, keyword, effects, duration_frames} with role text Presets for the tiers, an optional role keyword Preset and role effect Presets, and no instances; the host lays the block out and provides its configuration parameters. Other kinds place instances by layout and timing.",
@@ -94,6 +94,7 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
         "v5: a text Preset may draw the line the host passes as children (keyword hits already drawn) instead of drawing segments itself; only such tiers offer the position chars, where every glyph is a unit and the units take an entrance or exit in turn (reading order in, last first out). Every effect Preset also receives index and count (the unit in its tier at chars, the tier at tiers/line1/line2, 0 of 1 elsewhere).",
         "v6: a two-tier text takes arrangement stack (default; line_gap apart) or overlap (both tiers in one place, centred on each other, the lower one on top; line_gap may be left out), which becomes the configuration parameter tierLayout. The slot cue (two tiers only) keeps progress 0 until the lower tier appears and then rises to 1 over seconds; it stays 0 while the lower tier has no text. The element around each tier carries the tier's font size.",
         "v7: a text.effects entry may leave out title, slot, target and seconds; the host takes them from its effect Preset's usage, and an entry without them whose Preset records no usage is refused.",
+        "v8: a keyword Preset may draw the hit's glyphs the host passes as children, so a hit's glyphs are units too; the glyph positions are chars (all glyphs), keywordChars (the keyword hits' glyphs, only with such a keyword Preset or none) and plainChars (the other glyphs), each counting its own units. An entrance or cue effect takes delay (0-3 seconds, configuration parameter effect{k}Delay) and starts that much later, so effects can follow one another.",
         "parameters lifts Preset props to required top-level Sprite style parameters that templates may change per placement; each binding targets declared top-level Preset props that share one object schema and one value; a bound number needs minimum and maximum (integers for an integer), a bound string a colour pattern, enum or maxLength of at most 2000; only type, title, description, default, minimum, maximum, enum, minLength, maxLength, the colour pattern (or the keywordColor pattern), maxItems and items.maxLength may be used. A text block's configuration names (text, fontSize, fonts, weights, size ratios, lineGap, lineStartFrames, keyword options, keywordEffect, effect{k}...) are taken, for parameter names and for the tiers', keyword's and effects' instance_id alike.",
         "The host owns position, scale, rotation and opacity of the whole Sprite; do not bind or implement them.",
     ],

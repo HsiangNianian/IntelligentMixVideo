@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from ..categories import (
-    DEFAULT_EFFECT_SECONDS, EFFECT_PARAMETER, EFFECT_SECONDS, EFFECT_SLOTS, EFFECT_TARGETS, FIXED_TITLES, GLYPH_TARGET, KEYWORD_EFFECT_PROP,
+    DEFAULT_EFFECT_SECONDS, EFFECT_DELAY, EFFECT_PARAMETER, EFFECT_SECONDS, EFFECT_SLOTS, EFFECT_TARGETS, FIXED_TITLES, GLYPH_TARGETS,
+    KEYWORD_EFFECT_PROP, KEYWORD_GLYPH_TARGET,
     LINE_GAP, LINE_STARTS, REQUIRED, TEXT_KEYWORDS, TIER_LAYOUT, TIER_LAYOUTS, TIER_SIZE_RATIO,
 )
 from .registry import ToolFault
@@ -108,8 +109,9 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
     One tier exposes `fontFamily`/`fontWeight`; two tiers expose each tier's font, weight and size ratio plus
     `tierLayout` (stacked, or overlapping, which needs no gap and defaults it to 0), `lineGap` and `lineStartFrames`. Both expose `text`, `fontSize` and the seven keyword parameters (off by
     default), a block with a keyword Preset also its `keywordEffect` switch (on by default), and effect k (from 1, in
-    the block's order) its switch `effect{k}`, its position `effect{k}Target` and, entering or exiting, its length
-    `effect{k}Seconds`, titled with the effect's own Chinese name.
+    the block's order) its switch `effect{k}`, its position `effect{k}Target`, unless it loops its length
+    `effect{k}Seconds` and, entering or at the lower tier's cue, its start delay `effect{k}Delay`, titled with the
+    effect's own Chinese name.
     """
     rules = {rule.name: rule for rule in REQUIRED["text"]}
     font = {"type": "string", "enum": fonts}
@@ -144,6 +146,9 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
         if effect["slot"] != "loop":
             entries.append((f"{name}Seconds", {"type": "number", "minimum": low, "maximum": high}, effect.get("seconds", DEFAULT_EFFECT_SECONDS)))
             titles[f"{name}Seconds"] = f"{title}时长（秒）"
+        if effect["slot"] in {"enter", "cue"}:
+            entries.append((f"{name}Delay", {"type": "number", "minimum": EFFECT_DELAY[0], "maximum": EFFECT_DELAY[1]}, effect.get("delay", 0)))
+            titles[f"{name}Delay"] = f"{title}延迟（秒）"
     schemas = {name: {**deepcopy(definition), "title": titles[name]} for name, definition, _ in entries}
     return schemas, {name: deepcopy(value) for name, _, value in entries}
 
@@ -198,8 +203,9 @@ def compose_text_source(
     order); ``bindings`` are the Agent's style parameters over them. The configuration parameters come first in the
     schema, bound to the block itself (`TEXT_BLOCK_ID`); a style parameter may not take a configuration name, nor the
     name of a later effect's configuration. ``still`` holds each tier on its middle frame, so only the effects move it.
-    The `chars` position needs every tier's text Preset to draw the host's line (`children`): otherwise no effect may
-    sit there and the position is left out of every effect's choice, so users cannot move one there either.
+    The glyph positions need every tier's text Preset to draw the host's line (`children`), and `keywordChars` also a
+    keyword Preset that draws the hit's glyphs (`children`): otherwise no effect may sit there and the position is left
+    out of every effect's choice, so users cannot move one there either.
     """
     host_schemas, host_defaults = text_configuration(block, fonts)
     instances = [*tiers, *([keyword] if keyword else []), *effects]
@@ -218,14 +224,18 @@ def compose_text_source(
         "effects": [{**source(item), "slot": effect["slot"]} for item, effect in zip(effects, block.get("effects", []))], "still": still,
     }, "defaults": defaults})
     drawn = [item["instance_id"] for item, line in zip(tiers, answer["children"]) if not line]
-    if drawn:
-        for index, effect in enumerate(block.get("effects", []), start=1):
-            if effect["target"] == GLYPH_TARGET:
-                raise ToolFault("INVALID_ARGUMENT", f"The effect at chars needs tiers whose text Preset draws the line the host passes as children, but "
-                                f"{', '.join(drawn)} draws the segments itself. Copy that Preset with preset_modify: declare children: React.ReactNode "
-                                "in its props and render {props.children} where it maps the segments, keeping its look on the same block.",
-                                field=f"/text/effects/{index - 1}/target")
-            schema["properties"][f"effect{index}Target"]["enum"].remove(GLYPH_TARGET)
+    unavailable = {target: (f"tiers whose text Preset draws the line the host passes as children, but {', '.join(drawn)} draws the segments "
+                            "itself. Copy that Preset with preset_modify: declare children: React.ReactNode in its props and render "
+                            "{props.children} where it maps the segments, keeping its look on the same block.") for target in GLYPH_TARGETS} if drawn else {}
+    if keyword and not answer["keyword_children"] and KEYWORD_GLYPH_TARGET not in unavailable:
+        unavailable[KEYWORD_GLYPH_TARGET] = (f"a keyword Preset that draws the hit's glyphs the host passes as children, but {keyword['instance_id']} "
+                                             "draws its text itself. Copy it with preset_modify: declare children: React.ReactNode in its props and "
+                                             "render {props.children} where it renders props.text, keeping its look around them.")
+    for index, effect in enumerate(block.get("effects", []), start=1):
+        if effect["target"] in unavailable:
+            raise ToolFault("INVALID_ARGUMENT", f"The effect at {effect['target']} needs {unavailable[effect['target']]}", field=f"/text/effects/{index - 1}/target")
+        enum = schema["properties"][f"effect{index}Target"]["enum"]
+        enum[:] = [target for target in enum if target not in unavailable]
     host_bindings = [{"name": name, "title": schema["title"], "targets": [{"instance_id": TEXT_BLOCK_ID, "parameter": name}]} for name, schema in host_schemas.items()]
     return answer["code"], schema, defaults, host_bindings
 

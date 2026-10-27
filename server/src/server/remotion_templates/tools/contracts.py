@@ -96,10 +96,11 @@ PresetRole = Literal["text", "keyword", "effect"]
 # 宿主传给各角色 Preset 的 prop：它们不属于 Preset 自己的参数，不能写进 parameter_schema。effect 收到被包住的内容 children、
 # 显现进度 progress（0 还没出现，1 完全显示）与宿主的外层元素 Box（它按位置决定块级或行内）。
 # text Preset 可以画宿主排好的这一栏 children（关键词命中已由宿主包好，逐字特效时每个字是一个单元），也可以按 segments 自己画；
-# 只有前者能用逐字位置 chars。effect 另收 index、count：逐字时是这个字在本栏的序号与字数，各栏时是栏序号与栏数，其余为 0 与 1。
+# 只有前者能用逐字位置。keyword Preset 同样可以画宿主交来的这个命中的各个字 children（逐字特效时每个字是一个单元），
+# 只画 text 的旧写法没有关键词逐字位置。effect 另收 index、count：逐字位置是这个字在本栏该位置的序号与字数，各栏时是栏序号与栏数，其余为 0 与 1。
 ROLE_PROPS: dict[str, tuple[str, ...]] = {
     "text": ("text", "segments", "Keyword", "children", "fontFamily", "fontWeight", "fontSize"),
-    "keyword": ("text",),
+    "keyword": ("text", "children"),
     "effect": ("children", "progress", "Box", "index", "count"),
 }
 
@@ -392,9 +393,10 @@ class TextKeyword(ContractModel):
 # 特效的类型：enter 入场、exit 出场（宿主按配置的时长算显现进度），loop 持续（进度恒为 1，需要循环时自己读帧），
 # cue 下栏出现（只有双栏：下栏出现前为 0，出现后按时长升到 1；这一组没有下栏文字时一直为 0）。
 EffectSlot = Literal["enter", "exit", "loop", "cue"]
-# 特效作用的位置：block 整个文字块，tiers 各栏（各自从出现的帧起），line1、line2 上栏或下栏（只有双栏），chars 每个字（依次分享入场、
-# 出场进度；只有画 children 的栏有），keyword 每个关键词命中。
-EffectTarget = Literal["block", "tiers", "line1", "line2", "chars", "keyword"]
+# 特效作用的位置：block 整个文字块，tiers 各栏（各自从出现的帧起），line1、line2 上栏或下栏（只有双栏），逐字位置 chars 每个字、
+# keywordChars 关键词里的每个字、plainChars 关键词以外的每个字（依次分享入场、出场进度；只有画 children 的栏有，关键词逐字还要
+# 关键词 Preset 画 children），keyword 每个关键词命中。
+EffectTarget = Literal["block", "tiers", "line1", "line2", "chars", "keywordChars", "plainChars", "keyword"]
 # 特效的中文名称，如「淡入」「发光」：宿主据此写它的开关、位置与时长参数的标题。
 EffectTitle = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=8)]
 
@@ -411,6 +413,8 @@ class TextEffect(ContractModel):
     target: Omittable[EffectTarget]
     # 入场、出场的时长（秒），省略为 0.5；持续特效没有时长。
     seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
+    # 入场、下栏出现特效推迟开始的秒数，省略为 0，让特效可以一个接一个；出场与持续特效没有延迟。
+    delay: Omittable[Annotated[FiniteNumber, Field(ge=0, le=3)]]
     # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
     enabled: Omittable[StrictBool]
 
@@ -522,10 +526,12 @@ class ReviewFrame(ContractModel):
 
 
 class SpriteReview(ContractModel):
-    """保存后供 Agent 对照要求查看的几帧（灰底合成、按内容区域裁切），以及之后还有几次回看。"""
+    """保存后供 Agent 对照要求查看的几帧（灰底合成、按内容区域裁切），以及之后还有几次回看。默认没有关键词的字效按示例关键词
+    （默认文字首个非空行开头至多两个字，与字效工作区预览相同）截取，keywords 列出它们。"""
 
     frames: list[ReviewFrame]
     rounds_left: NonNegativeInteger
+    keywords: Omittable[list[str]]
 
 
 class SpriteCreateOutput(ContractModel):

@@ -249,13 +249,21 @@ FIXED_TITLES = {
     },
 }
 
-# 文字块第 k 个特效（从 1 起）的配置参数：开关 effect{k}、作用位置 effect{k}Target，入场与出场另有时长 effect{k}Seconds（秒）。
-# 名称由宿主按特效顺序生成，标题取特效的中文名称（`compose.text_configuration`）；样式参数与实例都不能用这种名字。
-EFFECT_PARAMETER = re.compile(r"^effect[1-9][0-9]*(?:Target|Seconds)?$")
-# 特效可选的位置：单栏没有各栏与上下栏，只有整体、逐字与关键词；逐字只在各栏的 text Preset 都画宿主的 children 时可选（`compose.compose_text_source`）。
-EFFECT_TARGETS = {1: ("block", "chars", "keyword"), 2: ("block", "tiers", "line1", "line2", "chars", "keyword")}
-# 逐字位置：每个字一个单元。
-GLYPH_TARGET = "chars"
+# 文字块第 k 个特效（从 1 起）的配置参数：开关 effect{k}、作用位置 effect{k}Target，入场、出场与下栏出现另有时长 effect{k}Seconds
+# （秒），入场与下栏出现还有推迟开始的 effect{k}Delay（秒）。名称由宿主按特效顺序生成，标题取特效的中文名称
+# （`compose.text_configuration`）；样式参数与实例都不能用这种名字。
+EFFECT_PARAMETER = re.compile(r"^effect[1-9][0-9]*(?:Target|Seconds|Delay)?$")
+# 特效可选的位置：单栏没有各栏与上下栏；逐字位置只在各栏的 text Preset 都画宿主的 children 时可选，关键词逐字另要求关键词 Preset
+# 也画 children（`compose.compose_text_source`）。
+EFFECT_TARGETS = {
+    1: ("block", "chars", "keywordChars", "plainChars", "keyword"),
+    2: ("block", "tiers", "line1", "line2", "chars", "keywordChars", "plainChars", "keyword"),
+}
+# 逐字位置：每个字一个单元，依次分享入场、出场进度；关键词逐字位置单列，它要求关键词 Preset 画宿主的 children。
+GLYPH_TARGETS = ("chars", "keywordChars", "plainChars")
+KEYWORD_GLYPH_TARGET = "keywordChars"
+# 入场与下栏出现特效推迟开始的秒数范围，省略为 0。
+EFFECT_DELAY = (0, 3)
 # 入场、出场时长（秒）的范围与省略时的默认值（与 IMS 文字入场、出场一致）。
 EFFECT_SECONDS = (0.1, 3)
 DEFAULT_EFFECT_SECONDS = 0.5

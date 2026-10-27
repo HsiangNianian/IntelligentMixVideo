@@ -173,7 +173,7 @@ function textBlockVersion() {
     line1Color: { ...color, title: "上栏颜色" },
     keywordEffect: { type: "boolean", title: "关键词字效" },
     effect1: { type: "boolean", title: "持续·发光" },
-    effect1Target: { type: "string", title: "发光位置", enum: ["block", "tiers", "line1", "line2", "chars", "keyword"] },
+    effect1Target: { type: "string", title: "发光位置", enum: ["block", "tiers", "line1", "line2", "chars", "keywordChars", "plainChars", "keyword"] },
     shineColor: { ...color, title: "发光颜色" },
     keywordEffectColor: { ...color, title: "关键词颜色效果" },
     upper: nested("上栏投影"), lower: nested("下栏投影"), glow: nested("关键词光晕"), shine: nested("脉动速度"),
@@ -209,14 +209,18 @@ test("文字组合的字效分为文字与特效两块，每个特效的开关�
   expect(changes).toEqual([["effect1", false], ["shine", { amount: 0.5 }], ["keywordEffect", false]]);
 });
 
-// 场景：特效放在逐字位置（每个字依次显现，如打字机）时，位置显示中文名称「逐字」；双栏的排布（重叠）是「文字」里的排版参数，显示中文名称。
-test("特效的逐字位置与双栏的重叠排布显示中文名称", () => {
+// 场景：特效放在逐字位置（每个字依次显现，如打字机）时，位置显示中文名称（这里是「关键词逐字」），推迟开始的延迟和位置一样在这个特效的卡片里；
+// 双栏的排布（重叠）是「文字」里的排版参数，显示中文名称。
+test("特效的逐字位置、延迟与双栏的重叠排布显示中文名称", () => {
   const version = textBlockVersion();
   version.candidate.config_schema.properties.tierLayout = { type: "string", title: "双栏排布", enum: ["stack", "overlap"] };
-  render(<ParametersPanel version={version} values={{ ...version.candidate.default_config, effect1Target: "chars", tierLayout: "overlap" }} disabled={false} pending={false} dirty={false} saving={false}
+  version.candidate.config_schema.properties.effect1Delay = { type: "number", title: "发光延迟（秒）", minimum: 0, maximum: 3 };
+  render(<ParametersPanel version={version} values={{ ...version.candidate.default_config, effect1Target: "keywordChars", effect1Delay: 1, tierLayout: "overlap" }} disabled={false} pending={false} dirty={false} saving={false}
     onChange={() => {}} onSave={() => {}} onDiscard={() => {}} />);
   const shine = within(screen.getByRole("group", { name: "特效" })).getByRole("region", { name: "持续·发光" });
-  expect(within(shine).getByLabelText("发光位置").textContent).toBe("逐字");
+  expect(within(shine).getByLabelText("发光位置").textContent).toBe("关键词逐字");
+  expect(within(shine).getByLabelText<HTMLInputElement>("发光延迟（秒）").value).toBe("1");
+  expect(within(screen.getByRole("group", { name: "文字" })).queryByLabelText("发光延迟（秒）")).toBeNull();
   expect(within(screen.getByRole("group", { name: "文字" })).getByLabelText("双栏排布").textContent).toBe("重叠");
 });
 

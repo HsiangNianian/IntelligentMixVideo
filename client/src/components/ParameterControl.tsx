@@ -52,6 +52,8 @@ const OPTION_LABELS: Record<string, string> = {
   line1: "上栏",
   line2: "下栏",
   chars: "逐字",
+  keywordChars: "关键词逐字",
+  plainChars: "非关键词逐字",
   keyword: "关键词",
   // 双栏的排布（`tierLayout`）。
   stack: "上下排列",

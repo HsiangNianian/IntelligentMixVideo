@@ -55,12 +55,14 @@ STATIC_TEXT_SECONDS = 1.5
 
 class FrameCapture(NamedTuple):
     """Still frames of a validated mount for the Agent to look at: the ``frames`` to capture, the canvas ``box`` to cut
-    them to at ``scale``, and the ``directory`` that receives them as `frame-<n>.png` once every check has passed."""
+    them to at ``scale``, and the ``directory`` that receives them as `frame-<n>.png` once every check has passed;
+    ``parameters`` are mounted over the configured values for them (such as sample keywords)."""
 
     frames: list[int]
     box: dict[str, float]
     scale: float
     directory: Path
+    parameters: dict[str, Any] | None = None
 
 
 class FitSprite(NamedTuple):
@@ -291,7 +293,7 @@ class ToolValidator:
         if lengths:
             payload_request["lengths"] = lengths
         if capture:
-            payload_request["capture"] = {"frames": capture.frames, "box": capture.box, "scale": capture.scale}
+            payload_request["capture"] = {"frames": capture.frames, "box": capture.box, "scale": capture.scale, "parameters": capture.parameters or {}}
         (directory / "request.json").write_text(json.dumps(payload_request), encoding="utf-8")
         try:
             payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs")

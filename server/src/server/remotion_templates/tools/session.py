@@ -7,6 +7,7 @@ import difflib
 import hashlib
 import json
 import logging
+import re
 from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -77,31 +78,38 @@ def review_frames(sprite: SpriteDraft) -> list[tuple[int, str]]:
     """The frames the Agent looks at after saving ``sprite``, each with what it shows, in time order (at most four).
 
     A text block is sampled from its own timing in its defaults: the middle frame (shown in full, where a held text is
-    frozen), half way into its longest enabled entrance, the frame before the lower tier appears and half way into its
-    longest cue effect, and half way out of its longest exit. Other Sprites are sampled at a quarter, the middle and
-    three quarters of their length.
+    frozen), half way into each enabled entrance (entrances that start later, after their delay, get frames of their
+    own, so their order shows), the frame before the lower tier appears and half way into its longest cue effect, and
+    half way out of its longest exit. Other Sprites are sampled at a quarter, the middle and three quarters of their
+    length. Lengths and delays are clamped as the host clamps them.
     """
     last, fps = sprite.composition.duration_frames - 1, sprite.composition.fps
     if sprite.text is None:
         picks = [(last // 2, "half way"), (last // 4, "a quarter of the way"), (last * 3 // 4, "three quarters of the way")]
     else:
         config = sprite.default_parameters
-        lengths = {"enter": 0, "exit": 0, "cue": 0}
+        exit_length, cue_offset = 0, None
+        entrances: dict[int, str] = {}
         for index, effect in enumerate(sprite.text.effects, start=1):
-            if effect.slot in lengths and config.get(f"effect{index}") is not False:
-                length = max(1, min(round((config.get(f"effect{index}Seconds") or 0.5) * fps), last // 2))
-                lengths[effect.slot] = max(lengths[effect.slot], length)
+            if effect.slot == "loop" or config.get(f"effect{index}") is False:
+                continue
+            length = max(1, min(round((config.get(f"effect{index}Seconds") or 0.5) * fps), last // 2))
+            delay = min(round((config.get(f"effect{index}Delay") or 0) * fps), max(0, last // 2 - length))
+            if effect.slot == "enter":
+                entrances.setdefault(delay + length // 2, f"half way into the entrance {effect.title}")
+            elif effect.slot == "cue":
+                cue_offset = max(cue_offset or 0, delay + length // 2)
+            else:
+                exit_length = max(exit_length, length)
         starts = config.get("lineStartFrames") or [0]
         cue = starts[1] if len(starts) > 1 else None
-        picks = [(last // 2, "shown in full (middle frame)")]
-        if lengths["enter"]:
-            picks.append((lengths["enter"] // 2, "half way into the entrance"))
+        picks = [(last // 2, "shown in full (middle frame)"), *sorted(entrances.items())]
         if cue:
             picks.append((cue - 1, "just before the lower tier appears"))
-        if cue is not None and lengths["cue"]:
-            picks.append((cue + lengths["cue"] // 2, "half way into the effects played when the lower tier appears"))
-        if lengths["exit"]:
-            picks.append((last - lengths["exit"] // 2, "half way out of the exit"))
+        if cue is not None and cue_offset is not None:
+            picks.append((cue + cue_offset, "half way into the effects played when the lower tier appears"))
+        if exit_length:
+            picks.append((last - exit_length // 2, "half way out of the exit"))
     chosen: dict[int, str] = {}
     for frame, label in picks:
         if len(chosen) < 4 and 0 <= frame <= last:
@@ -119,6 +127,18 @@ def _review_box(sprite: SpriteDraft) -> dict[str, float]:
     left, top = max(0, layout.x - margin), max(0, layout.y - margin)
     right, bottom = min(width, layout.x + layout.width + margin), min(height, layout.y + layout.height + margin)
     return {"x": left, "y": top, "width": right - left, "height": bottom - top}
+
+
+def sample_keywords(sprite: SpriteDraft) -> list[str]:
+    """The keywords a text effect's review frames show when its defaults have none: up to two characters opening the
+    first non-empty line of its default text, the sample the workspace preview and the `text_fit` keyword mount use, so
+    keyword effects show in the frames as the user sees them; none for other Sprites or when keywords are set."""
+    values = sprite.default_parameters
+    if sprite.kind != "text" or "keywords" not in sprite.parameter_schema.get("properties", {}) or values.get("keywords"):
+        return []
+    line = next((line for line in str(values.get("text", "")).split("\n") if line.strip()), "")
+    word = re.search(r"\S{1,2}", line)
+    return [word.group(0)] if word else []
 
 
 def _terms(text: str) -> set[str]:
@@ -271,7 +291,8 @@ def _text_block(sprite: SpriteDraft, config: dict) -> dict:
             {
                 "instance_id": item.instance_id, "source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"}, "parameters": parameters[item.instance_id],
                 "title": item.title, "slot": item.slot, "target": config.get(f"effect{index}Target"),
-                **({"seconds": config.get(f"effect{index}Seconds")} if item.slot != "loop" else {}), "enabled": config.get(f"effect{index}") is not False,
+                **({"seconds": config.get(f"effect{index}Seconds")} if item.slot != "loop" else {}),
+                **({"delay": config[f"effect{index}Delay"]} if f"effect{index}Delay" in config else {}), "enabled": config.get(f"effect{index}") is not False,
             }
             for index, item in enumerate(sprite.text.effects, start=1)
         ]
@@ -764,9 +785,10 @@ class ToolSession:
         review = {}
         if frames:
             self.review_rounds += 1
+            keywords = sample_keywords(sprite)
             review["review"] = SpriteReview(frames=[ReviewFrame(image=len(self.images) + index, frame=frame, label=label)
                                                     for index, (_path, frame, label) in enumerate(frames, start=1)],
-                                            rounds_left=VISUAL_REVIEW_ROUNDS - self.review_rounds)
+                                            rounds_left=VISUAL_REVIEW_ROUNDS - self.review_rounds, **({"keywords": keywords} if keywords else {}))
         return SpriteCreateOutput(sprite_id=record.sprite_id, created_at=record.created_at, composition=record.composition, validation=validation, **review)
 
     async def _require_visible_video(self, sprite: SpriteDraft) -> list[tuple]:
@@ -782,8 +804,9 @@ class ToolSession:
         capture = None
         if self.review_rounds < VISUAL_REVIEW_ROUNDS:
             picks, box = review_frames(sprite), _review_box(sprite)
+            keywords = sample_keywords(sprite)
             capture = FrameCapture([frame for frame, _ in picks], box, min(1, _REVIEW_SIDE / max(box["width"], box["height"])),
-                                   self.directory / "review" / uuid4().hex)
+                                   self.directory / "review" / uuid4().hex, {"keywords": keywords} if keywords else None)
 
         report = await self.validate_render(
             RenderValidationInput(
@@ -941,6 +964,9 @@ class ToolSession:
                                 "(tiers, line1 and line2 are positions of a two-tier text).", field=f"/text/effects/{index}/target")
             if effect.slot == "cue" and tiers != 2:
                 raise ToolFault("INVALID_ARGUMENT", "A cue effect plays when the lower tier appears, so only a two-tier text has one.", field=f"/text/effects/{index}/slot")
+            if effect.delay is not None and effect.slot not in {"enter", "cue"}:
+                raise ToolFault("INVALID_ARGUMENT", "Only an entrance or a cue effect waits: leave delay out of an exit or a looping effect.",
+                                field=f"/text/effects/{index}/delay")
             if effect.slot == "loop" and effect.seconds is not None:
                 raise ToolFault("INVALID_ARGUMENT", "A looping effect lasts as long as its position shows: leave seconds out (only enter and exit "
                                 "effects have a length).", field=f"/text/effects/{index}/seconds")
