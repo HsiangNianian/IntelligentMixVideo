@@ -9,6 +9,7 @@ from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectT
 from ..template.timing import ClipContext, TimelineContext, resolve_template, resolve_track
 from ..template.transitions import select_transitions
 from .schema import CompositionRequest, MatchedSegment, PositiveSeconds, Segment
+from .split_screen import window_clip, border_clip
 
 
 def validate_segments(segments: list[Segment], duration_ms: int) -> None:
@@ -71,6 +72,7 @@ def build_timeline(
     duration_ms: int | float, *, width: int, height: int, fps: int,
     material_durations: list[float] | None = None, title_keyword: str = "", transition_seed: str = "",
     title_en: str | None = None, title_keyword_en: str = "",
+    split_assets: dict | None = None,
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
     request = CompositionRequest.from_snapshot(request)
@@ -80,6 +82,8 @@ def build_timeline(
     has_subtitles = request.composition_mode != "materials_silent" and bool(request.text)
     source = TypeAdapter(list[Segment]).validate_python(segments) if has_subtitles else []
     matched = TypeAdapter(list[MatchedSegment]).validate_python(matches) if standard else []
+    layout = template.split_screen if standard and template.split_screen and template.split_screen.enabled else None
+    material_clips, material_borders, avatar_clips, avatar_borders = [], [], [], []
     if has_subtitles:
         validate_segments(source, duration_ms)
     if standard:
@@ -132,8 +136,28 @@ def build_timeline(
                 continue
             if cursor < item.start_time:
                 clips.append(video(request.video_url, "video", cursor, item.start_time, cursor))
-            clips.append(video(match.matched_candidate_url, match.matched_candidate_type,
-                               item.start_time, item.end_time, 0))
+            material = video(match.matched_candidate_url, match.matched_candidate_type, item.start_time, item.end_time, 0)
+            if layout:
+                if split_assets is None:
+                    raise ValueError("同屏布局图片尚未准备")
+                material = window_clip(material, layout.material, split_assets["media"][match.matched_candidate_url], width, height)
+                material_clips.append(material)
+                if border := split_assets["material_borders"].get(match.matched_candidate_url):
+                    material_borders.append(border_clip(material, border))
+                avatar = window_clip(video(request.video_url, "video", item.start_time, item.end_time, item.start_time),
+                                     layout.avatar, split_assets["media"][request.video_url], width, height)
+                if avatar_clips and avatar_clips[-1]["TimelineOut"] == item.start_time:
+                    avatar_clips[-1].update(TimelineOut=item.end_time, Out=item.end_time)
+                    if avatar_borders:
+                        avatar_borders[-1].update(TimelineOut=item.end_time, Duration=item.end_time - avatar_borders[-1]["TimelineIn"])
+                else:
+                    avatar_clips.append(avatar)
+                    if border := split_assets.get("avatar_border"):
+                        avatar_borders.append(border_clip(avatar, border))
+                # 第 0 轨继续保持业务片段边界；同屏区间由底色占位，上层独立摆放窗口。
+                material = {"Type": "Image", "MediaURL": split_assets["background"], "Duration": item.end_time - item.start_time,
+                            "TimelineIn": item.start_time, "TimelineOut": item.end_time, "Width": width, "Height": height, "AdaptMode": "Fill"}
+            clips.append(material)
             cursor = item.end_time
         if cursor < duration:
             clips.append(video(request.video_url, "video", cursor, duration, cursor))
@@ -192,12 +216,19 @@ def build_timeline(
         }]})
     timeline = {"VideoTracks": [{"VideoTrackClips": clips}], "AudioTracks": audio_tracks,
                 "SubtitleTracks": subtitle_tracks}
+    timeline["VideoTracks"].extend({"VideoTrackClips": items} for items in (material_clips, material_borders, avatar_clips, avatar_borders) if items)
+    # IMS 独立叠加轨的结束点包含该时刻；减去接口最小精度，表达 [start,end)。
+    # 只改显示终点，源 In/Out、业务边界与总时长不变，避免切换帧出现大小两个人像。
+    for row in timeline["VideoTracks"][1:]:
+        for clip in row["VideoTrackClips"]:
+            if clip["TimelineOut"] < duration:
+                clip["TimelineOut"] = round(clip["TimelineOut"] - 0.0001, 4)
     effects = []
     # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验；
     # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。
     remotion_texts = {(track.text_target, track.language) for track in template.tracks if track.text_target is not None}
     tracks = [track for track in template.tracks if track.target != "remotion" and (track.target, track.language) not in remotion_texts]
-    if not template.transition_enabled:
+    if not template.transition_enabled or layout:
         tracks = [track for track in tracks if track.target != "transition"]
     elif template.transition_mode is not None:
         selected = select_transitions([track.model_dump(mode="json") for track in template.tracks],
@@ -267,8 +298,16 @@ def build_timeline(
                     # 持续到结束的标题覆盖请求终点，固定时长标题遵循用户设置。
                     end = duration if track.target == "title" and track.duration is None else segment.end
                     clip = text(track.target, content, segment.start, end, segment.editor, track_parameters)
+                    same_screen = layout and track.target == "subtitle" and any(
+                        item.start_time <= segment.start < item.end_time and match.matched_candidate_url
+                        for item, match in zip(source, matched)
+                    )
                     if track.language == "en":
                         clip.update(AdaptMode="AutoScale", TextWidth=0.9)
+                    if same_screen:
+                        point = layout.subtitle_en if track.language == "en" else layout.subtitle
+                        clip.update(X=min(point.x / 100, 0.9999), Y=min(point.y / 100, 0.9999),
+                                    TimelineOut=round(end - 0.0001, 4) if end < duration else end)
                     text_clips.append(clip)
             if text_clips:
                 timeline["SubtitleTracks"].append({"SubtitleTrackClips": text_clips})

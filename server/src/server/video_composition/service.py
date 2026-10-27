@@ -24,6 +24,7 @@ from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, MatchedSegment, PlaygroundRequest, PositiveSeconds, Segment, TaskResponse
 from .settings import ClientSettings, Settings, ZosSettings
 from .timeline import build_timeline, validate_segments
+from . import split_screen
 
 logger = logging.getLogger(__name__)
 
@@ -583,6 +584,13 @@ class Job:
                       **{key: data["output"][key] for key in ("width", "height", "fps")})
         if request.composition_mode != "standard":
             inputs["material_durations"] = data["material_durations"]
+        if request.composition_mode == "standard" and data["template"].get("split_screen", {}).get("enabled"):
+            if "split_assets" not in data:
+                assets = await self.runtime.step(self.record, "split_screen", lambda: split_screen.prepare(
+                    self.record["task_id"], data, self.settings.composition_http_timeout_seconds), {})
+                await self.save("assembling", split_assets=assets)
+                data = self.record["data"]
+            inputs["split_assets"] = data["split_assets"]
         await self.runtime.log(self.record, "step_started", step="assembling", input=inputs)
         try:
             timeline, warnings = build_timeline(**inputs)

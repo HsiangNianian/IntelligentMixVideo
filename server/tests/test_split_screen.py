@@ -1,11 +1,25 @@
 """同屏保存、几何、业务时间线及跨布局字幕回归；pytest tests/test_split_screen.py，不访问云服务。"""
+from copy import deepcopy
+
 import pytest
 from google.protobuf.json_format import ParseDict
 from generated.imv.template.v1 import template_pb2 as pb
 
-from server.template.split_screen import SplitScreen
+from server.template.split_screen import SplitScreen, ScreenWindow, screen_rect
+from server.video_composition.timeline import build_timeline
+from server.video_composition import split_screen
 from .conftest import template_track
 from .template_wire import post_template
+
+
+def enable(case):
+    """人工媒体尺寸与装饰地址，独立设置两个命中素材，不调用上传。"""
+    case["template"]["split_screen"] = SplitScreen(enabled=True).model_dump(mode="json", by_alias=True)
+    for match in case["matches"]:
+        match.update(matched_candidate_url=f"https://example.test/{match['segment_id']}.mp4", matched_candidate_type="video")
+    case["split_assets"] = {"background": "https://example.test/bg.png", "avatar_border": "https://example.test/frame.png",
+        "material_borders": {}, "media": {case["request"]["videoUrl"]: [720, 1280], **{match["matched_candidate_url"]: [1920, 1080] for match in case["matches"]}}}
+    return case
 
 
 def test_protobuf_roundtrip_and_legacy_update(client):
@@ -35,3 +49,113 @@ def test_invalid_window_rejected(client, change):
     response = post_template(client, {"name": "无效布局", "tracks": [template_track("title"), template_track("subtitle")], "split_screen": layout})
     assert response.status_code == 422
     assert not ParseDict(client.get("/template").json(), pb.ListTemplatesResponse()).templates
+
+
+def test_contain_geometry_border_and_mask():
+    """横素材完整显示时边框跟随可见画面，透明内外区域不覆盖下面的窗口。"""
+    window = ScreenWindow(x=10, y=10, width=80, height=50, radius=24, border_width=6)
+    rect = screen_rect(window, [1920, 1080], 1080, 1920)
+    assert rect == dict(x=108, y=429, width=864, height=486, radius=24, border=6)
+    image = split_screen.border_image(rect, "#FFFFFF")
+    assert image.getpixel((0, 0))[3] == 0 and image.getpixel((432, 243))[3] == 0
+    assert image.getpixel((432, 2))[3] > 240
+    clip = split_screen.window_clip({"Effects": [{"Type": "Background"}, {"Type": "Volume", "Gain": 0}]}, window, [1920, 1080], 1080, 1920)
+    assert clip["Effects"][0] == {"Type": "Volume", "Gain": 0}
+    assert "radius=24.000000" in clip["Effects"][1]["ExtParams"]
+
+
+def test_timeline_windows_sync_gaps_subtitles_and_audio(composition_case):
+    """命中同屏、空隙全屏，数字人读取绝对源时间且只保留原配音；同屏字幕使用新位置。"""
+    case = enable(composition_case)
+    original = deepcopy(case)
+    timeline, _ = build_timeline(**case)
+    tracks = [track["VideoTrackClips"] for track in timeline["VideoTracks"]]
+    assert [clip["Type"] for clip in tracks[0]] == ["Video", "Image", "Video", "Image", "Video"]
+    assert [(clip["In"], clip["Out"], clip["TimelineIn"], clip["TimelineOut"]) for clip in tracks[2]] == [(1, 3, 1, 2.9999), (4, 6, 4, 5.9999)]
+    assert len(timeline["AudioTracks"]) == 1
+    subtitles = timeline["SubtitleTracks"][1]["SubtitleTrackClips"]
+    assert [(clip["X"], clip["Y"]) for clip in subtitles] == [(0.5, 0.62)] * 2
+    assert all(effect["Type"] != "Background" for clip in tracks[1] + tracks[2] for effect in clip["Effects"])
+    assert case == original
+    case["segments"][1]["start_time"] = case["matches"][1]["start_time"] = 3
+    tracks = build_timeline(**case)[0]["VideoTracks"]
+    assert len(tracks[2]["VideoTrackClips"]) == 1
+    assert tracks[2]["VideoTrackClips"][0]["Out"] == 6
+
+
+def test_unmatched_subtitle_and_disabled_layout(composition_case):
+    """未命中的字幕保持原位；关闭布局完全回到原时间线。"""
+    case = enable(composition_case)
+    case["matches"][0]["matched_candidate_url"] = None
+    timeline, _ = build_timeline(**case)
+    subtitles = timeline["SubtitleTracks"][1]["SubtitleTrackClips"]
+    assert [clip["Y"] for clip in subtitles] == [0.82, 0.62]
+    case["template"]["split_screen"]["enabled"] = False
+    disabled = build_timeline(**case)
+    del case["template"]["split_screen"]
+    assert disabled == build_timeline(**case)
+
+
+def test_english_position_and_materials_mode(composition_case):
+    """英文字幕独立换位；同一模板用于纯素材时完整忽略窗口和同屏字幕位置。"""
+    case = enable(composition_case)
+    english = deepcopy(next(track for track in case["template"]["tracks"] if track["target"] == "subtitle"))
+    english.update(id="subtitle-en", language="en")
+    case["template"]["tracks"].append(english)
+    for segment in case["segments"]:
+        segment["text_en"] = "Example"
+    subtitle = [clip for row in build_timeline(**case)[0]["SubtitleTracks"] for clip in row["SubtitleTrackClips"] if clip.get("AdaptMode") == "AutoScale"]
+    assert all(clip["Y"] == 0.655 for clip in subtitle)
+    case["request"].update(compositionMode="materials_voice", materials=[{"fileUrl": "https://example.test/material.mp4", "type": "video"}])
+    case["material_durations"] = [8]
+    with_layout = build_timeline(**case)
+    del case["template"]["split_screen"]
+    assert with_layout == build_timeline(**case)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cached", [False, True])
+async def test_assembly_recovery_reuses_layout_assets(composition_case, composition_runtime, monkeypatch, cached):
+    """首次组装持久化几何资产后提交；恢复时只读取已持久化的尺寸和图片。"""
+    from server.video_composition import service, store
+    case = enable(composition_case)
+    store.initialize_schema()
+    record = store.create(case["request"], composition_runtime.settings.output())
+    record = store.advance(record, "assembling", template=case["template"], duration_ms=8000,
+        segmentation={"segments": case["segments"]}, matches=case["matches"], **({"split_assets": case["split_assets"]} if cached else {}))
+    calls = []
+    async def prepare(*args):
+        """首次返回人工布局资产，恢复不应重复探测或上传。"""
+        calls.append(args)
+        return case["split_assets"]
+    monkeypatch.setattr(split_screen, "prepare", prepare)
+    async def storage_location(*args):
+        """隔离 IMS 存储查询，不访问实际云端。"""
+        return "test-bucket.oss-cn-shanghai.aliyuncs.com"
+    monkeypatch.setattr(service.ims.IMS, "storage_location", storage_location)
+    job = service.Job(composition_runtime, record, composition_runtime.settings)
+    await job.assemble()
+    saved = store.get(record["task_id"])
+    assert saved["stage"] == "submitting"
+    assert len(saved["data"]["timeline"]["VideoTracks"]) == 4
+    assert saved["data"]["split_assets"] == case["split_assets"]
+    assert len(calls) == (0 if cached else 1)
+
+
+@pytest.mark.anyio
+async def test_prepare_reads_distinct_media_and_ignores_no_matches(composition_case, monkeypatch):
+    """同一素材只探测一次，旋转和非方形像素计入比例，无命中不上传。"""
+    case = enable(composition_case)
+    data = {"request": case["request"], "template": case["template"], "matches": case["matches"], "output": {"width": 1080, "height": 1920}}
+    calls = []
+    async def probe(url, *args):
+        """返回旋转的人工元数据。"""
+        calls.append(url)
+        return {"streams": [{"width": 200, "height": 100, "sample_aspect_ratio": "2:1", "side_data_list": [{"rotation": 90}]}]}
+    monkeypatch.setattr(split_screen, "ffprobe_json", probe)
+    monkeypatch.setattr(split_screen, "_images", lambda task, data, layout, urls, avatar, sizes, timeout: sizes)
+    sizes = await split_screen.prepare("job", data, 30)
+    assert len(calls) == 3 and all(value == [100, 400] for value in sizes.values())
+    data["matches"] = []
+    assert await split_screen.prepare("job", data, 30) is None
+    assert len(calls) == 3

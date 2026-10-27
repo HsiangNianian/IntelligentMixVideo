@@ -108,7 +108,7 @@ GROUPS = {
     "template": "template", "remotion_snapshot": "template", "remotion_render": "timeline",
     "asr": "asr", "segmentation": "segmentation", "translation": "segmentation",
     "matching": "matching", "match_submit": "matching", "match_query": "matching",
-    "assembling": "timeline", "material_probe": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
+    "assembling": "timeline", "material_probe": "timeline", "split_screen": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
     "rendering": "zos", "ims_query": "zos", "playback": "zos", "zos_upload": "zos",
 }
 
