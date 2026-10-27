@@ -461,6 +461,8 @@ Standard local installers are written to `client/src-tauri/target/release/bundle
 
 The regular entry point is [validation.yml](.github/workflows/validation.yml), and builds reuse [client-build.yml](.github/workflows/client-build.yml). The aggregate PR check is named `CI result`. Branch protection should require it and pre-commit.ci rather than individual platform jobs that may be skipped based on changed paths.
 
+Release preflight explicitly installs the Python version selected by `setup-uv` before checking the uv lockfile offline; selecting a version alone does not install the interpreter.
+
 When Validate project runs manually, `integration-tests` is enabled by default and uses temporary MySQL and an isolated rendering environment. Regular push / PR runs do not start these heavier tests. Reports and artifacts are retained for 14 days. Enable `build-installers` to create installers in the same run. Set `api-url` for the standard package API URL; leaving it empty defaults to `http://localhost:20070`.
 
 See the [client build CI conventions](AGENTS.md#客户端构建-ci) for scheduling based on client or CI changes, lockfile validation, native checks across four platform/architecture targets, and the integration environment.

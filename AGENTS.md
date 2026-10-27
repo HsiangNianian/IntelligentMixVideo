@@ -240,6 +240,7 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 
 涉及 CI、原生代码或两端版本清单/锁文件时，Release preflight 检查全部工作流、运行调度与发布脚本测试，
 校验两端源码版本一致，并通过临时副本验证版本同步、Bun 冻结安装、Cargo 和 uv 锁文件。
+Release preflight 在离线锁文件检查前用 `uv python install "$UV_PYTHON"` 安装所选解释器；`setup-uv` 的 `python-version` 只设置版本选择，不保证解释器已安装。
 服务端 job 使用 Python 3.12 和 uv 缓存，并在 pytest 前配置 Node 24、仓库指定的 Bun 和服务端 Remotion 冻结依赖，保证普通合成测试的 esbuild 打包与导入边界检查可运行；不因此启用真实浏览器或媒体集成测试。`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
 在 Validate project 上手动运行会执行全部检查（原生检查模式）；需要安装包时手动运行 Build client。
 
