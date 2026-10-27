@@ -21,6 +21,8 @@ import { defaultPreviewUrls, readPreviewVideos } from "./media";
 import { compactTransitions, previewTransitions, setTransitionDuration, transitionItems } from "./transitions";
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
+import { FrameMaskCard, FrameMaskPanel } from "./FrameMaskPanel";
+import { newFrameMask } from "./frameMask";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
 import { addClip, bindClip, clipSlot, hiddenTextClips, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
@@ -352,6 +354,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                 <div className="flex h-14 items-center gap-1 border-b border-line px-3" role="tablist" aria-label="素材来源">
                   <button type="button" role="tab" aria-selected={assetSource === "effects"} className="studio-source-tab" onClick={() => setAssetSource("effects")}>特效素材</button>
                   <button type="button" role="tab" aria-selected={assetSource === "ai"} className="studio-source-tab" onClick={() => { setAssetSource("ai"); spriteCatalog.refresh(); }}>AI 资产</button>
+                  <button type="button" role="tab" aria-selected={assetSource === "masks"} className="studio-source-tab" onClick={() => setAssetSource("masks")}>蒙版</button>
                 </div>
                 <div hidden={assetSource !== "effects"}><EffectAssets editor={assetTrack?.editor} catalog={catalog} textTarget={textTarget} textTracks={visibleDraft!.tracks} selectedText={lastTextTrack.current} onSelectText={selectTarget} textEditor={draft.tracks.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
                   setTextTarget(role);
@@ -368,6 +371,10 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   return result.draft;
                 }, true)} /></div>
                 <div hidden={assetSource !== "ai"}><SpriteCatalog catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} /></div>
+                <div hidden={assetSource !== "masks"}><FrameMaskCard mask={draft.frame_mask} onSelect={() => {
+                  if (!draft.frame_mask) editTrack(() => ({ ...draft, frame_mask: newFrameMask() }));
+                  setTarget("frame-mask");
+                }} /></div>
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
                 <TemplatePreview draft={previewDraft!} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={current?.template_id ?? draft.name} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
@@ -375,6 +382,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
               </main>}
               inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={visibleDraft!} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
                 <SpriteClips clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
+                {target === "frame-mask" && draft.frame_mask && <FrameMaskPanel mask={draft.frame_mask}
+                  onChange={(frame_mask) => editTrack(() => ({ ...draft, frame_mask }))} onClose={() => setTarget(null)} />}
                 {bilingualTarget && <div className="space-y-2 border-b px-4 py-3">
                   <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!english && english.enabled !== false} onChange={(event) => {
                     const enabled = event.target.checked;
