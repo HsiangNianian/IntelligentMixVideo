@@ -497,6 +497,8 @@ class Job:
         if request.text:
             await self.save("segmentation", duration_ms=duration_ms)
             segment_input = {"title": request.title, "script": request.text, "asr_result": asr_result}
+            if request.process_rules.subtitle_max_chars is not None:
+                segment_input["max_segment_chars"] = request.process_rules.subtitle_max_chars
             segmented = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
             segments = TypeAdapter(list[Segment]).validate_python(segmented["segments"])
             validate_segments(segments, duration_ms)

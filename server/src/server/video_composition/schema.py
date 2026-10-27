@@ -63,9 +63,11 @@ class PackRules(APIModel):
 
 
 class ProcessRules(APIModel):
-    """无语音纯素材使用秒制成片时长，其余处理开关仍不参与合成。"""
+    """无语音纯素材使用秒制成片时长；字幕每行字数上限传给切片，省略时沿用切片默认值，其余处理开关仍不参与合成。"""
 
     video_duration: PositiveSeconds | None = Field(default=None, strict=True)
+    subtitle_max_chars: int | None = Field(default=None, ge=1, strict=True,
+                                           description="字幕每行最多字数（不计标点和空白），作为文案切片上限")
 
 
 class CompositionRequest(APIModel):
