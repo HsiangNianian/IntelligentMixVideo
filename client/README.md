@@ -30,6 +30,7 @@ bun run dev
 ```
 
 打开 `http://localhost:1420`。API 地址通过 `client/.env` 中的 `VITE_API_URL` 配置，未配置或留空时默认 `http://localhost:20070`。
+模板 SDK 使用空 License 的本地预览，页面域名必须是 `localhost`，不能换成 `127.0.0.1` 或局域网 IP；否则 SDK 会显示「license校验失败」，即使外层提示「预览已就绪」。自定义端口时也请使用 `http://localhost:<端口>`。浏览器验收需确认实际视频画面和播放推进，不能只检查就绪提示；官方限制见 [预览组件接入说明](https://help.aliyun.com/zh/ims/developer-reference/access-the-preview-component-web-sdk)。这个要求针对页面地址，视频资源地址不必改成 localhost。
 若尚无 `.env`，可复制 `.env.example` 创建；已有文件直接修改，保留示例视频配置。
 
 ```dotenv

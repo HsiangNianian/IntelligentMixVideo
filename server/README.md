@@ -62,9 +62,13 @@ GET 与 POST 成功响应默认使用 `application/json`，采用 Protobuf JSON 
 
 列表返回逐条校验的 `TemplateSummary`，包含名称、ID、更新时间、有效模板的标题/字幕及对象数量，无效记录通过 `validationError` 说明原因。无效记录的详情读取返回 409，删除仍按 ID 执行，不影响同库有效模板。保存必须包含中文标题和中文字幕各一个；双语模板另有对应的英文对象。列表消息与转场字段需要客户端、服务端一起升级；已有记录不自动转换。
 
-同屏配置通过 `SaveTemplateRequest.split_screen` 保存，JSON 响应为 `splitScreen`：包含 `enabled`、`backgroundColor`、`material`、`avatar`、`subtitle`、`subtitleEn`。窗口位置和尺寸为画布百分比，圆角和内边框宽度为 1080×1920 基准像素，显示方式为 `Contain` / `Cover`。旧模板缺省关闭，旧客户端更新时省略此字段保留已有配置，关闭用 `enabled=false`。标准合成仅命中素材时同屏，未命中全屏数字人；纯素材模式忽略配置。进出同屏及同屏内均不使用转场。
+同屏配置通过 `SaveTemplateRequest.split_screen` 保存，JSON 响应为 `splitScreen`：包含 `enabled`、`layout`、`backgroundColor`、`material`、`avatar`、`subtitle`、`subtitleEn`。`layout` 为 `split`（默认，分区双窗口）、`overlay`（完整素材叠人物）、`circle`（完整素材叠自动圆形头像）；旧客户端省略新 `layout` 重存时保留原值。`overlay` / `circle` 的素材直接用完整画布 Contain 加模糊填充，忽略但保留原素材窗口配置；人物位置用窗口左上角 X/Y 和宽高的画布百分比，无左右角/边距预设、无自动字幕避让。人物叠加等比放入原视频框，圆形头像截取检测到的头部正方形，再用 `mask_circle` 放入窗口内的最大正圆；两种叠加布局均无矩形装饰。`split` 保留原有窗口 Contain/Cover、圆角/内边框（1080×1920 基准像素）和底色。旧模板缺省关闭，旧客户端更新时省略整个同屏字段保留已有配置，关闭用 `enabled=false`。三种布局都仅在标准合成命中素材时生效，未命中时使用带原背景的全屏数字人，不抠像、不裁圆；纯素材模式忽略配置。进出同屏及同屏内均不使用转场。
 
 圆角预览资源接收 `width`、`height`（源尺寸，2～32768）、`box_width`（2～1080）、`box_height`（2～1920）、`radius`（大于 0 且不超过窗口短边一半）、`seconds`（正整数持续秒数）。在工作线程用 Pillow/FFmpeg 编码单帧 MP4，最多缓存 32 份，缺编码器返回 503。云合成另用 ffprobe 探测实际尺寸、IMS 原生蒙版与 ZOS 透明边框，不重编码用户源视频。SDK 预览保留实时花字和滤镜。
+
+数字人效果独立通过 `SaveTemplateRequest.avatar_effects` 保存，JSON 为 `avatarEffects`：`openingEnabled` 默认 false，`openingDuration` 默认 2 秒（0.1～300），`circleScale` 默认 1.6（1～3，脸框留量），`feather` 默认 0.02（0～0.2），`removeBackground` 默认 false。省略整个字段时，旧客户端重存保留已有设置；显式关闭不清除参数。位置尺寸继续使用 `splitScreen.avatar`，相对整张画布、按原视频矩形框定位。
+
+标准合成开启开场，或选择圆形头像且存在匹配素材时，FFmpeg 按显示方向和像素宽高比抽取片头区间最多 8 帧，`opencv-python-headless==4.12.0.88` 与随包 YuNet 在线程中定位固定圆（限制在源画面内，不逐帧跟踪）；模型位于 `video_composition/models/`，无需运行时下载；来源与完整许可声明见本文末尾。两种圆形效果共用检测，成功定位或明确无脸结果持久化为任务 `avatar_opening`；恢复复用。只启用头像时检测结果的 `duration=0`，不上传黑底、不隐藏素材。无脸跳过开场；圆形头像无脸时回退直接切换：命中区间只显示完整素材，其余显示原数字人，字幕用普通位置。读取/检测/上传故障仍以 `avatar_opening_failed` 失败。有效开场以黑底与 `mask_circle` 覆盖原业务视频，不拆素材、不补时、不重启源时间，字幕沿用普通位置；结束恢复对应区间布局。仅非圆形的实际同屏且开启抠像时使用 `AI_RealMatting`，忽略数字人圆角和边框，保留分区素材装饰；不支持的地域以 `avatar_matting_region_unsupported` 失败（目前仅北京、上海、杭州）。编辑器切换到人物叠加时默认开启去背景，可用同一个开关保留原背景，不另列小窗画中画模式；切到分区或圆形时关闭抠像。圆形头像始终保留圆内背景，忽略旧抠像开关。纯素材模式不检测、不抠像。SDK 只展示配置和布局，头像圆形以居中裁切示意，真实头部位置和边缘以成片为准。
 
 `SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
