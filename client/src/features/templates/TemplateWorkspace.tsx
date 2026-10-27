@@ -112,6 +112,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     return {
       id: clip.id,
       spriteId: clip.sprite_id,
+      sourceVersionId: asset?.sourceVersionId,
       aspect: asset?.aspect ?? 9 / 16,
       name: asset?.name ?? "AI 资产",
       start: clip.start,

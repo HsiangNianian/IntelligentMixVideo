@@ -1,8 +1,9 @@
-"""Publish accepted Remotion versions as immutable Sprites.
+"""Publish accepted Remotion versions as Sprite assets.
 
 A publication copies the sealed source, parameter contract and interactive player bundle out of the
-chat-owned version directory, so deleting or editing the source work never changes a placed Sprite.
-Publications (`imv.sprite.v1.PublishedSprite` JSON) are rows of the MySQL table in `sprite_store.py`, next
+chat-owned version directory, so deleting or editing the source work never changes a Sprite by itself. A save can
+replace an existing asset under its ID (issue #246), which is the explicit way templates that place it move to a
+new version. Publications (`imv.sprite.v1.PublishedSprite` JSON) are rows of the MySQL table in `sprite_store.py`, next
 to the templates whose `remotion` tracks reference them; their player bundle copies are objects in the
 Remotion object store (ZOS, or the data folder without ZOS). A bundle that is missing or no longer matches its
 recorded hash is rebuilt from the published source on the next preview. Where a Sprite is placed is part of the template, so nothing here reads or validates IMS
@@ -425,7 +426,8 @@ def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None
     """Replace a publication's player copy and its recorded hash; the source and parameters are untouched.
 
     The object is written before the hash is recorded. If the second step fails, the copy no longer matches and
-    the next preview rebuilds it, so a partial update never leaves an unusable asset.
+    the next preview rebuilds it, so a partial update never leaves an unusable asset. Callers hold bundle_lock
+    and pass the publication re-read under that lock, so an old source cannot replace a newer source's player.
     """
     staged = store.root / "sprites" / f".bundle-{uuid4().hex}.js"
     staged.parent.mkdir(parents=True, exist_ok=True)
@@ -451,14 +453,11 @@ def _existing(version: TemplateVersion, request: pb.PublishSpriteRequest) -> dic
     return data
 
 
-def _inspect(
-    store: Store, request: pb.PublishSpriteRequest, device: UUID,
-) -> tuple[TemplateVersion, pb.PublishedSprite | None, bytes]:
-    """Check the request against its re-verified source of this device and find the player bytes involved.
+def _source(store: Store, request: pb.PublishSpriteRequest, device: UUID) -> tuple[TemplateVersion, Path]:
+    """Re-verify the request's sealed source version and return it with its accepted artifact directory.
 
-    Returns the version, the publication this source and field choice already produced (or None) and the
-    bundle that publication serves (empty when its copy is lost, so it is rebuilt), or that a new one would copy.
-    It hashes every sealed artifact, so callers run it in a worker thread.
+    The source must belong to the requesting device and still exist. Every sealed artifact is hashed, so callers
+    run this in a worker thread.
     """
     try:
         version_id = UUID(request.source_version_id)
@@ -475,12 +474,99 @@ def _inspect(
         raise Conflict("该版本没有可发布的交互预览")
     if max(len(request.text_prop), len(request.keywords_prop)) > sprite_store.NAME_LENGTH:
         raise _invalid(f"text_prop 与 keywords_prop 不能超过 {sprite_store.NAME_LENGTH} 个字符")
+    return version, accepted
+
+
+def _inspect(
+    store: Store, request: pb.PublishSpriteRequest, device: UUID,
+) -> tuple[TemplateVersion, pb.PublishedSprite | None, bytes]:
+    """Check the request against its re-verified source of this device and find the player bytes involved.
+
+    Returns the version, the publication this source and field choice already produced (or None) and the
+    bundle that publication serves (empty when its copy is lost, so it is rebuilt), or that a new one would copy.
+    """
+    version, accepted = _source(store, request, device)
     # Re-saving an existing publication only refreshes its player; the rules for new publications do not apply to it.
     if (data := _existing(version, request)) is None:
         _validated_request(request, version)
         return version, None, (accepted / PREVIEW_BUNDLE).read_bytes()
     sprite = published_from(data)
     return version, sprite, _bundle_bytes(store, sprite) or b""
+
+
+def _accepts_previous_parameter(previous: dict | None, current: dict | None) -> bool:
+    """Conservatively compare the independent parameter schemas supported by published controls.
+
+    Labels/defaults may change, bounds and enums may widen, and integers may become numbers. Unknown constraints
+    are not guessed at: their compatibility needs a new asset instead. Array items use the same comparison.
+    """
+    known = {"type", "title", "description", "default", "minimum", "maximum", "minLength", "maxLength",
+             "minItems", "maxItems", "enum", "pattern", "items"}
+    if not isinstance(previous, dict) or not isinstance(current, dict) or (set(previous) | set(current)) - known:
+        return False
+    if previous.get("type") != current.get("type") and (previous.get("type"), current.get("type")) != ("integer", "number"):
+        return False
+    for key in ("minimum", "minLength", "minItems"):
+        if key in current and current[key] > previous.get(key, float("-inf") if key == "minimum" else 0):
+            return False
+    for key in ("maximum", "maxLength", "maxItems"):
+        if key in current and current[key] < previous.get(key, float("inf")):
+            return False
+    if "enum" in current and ("enum" not in previous or any(value not in current["enum"] for value in previous["enum"])):
+        return False
+    if "pattern" in current and current["pattern"] != previous.get("pattern"):
+        return False
+    return "items" not in current or _accepts_previous_parameter(previous.get("items"), current["items"])
+
+
+def _validated_overwrite(request: pb.PublishSpriteRequest, version: TemplateVersion, target: pb.PublishedSprite) -> None:
+    """Refuse an overwrite that would change what templates already rely on.
+
+    Templates place a Sprite by ID and keep only their own parameter overrides, so replacing the content is safe
+    only while the kind, text fields, canvas and every previously editable parameter stay compatible. Defaults
+    and internal instance schemas may change; existing overrides must still be accepted against the new defaults.
+    Cross-parameter constraints cannot be proven compatible here and require a new asset.
+    """
+    if request.kind != target.kind:
+        raise _invalid("覆盖保存不能改变资产分类；如需保存为其他分类，请另存为新资产")
+    if request.text_prop != target.text_prop or (target.keywords_prop and request.keywords_prop != target.keywords_prop):
+        raise _invalid("覆盖保存不能改变字效的文字或已有关键词字段；如需更改，请另存为新资产")
+    composition, canvas = version.spec.composition, target.canvas
+    if (composition.width, composition.height, round(composition.fps)) != (canvas.width, canvas.height, canvas.fps):
+        raise _invalid("覆盖保存要求画布宽、高和帧率与目标资产一致；如需使用其他画布，请另存为新资产")
+    if _unchanged(target, request, version):
+        return
+    previous = [item for item in operator_parameters(target) if item.access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE]
+    if not previous:
+        return
+    schema = open_font_schema(version.candidate.config_schema)
+    # Independent properties are safe to merge with new defaults. Arbitrary root constraints can couple an old
+    # override to a changed internal default, even when those constraints themselves have not changed.
+    independent = {"type", "properties", "required", "additionalProperties", "title", "description", "default",
+                   "$schema", "$id", "$comment", "$defs", "definitions"}
+    if set(schema) - independent:
+        raise _invalid("覆盖保存无法确认跨参数约束与已有模板兼容；请另存为新资产")
+    old_properties = open_font_schema(json.loads(target.config_schema_json or "{}")).get("properties", {})
+    properties = schema.get("properties", {})
+    editable = {item.key for item in _parameters(schema, version.candidate.default_config, _bound_names(version))}
+    incompatible = [item.key for item in previous if item.key not in editable
+                    or not _accepts_previous_parameter(old_properties.get(item.key), properties.get(item.key))]
+    if incompatible:
+        raise _invalid(f"覆盖保存不能删除、改型或收紧已有参数（{'、'.join(incompatible)}）；请另存为新资产")
+
+
+def _inspect_target(
+    store: Store, request: pb.PublishSpriteRequest, device: UUID,
+) -> tuple[TemplateVersion, pb.PublishedSprite, bytes]:
+    """Check an overwrite request: re-verify the source, load the target and refuse incompatible changes.
+
+    Returns the new version, the target publication and the bundle the new version would copy over the target's.
+    """
+    version, accepted = _source(store, request, device)
+    _validated_request(request, version)
+    target = get(request.target_sprite_id)
+    _validated_overwrite(request, version, target)
+    return version, target, (accepted / PREVIEW_BUNDLE).read_bytes()
 
 
 def _bound_names(version: TemplateVersion) -> list[str]:
@@ -525,40 +611,53 @@ async def _sample(service, version: TemplateVersion, kind: int) -> None:
             logger.warning("Sprite boundary sample %s of %s failed, published anyway: %s", item.name.removeprefix("sample:"), version.id, (item.message or "")[:300])
 
 
+def _publication(
+    request: pb.PublishSpriteRequest, version: TemplateVersion, *, sprite_id: str, name: str,
+    canvas: pb.SpriteCanvas, bundle: bytes, published_at: datetime,
+) -> pb.PublishedSprite:
+    """Build one publication record from an accepted version, keeping the caller-chosen identity and canvas.
+
+    Published font parameters are open strings: their enum can only name fonts known at generation time.
+    """
+    schema = open_font_schema(version.candidate.config_schema)
+    sprite = pb.PublishedSprite(
+        sprite_id=sprite_id,
+        source_version_id=str(version.id),
+        name=name,
+        kind=request.kind,
+        canvas=canvas,
+        tsx_code=version.candidate.tsx_code,
+        code_sha256=hashlib.sha256(version.candidate.tsx_code.encode()).hexdigest(),
+        parameters=_parameters(schema, version.candidate.default_config, _bound_names(version)),
+        text_prop=request.text_prop,
+        keywords_prop=request.keywords_prop,
+        preview_sha256=hashlib.sha256(bundle).hexdigest(),
+        config_schema_json=json.dumps(schema, ensure_ascii=False),
+        default_config_json=json.dumps(version.candidate.default_config, ensure_ascii=False),
+        content_box=_content_box(version),
+    )
+    sprite.published_at.FromDatetime(published_at)
+    return sprite
+
+
 def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVersion, bundle: bytes) -> pb.SpriteSummary:
     """Record a new publication with its own copy of the player bundle; losing a race to an identical one returns the winner."""
-    # Published font parameters are open strings: their enum can only name fonts known at generation time.
-    schema = open_font_schema(version.candidate.config_schema)
     composition = version.spec.composition
     sprite_id = str(uuid4())
     published_at = datetime.now(UTC)
+    sprite = _publication(
+        request, version, sprite_id=sprite_id, name=request.name.strip() or version.spec.name,
+        canvas=pb.SpriteCanvas(
+            width=composition.width, height=composition.height,
+            fps=round(composition.fps), preview_frames=composition.duration_in_frames,
+        ),
+        bundle=bundle, published_at=published_at,
+    )
     staged = store.root / "sprites" / f".bundle-{uuid4().hex}.js"
     staged.parent.mkdir(parents=True, exist_ok=True)
     try:
         staged.write_bytes(bundle)
         store.objects.put(bundle_key(sprite_id), staged, "text/javascript")
-        sprite = pb.PublishedSprite(
-            sprite_id=sprite_id,
-            source_version_id=str(version.id),
-            name=version.spec.name,
-            kind=request.kind,
-            canvas=pb.SpriteCanvas(
-                width=composition.width,
-                height=composition.height,
-                fps=round(composition.fps),
-                preview_frames=composition.duration_in_frames,
-            ),
-            tsx_code=version.candidate.tsx_code,
-            code_sha256=hashlib.sha256(version.candidate.tsx_code.encode()).hexdigest(),
-            parameters=_parameters(schema, version.candidate.default_config, _bound_names(version)),
-            text_prop=request.text_prop,
-            keywords_prop=request.keywords_prop,
-            preview_sha256=hashlib.sha256(bundle).hexdigest(),
-            config_schema_json=json.dumps(schema, ensure_ascii=False),
-            default_config_json=json.dumps(version.candidate.default_config, ensure_ascii=False),
-            content_box=_content_box(version),
-        )
-        sprite.published_at.FromDatetime(published_at)
         sprite_store.insert(
             sprite_id=sprite_id, source_version_id=str(version.id), kind=request.kind,
             text_prop=request.text_prop, keywords_prop=request.keywords_prop, published_at=published_at,
@@ -578,21 +677,115 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
     return summarize(sprite)
 
 
+def _overwrite(
+    store: Store, request: pb.PublishSpriteRequest, version: TemplateVersion,
+    target: pb.PublishedSprite, bundle: bytes,
+) -> pb.SpriteSummary:
+    """Replace a publication with the new version's content under the same ID and name.
+
+    Templates reference the ID, so they use the new content without being touched. The player copy is written
+    before the record: if the record update fails, its hash no longer matches the copy and the next preview repairs
+    the copy from the still-stored old source. A duplicate key means this version already became another asset;
+    that is a conflict instead of silently merging two records.
+    """
+    published_at = datetime.now(UTC)
+    sprite = _publication(
+        request, version, sprite_id=target.sprite_id, name=target.name,
+        canvas=pb.SpriteCanvas(
+            width=target.canvas.width, height=target.canvas.height, fps=target.canvas.fps,
+            preview_frames=version.spec.composition.duration_in_frames,
+        ),
+        bundle=bundle, published_at=published_at,
+    )
+    staged = store.root / "sprites" / f".bundle-{uuid4().hex}.js"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        staged.write_bytes(bundle)
+        store.objects.put(bundle_key(target.sprite_id), staged, "text/javascript")
+        try:
+            data = sprite_store.replace(
+                target.sprite_id, source_version_id=str(version.id), kind=request.kind,
+                text_prop=request.text_prop, keywords_prop=request.keywords_prop,
+                published_at=published_at, data=MessageToDict(sprite, preserving_proto_field_name=True),
+                name=request.name.strip() or None,
+            )
+        except IntegrityError as exc:
+            if exc.orig.args[0] != 1062:
+                raise
+            raise Conflict("该版本已经保存为另一个资产；请先删除那个资产，或改为另存为新资产") from None
+        if data is None:
+            # The asset was deleted while this save ran; remove the copy just written for it so no orphan stays.
+            store.objects.delete_prefix(f"{PREFIX}/sprites/{target.sprite_id}/")
+            raise NotFound("sprite not found")
+    finally:
+        staged.unlink(missing_ok=True)
+    _rebuild_failed.pop(target.sprite_id, None)
+    return summarize(published_from(data))
+
+
+def _unchanged(target: pb.PublishedSprite, request: pb.PublishSpriteRequest, version: TemplateVersion) -> bool:
+    """Whether the target already holds exactly this version, so a repeated save only refreshes its player."""
+    return (
+        target.source_version_id == str(version.id)
+        and target.kind == request.kind
+        and target.text_prop == request.text_prop
+        and target.keywords_prop == request.keywords_prop
+        and target.code_sha256 == hashlib.sha256(version.candidate.tsx_code.encode()).hexdigest()
+    )
+
+
+async def _resave(store: Store, sprite: pb.PublishedSprite, fresh: bytes | None, name: str) -> pb.SpriteSummary:
+    """Commit a repeated save only while its publication still holds the inspected source.
+
+    Rebuilding may overlap an overwrite. Take the same lock as overwrite, preview repair and deletion, then
+    re-read before writing either the bundle/hash or a name; a stale request must not modify the newer asset.
+    """
+    async with bundle_lock(sprite.sprite_id):
+        current = await run_in_threadpool(get, sprite.sprite_id)
+        identity = ("source_version_id", "kind", "text_prop", "keywords_prop", "code_sha256")
+        if any(getattr(current, field) != getattr(sprite, field) for field in identity):
+            raise Conflict("资产已被其他版本覆盖，请刷新后重试或另存为新资产")
+        if fresh:
+            await run_in_threadpool(_store_bundle, store, current, fresh)
+        if name:
+            return await run_in_threadpool(rename, current.sprite_id, name)
+        return summarize(await run_in_threadpool(get, current.sprite_id))
+
+
 async def publish(service, request: pb.PublishSpriteRequest, device: UUID) -> pb.SpriteSummary:
-    """Copy a verified accepted version into an immutable publication; repeating returns the original.
+    """Copy a verified accepted version into a publication; repeating returns the original, or replaces a target.
 
     A new publication first renders its boundary samples (`boundary.py`), so later template overrides inside its
-    parameter contract need no sandbox. The player bundle is rebuilt with the current host code when the sealed
-    one predates frame-synchronised previews or placement overrides, so older versions can still be previewed
-    over a template after saving. Hashing, copying and database work run in worker threads and only the browser
-    work is awaited, so the event loop stays free; identical publications take turns, so a double click samples
-    and rebuilds once.
+    parameter contract need no sandbox. With `target_sprite_id` the same content replaces that asset under its
+    existing ID and name, so templates already placing it use the new version; running samples is skipped when the
+    target already holds exactly this version. The player bundle is rebuilt with the current host code when the
+    sealed one predates frame-synchronised previews or placement overrides, so older versions can still be
+    previewed over a template after saving. Hashing, copying and database work run in worker threads and only the
+    browser work is awaited, so the event loop stays free; identical publications take turns, and overwrites of one
+    asset are serialized, so a double click samples and rebuilds once.
     """
+    name = request.name.strip()
+    if len(name) > NAME_MAX_LENGTH:
+        raise _invalid(f"资产名称去除首尾空白后不能超过 {NAME_MAX_LENGTH} 个字符")
     store = service.store
-    lock = _publishing.setdefault(
-        (request.source_version_id, request.kind, request.text_prop, request.keywords_prop), asyncio.Lock()
+    key = (
+        ("overwrite", request.target_sprite_id) if request.target_sprite_id
+        else (request.source_version_id, request.kind, request.text_prop, request.keywords_prop)
     )
+    lock = _publishing.setdefault(key, asyncio.Lock())
     async with lock:
+        if request.target_sprite_id:
+            version, target, bundle = await run_in_threadpool(_inspect_target, store, request, device)
+            fresh = None if current_bundle(bundle) else await _rebuild_bundle(
+                service, version.candidate.tsx_code, version.candidate.default_config,
+                version.spec.composition.model_dump(), version.id,
+            )
+            if _unchanged(target, request, version):
+                return await _resave(store, target, fresh, name)
+            await _sample(service, version, request.kind)
+            # Serialize with a preview rebuild or deletion of the same asset, so the copy and record stay in step.
+            async with bundle_lock(target.sprite_id):
+                return await run_in_threadpool(_overwrite, store, request, version, target, fresh or bundle)
         version, sprite, bundle = await run_in_threadpool(_inspect, store, request, device)
         if sprite is None:
             await _sample(service, version, request.kind)
@@ -602,6 +795,4 @@ async def publish(service, request: pb.PublishSpriteRequest, device: UUID) -> pb
         )
         if sprite is None:
             return await run_in_threadpool(_create, store, request, version, fresh or bundle)
-        if fresh:
-            await run_in_threadpool(_store_bundle, store, sprite, fresh)
-        return summarize(sprite)
+        return await _resave(store, sprite, fresh, name)

@@ -69,6 +69,8 @@ function groupTransitionRows(rows: (Omit<TimelineRow, "actions"> & { actions: Pr
 export interface SpriteClip {
   id: string;
   spriteId: string;
+  /** 目录里的来源版本：覆盖资产后刷新播放器，不写入模板轨道。 */
+  sourceVersionId?: string;
   aspect: number;
   name: string;
   start: number;

@@ -478,10 +478,28 @@ round, `job.updated` omits that history, and the client keeps the rounds it has 
 
 ## Sprite assets
 
-`POST /api/sprites/publish` copies an accepted version into an immutable
+`POST /api/sprites/publish` copies an accepted version into a published
 `imv.sprite.v1.PublishedSprite` (a row of the shared MySQL table `remotion_sprites`, `sprite_store.py`, plus the
 object `imv/remotion/sprites/<id>/interactive.js`), so deleting or editing the source work never changes a
-published Sprite. Only the device that owns the source work may publish it (another device's version is a 404). The table is created on first use like the template table and sits in the same database as the
+published Sprite. A save may instead name an existing asset in `target_sprite_id` (issue #246): that row is replaced
+in place, keeping its `sprite_id` so every template placing it uses the new version. The optional `name` field
+sets the catalog name in the same save (trimmed, at most 100 characters; longer values return 422 before writing).
+An omitted or blank name uses the AI-generated name for a new asset and preserves the current catalog name for
+an overwrite or repeated save. Overwrites read that name under the row lock so a rename committed during
+boundary sampling is preserved. An explicit name also renames an already-saved version without another asset or sampling. The new
+content must keep the target's kind, canvas (width, height, fps) and text/keyword fields, otherwise the answer is a
+422 asking for a new asset; an unknown target is a 404. When the same version and field choice was already saved as
+another asset the unique key makes it a 409, and repeating an overwrite of the version the target already holds only
+refreshes the preview bundle without rendering boundary samples again. Overwrites also preserve every previously
+editable parameter: removing/unbinding it, changing its type (except integer to number), narrowing its bounds,
+enum, string lengths or array size, or adding a restrictive pattern returns 422 before sampling or writing.
+Bounds/enums may widen, new parameters may be added, and defaults/internal instance schemas may change. Fonts are
+compared as open strings, as in placement validation. Root-level cross-parameter constraints cannot be proven
+compatible with arbitrary existing overrides and changed defaults, so those versions require a new asset.
+Repeated saves, overwrites, preview repairs and deletion share the asset's bundle lock. A repeated save re-reads
+the publication under that lock before writing its bundle/hash or name; if another version replaced it during
+the rebuild, it returns 409 without touching that newer asset.
+Only the device that owns the source work may publish it (another device's version is a 404). The table is created on first use like the template table and sits in the same database as the
 templates that reference its IDs, which is what lets a template save check its `remotion` tracks (422 when a
 `sprite_id` is not published or the clips' Sprites do not share one width, height and fps, which an overlay render requires). The preview bundle is an object; when it is missing or no longer matches the recorded
 hash (for example Sprites published while bundles were local files), the preview route rebuilds it from the

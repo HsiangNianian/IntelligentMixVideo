@@ -1,7 +1,7 @@
 /** AI 资产核心测试：版本卡片的资产分类与发布请求，以及云端模板编辑中的资产目录、片段编辑与随模板的原子保存；执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
 import { create, fromBinary, fromJson, toBinary, toJson, type MessageInitShape } from "@bufbuild/protobuf";
-import { cleanup, fireEvent, render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
 import { VersionCard } from "@/features/remotion_templates/VersionCard";
 import { defaultKind, publishChoice } from "@/features/remotion_templates/spriteChoice";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
@@ -761,6 +761,33 @@ test("收到目录推送后刷新 AI 资产目录，未展开时不订阅、卸�
   expect(within(region).getByRole("button", { name: "添加 AI 资产：冷色光斑" })).toBeTruthy();
   unmount();
   expect(source.readyState).toBe(FakeEventSource.CLOSED);
+});
+
+// 回归：目录推送的同 ID 新版本必须穿过工作区映射传入叠加播放器；刷新资产不能改写当前模板草稿。
+test("工作区收到覆盖事件后刷新正在使用的资产预览", async () => {
+  const source = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "src")!;
+  Object.defineProperty(HTMLMediaElement.prototype, "src", {
+    ...source,
+    set(this: HTMLMediaElement, value: string) {
+      source.set!.call(this, value);
+      Object.defineProperties(this, { duration: { configurable: true, value: 10 }, videoWidth: { configurable: true, value: 1080 }, videoHeight: { configurable: true, value: 1920 } });
+      queueMicrotask(() => this.dispatchEvent(new Event("loadedmetadata")));
+    },
+  });
+  try {
+    const catalog = [{ ...summary(), sourceVersionId: "v1" }];
+    const { template, posts } = sprites({ catalog, clips: [{ id: "placed", sprite_id: "sprite-1", start: 0, duration: 3, parameters: {}, transform: { x: 540 } }] });
+    render(<TemplateWorkspace selection={{ templateId: template.template_id }} onHome={() => {}} />);
+    const frame = await screen.findByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
+    expect(new URL(frame.src).searchParams.get("version")).toBe("v1");
+    catalog[0] = { ...catalog[0], sourceVersionId: "v2" };
+    await act(async () => { FakeEventSource.instances.find((item) => item.url.endsWith("/api/sprites/stream"))!.emit("catalog.changed"); });
+    await waitFor(() => expect(new URL(frame.src).searchParams.get("version")).toBe("v2"));
+    expect(posts).toEqual([]);
+    expect(screen.queryByText("有未保存的修改")).toBeNull();
+  } finally {
+    Object.defineProperty(HTMLMediaElement.prototype, "src", source);
+  }
 });
 
 // 场景：网络切换或代理静默断开时浏览器察觉不到，45 秒收不到 ping 或变化就换一条新连接，新连接的首条事件补读断线期间的变化。

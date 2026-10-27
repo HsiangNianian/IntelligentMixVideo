@@ -1,7 +1,7 @@
 /** 成功版本交互回归：目录、折叠复制、只读预览、导航保护与并发清理；执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { PublishSpriteRequestSchema, PublishSpriteResponseSchema, SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
+import { PublishSpriteRequestSchema, PublishSpriteResponseSchema, ListSpritesResponseSchema, SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import {
   act,
   fireEvent,
@@ -20,7 +20,7 @@ import { apply } from "@/features/remotion_templates/localSessions";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
 import { remotionServer, seed } from "./remotion-server";
 import { codeText } from "./remotion-version-helpers";
-import { fetchMock } from "./setup";
+import { FakeEventSource, fetchMock } from "./setup";
 
 /** 建立两个真实公开成功任务并写入本地会话，刷新恢复时可把版本放回对应的助手消息。 */
 async function history(
@@ -65,9 +65,19 @@ async function ready() {
 }
 
 /** 发布成功的最小 Protobuf 回执，不访问真实资产库。 */
-function publishedAsset() {
+function publishedAsset(sourceVersionId = "version-2") {
   return new Response(Uint8Array.from(toBinary(PublishSpriteResponseSchema, create(PublishSpriteResponseSchema, {
-    sprite: { spriteId: "sprite-1", name: "今日灵感", kind: SpriteKind.TEXT },
+    sprite: { spriteId: "sprite-1", name: "今日灵感", kind: SpriteKind.TEXT, sourceVersionId },
+  }))), { headers: { "Content-Type": "application/x-protobuf" } });
+}
+
+/** 资产目录：本会话的 version-2 已经保存为 sprite-1，工作区应默认提议覆盖它。 */
+function spriteCatalog(name = "今日灵感") {
+  return new Response(Uint8Array.from(toBinary(ListSpritesResponseSchema, create(ListSpritesResponseSchema, {
+    sprites: [{
+      spriteId: "sprite-1", name, kind: SpriteKind.TEXT, sourceVersionId: "version-2",
+      canvas: { width: 1080, height: 1920, fps: 30, previewFrames: 150 },
+    }],
   }))), { headers: { "Content-Type": "application/x-protobuf" } });
 }
 
@@ -112,6 +122,164 @@ test("顶栏保存当前预览版本为资产并防止重复提交", async () =>
   await waitFor(() => expect(requests).toHaveLength(2));
   expect(requests[1]).toMatchObject({ sourceVersionId: "version-1", kind: SpriteKind.FILTER_OVERLAY, textProp: "", keywordsProp: "" });
   await waitFor(() => expect(save.disabled).toBe(false));
+});
+
+// 模板编辑处改名后，已打开的字效工作区通过目录推送或重新聚焦同步；后台更新不覆盖名称草稿。
+test("资产重命名同步到保存方式和名称提示，并保留正在输入的名称", async () => {
+  let name = "今日灵感";
+  await history((path) => path === "/api/sprites" ? spriteCatalog(name) : undefined);
+  const view = render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  const mode = await screen.findByRole("combobox", { name: "保存方式" });
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "资产名称" });
+  const source = FakeEventSource.instances.find((item) => item.url.endsWith("/api/sprites/stream"))!;
+  expect(mode.textContent).toContain("今日灵感");
+  name = "模板编辑里的名称";
+  await act(async () => source.emit("catalog.changed"));
+  await waitFor(() => expect(mode.textContent).toContain(name));
+  expect(input.placeholder).toBe(name);
+  fireEvent.change(input, { target: { value: "尚未保存的名称" } });
+  name = "另一处修改的名称";
+  fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(mode.textContent).toContain(name));
+  expect(input.value).toBe("尚未保存的名称");
+  view.unmount();
+  expect(source.readyState).toBe(FakeEventSource.CLOSED);
+});
+
+// 同一会话换版本不丢失名称草稿；新增会话才清空，迟到的新版本不能让已经输入的名称悄悄失效。
+test("名称草稿随会话保留，切换预览版本不清空", async () => {
+  await history();
+  render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "资产名称" });
+  fireEvent.change(input, { target: { value: "准备保存的名称" } });
+  fireEvent.click(screen.getByRole("button", { name: "预览 V1" }));
+  await waitFor(() => expect(screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器").src).toContain("version-1"));
+  expect(input.value).toBe("准备保存的名称");
+  fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+  await waitFor(() => expect(input.value).toBe(""));
+});
+
+// 首次保存的名称可选：有内容时随同一发布请求提交；空白交给服务端使用 AI 名称，失败保留草稿可重试。
+test.each(["  我的片头  ", "   "])("首次保存提交可选名称：%s", async (name) => {
+  const requests: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>>[] = [];
+  await history((path, options) => {
+    if (path === "/api/sprites/publish") {
+      requests.push(fromBinary(PublishSpriteRequestSchema, new Uint8Array(options!.body as Uint8Array)));
+      return requests.length === 1
+        ? Response.json({ detail: "暂时无法保存" }, { status: 503 })
+        : publishedAsset();
+    }
+  });
+  render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "资产名称" });
+  fireEvent.change(input, { target: { value: name } });
+  const save = screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" });
+  await waitFor(() => expect(save.disabled).toBe(false));
+  fireEvent.click(save);
+  await screen.findByText("暂时无法保存");
+  expect(input.value).toBe(name);
+  fireEvent.click(save);
+  await waitFor(() => expect(requests).toHaveLength(2));
+  expect(requests.map((item) => [item.name, item.targetSpriteId])).toEqual([[name.trim(), ""], [name.trim(), ""]]);
+  await waitFor(() => expect(input.value).toBe(""));
+});
+
+// 覆盖保存可同时填写新名称，仍然使用原资产 ID；目录读取失败时禁止降级为新建，显式重试后恢复。
+test("目录失败可重试，覆盖资产时名称与目标一起提交", async () => {
+  let available = false;
+  let request: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>> | undefined;
+  await history((path, options) => {
+    if (path === "/api/sprites") return available ? spriteCatalog() : Response.json({ detail: "暂不可用" }, { status: 503 });
+    if (path === "/api/sprites/publish") {
+      request = fromBinary(PublishSpriteRequestSchema, new Uint8Array(options!.body as Uint8Array));
+      return publishedAsset();
+    }
+  });
+  render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  const save = screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" });
+  expect(save.disabled).toBe(true);
+  available = true;
+  fireEvent.click(await screen.findByRole("button", { name: "重试资产目录" }));
+  await screen.findByRole("combobox", { name: "保存方式" });
+  fireEvent.change(screen.getByRole("textbox", { name: "资产名称" }), { target: { value: "  新名字  " } });
+  fireEvent.click(save);
+  await waitFor(() => expect(request?.name).toBe("新名字"));
+  expect(request?.targetSpriteId).toBe("sprite-1");
+});
+
+// Issue #246：本会话保存过资产后默认覆盖它；保存处可切换为另存为新资产，覆盖请求带上目标资产 ID。
+test("保存资产默认覆盖本会话上一次保存的资产，也可以另存为新资产", async () => {
+  const requests: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>>[] = [];
+  await history((path, options) => {
+    if (/^\/versions\/version-\d+$/.test(path)) {
+      const version = remotionVersion(path.split("/")[2]);
+      version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywords", title: "关键词" }] };
+      return Response.json(version);
+    }
+    if (path === "/api/sprites" && (options?.method ?? "GET") === "GET") return spriteCatalog();
+    if (path === "/api/sprites/publish") {
+      requests.push(fromBinary(PublishSpriteRequestSchema, new Uint8Array(options!.body as Uint8Array)));
+      return publishedAsset();
+    }
+  });
+  render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  const mode = await screen.findByRole("combobox", { name: "保存方式" });
+  expect(mode.textContent).toContain("覆盖「今日灵感」");
+  const save = screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" });
+  expect(save.title).toContain("覆盖资产「今日灵感」");
+  fireEvent.click(save);
+  await waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]).toMatchObject({
+    sourceVersionId: "version-2", targetSpriteId: "sprite-1", kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "keywords",
+  });
+  await waitFor(() => expect(save.disabled).toBe(false));
+  fireEvent.keyDown(mode, { key: "ArrowDown" });
+  fireEvent.keyDown(await screen.findByRole("option", { name: "另存为新资产" }), { key: "Enter" });
+  await waitFor(() => expect(mode.textContent).toContain("另存为新资产"));
+  expect(save.title).toContain("保存当前预览 V2 为新资产");
+  fireEvent.click(save);
+  await waitFor(() => expect(requests).toHaveLength(2));
+  expect(requests[1].targetSpriteId).toBe("");
+  expect(requests[1]).toMatchObject({ sourceVersionId: "version-2", kind: SpriteKind.TEXT });
+});
+
+// 改选其他分类表示要一个新资产：覆盖不能再改变已有片段依赖的类型，选项不可用且按卡片分类保存为新资产。
+test("为版本改选其他分类时覆盖不可用，按新分类另存", async () => {
+  const requests: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>>[] = [];
+  await history((path, options) => {
+    if (/^\/versions\/version-\d+$/.test(path)) {
+      const version = remotionVersion(path.split("/")[2]);
+      version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywords", title: "关键词" }] };
+      return Response.json(version);
+    }
+    if (path === "/api/sprites" && (options?.method ?? "GET") === "GET") return spriteCatalog();
+    if (path === "/api/sprites/publish") {
+      requests.push(fromBinary(PublishSpriteRequestSchema, new Uint8Array(options!.body as Uint8Array)));
+      return publishedAsset();
+    }
+  });
+  render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  await screen.findByRole("combobox", { name: "保存方式" });
+  const kind = within(screen.getByLabelText("成功版本 V2")).getByRole("combobox", { name: "资产分类" });
+  fireEvent.keyDown(kind, { key: "ArrowDown" });
+  fireEvent.keyDown(await screen.findByRole("option", { name: "滤镜" }), { key: "Enter" });
+  await waitFor(() => expect(kind.textContent).toContain("滤镜"));
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" }).disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "保存资产" }));
+  await waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]).toMatchObject({ targetSpriteId: "", kind: SpriteKind.FILTER_OVERLAY });
 });
 
 // 发布被服务端拒绝时保留具体原因、不自动重试，用户再次保存后可恢复。
