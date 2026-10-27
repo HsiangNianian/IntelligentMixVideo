@@ -295,8 +295,11 @@ async def require_fonts(overlay: Overlay) -> None:
         raise OverlayError("font_unavailable", "渲染需要的字体尚未就绪，请稍后重试")
 
 
-async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.PublishedSprite], directory: Path) -> None:
+async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.PublishedSprite], directory: Path) -> list[list[dict]]:
     """Make every text effect show the text a render really passes, whatever its length.
+
+    Returns the worker's answers per Sprite (including the fitted `size` and the measured `lines`) for diagnostics and
+    tests; the applied render-only changes are written to `overlay`.
 
     A generated effect cannot know how long a title or subtitle the bus will send, so the host measures it: for each
     text Sprite the isolated browser mounts each distinct content with its own values, at the length its Sprite plays
@@ -346,7 +349,7 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
             "frames": frames, "length": length, "transform": transform, "one_line": one_line, "grow": grow,
         })
     if not groups:
-        return
+        return []
     measured = [(group, list(distinct), list(distinct.values())) for group, distinct in groups.items()]
     items = [item for *_, distinct in measured for item in distinct]
     # One browser run measures every distinct text: a few seconds for each, and for loading each Sprite.
@@ -391,6 +394,7 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
                 logger.info("叠加渲染 Sprite %s 的字幕（%d 字）换行后向%s展开 %s 像素", group[0], len(item["text"]), "下" if grow_shift > 0 else "上", abs(grow_shift))
                 for index in members[(group, key)]:
                     overlay.instances[index]["host"] = nudged_host(overlay.instances[index]["host"], {"y": grow_shift})
+    return answers
 
 
 def nudged_host(host: dict, shift: dict) -> dict:

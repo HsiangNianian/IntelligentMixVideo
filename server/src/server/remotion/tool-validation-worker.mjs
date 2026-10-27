@@ -1045,7 +1045,10 @@ async function fitTexts(page, loadError, sprite) {
     // grows above. Measure that line and the same text on one line, then move the placement so the line sits exactly
     // where the single line would, whatever vertical alignment the effect uses. Never move it past the shown canvas.
     let growShift = null;
-    if (item.grow && ok) {
+    // A rotated subtitle adds its lines along the rotated direction; moving only host y would not keep the nearest line
+    // away from the other language. Leave that placement on its original layout rather than moving it the wrong way.
+    const upright = Math.abs(item.transform.rotation ?? 0) < 0.5;
+    if (item.grow && ok && upright) {
       const measured = await measureSize(size);
       // A text that throws or shows nothing here is reported by the render; a sample measurement is only an improvement.
       if (!measured.error && measured.shown > 0 && measured.lines > 1 && measured.extent) {
@@ -1073,9 +1076,9 @@ async function fitTexts(page, loadError, sprite) {
           if (anchor?.center && sample?.extent) {
             const middle = (sample.extent.top + sample.extent.bottom) / 2;
             let move = middle - anchor.center[1];
-            // Keep the whole multi-line text inside the window the video shows.
-            if (move > 0) move = Math.min(move, visible.y + visible.height - nudged.bottom);
-            else if (move < 0) move = Math.max(move, visible.y - nudged.top);
+            // Keep the whole multi-line text inside the window the video shows, without ever reversing the direction.
+            if (item.grow === "down") move = Math.max(0, Math.min(move, visible.y + visible.height - nudged.bottom));
+            else move = Math.min(0, Math.max(move, visible.y - nudged.top));
             growShift = Math.round(move);
             anchored = true;
             if (growShift === 0) growShift = null;
@@ -1086,16 +1089,17 @@ async function fitTexts(page, loadError, sprite) {
           const nudged = { top: measured.extent.top + (shift?.y ?? 0), bottom: measured.extent.bottom + (shift?.y ?? 0) };
           const height = measured.extent.bottom - measured.extent.top;
           const grow = (height * (measured.lines - 1)) / (2 * measured.lines);
-          if (item.grow === "down") growShift = Math.min(grow, visible.y + visible.height - nudged.bottom);
-          else if (item.grow === "up") growShift = -Math.min(grow, nudged.top - visible.y);
+          if (item.grow === "down") growShift = Math.min(grow, Math.max(0, visible.y + visible.height - nudged.bottom));
+          else if (item.grow === "up") growShift = -Math.min(grow, Math.max(0, nudged.top - visible.y));
           if (growShift !== null) growShift = Math.round(growShift);
           if (growShift === 0) growShift = null;
         }
       }
     }
     const keywordSize = valuesAtSize(item, size).keywordSize;
+    const final = await measureSize(size);
     answers.push({
-      index: item.index, fits: ok, size, ...(keywordSize !== item.values.keywordSize ? { keyword_size: keywordSize } : {}),
+      index: item.index, fits: ok, size, lines: final.lines, ...(keywordSize !== item.values.keywordSize ? { keyword_size: keywordSize } : {}),
       ...(shift && (shift.x || shift.y) ? { shift } : {}), ...(growShift ? { grow_shift: growShift } : {}),
     });
   }

@@ -2064,11 +2064,12 @@ def titled(text: str, *, sprite_id: str = "t", duration: float | None = None, fo
     return OverlayPlacement.model_validate({"spriteId": sprite_id, "start": 0, **({"duration": duration} if duration else {}), "editor": {"remotion": remotion}})
 
 
-def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[OverlayPlacement], seconds: float, *, minimum: int = 24, one_line: bool = False, grow: str = ""):
+def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[OverlayPlacement], seconds: float, *, minimum: int = 24, one_line: bool = False, grow: str = "", return_answers: bool = False):
     """用真实沙箱和浏览器对这些摆放做排版预检，返回预检后的渲染计划。
 
     codes 是各字效的源码（Sprite ID 到源码；只给一份源码时就是字效 t），内容区域都是整块画布。
     one_line、grow 给视频合成的英文字幕、字幕轨加上单行要求与换行后的展开方向（"down" 英文、"up" 中文），与合成标记实例的方式相同。
+    return_answers 为 True 时同时返回 worker 的答案（含最终字号与实测行数），供测试检查单行适配是否真的保持一行。
     """
     configured = {
         name: Path(value)
@@ -2102,8 +2103,8 @@ def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[O
             instance["one_line"] = True
         if grow:
             instance["grow"] = grow
-    asyncio.run(overlay_render.fit_texts(Renderer(settings), overlay, published, tmp_path / "fit"))
-    return overlay
+    answers = asyncio.run(overlay_render.fit_texts(Renderer(settings), overlay, published, tmp_path / "fit"))
+    return (overlay, answers) if return_answers else overlay
 
 
 # 两段文字都保留排版框，第二段的不透明度由外层特效控制；首段可见，用来复现透明部分被误判为缺字。
@@ -2168,10 +2169,12 @@ def test_real_browser_shrinks_an_english_subtitle_to_one_line(tmp_path: Path) ->
     """宽 972 的框里长英文在 128 字号换成两三行；要求单行时缩到一行放得下的更小字号，不要求时仍是 128。"""
     code = FIXED_BOX.replace("WRAP", '"normal"').replace("height: 360", "height: 700")
     text = "detectors spinning round and round"
-    one = fit_for_real(tmp_path / "one", code, [titled(text, font_size=128)], 1.0, one_line=True)
-    wrapped = fit_for_real(tmp_path / "wrapped", code, [titled(text, font_size=128)], 1.0)
+    one, one_answers = fit_for_real(tmp_path / "one", code, [titled(text, font_size=128)], 1.0, one_line=True, return_answers=True)
+    wrapped, wrapped_answers = fit_for_real(tmp_path / "wrapped", code, [titled(text, font_size=128)], 1.0, return_answers=True)
     assert wrapped.instances[0]["config"]["fontSize"] == 128
     assert 24 <= one.instances[0]["config"]["fontSize"] < 128
+    assert one_answers[0][0]["lines"] == 1
+    assert wrapped_answers[0][0]["lines"] > 1
 
 
 # 场景：字幕轨的单行字效即使缩到最小字号也放不下一行时，靠近另一语言的一行留在原单行的位置，多出的行朝远离另一语言
@@ -2198,6 +2201,7 @@ def test_real_browser_grows_a_wrapped_subtitle_away_from_the_other_language(tmp_
     stayed = fit_for_real(tmp_path / "stayed", code, [titled(text, font_size=60)], 1.0)
     centered_down = fit_for_real(tmp_path / "centered-down", CENTERED_BOX, [titled(text, font_size=60)], 1.0, one_line=True, grow="down")
     centered_up = fit_for_real(tmp_path / "centered-up", CENTERED_BOX, [titled(text, font_size=60)], 1.0, grow="up")
+    rotated = fit_for_real(tmp_path / "rotated", code, [titled(text, font_size=60, rotation=30)], 1.0, grow="up")
     assert down.instances[0]["config"]["fontSize"] == 60 and up.instances[0]["config"]["fontSize"] == 60
     # Top-aligned: the first line already sits where a single line would, and the last line moves up by the whole extra height.
     assert down.instances[0]["host"]["transform"] == {}
@@ -2206,6 +2210,8 @@ def test_real_browser_grows_a_wrapped_subtitle_away_from_the_other_language(tmp_
     assert centered_up.instances[0]["host"]["transform"]["y"] < 960
     assert up.instances[0]["host"]["transform"]["y"] < 960
     assert abs(up.instances[0]["host"]["transform"]["y"] - 960) > abs(centered_up.instances[0]["host"]["transform"]["y"] - 960) * 1.5
+    # A rotated subtitle keeps its original layout instead of moving the nearest line sideways.
+    assert rotated.instances[0]["host"]["transform"] == {"rotation": 30}
     assert stayed.instances[0]["host"]["transform"] == {}
 
 

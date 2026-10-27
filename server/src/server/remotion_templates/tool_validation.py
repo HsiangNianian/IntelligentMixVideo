@@ -337,9 +337,11 @@ class ToolValidator:
         browser run under one deadline. Each item carries complete ``values`` (including the
         text and the requested size), the ``text`` to look for, the name of the size parameter (``size_key``), its
         ``min``, the ``frames`` to measure at the ``length`` its Sprite plays and the host ``transform`` that places it
-        inside ``box`` on the canvas. The answer is one list per Sprite with ``{index, fits, size[, keyword_size][, shift][, grow_shift]}``
-        per item: ``size`` is the requested size when the text already fits, otherwise the largest smaller whole size
-        that does, and ``keyword_size`` is then the proportionally smaller ``keywordSize`` when the values set one.
+        inside ``box`` on the canvas. The answer is one list per Sprite with
+        ``{index, fits, size, lines[, keyword_size][, shift][, grow_shift]}`` per item: ``size`` is the requested size when
+        the text already fits, otherwise the largest smaller whole size that does, and ``lines`` is the number of visual
+        lines that size shows (diagnostics; the host enforces ``one_line``). ``keyword_size`` is the proportionally
+        smaller ``keywordSize`` when the values set one.
         When even ``min`` leaves the text outside the window the video shows, ``shift`` ``{x, y}`` is the shortest
         move of the placement, in canvas pixels, that brings it back in; ``fits`` is false when not even that helps.
         ``grow_shift`` is a signed downward (+) or upward (-) move of a subtitle text that wrapped, so the extra lines

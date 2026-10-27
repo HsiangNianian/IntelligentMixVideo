@@ -686,9 +686,11 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   the single line would — whatever vertical alignment the effect uses (centred text moves by about half the added height,
   top- or bottom-aligned text by its full height at the far end) — keeping the line nearest the other language in place:
   the English subtitle (`down`) keeps its first line and grows below, the Chinese one (`up`) keeps its last line and grows
-  above, so the two never run into each other (never past the canvas the video shows; the move is logged and the saved
-  placement is untouched). The Chinese subtitle is only marked `up` while an English subtitle is enabled; without one it
-  keeps the original centred growth. A `keywordSize` above 0 is
+  above, so the two do not run into each other (never past the canvas the video shows; when the canvas leaves no room for
+  the full move it is clamped, so a subtitle at the very edge can still be close; the move is logged and the saved
+  placement is untouched). Rotated subtitle placements keep their original layout instead of moving the wrong way. The
+  Chinese subtitle is only marked `up` while an English subtitle is enabled; without one it keeps the original centred
+  growth. A `keywordSize` above 0 is
   an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's
   proportion to the text instead of crowding the smaller text. If at the minimum the text
   still leaves the canvas only because of where it is placed (a long title whose centre sits near the top edge), the
