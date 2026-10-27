@@ -282,3 +282,35 @@ HTTP 请求与轮询等待均为异步，不阻塞事件循环。等待预算必
 视频合成支持同一 `styleId` 下的 Remotion 动态字效；新 `text_target` 槽位沿用上游的 IMS 文字替代规则，旧独立用途快照继续兼容。保存接口接受仅有 `editor.remotion.businessTarget=title/subtitle` 的旧字效轨道，替换资产仍保留 IMS 与 Remotion 共存，不自动迁移为新槽位。使用方式、资产字段声明、旧资产适配、时长限制和联调清单见 [Remotion 接入说明](../docs/remotion-video-composition.md)。
 
 合成侧计划、时长适配打包、渲染或上传失败会在 `server/.log/video_composition/<task_id>/errors/` 私有保留 `remotion-worker.log` 与异常链 `remotion-error.log`（含子进程 stderr），临时视频和编译产物仍清理；公开错误保持稳定摘要，执行日志记录根因的异常类型、代码位置、错误码及详细日志相对路径，排障时按 `timeline.json` 的 `error_log[].error.detail_log_path` 读取私有日志。
+
+## YuNet 模型与第三方许可
+
+人脸定位随包使用 OpenCV Zoo 的 `face_detection_yunet_2023mar.onnx`，匹配运行库 `opencv-python-headless==4.12.0.88`；模型仅用于定位，人物抠像交给 IMS。
+
+- 来源：[OpenCV Zoo / YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)。
+- SHA-256：`8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4`。
+- 以下 MIT 版权和许可声明随模型保留；本 README 同时作为服务端发行包的项目说明。
+
+```text
+MIT License
+
+Copyright (c) 2020 Shiqi Yu <shiqi.yu@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
