@@ -492,6 +492,9 @@ function textFitProblems(page, needle, placement) {
     let joined = "";
     let area = 0;
     let extent = null; // canvas rectangle of all shown text after the transform
+    // The visual text lines: rectangles whose vertical ranges overlap belong to the same line, so the pieces of a line
+    // split into keyword spans still count once. A text block laid out for one line that wraps is then two lines.
+    const rows = [];
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const shown = compact(node.nodeValue);
       if (!shown || !(wanted.includes(shown) || shown.includes(wanted)) || !node.parentElement || getComputedStyle(node.parentElement).visibility !== "visible") continue;
@@ -511,6 +514,13 @@ function textFitProblems(page, needle, placement) {
         top: Math.min(...lines.map((rect) => rect.top)), bottom: Math.max(...lines.map((rect) => rect.bottom)),
       };
       area += lines.reduce((sum, rect) => sum + (rect.right - rect.left) * rect.height, 0);
+      for (const rect of lines) {
+        // Spans of one line overlap almost completely; line boxes of two stacked lines only touch, so half the smaller
+        // height tells them apart even when a taller keyword span shifts slightly.
+        const same = rows.find((row) => Math.min(row.bottom, rect.bottom) - Math.max(row.top, rect.top) > Math.min(row.bottom - row.top, rect.height) / 2);
+        if (same) { same.top = Math.min(same.top, rect.top); same.bottom = Math.max(same.bottom, rect.bottom); }
+        else rows.push({ top: rect.top, bottom: rect.bottom });
+      }
       const smallest = Math.min(...lines.map((rect) => rect.height));
       if (smallest < minLine) problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
       const corners = lines.flatMap((rect) => [place(rect.left, rect.top), place(rect.right, rect.top), place(rect.left, rect.bottom), place(rect.right, rect.bottom)]);
@@ -537,7 +547,7 @@ function textFitProblems(page, needle, placement) {
     }
     if (!extent) return null;
     if (!joined.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
-    return { problems: [...problems], area, extent, view };
+    return { problems: [...problems], area, extent, view, lines: rows.length };
   }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, request.mode === "fit");
 }
 
@@ -554,13 +564,15 @@ const UNPLACED = Object.freeze({ cx: 0, cy: 0, x: 0, y: 0, scale: 1, rotation: 0
  * With `placement.nudge` the text leaving the window is no problem and `shift` is the smallest move of the placement
  * (`{x, y}` in canvas pixels, zero when none is needed) that brings the text of the middle one of the problem-free
  * full-size frames back inside it; when that text is larger than the window no move helps and it does not fit.
+ * `lines` is the largest number of visual lines those full-size frames show, which `fitTexts` uses to keep an English
+ * title or subtitle on one line, and `extent` is the canvas rectangle of the text in the middle one of them.
  */
 async function measureTextFit(page, needle, frames = sampleFrames(request.composition.duration_frames), placement = UNPLACED) {
   const verdicts = [];
   for (const frame of frames) {
     await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
     const error = await page.evaluate(() => window.__imvRuntimeError ?? null);
-    if (error) return { error, frame, shown: verdicts.length, full: 0, fits: false, problems: [] };
+    if (error) return { error, frame, shown: verdicts.length, full: 0, fits: false, lines: 0, extent: null, problems: [] };
     const verdict = await textFitProblems(page, needle, placement);
     if (verdict) verdicts.push(verdict);
   }
@@ -576,7 +588,8 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
     if (x !== null && y !== null) shift = { x, y };
   }
   const fits = placement.nudge ? shift !== null : clean.length > 0;
-  return { error: null, shown: verdicts.length, full: full.length, fits, shift, problems: fits ? [] : [...new Set(full.flatMap((verdict) => verdict.problems))] };
+  const middle = full[Math.floor((full.length - 1) / 2)] ?? null;
+  return { error: null, shown: verdicts.length, full: full.length, fits, lines: Math.max(0, ...full.map((verdict) => verdict.lines)), extent: middle?.extent ?? null, shift, problems: fits ? [] : [...new Set(full.flatMap((verdict) => verdict.problems))] };
 }
 
 /**
@@ -875,6 +888,13 @@ function valuesAtSize(item, size) {
  * shows (a long title placed at the top edge), the placement is moved the shortest way back inside at `min`:
  * the answer's `shift` is that move in canvas pixels. `fits: false` means the text is too long even for that. When the
  * size is lowered the answer also carries the matching `keyword_size` (see `valuesAtSize`).
+ *
+ * An item with `one_line` (an English title or subtitle, which is laid out for one line and would otherwise wrap into
+ * the other language's text) is fitted to the largest size that also shows it on one line, shrinking it as needed.
+ * This is best effort: a text that cannot be one line at the readable floor keeps the largest size that fits it
+ * wrapped, so a long translation is still shown in full. An item with `grow` (a subtitle's `up` or `down`) that still
+ * wraps answers `grow_shift`: the placement moves along that axis so the line next to the other language stays where a
+ * single line sits and the added lines grow away from it, by half the height they take.
  */
 async function fitTexts(page, loadError, sprite) {
   if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
@@ -887,29 +907,46 @@ async function fitTexts(page, loadError, sprite) {
     await page.evaluate((values) => window.__imvTool.setSample(values, {}), valuesAtSize(item, size));
     return measureTextFit(page, item.text, item.frames, hostPlacement(box, item.transform, visible, nudge));
   };
-  const fits = async (item, size) => {
-    const measured = await measure(item, size, false);
-    return measured.error !== null || measured.shown === 0 || measured.fits;
-  };
+  /** A component that throws or never renders its text is left alone; the render reports that itself. */
+  const usable = (measured) => measured.error !== null || measured.shown === 0 || measured.fits;
   const answers = [];
   for (const item of sprite.fit) {
+    /** One measurement per size: the size search and the subtitle shift read the same result. */
+    const measuredSizes = new Map();
+    const measureSize = async (size) => {
+      if (!measuredSizes.has(size)) measuredSizes.set(size, await measure(item, size, false));
+      return measuredSizes.get(size);
+    };
     const requested = item.values[item.size_key];
     // Never below what is readable, and never above what was asked for.
     const floor = Math.min(requested, Math.max(item.min, readableFontSize(item.values)));
+    // Turning this off when the text cannot be one line makes `accepts` check the wrapped fit instead.
+    let oneLine = item.one_line === true;
+    const accepts = (measured) => usable(measured) && (!oneLine || measured.lines <= 1);
     let size = requested;
-    let ok = await fits(item, requested);
+    const atRequested = await measureSize(requested);
+    let ok = accepts(atRequested);
     if (!ok) {
-      ok = requested > floor && await fits(item, floor);
-      if (ok) {
-        // `low` fits: the answer lies in [low, requested - 1].
-        let low = floor;
-        let high = requested - 1;
-        while (low < high) {
-          const middle = Math.ceil((low + high) / 2);
-          if (await fits(item, middle)) low = middle; else high = middle - 1;
-        }
-        size = low;
-      } else size = floor;
+      const atFloor = floor < requested ? await measureSize(floor) : atRequested;
+      const floorOK = accepts(atFloor);
+      if (oneLine && !floorOK && atRequested.fits) {
+        // It cannot be one line at any readable size: keep the text whole, wrapped, at the size asked for.
+        ok = true;
+      } else {
+        // One line where possible; otherwise the normal wrapped fit below.
+        if (!floorOK) oneLine = false;
+        ok = accepts(atFloor);
+        if (ok) {
+          // `floor` fits: the answer lies in [floor, requested - 1].
+          let low = floor;
+          let high = requested - 1;
+          while (low < high) {
+            const middle = Math.ceil((low + high) / 2);
+            if (accepts(await measureSize(middle))) low = middle; else high = middle - 1;
+          }
+          size = low;
+        } else size = floor;
+      }
     }
     let shift = null;
     if (!ok) {
@@ -917,10 +954,26 @@ async function fitTexts(page, loadError, sprite) {
       ok = nudged.fits;
       shift = nudged.shift;
     }
+    // A subtitle text block is centred where a single line would be. When it wrapped anyway, move it by half the extra
+    // height so the line nearest the other language stays put and the added lines grow away from it: an English
+    // subtitle (`down`) keeps its first line and grows below, a Chinese one (`up`) keeps its last line and grows above.
+    // Never move it past the part of the canvas the video shows.
+    let growShift = null;
+    if (item.grow && ok) {
+      const measured = await measureSize(size);
+      if (!measured.error && measured.shown > 0 && measured.lines > 1 && measured.extent) {
+        const height = measured.extent.bottom - measured.extent.top;
+        const grow = (height * (measured.lines - 1)) / (2 * measured.lines);
+        if (item.grow === "down") growShift = Math.min(grow, visible.y + visible.height - measured.extent.bottom);
+        else if (item.grow === "up") growShift = -Math.min(grow, measured.extent.top - visible.y);
+        if (growShift !== null) growShift = Math.round(growShift);
+        if (growShift === 0) growShift = null;
+      }
+    }
     const keywordSize = valuesAtSize(item, size).keywordSize;
     answers.push({
       index: item.index, fits: ok, size, ...(keywordSize !== item.values.keywordSize ? { keyword_size: keywordSize } : {}),
-      ...(shift && (shift.x || shift.y) ? { shift } : {}),
+      ...(shift && (shift.x || shift.y) ? { shift } : {}), ...(growShift ? { grow_shift: growShift } : {}),
     });
   }
   return answers;

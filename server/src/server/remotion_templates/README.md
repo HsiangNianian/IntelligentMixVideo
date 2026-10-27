@@ -677,7 +677,16 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   size and placement measurements; missing text, `display: none` and `visibility: hidden` are still excluded.
   Generation's `text_fit` check continues to require visible text. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum but never below 24 (smaller lines count as unreadable), at which it is shown in full
-  (binary search; the size is logged, the template and the sealed source are untouched). A `keywordSize` above 0 is
+  (binary search; the size is logged, the template and the sealed source are untouched). An English title or subtitle of a
+  video composition is marked `one_line`: its effect is laid out for one line, and a wrapped translation would reach into the
+  other language's text, so it is lowered to the largest size that also shows it on one line, and only a text that still
+  wraps at that minimum keeps the largest size that fits it whole (single line is best effort, never a failure). A video
+  composition's subtitle is marked `grow`: a text block is centred where a single line would be, so when it still wraps
+  the placement is moved along that axis by half the height the extra lines add, keeping the line nearest the other
+  language in place — the English subtitle (`down`) keeps its first line and grows below, the Chinese one (`up`) keeps its
+  last line and grows above, so the two never run into each other (never past the canvas the video shows; the move is
+  logged and the saved placement is untouched). The Chinese subtitle is only marked `up` while an English subtitle is
+  enabled; without one it keeps the original centred growth. A `keywordSize` above 0 is
   an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's
   proportion to the text instead of crowding the smaller text. If at the minimum the text
   still leaves the canvas only because of where it is placed (a long title whose centre sits near the top edge), the

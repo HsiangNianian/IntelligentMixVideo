@@ -311,7 +311,12 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
     Instances name their Sprite with `sprite_id` (others are not measured) and are measured with the `code` the render
     runs, on their own canvas (`width`, `height`, which the video scales to cover) when they have one. The text is the
     instance's `text` when it carries one (a video composition fills it into several parameter paths), otherwise the
-    Sprite's text parameter.
+    Sprite's text parameter. An instance marked `one_line` (an English title or subtitle of a video composition, laid
+    out for one line) is instead lowered to the largest size that shows it on one line, when the readable minimum still
+    does; a text too long for one line keeps the size that fits it wrapped, so the shrink is best effort. An instance
+    marked `grow` (a subtitle's `up` or `down`) that still wraps is moved along that axis so it grows away from the
+    other language's subtitle: its first line (down) or last line (up) stays where a single line sits, without leaving
+    the canvas.
     """
     from .tool_validation import FitSprite, ToolValidator, ValidationUnavailable
     from .tools.contracts import ComponentDefinition
@@ -331,12 +336,14 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
         frames, length = _fit_frames(instance, overlay.frames)
         # Opacity does not move the text; every other transform field does, so it tells contents apart.
         transform = {name: value for name, value in instance["host"]["transform"].items() if name != "opacity"}
+        one_line = bool(instance.get("one_line"))
+        grow = instance.get("grow") or ""
         group = (instance["sprite_id"], instance["code"])
-        key = json.dumps([config, frames, length, transform], sort_keys=True, ensure_ascii=False)
+        key = json.dumps([config, frames, length, transform, one_line, grow], sort_keys=True, ensure_ascii=False)
         members.setdefault((group, key), []).append(index)
         groups.setdefault(group, {}).setdefault(key, {
             "index": index, "values": config, "text": text, "size_key": "fontSize", "min": math.ceil(size["minimum"]),
-            "frames": frames, "length": length, "transform": transform,
+            "frames": frames, "length": length, "transform": transform, "one_line": one_line, "grow": grow,
         })
     if not groups:
         return
@@ -378,6 +385,12 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
                 logger.info("叠加渲染 Sprite %s 的文字（%d 字）在最小字号下仍出画布，位置平移 (%s, %s)", group[0], len(item["text"]), shift["x"], shift["y"])
                 for index in members[(group, key)]:
                     overlay.instances[index]["host"] = nudged_host(overlay.instances[index]["host"], shift)
+            if grow_shift := fit.get("grow_shift"):
+                # A subtitle that wrapped keeps its nearest line to the other language in place: English grows down,
+                # Chinese up, so the two subtitles do not run into each other.
+                logger.info("叠加渲染 Sprite %s 的字幕（%d 字）换行后向%s展开 %s 像素", group[0], len(item["text"]), "下" if grow_shift > 0 else "上", abs(grow_shift))
+                for index in members[(group, key)]:
+                    overlay.instances[index]["host"] = nudged_host(overlay.instances[index]["host"], {"y": grow_shift})
 
 
 def nudged_host(host: dict, shift: dict) -> dict:
