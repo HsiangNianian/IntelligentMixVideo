@@ -9,6 +9,7 @@ from google.protobuf.json_format import ParseDict
 from generated.imv.template.v1 import template_pb2 as pb
 
 from server.template.split_screen import SplitScreen, ScreenWindow, screen_rect
+from server.template.preview_mask import mask_image
 from server.video_composition.timeline import build_timeline
 from server.video_composition import split_screen, remotion
 from server.remotion_templates.overlay_render import _fit_frames
@@ -68,6 +69,40 @@ def test_contain_geometry_border_and_mask():
     clip = split_screen.window_clip({"Effects": [{"Type": "Background"}, {"Type": "Volume", "Gain": 0}]}, window, [1920, 1080], 1080, 1920)
     assert clip["Effects"][0] == {"Type": "Volume", "Gain": 0}
     assert "radius=24.000000" in clip["Effects"][1]["ExtParams"]
+
+
+def test_preview_mask_crop_and_endpoint(client, monkeypatch):
+    """Cover 的圆角沿实际裁剪边缘生成；公开资源接口只处理几何，无模板数据库副作用。"""
+    from server.template import router
+    image = mask_image(1920, 1080, 400, 800, 60)
+    # 1:2 窗口对横源中心裁剪；角透明、中央及边中不透明，不能只裁源画面的四角。
+    assert image.getpixel((690, 0)) < 5
+    assert image.getpixel((960, 0)) > 250
+    assert image.getpixel((960, 540)) == 255
+    calls = []
+    def encode(**params):
+        """隔离 FFmpeg，记录实际通过边界的参数。"""
+        calls.append(params)
+        return b"mask-mp4"
+    monkeypatch.setattr(router, "mask_video", encode)
+    params = dict(width=1920, height=1080, box_width=400, box_height=800, radius=60, seconds=11)
+    response = client.get("/template/preview-mask", params=params)
+    assert response.status_code == 200 and response.content == b"mask-mp4"
+    assert response.headers["content-type"] == "video/mp4" and calls == [params]
+    assert client.get("/template/preview-mask", params={**params, "radius": 201}).status_code == 422
+    assert len(calls) == 1
+    assert not client.get("/template").json()["templates"]
+
+
+def test_preview_mask_encoder_unavailable(client, monkeypatch):
+    """缺少 FFmpeg 明确报 503，不把无法生成的蒙版伪装成成功。"""
+    from server.template import router
+    def unavailable(**params):
+        """模拟部署缺少编码器。"""
+        raise FileNotFoundError("ffmpeg")
+    monkeypatch.setattr(router, "mask_video", unavailable)
+    response = client.get("/template/preview-mask", params=dict(width=100, height=100, box_width=100, box_height=100, radius=10, seconds=11))
+    assert response.status_code == 503 and "FFmpeg" in response.json()["detail"]
 
 
 def test_timeline_windows_sync_gaps_subtitles_and_audio(composition_case):

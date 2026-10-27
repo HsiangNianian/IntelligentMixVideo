@@ -11,6 +11,7 @@ import { CAN_PLAY_TIMEOUT_MS, readCatalog, STALL_TIMEOUT_MS, type PlayerEvent } 
 import { addTrack, previewContext, resolveTemplate } from "@/features/templates/tracks";
 import { sampleMedia } from "./fixtures";
 import { frames } from "./frames";
+import { defaultSplitScreen } from "@/features/templates/splitScreen";
 
 /** SDK 播放器替身：记录调用，事件由用例推送；载入时间线一直不完成，除非用例调用 finishTimeline。 */
 class FakePlayer {
@@ -28,12 +29,14 @@ class FakePlayer {
   readonly play = mock();
   readonly pause = mock();
   readonly destroy = mock();
+  readonly mediaInfo?: (id: string, type: string, origin: string) => Promise<unknown>;
   finishTimeline: () => void = () => {};
   failTimeline: (error: Error) => void = () => {};
-  readonly setTimeline = mock(() => new Promise<void>((resolve, reject) => { this.finishTimeline = resolve; this.failTimeline = reject; }));
+  readonly setTimeline = mock((_timeline?: unknown) => new Promise<void>((resolve, reject) => { this.finishTimeline = resolve; this.failTimeline = reject; }));
   /** 登记为最近创建的播放器。 */
-  constructor() {
+  constructor(options?: { getMediaInfo: FakePlayer["mediaInfo"] }) {
     FakePlayer.last = this;
+    this.mediaInfo = options?.getMediaInfo;
   }
   /** 以 SDK 的身份推送一条事件。 */
   emit(type: string, data?: PlayerEvent["data"]) {
@@ -68,6 +71,25 @@ async function mountWithSdk(draft: Draft, extra: Partial<Parameters<typeof Templ
 
 /** 时间轴各行的对象类型。 */
 const rowObjects = () => [...screen.getByLabelText("时间轴轨道标签").querySelectorAll("[data-object]")].map((label) => label.getAttribute("data-object"));
+
+// 回归：SDK 的动态媒体路径忽略 Timeline 蒙版字段，须从媒体回调一起交给原视频节点；不降级花字和滤镜。
+test("同屏圆角从 SDK 媒体回调返回，直角视频保留原地址", async () => {
+  spyOn(HTMLImageElement.prototype, "decode").mockResolvedValue();
+  spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage: () => {} } as unknown as CanvasRenderingContext2D);
+  spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,cHJldmlldw==");
+  const draft = { ...newDraft(), split_screen: { ...defaultSplitScreen(), enabled: true } };
+  const { player } = await mountWithSdk(draft);
+  const timeline = player.setTimeline.mock.calls[0][0] as { VideoTracks: { VideoTrackClips: { MediaURL?: string }[] }[] };
+  const id = timeline.VideoTracks.flatMap((row) => row.VideoTrackClips).find((clip) => clip.MediaURL?.includes("#imv-mask="))!.MediaURL!;
+  const masked = await player.mediaInfo!(id, "Video", "mediaURL") as { url: string; maskUrl: string };
+  expect(masked.url).toBe(sampleMedia[0].url);
+  expect(new URL(masked.maskUrl).searchParams.get("radius")).toBe("30");
+  expect(await player.mediaInfo!(sampleMedia[1].url, "Video", "mediaURL")).toBe(sampleMedia[1].url);
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  await screen.findByText("预览已就绪，点击播放查看效果");
+  expect(screen.queryByText(/已切换基础视频预览/)).toBeNull();
+});
 
 // 回归：时间轴行只在 SDK 载入时间线之后才生成和更新，IMS 加载慢或卡住时时间轴没有对象与视频行，修改模板后也不变。
 // 时间轴行直接按草稿生成：载入还没完成时已有对象与视频行，修改后立即更新。
