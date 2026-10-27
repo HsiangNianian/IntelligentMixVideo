@@ -95,19 +95,32 @@ class ComponentDefinition(ContractModel):
 PresetRole = Literal["text", "keyword", "effect"]
 # 宿主传给各角色 Preset 的 prop：它们不属于 Preset 自己的参数，不能写进 parameter_schema。effect 收到被包住的内容 children、
 # 显现进度 progress（0 还没出现，1 完全显示）与宿主的外层元素 Box（它按位置决定块级或行内）。
+# text Preset 可以画宿主排好的这一栏 children（关键词命中已由宿主包好，逐字特效时每个字是一个单元），也可以按 segments 自己画；
+# 只有前者能用逐字位置 chars。effect 另收 index、count：逐字时是这个字在本栏的序号与字数，各栏时是栏序号与栏数，其余为 0 与 1。
 ROLE_PROPS: dict[str, tuple[str, ...]] = {
-    "text": ("text", "segments", "Keyword", "fontFamily", "fontWeight", "fontSize"),
+    "text": ("text", "segments", "Keyword", "children", "fontFamily", "fontWeight", "fontSize"),
     "keyword": ("text",),
-    "effect": ("children", "progress", "Box"),
+    "effect": ("children", "progress", "Box", "index", "count"),
 }
 
 
+class EffectUsage(ContractModel):
+    """特效 Preset 的默认用法：中文名称、类型、作用位置与（入场、出场、下栏出现的）时长；组合时特效条目没给的就取这里的，
+    做成功的特效因此只要检索、引用就能原样复用。"""
+
+    title: EffectTitle
+    slot: EffectSlot
+    target: EffectTarget
+    seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
+
+
 class PresetDraft(ComponentDefinition):
-    """尚未入库的完整预设，可标记直接来源与文字组合里的角色。"""
+    """尚未入库的完整预设，可标记直接来源（组合时取自库内记录的快照记下那条记录）、文字组合里的角色与特效的默认用法。"""
 
     description: Description
     source_preset_id: Omittable[PresetId]
     role: Omittable[PresetRole]
+    usage: Omittable[EffectUsage]
 
 
 class PresetRecord(PresetDraft):
@@ -182,10 +195,12 @@ class ImageCropInput(ImageInfoInput):
 # create 承接 Agent 已写好的完整定义；输入模型即 PresetDraft。
 
 class PresetSearchInput(ContractModel):
-    """可选关键词（空白分隔的每个词都要出现在描述里）、角色与结果数量上限；留空则列出最近的预设；给出 preset_id 则读取该完整记录。"""
+    """可选关键词（分词后按命中的词数排序，一个词都没命中的不列出）、角色、特效类型与结果数量上限；同分时生成过成功版本、存进资产库的
+    排在前面，再按时间由新到旧；留空则按这个顺序列出全部；给出 preset_id 则读取该完整记录。"""
 
     query: str = ""
     role: Omittable[PresetRole]
+    slot: Omittable[EffectSlot]
     limit: Annotated[PositiveInteger, Field(le=100)] = 20
     preset_id: Omittable[PresetId]
 
@@ -197,6 +212,10 @@ class PresetSummary(ContractModel):
     description: Description
     parameter_names: list[str]
     role: Omittable[PresetRole]
+    usage: Omittable[EffectUsage]
+    # 用到它的成功版本数，以及其中被存进资产库的版本数。
+    accepted_uses: NonNegativeInteger = 0
+    published_uses: NonNegativeInteger = 0
 
 
 class PresetSearchOutput(ContractModel):
@@ -222,6 +241,7 @@ class PresetChanges(ContractModel):
     description: Omittable[Description]
     parameter_schema: Omittable[JsonSchema]
     default_parameters: Omittable[JsonObject]
+    usage: Omittable[EffectUsage]
 
 
 class PresetModifyInput(ContractModel):
@@ -369,23 +389,26 @@ class TextKeyword(ContractModel):
     parameters: Omittable[JsonObject]
 
 
-# 特效的类型：enter 入场、exit 出场（宿主按配置的时长算显现进度），loop 持续（进度恒为 1，需要循环时自己读帧）。
-EffectSlot = Literal["enter", "exit", "loop"]
-# 特效作用的位置：block 整个文字块，tiers 各栏（各自从出现的帧起），line1、line2 上栏或下栏（只有双栏），keyword 每个关键词命中。
-EffectTarget = Literal["block", "tiers", "line1", "line2", "keyword"]
+# 特效的类型：enter 入场、exit 出场（宿主按配置的时长算显现进度），loop 持续（进度恒为 1，需要循环时自己读帧），
+# cue 下栏出现（只有双栏：下栏出现前为 0，出现后按时长升到 1；这一组没有下栏文字时一直为 0）。
+EffectSlot = Literal["enter", "exit", "loop", "cue"]
+# 特效作用的位置：block 整个文字块，tiers 各栏（各自从出现的帧起），line1、line2 上栏或下栏（只有双栏），chars 每个字（依次分享入场、
+# 出场进度；只有画 children 的栏有），keyword 每个关键词命中。
+EffectTarget = Literal["block", "tiers", "line1", "line2", "chars", "keyword"]
 # 特效的中文名称，如「淡入」「发光」：宿主据此写它的开关、位置与时长参数的标题。
 EffectTitle = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=8)]
 
 
 class TextEffect(ContractModel):
-    """文字块的一个特效：画它的 effect 角色 Preset 及其样式参数、中文名称、类型，以及作用位置、时长与开关（配置的默认值）。"""
+    """文字块的一个特效：画它的 effect 角色 Preset 及其样式参数、中文名称、类型，以及作用位置、时长与开关（配置的默认值）；
+    名称、类型、位置与时长省略时取 Preset 记下的默认用法。"""
 
     instance_id: NonEmptyString
     source: PresetSource
     parameters: Omittable[JsonObject]
-    title: EffectTitle
-    slot: EffectSlot
-    target: EffectTarget
+    title: Omittable[EffectTitle]
+    slot: Omittable[EffectSlot]
+    target: Omittable[EffectTarget]
     # 入场、出场的时长（秒），省略为 0.5；持续特效没有时长。
     seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
     # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
@@ -401,7 +424,9 @@ class TextComposition(ContractModel):
     text: Annotated[StrictStr, StringConstraints(min_length=1, max_length=100)]
     font_size: Annotated[FiniteNumber, Field(ge=24, le=240)]
     tiers: list[TextTier] = Field(min_length=1, max_length=2)
-    # 只有双栏使用：两栏之间的距离（像素，可为负数以让下栏上移叠住上栏，最低 -600）与各栏出现的帧（首项为 0，不递减）。
+    # 只有双栏使用：两栏的排布（stack 上下排列，省略时如此；overlap 两栏叠在同一处、彼此居中、下栏在上层）、
+    # 两栏之间的距离（像素，可为负数以让下栏上移叠住上栏，最低 -600；重叠排布时不用，可省略）与各栏出现的帧（首项为 0，不递减）。
+    arrangement: Omittable[Literal["stack", "overlap"]]
     line_gap: Omittable[Annotated[FiniteNumber, Field(ge=-600, le=300)]]
     line_starts: Omittable[list[Annotated[Integer, Field(ge=0, le=3600)]]]
     keyword: Omittable[TextKeyword]
@@ -488,13 +513,29 @@ class SpriteCreateInput(ContractModel):
     draft_id: DraftId
 
 
+class ReviewFrame(ContractModel):
+    """回看的一帧：它是下一轮附带的第几张图片（参考图在前）、在 Sprite 里的帧号，以及这一帧应当显示什么。"""
+
+    image: PositiveInteger
+    frame: NonNegativeInteger
+    label: NonEmptyString
+
+
+class SpriteReview(ContractModel):
+    """保存后供 Agent 对照要求查看的几帧（灰底合成、按内容区域裁切），以及之后还有几次回看。"""
+
+    frames: list[ReviewFrame]
+    rounds_left: NonNegativeInteger
+
+
 class SpriteCreateOutput(ContractModel):
-    """新 sprite 的 ID 与入库代码校验报告；完整记录由宿主保存。"""
+    """新 sprite 的 ID 与入库代码校验报告；完整记录由宿主保存。还有回看次数时附上它的几帧画面。"""
 
     sprite_id: SpriteId
     created_at: Timestamp
     composition: Composition
     validation: CodeValidationReport
+    review: Omittable[SpriteReview]
 
 
 

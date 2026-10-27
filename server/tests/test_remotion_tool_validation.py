@@ -608,6 +608,41 @@ def test_real_browser_measures_whether_the_video_stays_visible(tmp_path, code, p
     assert report.passed is passed
 
 
+# 一个按帧从左向右长出的色条：第 0 帧没有，最后一帧占满 400 像素宽。
+GROWING_BAR = """import React from "react";
+import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
+export default function Bar(props: { tint: string }) {
+  const frame = useCurrentFrame();
+  const { durationInFrames } = useVideoConfig();
+  return <AbsoluteFill><div style={{ position: "absolute", left: 100, top: 100, height: 200, width: (400 * frame) / (durationInFrames - 1), background: props.tint }} /></AbsoluteFill>;
+}
+"""
+
+
+@needs_node
+@needs_browser
+def test_real_browser_captures_review_frames_on_gray(tmp_path):
+    """各项检查都通过后，同一次挂载按要求的帧截图：裁到给定区域并缩放，透明处合成在 #808080 灰底上，画面随帧变化。"""
+    from PIL import Image
+    from server.remotion_templates.tool_validation import FrameCapture
+
+    settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
+    component_ = ComponentDefinition(
+        code=GROWING_BAR,
+        parameter_schema={"type": "object", "properties": {"tint": {"type": "string"}}, "required": ["tint"], "additionalProperties": False},
+        default_parameters={"tint": "#FF0000"},
+    )
+    capture = FrameCapture([0, 29], {"x": 0, "y": 0, "width": 600, "height": 400}, 0.5, tmp_path / "review")
+    report = asyncio.run(ToolValidator(Renderer(settings), tmp_path).validate_render(
+        RenderValidationInput(component=component_, duration_frames=30), transparency=True, capture=capture))
+    assert report.passed
+    first, last = (Image.open(tmp_path / "review" / f"frame-{frame}.png").convert("RGB") for frame in (0, 29))
+    assert first.size == last.size == (300, 200)
+    # The bar spans canvas x 100-500 and y 100-300 on the last frame: (300, 200) on the canvas is (150, 100) here.
+    assert first.getpixel((150, 100)) == (128, 128, 128) and last.getpixel((150, 100)) == (255, 0, 0)
+    assert last.getpixel((10, 10)) == (128, 128, 128)
+
+
 # 一个只在后面的帧才抛错的组件，以及一个在模块加载时就抛错、宿主根本挂不上的组件。
 THROWS_LATE = """import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";

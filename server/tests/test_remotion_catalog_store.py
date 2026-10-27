@@ -114,3 +114,33 @@ def test_catalog_waits_leave_the_event_loop_responsive(tmp_path, monkeypatch, op
             await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(scenario())
+
+
+def test_an_accepted_version_records_the_presets_it_was_built_from(template_db, caplog):
+    """生成成功的版本登记它取自库内的 Preset（各实例快照记下的直接来源，不重复）；之后存进资产库再标记已发布。
+    登记失败只少一条排序依据，记日志，不让已经完成的任务失败。"""
+    from server.remotion_templates.runtime import record_uses
+    from server.remotion_templates.tools.contracts import SpriteDraft
+
+    preset = {"code": "export default function C(){return null}", "parameter_schema": {"type": "object", "properties": {}}, "default_parameters": {},
+              "description": "p"}
+    instance = {"parameters": {}, "layout": {"x": 0, "y": 0, "width": 10, "height": 10, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 30}}
+    sprite = SpriteDraft(description="s", code="export default function S(){return null}", parameter_schema={"type": "object", "properties": {}},
+                         default_parameters={}, composition={"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
+                         instances=[{**instance, "instance_id": "a", "preset": {**preset, "source_preset_id": "tier"}},
+                                    {**instance, "instance_id": "b", "preset": {**preset, "source_preset_id": "tier"}},
+                                    {**instance, "instance_id": "c", "preset": preset}])
+    version = SimpleNamespace(id="version-1", spec=SimpleNamespace(sprite=sprite))
+    record_uses(version)
+    assert CatalogStore().use_counts() == {"tier": (1, 0)}
+    CatalogStore().record_uses("version-1", ["tier"], published=True)
+    assert CatalogStore().use_counts() == {"tier": (1, 1)}
+
+    def unavailable(self):
+        """模拟连接失败的 MySQL。"""
+        raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(CatalogStore, "_engine", unavailable)
+        record_uses(SimpleNamespace(id="version-2", spec=SimpleNamespace(sprite=sprite)))
+    assert "Preset uses of version version-2 were not recorded" in caplog.text

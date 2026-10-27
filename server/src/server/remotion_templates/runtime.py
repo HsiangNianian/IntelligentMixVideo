@@ -26,10 +26,21 @@ from .provider import Budget, ExecutionFailure, ModelFailure, Provider
 from .publication import revisable
 from .store import LEASE_RENEW, Conflict, Store, now
 from .tool_validation import ToolValidator, ValidationUnavailable
+from .tools.catalog_store import CatalogStore, preset_sources
 from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 
 logger = logging.getLogger("uvicorn.error")
+
+
+def record_uses(version) -> None:
+    """Record the stored Presets an Agent-made version was built from, the ranking signal of Preset searches; a database
+    failure only loses that signal, so it is logged instead of failing the finished job."""
+    try:
+        CatalogStore().record_uses(str(version.id), preset_sources(version.spec.sprite))
+    except Exception:
+        logger.warning("Preset uses of version %s were not recorded", version.id, exc_info=True)
+
 
 # Host-written meaning of each reference image source, so an image without text still says what it is for.
 REFERENCE_MEANINGS = {
@@ -516,7 +527,9 @@ class Runtime:
                 candidate, spec, report, attempt_dir = result
                 self.store.update(job_id, usage=budget.summary())
                 budget.progress("preparing")
-                await asyncio.to_thread(self.store.publish, job_id, candidate, spec, report, attempt_dir)
+                version = await asyncio.to_thread(self.store.publish, job_id, candidate, spec, report, attempt_dir)
+                if patch is None:
+                    await asyncio.to_thread(record_uses, version)
         except asyncio.CancelledError:
             self.store.update(
                 job_id, status="interrupted", stage="finished", usage=budget.summary()

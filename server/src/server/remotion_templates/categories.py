@@ -37,6 +37,9 @@ MAX_LINES = 4
 LINE_START_MAX_FRAMES = 3600
 # 多行字效相邻两行之间的距离（像素）：所有行在同一个纵向容器里排布，模板可以按摆放调整。
 LINE_GAP_PROP = "lineGap"
+# 双栏的排布参数与取值：stack 上下排列，overlap 两栏叠在同一处、彼此居中、下栏在上层。
+TIER_LAYOUT = "tierLayout"
+TIER_LAYOUTS = ("stack", "overlap")
 # 生成只做双栏：新的多行字效固定上下两栏；更早发布的 3～MAX_LINES 行资产仍按自己封存的行数显示。
 TIERS = 2
 # 双栏字效每栏的字号是两栏共用的 fontSize 乘以该栏的比例，比例范围固定。
@@ -238,7 +241,7 @@ FIXED_TITLES = {
     "text": "文字", "fontSize": "字号", "fontWeight": "字重", "fontFamily": "字体",
     "keywords": "关键词", "keywordBold": "关键词加粗", "keywordItalic": "关键词斜体", "keywordUnderline": "关键词下划线",
     "keywordStrikeout": "关键词删除线", "keywordColor": "关键词颜色", "keywordSize": "关键词字号", KEYWORD_EFFECT_PROP: "关键词字效",
-    LINE_GAP_PROP: "栏间距", LINE_STARTS_PROP: "各栏出现帧",
+    LINE_GAP_PROP: "栏间距", LINE_STARTS_PROP: "各栏出现帧", TIER_LAYOUT: "双栏排布",
     **{
         f"line{tier}{suffix}": f"{name}{label}"
         for tier, name in ((1, "上栏"), (2, "下栏"))
@@ -249,13 +252,15 @@ FIXED_TITLES = {
 # 文字块第 k 个特效（从 1 起）的配置参数：开关 effect{k}、作用位置 effect{k}Target，入场与出场另有时长 effect{k}Seconds（秒）。
 # 名称由宿主按特效顺序生成，标题取特效的中文名称（`compose.text_configuration`）；样式参数与实例都不能用这种名字。
 EFFECT_PARAMETER = re.compile(r"^effect[1-9][0-9]*(?:Target|Seconds)?$")
-# 特效可选的位置：单栏没有各栏与上下栏，只有整体与关键词。
-EFFECT_TARGETS = {1: ("block", "keyword"), 2: ("block", "tiers", "line1", "line2", "keyword")}
+# 特效可选的位置：单栏没有各栏与上下栏，只有整体、逐字与关键词；逐字只在各栏的 text Preset 都画宿主的 children 时可选（`compose.compose_text_source`）。
+EFFECT_TARGETS = {1: ("block", "chars", "keyword"), 2: ("block", "tiers", "line1", "line2", "chars", "keyword")}
+# 逐字位置：每个字一个单元。
+GLYPH_TARGET = "chars"
 # 入场、出场时长（秒）的范围与省略时的默认值（与 IMS 文字入场、出场一致）。
 EFFECT_SECONDS = (0.1, 3)
 DEFAULT_EFFECT_SECONDS = 0.5
 # 特效类型的中文名称，写在开关参数的标题里。
-EFFECT_SLOTS = {"enter": "入场", "exit": "出场", "loop": "持续"}
+EFFECT_SLOTS = {"enter": "入场", "exit": "出场", "loop": "持续", "cue": "下栏出现"}
 
 
 def _tier_rules(tier: int) -> tuple[Rule, ...]:

@@ -49,11 +49,11 @@ export function instanceTransformFields(kind: SpriteKind): TransformField[] {
 export const TEMPLATE_KEYWORD_PARAMETERS = ["keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize"];
 
 /**
- * 字效的排版参数：基准字号、单栏的字体与字重、双栏的栏间距与逐栏字体、字重、字号比例（名称与服务端 `categories.FIXED_TITLES` 一致）。
+ * 字效的排版参数：基准字号、单栏的字体与字重、双栏的排布（上下排列或重叠）、栏间距与逐栏字体、字重、字号比例（名称与服务端 `categories.FIXED_TITLES` 一致）。
  * 字效工作区的「配置」组与模板编辑的「外观与位置」共用这份清单，两处能调的排版项相同。
  */
 export const TEXT_LAYOUT_PARAMETERS = [
-  "fontSize", "fontFamily", "fontWeight", "lineGap",
+  "fontSize", "fontFamily", "fontWeight", "tierLayout", "lineGap",
   ...[1, 2].flatMap((tier) => [`line${tier}SizeRatio`, `line${tier}FontFamily`, `line${tier}FontWeight`]),
 ];
 

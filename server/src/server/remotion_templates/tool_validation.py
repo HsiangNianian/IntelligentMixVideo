@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 from pathlib import Path
 from typing import Any, NamedTuple
 from uuid import uuid4
@@ -50,6 +51,16 @@ MAX_RENDER_SECONDS = 120
 # 字效（标题、字幕）显示不足这个时长时不播出入场，定格在预览长度的中间帧（见 sprite_render）：出入场通常共需
 # 0.6～1.3 秒，更短的字幕几乎看不到完整画面，还会闪烁。所以字效从不按更短的长度播放。
 STATIC_TEXT_SECONDS = 1.5
+
+
+class FrameCapture(NamedTuple):
+    """Still frames of a validated mount for the Agent to look at: the ``frames`` to capture, the canvas ``box`` to cut
+    them to at ``scale``, and the ``directory`` that receives them as `frame-<n>.png` once every check has passed."""
+
+    frames: list[int]
+    box: dict[str, float]
+    scale: float
+    directory: Path
 
 
 class FitSprite(NamedTuple):
@@ -224,6 +235,7 @@ class ToolValidator:
 
     async def validate_render(
         self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
+        capture: FrameCapture | None = None,
     ) -> RenderValidationReport:
         """Run fixed-canvas default/configured mounts and each independent behavior script.
 
@@ -233,7 +245,8 @@ class ToolValidator:
         ``render_lengths`` check when the component throws. With ``text_fit`` (text effects) it fills the ``text``
         parameter to its ``maxLength`` and fails the ``text_fit`` check when that text is clipped, leaves the canvas or
         is too small to read. Only the generation path asks for these: a user's own parameter edits are never blocked
-        by them.
+        by them. With ``capture`` the same mount also captures still frames into ``capture.directory`` when every
+        check passes; a failed report captures none.
         """
         if request.duration_frames > 216000:
             raise ValueError("duration_frames exceeds the validation resource limit")
@@ -277,11 +290,17 @@ class ToolValidator:
         }
         if lengths:
             payload_request["lengths"] = lengths
+        if capture:
+            payload_request["capture"] = {"frames": capture.frames, "box": capture.box, "scale": capture.scale}
         (directory / "request.json").write_text(json.dumps(payload_request), encoding="utf-8")
         try:
             payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs")
         except (OSError, RuntimeError, TimeoutError) as exc:
             raise ValidationUnavailable(str(exc)) from exc
+        if capture and (directory / "frames").is_dir():
+            capture.directory.mkdir(parents=True, exist_ok=True)
+            for frame in (directory / "frames").glob("frame-*.png"):
+                shutil.move(frame, capture.directory / frame.name)
         raw_checks = payload.get("checks")
         if not isinstance(raw_checks, list):
             raise ValidationUnavailable("Render validation worker returned no checks")

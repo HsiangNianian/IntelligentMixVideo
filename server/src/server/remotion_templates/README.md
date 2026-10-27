@@ -27,7 +27,7 @@ Six business tools have implementations in this build:
 | `sprite.create` | implemented — takes that `draft_id`; code validation (each distinct Preset source once, then the Sprite), one browser mount that must leave the video visible, and save |
 | `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name; it reads a contract, it does not search or list tools |
 | `image.info` / `image.resize` / `image.crop` | contract only |
-| `preset.search` | implemented: plain listing with optional keyword; the agent picks what to recall |
+| `preset.search` | implemented: ranked listing by the words of an optional query and by proven uses; the agent picks what to recall |
 | `preset.modify` | implemented: copies a stored Preset or a task draft (`base_*`, earlier `draft_id`), keeps the copy host-side and returns its `draft_id`; compose it with source `{kind: "draft", draft_id}`. Code changes go in as exact `edits` `[{old_str, new_str}]` (each `old_str` occurs once) or as a whole `code`; the receipt counts the changed code lines and notes an edit that copied a stored Preset instead of its `base_*` draft (a stored Preset with the same code, schema and defaults as a `base_*` draft is the one the base draws with and is not noted) |
 | `validate.code` / `validate.render` | contract only |
 
@@ -109,12 +109,21 @@ device. A database failure surfaces as `PRESET_STORE_FAILED`; nothing is written
 immutable; there is no update or delete. Catalog reads and writes run in worker threads, so database waits do not
 block the event loop or delay cancellation.
 
-`preset.search` reads the database records, sorts by creation time newest
-first, and then applies `limit`. UUID ordering does not affect
-which recent Presets are returned.
-Legacy timestamps without a timezone are interpreted as UTC; invalid timestamps
-sort last without hiding the record. `tools.inspect` identifies this search
-contract as version 2, replacing the previously unimplemented `matches` shape.
+The library is the collection of what earlier works built, so search is how the Agent reuses an effect instead of
+writing it again. `preset.search` cuts the query into words with jieba's search segmentation (Chinese needs no
+spaces; single characters only count when the query has no longer word) and ranks the Presets by how many of those
+words their description or effect usage title contains, leaving out those that contain none. Among equal matches
+the Presets that versions saved to the asset library used come first, then those accepted versions used, then the
+newest; an empty query lists every Preset in that order. Uses live in a second table, `remotion_preset_uses` (one
+row per Preset and accepted version, marked `published` when that version is saved to the asset library): a
+successful Agent job records the stored Presets its version was built from (each instance snapshot names its direct
+source as `source_preset_id`), and `POST /api/sprites/publish` marks them published. Recording is best effort: a
+database failure is logged and only loses the ranking signal. Optional `role` and `slot` (an effect's usage slot)
+filter the list, and summaries carry an effect's usage and both counts. An effect Preset records its `usage`
+(`title`, `slot`, `target`, `seconds`) when it is created, so a text block's effect entry may name only its source
+and take the rest from it. Legacy timestamps without a timezone are interpreted as UTC; invalid timestamps sort last
+without hiding the record. `tools.inspect` identifies this search contract as version 3 (version 2 required every
+whitespace-separated word and listed newest first).
 `limit` accepts 1–100, and serialized search content is capped at 40,000 UTF-8
 bytes including JSON string escaping. `has_more` marks omitted summaries;
 oversized individual summaries or full records return `RESOURCE_LIMIT_EXCEEDED`
@@ -123,6 +132,19 @@ storage errors only. `preset.create` and `sprite.create` run the isolated valida
 before storing: when it cannot start (for example `bwrap` is missing) they return
 `VALIDATION_UNAVAILABLE` with the original error and store nothing. `preset.modify`
 only checks the contract and never starts the validator.
+
+## Looking at the result
+
+The Agent writes code without a visual judge, so it gets to see what it saved: for the first two Sprites a task saves
+(`tools/session.VISUAL_REVIEW_ROUNDS`), the browser mount `sprite.create` runs anyway also captures up to four still
+frames once every check has passed (`FrameCapture`, `captureFrames` in the validation worker). They are chosen from
+the Sprite's own timing (`review_frames`: for a text block the middle frame, half way into its longest entrance, just
+before the lower tier appears, half way into its cue effects and half way out of its longest exit), cut to the text
+block with room around it, at most 720 pixels on the long side, composited onto the neutral #808080 gray the model is
+told is not content. The receipt lists them in `review.frames` with what each should show, and they follow the
+reference images in every Executor turn of the step (`candidate_frames` in the snapshot maps them) until the step
+ends; a later save replaces them. The rules have the Executor compare them with the request and the reference images
+and change only what is clearly missing or wrong. The host draws no verdict from them.
 
 ## Preview
 
@@ -140,9 +162,12 @@ Edits start from the accepted version and keep deriving the length from the inst
 
 A new text effect (kind `text`) is composed from a text block (`sprite.compose` contract v3, `text`), not from boxes;
 boxes stay for edits of older text effects. A Preset may carry a role. A `text` Preset draws one tier: the host passes
-it `text`, the `segments` of that text cut at the keyword hits, a `Keyword` component for the hit segments and
-`fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`), and the Executor rules have it draw the
-tier's look (colour, stroke, shadow, gradient, underline) on its own block so the `Keyword` segments inherit it; its `parameter_schema` declares only its
+it `children`, the tier's line the host renders itself (its text with every keyword hit already drawn by the host's
+`Keyword`), and `fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`), and the Executor rules have
+it render `{props.children}` in one block of its own that carries the tier's look (colour, stroke, shadow, gradient,
+underline), so the whole line inherits it. Older text Presets draw the line themselves from `text`, the `segments` of
+that text cut at the keyword hits and the `Keyword` component, which the host still passes; `compose.mjs`
+(`takesChildren`) hands the line only to a Preset whose code names `children`. Its `parameter_schema` declares only its
 own style props, declaring a host prop is refused, and the code check type-checks it with sample host props (`sprite.create`
 re-checks every source Preset with its role). The check's call site passes each default and host prop as its own JSX
 attribute, so a literal default such as `"center"` satisfies a prop typed `"left" | "center" | "right"` (an object
@@ -166,12 +191,24 @@ Motion is split out of the tiers (contract v4): `text.effects` lists `effect` Pr
 slot (`enter`, `exit` or `loop`), a default position and, entering or exiting, a length in seconds (0.1–3, default
 0.5). An effect Preset receives `children`, the host's `Box` and `progress` (0 not shown, 1 fully shown) and only
 restyles what it wraps. The host leaves a wrap point at every position — `block` (the whole column), each tier
-(`tiers` for both, `line1`/`line2` for one; two tiers only) and each keyword hit (`keyword`, an inline box) — so
+(`tiers` for both, `line1`/`line2` for one; two tiers only), each glyph (`chars`, an inline box) and each keyword hit
+(`keyword`, an inline box) — so
 effect k's configuration parameters `effect{k}` (switch), `effect{k}Target` (position) and `effect{k}Seconds` move it
 or retime it without regenerating (`categories.EFFECT_PARAMETER`; titles from the effect's title). An entrance rises
 from the position's first frame (a tier and its keyword hits count from the tier's start), an exit falls to 0 on the
 last frame, a loop stays at 1, and every length is at most half of the frames its position plays less one, so a text
-frozen on its middle frame still shows in full. The text block of a new work records `still`: the host then holds
+frozen on its middle frame still shows in full. A cue effect (two tiers only) stays at 0 until the lower tier appears
+and then rises to 1 over its length, whatever position it wraps, so the upper tier can make way for the lower one; it
+stays at 0 while a placement has no lower text. An effect may draw `children` more than once inside its Box (clipped
+slices, echoes), and the element around each tier carries the tier's font size, so motion can be measured in em. Two
+tiers are stacked `lineGap` apart or, with the configuration parameter `tierLayout` "overlap" (`arrangement` in the
+block), share one grid cell, centred on each other with the lower tier on top. At `chars` the glyphs share their tier's entrance or exit in turn: while
+such an effect is on, the host cuts each line into units (a grapheme, a keyword hit as one, spaces none) and unit i of
+n shows `clamp(P * n - i)` of the position's progress P, so the text types in in reading order, leaves from its last
+glyph and a longer line goes faster. A line stays one run of text otherwise. Only tiers whose text Preset takes
+`children` have glyph units, so with an older tier the `effect{k}Target` enum leaves `chars` out and composing an
+effect there is refused with the fix. Every effect Preset also receives `index` and `count`: the unit within its tier
+at `chars`, the tier at `tiers`/`line1`/`line2`, 0 of 1 elsewhere, so a loop can offset its motion per glyph. The text block of a new work records `still`: the host then holds
 each tier Preset on the middle frame of the frames the tier plays (`compose.mjs` `__Hold`), so motion of its own
 never plays and a stored animated text Preset is reused as it is, look kept; compose requires at least one enter and
 one exit effect (kept with `enabled: false` for still text), so a block never ends up without motion. Transparency of
@@ -197,7 +234,7 @@ text-clipped background that the line's other text gets from its own elements. A
 spans of the other segments is refused with the differences (`text_fit: … is drawn without its tier's look …`), so
 the template preview's sample keyword and the composed title keyword keep the tier's look. Templates only switch the seven keyword parameters (any
 other `keyword…` parameter is internal there), so the keyword effect is changed in the workspace and saved to the
-library again. `preset.search` matches every whitespace-separated word of the query and filters by role.
+library again. `preset.search` ranks by the words of the query and by proven uses and filters by role (see Preset storage).
 
 For Linux renderer validation, install the locked Bun dependencies in
 `server/src/server/remotion`, then run:
@@ -277,8 +314,8 @@ style's own file.
   `fontFamily` (an enum of library families, defaulting to the font chosen from the reference image or description);
   `sprite.create` checks the enum against the library. The stored Sprite keeps a plain string (`maxLength` 100), since
   the library grows, and a choice is checked against the live library: `placement.resolve` when a template saves or an
-  overlay is accepted, `patch_parameters` for a manual revision. The Agent only receives the user's reference images,
-  never its own renders. Older text effects without `fontFamily` keep working and show no font picker.
+  overlay is accepted, `patch_parameters` for a manual revision. Besides the user's reference images the Agent only sees
+  the review frames of the Sprites it saves (see Looking at the result), not a render with every font. Older text effects without `fontFamily` keep working and show no font picker.
 - **Editor**: the choice is a normal parameter override, so it is stored in the template track's
   `editor.remotion.parameters`. The client's `FontPicker` (`features/fonts/`) is used for every `fontFamily` parameter.
 - **Preview**: the player page lists the fonts that have a file (`#imv-preview-fonts`) and registers each as a lazy

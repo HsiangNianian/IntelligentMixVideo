@@ -1,8 +1,9 @@
 /**
  * Networkless browser behavior validator for PR76 components.  It performs
  * source-policy/type checks and drives a fixed Remotion Player through a small
- * page bridge; it never captures frames, encodes media, or invokes a visual
- * reviewer.
+ * page bridge; it never encodes media or invokes a visual reviewer. On request,
+ * once every check has passed, it captures a few still frames for the Agent to
+ * look at (`captureFrames`).
  */
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -322,6 +323,31 @@ async function transparencyCheck(page) {
   return { name: "transparency", status: "passed", message: `The video stays visible: the canvas is covered in ${covered} of the ${samples.length} measured frames (${summary}).` };
 }
 
+/**
+ * Capture `request.capture.frames` of the component as it is configured, composited onto neutral #808080 gray (the
+ * gray the model is told is not content) and cut to `request.capture.box` at `request.capture.scale`, as
+ * `frames/frame-<n>.png` for the Agent to compare with what was asked. The checks before may leave other values or
+ * another render length mounted, so the configured ones are put back first.
+ */
+async function captureFrames(page) {
+  const { frames, box, scale } = request.capture;
+  await fs.mkdir(`${root}/frames`, { recursive: true });
+  await page.evaluate((frames) => window.__imvTool.setDuration(frames), request.composition.duration_frames);
+  await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
+  const client = page._client();
+  await client.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 128, g: 128, b: 128, a: 1 } });
+  try {
+    for (const frame of frames) {
+      await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+      const shot = await client.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: true, clip: { ...box, scale } });
+      // The renderer's protocol client wraps the CDP result as `{ value: { data } }`.
+      await fs.writeFile(`${root}/frames/frame-${frame}.png`, Buffer.from((shot.value ?? shot).data, "base64"));
+    }
+  } finally {
+    await client.send("Emulation.setDefaultBackgroundColorOverride", {});
+  }
+}
+
 /** First, middle and last frame of one render length. */
 function edgeFrames(length) {
   return [...new Set([0, Math.floor((length - 1) / 2), length - 1])];
@@ -358,14 +384,17 @@ async function lengthsCheck(page) {
 }
 
 /**
- * Sample values of the props the host passes a text-block Preset (`ROLE_PROPS` in contracts.py), as JSX attributes of
- * the type check's call site: a text Preset draws one tier from its text, keyword segments and fonts, a keyword Preset one hit,
- * an effect Preset wraps children in the host's Box at a progress.
+ * Sample values of the props the host passes a text-block Preset (`ROLE_PROPS` in contracts.py), for the type check's
+ * call site: a text Preset draws one tier from the host's line (`children`) or from its text, keyword segments and
+ * `Keyword` itself, in its fonts; a keyword Preset draws one hit; an effect Preset wraps children in the host's Box at a
+ * progress, as unit `index` of `count`. Props a Preset may leave undeclared are spread: TypeScript checks the type of
+ * a spread prop the component declares (and its absence when required) but not an extra one, as at runtime, where the
+ * host passes them all.
  */
 const ROLE_HOST_PROPS = {
-  text: 'text={"示例文字"} segments={[{text: "示例", keyword: true}, {text: "文字", keyword: false}]} Keyword={(keyword: {text: string}) => <span>{keyword.text}</span>} fontFamily={"Noto Sans CJK SC"} fontWeight={700} fontSize={96}',
+  text: 'fontFamily={"Noto Sans CJK SC"} fontWeight={700} fontSize={96} {...{text: "示例文字", segments: [{text: "示例", keyword: true}, {text: "文字", keyword: false}], Keyword: (keyword: {text: string}) => <span>{keyword.text}</span>, children: <span>示例文字</span>}}',
   keyword: 'text={"示例"}',
-  effect: 'progress={1} Box={(box: {style?: React.CSSProperties; children?: React.ReactNode}) => <div style={box.style}>{box.children}</div>} children={<span>示例文字</span>}',
+  effect: 'progress={1} Box={(box: {style?: React.CSSProperties; children?: React.ReactNode}) => <div style={box.style}>{box.children}</div>} children={<span>示例文字</span>} {...{index: 0, count: 1}}',
 };
 
 /**
@@ -1229,6 +1258,7 @@ async function main() {
     if (baseReady && request.transparency === true) checks.push(await transparencyCheck(page));
     if (baseReady && Array.isArray(request.lengths)) checks.push(await lengthsCheck(page));
     if (baseReady && request.text_fit === true) checks.push(await textFitCheck(page));
+    if (baseReady && request.capture && checks.every((item) => item.status === "passed" || item.status === "pass")) await captureFrames(page);
     if (!baseReady) {
       result.tests = (request.tests ?? []).map((test) => ({ name: test.name, status: "not_run", message: "Base render failed.", assertions: [] }));
       result.custom_tests_executed = 0;

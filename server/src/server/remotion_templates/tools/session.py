@@ -6,9 +6,13 @@ import asyncio
 import difflib
 import hashlib
 import json
+import logging
 from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import uuid4
+
+import jieba
+
 from .contracts import (
     CodeDiagnostic,
     CodeValidationReport,
@@ -26,10 +30,12 @@ from .contracts import (
     PresetRecord,
     RenderValidationInput,
     RenderValidationReport,
+    ReviewFrame,
     SpriteComposeOutput,
     SpriteDraft,
     SpriteRecord,
     SpriteCreateOutput,
+    SpriteReview,
 )
 from ..categories import EFFECT_PARAMETER, EFFECT_TARGETS, FIXED_TITLES, agent_message, category_problems, parameter_problems
 from ..fonts import FontStore, open_font_schema
@@ -44,6 +50,85 @@ _SEARCH_BYTE_BUDGET = 40_000
 # 快照预算：provider 的请求体上限是 512000 字节，会话窗口自身上限 240000 字节，
 # 余量留给规则与工具描述。快照里只有编辑基线的源码没有上限，只能在这里按需省略。
 _SNAPSHOT_BYTE_BUDGET = 200_000
+# 分词的词典只在第一次检索时载入，日志里不留它的启动信息。
+jieba.setLogLevel(logging.WARNING)
+
+
+def _usage_problem(draft: PresetDraft) -> tuple[str, str] | None:
+    """Why a Preset's usage does not fit its role, as (field, message), or None: an effect Preset records its default
+    title, slot, position and length so later works reuse it as it is; other roles take none, and a loop has no length."""
+    if draft.role == "effect" and draft.usage is None:
+        return "/usage", ('An effect Preset records how it is used: give usage {"title": "<short Chinese name such as 淡入>", "slot": "enter|exit|loop|cue", '
+                          '"target": "block|tiers|line1|line2|chars|keyword", "seconds": 0.5}, the defaults a later work reuses it with.')
+    if draft.role != "effect" and draft.usage is not None:
+        return "/usage", "Only an effect Preset (role effect) records a usage; leave it out."
+    if draft.usage is not None and draft.usage.slot == "loop" and draft.usage.seconds is not None:
+        return "/usage/seconds", "A looping effect lasts as long as its position shows: leave usage.seconds out."
+    return None
+
+
+# 每个任务里保存后附带画面回看的次数：Executor 至多这么多次看到自己保存的 Sprite，再决定是否修改。
+VISUAL_REVIEW_ROUNDS = 2
+# 回看帧的最长边（像素）：看清效果即可，不必全尺寸。
+_REVIEW_SIDE = 720
+
+
+def review_frames(sprite: SpriteDraft) -> list[tuple[int, str]]:
+    """The frames the Agent looks at after saving ``sprite``, each with what it shows, in time order (at most four).
+
+    A text block is sampled from its own timing in its defaults: the middle frame (shown in full, where a held text is
+    frozen), half way into its longest enabled entrance, the frame before the lower tier appears and half way into its
+    longest cue effect, and half way out of its longest exit. Other Sprites are sampled at a quarter, the middle and
+    three quarters of their length.
+    """
+    last, fps = sprite.composition.duration_frames - 1, sprite.composition.fps
+    if sprite.text is None:
+        picks = [(last // 2, "half way"), (last // 4, "a quarter of the way"), (last * 3 // 4, "three quarters of the way")]
+    else:
+        config = sprite.default_parameters
+        lengths = {"enter": 0, "exit": 0, "cue": 0}
+        for index, effect in enumerate(sprite.text.effects, start=1):
+            if effect.slot in lengths and config.get(f"effect{index}") is not False:
+                length = max(1, min(round((config.get(f"effect{index}Seconds") or 0.5) * fps), last // 2))
+                lengths[effect.slot] = max(lengths[effect.slot], length)
+        starts = config.get("lineStartFrames") or [0]
+        cue = starts[1] if len(starts) > 1 else None
+        picks = [(last // 2, "shown in full (middle frame)")]
+        if lengths["enter"]:
+            picks.append((lengths["enter"] // 2, "half way into the entrance"))
+        if cue:
+            picks.append((cue - 1, "just before the lower tier appears"))
+        if cue is not None and lengths["cue"]:
+            picks.append((cue + lengths["cue"] // 2, "half way into the effects played when the lower tier appears"))
+        if lengths["exit"]:
+            picks.append((last - lengths["exit"] // 2, "half way out of the exit"))
+    chosen: dict[int, str] = {}
+    for frame, label in picks:
+        if len(chosen) < 4 and 0 <= frame <= last:
+            chosen.setdefault(frame, label)
+    return sorted(chosen.items())
+
+
+def _review_box(sprite: SpriteDraft) -> dict[str, float]:
+    """The canvas region a review frame shows: a text block with room around it for effects that move it, else the canvas."""
+    width, height = sprite.composition.width, sprite.composition.height
+    if sprite.text is None:
+        return {"x": 0, "y": 0, "width": width, "height": height}
+    layout = sprite.text.layout
+    margin = max(120, layout.height / 2)
+    left, top = max(0, layout.x - margin), max(0, layout.y - margin)
+    right, bottom = min(width, layout.x + layout.width + margin), min(height, layout.y + layout.height + margin)
+    return {"x": left, "y": top, "width": right - left, "height": bottom - top}
+
+
+def _terms(text: str) -> set[str]:
+    """The search terms of ``text``: its words (lower case, jieba's search segmentation) of two or more characters, or
+    its single characters when it has no longer word, so a Chinese query needs no spaces between its words."""
+    words = {word.strip().lower() for word in jieba.cut_for_search(text)}
+    words = {word for word in words if any(char.isalnum() for char in word)}
+    return {word for word in words if len(word) > 1} or words
+
+
 _OMITTED = (
     "{size} bytes of source omitted to keep the snapshot within the request limit. Compose it unchanged by its "
     "draft_id, or write a replacement with preset_create."
@@ -174,6 +259,7 @@ def _text_block(sprite: SpriteDraft, config: dict) -> dict:
         "layout": sprite.text.layout.model_dump(mode="json"), "text": config.get("text"), "font_size": config.get("fontSize"),
         "tiers": [tier(index, instance_id) for index, instance_id in enumerate(sprite.text.tiers)],
         **({"line_gap": config.get("lineGap"), "line_starts": config.get("lineStartFrames")} if two else {}),
+        **({"arrangement": config["tierLayout"]} if two and "tierLayout" in config else {}),
         "duration_frames": sprite.composition.duration_frames,
     }
     if sprite.text.keyword is not None:
@@ -273,12 +359,15 @@ class ToolSession:
         self.base = base
         base_sprite = spec.sprite if spec is not None and base is not None else None
         for instance in base_sprite.instances if base_sprite else []:
-            # The accepted base's Presets are reusable as drafts; their stored IDs are not kept in a Sprite snapshot.
+            # The accepted base's Presets are reusable as drafts; a snapshot keeps the stored Preset it came from as its source.
             self.preset_drafts[f"base_{instance.instance_id}"] = instance.preset
         # The host holds tier Presets still and effect Presets draw the block's motion, except in edits of a text effect made
         # before configurable effects, whose tier Presets animate themselves (a text block without `still`, or boxes).
         self.still_text = base_sprite is None or (base_sprite.text is not None and base_sprite.text.still is True)
         self.feedback = []
+        # Frames of the latest saved Sprite the Executor looks at (path, frame, label), and how many reviews this task had.
+        self.review_frames: list[tuple] = []
+        self.review_rounds = 0
         self.catalog_backend = "unset"
         self.operation = ""
         self.validator = None
@@ -471,12 +560,13 @@ class ToolSession:
 
     async def validate_render(
         self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
+        capture=None,
     ) -> RenderValidationReport:
         """Run the isolated component behavior runner and cache the exact report.
 
-        ``transparency`` adds the canvas-coverage measurement, ``lengths`` a mount at those render lengths (frames)
-        and ``text_fit`` the longest-text layout measurement of a text effect. The options are only forwarded when
-        asked for, so a validator that predates them keeps working.
+        ``transparency`` adds the canvas-coverage measurement, ``lengths`` a mount at those render lengths (frames),
+        ``text_fit`` the longest-text layout measurement of a text effect and ``capture`` (a `FrameCapture`) still
+        frames for the Agent. The options are only forwarded when asked for, so a validator that predates them keeps working.
         """
         if self.validator is None:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated behavior validator is unavailable.")
@@ -485,7 +575,7 @@ class ToolSession:
         try:
             options = {
                 **({"transparency": True} if transparency else {}), **({"lengths": lengths} if lengths else {}),
-                **({"text_fit": True} if text_fit else {}),
+                **({"text_fit": True} if text_fit else {}), **({"capture": capture} if capture else {}),
             }
             report = await self.validator.validate_render(request, **options)
         except ValidationUnavailable as exc:
@@ -503,6 +593,8 @@ class ToolSession:
         """Validate and store a new immutable PR76 Preset record."""
         if request.source_preset_id is not None:
             await asyncio.to_thread(self._find_preset, request.source_preset_id)
+        if problem := _usage_problem(request):
+            raise ToolFault("INVALID_ARGUMENT", problem[1], field=problem[0])
         validation = await self.validate_code(request)
         if not validation.passed:
             raise _validation_fault("Preset code validation failed.", validation)
@@ -516,14 +608,17 @@ class ToolSession:
         return PresetCreateOutput(preset=record, validation=validation)
 
     def search_presets(self, request: PresetSearchInput) -> PresetSearchOutput:
-        """List summaries, newest first, whose description contains every whitespace-separated word of the query
-        (case-insensitive) and, when asked, that play the given role in a text block.
+        """List summaries of the Presets matching the query, best first, and, when asked, only those of one role or
+        effect slot. A Preset's score is the number of the query's terms (`_terms`) its description or usage title
+        contains, and one without any is left out; among equal scores the ones accepted versions used and the asset
+        library published come first (`CatalogStore.use_counts`), then the newest. An empty query lists everything in
+        that order.
 
         With ``preset_id`` the matching full record (including code) is returned as well, so
         reading a Preset never requires a write-shaped tool.
         """
         full = self._find_preset(request.preset_id) if request.preset_id is not None else None
-        words = request.query.lower().split()
+        terms = _terms(request.query) if request.query.strip() else set()
         output = PresetSearchOutput(**({"preset": full} if full else {}), presets=[], has_more=False)
 
         def fits_reply():
@@ -533,9 +628,21 @@ class ToolSession:
 
         if not fits_reply():
             raise ToolFault("RESOURCE_LIMIT_EXCEEDED", "The full Preset exceeds the tool reply size limit.")
-        for item in self._recent_presets():
-            if not all(word in item.description.lower() for word in words) or (request.role is not None and item.role != request.role):
+        presets = self._recent_presets()
+        counts = self.catalog.use_counts() if presets else {}
+        ranked = []
+        for item in presets:
+            if (request.role is not None and item.role != request.role) or (request.slot is not None and (item.usage is None or item.usage.slot != request.slot)):
                 continue
+            text = f"{item.description} {item.usage.title if item.usage else ''}".lower()
+            score = sum(term in text for term in terms)
+            if terms and not score:
+                continue
+            accepted, published = counts.get(item.preset_id, (0, 0))
+            ranked.append((score, published, accepted, item))
+        # A stable sort keeps the newest first among equals.
+        ranked.sort(key=lambda entry: (-entry[0], -entry[1], -entry[2]))
+        for _score, published, accepted, item in ranked:
             if len(output.presets) >= request.limit:
                 output.has_more = True
                 break
@@ -543,7 +650,8 @@ class ToolSession:
                 preset_id=item.preset_id,
                 description=item.description,
                 parameter_names=_parameter_names(item.parameter_schema),
-                **({"role": item.role} if item.role else {}),
+                **({"role": item.role} if item.role else {}), **({"usage": item.usage} if item.usage else {}),
+                accepted_uses=accepted, published_uses=published,
             ))
             if not fits_reply():
                 output.presets.pop()
@@ -587,6 +695,8 @@ class ToolSession:
         if "edits" in changes:
             changes["code"] = _apply_edits(base["code"], changes.pop("edits"))
         draft = PresetDraft(**{**base, **changes, **({"source_preset_id": source} if source else {})})
+        if problem := _usage_problem(draft):
+            raise ToolFault("INVALID_ARGUMENT", problem[1], field="/changes" + problem[0])
         diagnostics = validate_component_contract(draft)
         if diagnostics:
             raise ToolFault("INVALID_ARGUMENT", "The edited Preset violates the component contract.",
@@ -641,7 +751,7 @@ class ToolSession:
         # later stay selectable (the live library is the check). Everything from here on, including the host's final
         # validation, sees the stored form.
         sprite = sprite.model_copy(update={"parameter_schema": open_font_schema(sprite.parameter_schema)})
-        await self._require_visible_video(sprite)
+        frames = await self._require_visible_video(sprite)
         record = SpriteRecord(
             sprite_id=uuid4().hex,
             created_at=datetime.now(UTC).isoformat(),
@@ -649,16 +759,31 @@ class ToolSession:
         )
         self.saved_sprites[record.sprite_id] = record
         self.latest_sprite_id = record.sprite_id
-        return SpriteCreateOutput(sprite_id=record.sprite_id, created_at=record.created_at, composition=record.composition, validation=validation)
+        # Frames of an earlier Sprite would mislead, so they always make way for this one's (or none).
+        self.review_frames = frames
+        review = {}
+        if frames:
+            self.review_rounds += 1
+            review["review"] = SpriteReview(frames=[ReviewFrame(image=len(self.images) + index, frame=frame, label=label)
+                                                    for index, (_path, frame, label) in enumerate(frames, start=1)],
+                                            rounds_left=VISUAL_REVIEW_ROUNDS - self.review_rounds)
+        return SpriteCreateOutput(sprite_id=record.sprite_id, created_at=record.created_at, composition=record.composition, validation=validation, **review)
 
-    async def _require_visible_video(self, sprite: SpriteDraft) -> None:
+    async def _require_visible_video(self, sprite: SpriteDraft) -> list[tuple]:
         """Refuse a Sprite that hides the video in most sampled frames, or throws at another render length, while the Executor can still fix it.
 
         Sprites are composited over the user's own video, so a full-frame opaque layer is never what a filter
         or an effect wants; the bus renders them at the final video's length, not the preview's. This is the browser mount the host needs anyway: the report is cached under the key
-        the final host check reads, so completing the task does not mount the Sprite a second time.
+        the final host check reads, so completing the task does not mount the Sprite a second time. While the task has
+        reviews left the same mount captures `review_frames`, returned as (path, frame, label) for those it captured.
         """
-        from ..tool_validation import render_lengths
+        from ..tool_validation import FrameCapture, render_lengths
+
+        capture = None
+        if self.review_rounds < VISUAL_REVIEW_ROUNDS:
+            picks, box = review_frames(sprite), _review_box(sprite)
+            capture = FrameCapture([frame for frame, _ in picks], box, min(1, _REVIEW_SIDE / max(box["width"], box["height"])),
+                                   self.directory / "review" / uuid4().hex)
 
         report = await self.validate_render(
             RenderValidationInput(
@@ -674,9 +799,11 @@ class ToolSession:
             # frozen at its preview length instead, so its shortest played length is that threshold.
             lengths=render_lengths(sprite.composition.fps, text=sprite.kind == "text"),
             text_fit=sprite.kind == "text",
+            **({"capture": capture} if capture else {}),
         )
         if report.passed:
-            return
+            shots = [(capture.directory / f"frame-{frame}.png", frame, label) for frame, label in picks] if capture else []
+            return [shot for shot in shots if shot[0].is_file()]
         diagnostics = [
             CodeDiagnostic(source="contract", severity="error", message=f"{item.name}: {item.message}" if item.message else item.name)
             for item in report.checks
@@ -688,7 +815,8 @@ class ToolSession:
         """Resolve one composed Preset: its snapshot, where it came from and its effective parameters (``field`` points at the instance)."""
         if source.kind == "stored":
             stored = await asyncio.to_thread(self._find_preset, source.preset_id)
-            preset = stored.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
+            # The snapshot names the stored Preset it was taken from, so the version records which Presets it used.
+            preset = {**stored.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True), "source_preset_id": stored.preset_id}
             origin = {"preset_id": stored.preset_id}
         else:
             draft = self._draft(self.preset_drafts, source.draft_id, f"{field}/source/draft_id")
@@ -774,6 +902,7 @@ class ToolSession:
         block = request.text
         if request.kind != "text":
             raise ToolFault("INVALID_ARGUMENT", "Only a text effect (kind text) has a text block.", field="/kind")
+        block = block.model_copy(update={"effects": [await self._with_usage(effect, index) for index, effect in enumerate(block.effects)]})
         if request.instances:
             raise ToolFault("INVALID_ARGUMENT", "A text effect is its text block alone: draw decorations inside the tier Presets or as effects of the block and leave instances empty.", field="/instances")
         lines = block.text.split("\n")
@@ -786,7 +915,8 @@ class ToolSession:
         if "keyword_effect" in self.requested and block.keyword is None:
             raise ToolFault("INVALID_ARGUMENT", "The user switched on the keyword effect (original_request.keyword_effect): give the text block a keyword-role Preset.", field="/text/keyword")
         if tiers == 2:
-            for name, value in (("line_gap", block.line_gap), ("line_starts", block.line_starts)):
+            # Overlapping tiers keep no gap between them.
+            for name, value in (("line_gap", 0 if block.arrangement == "overlap" else block.line_gap), ("line_starts", block.line_starts)):
                 if value is None:
                     raise ToolFault("INVALID_ARGUMENT", f"A two-tier text needs {name}.", field=f"/text/{name}")
             starts = block.line_starts
@@ -800,7 +930,7 @@ class ToolSession:
                 if tier.size_ratio is None:
                     raise ToolFault("INVALID_ARGUMENT", "Each tier of a two-tier text needs size_ratio (0.4 to 2, a ratio of font_size).", field=f"/text/tiers/{index}/size_ratio")
         else:
-            for name, value in (("line_gap", block.line_gap), ("line_starts", block.line_starts)):
+            for name, value in (("arrangement", block.arrangement), ("line_gap", block.line_gap), ("line_starts", block.line_starts)):
                 if value is not None:
                     raise ToolFault("INVALID_ARGUMENT", f"Only a two-tier text takes {name}.", field=f"/text/{name}")
             if block.tiers[0].size_ratio not in (None, 1):
@@ -809,6 +939,8 @@ class ToolSession:
             if effect.target not in EFFECT_TARGETS[tiers]:
                 raise ToolFault("INVALID_ARGUMENT", f"A one-tier text has no {effect.target} position: an effect wraps {' or '.join(EFFECT_TARGETS[1])} "
                                 "(tiers, line1 and line2 are positions of a two-tier text).", field=f"/text/effects/{index}/target")
+            if effect.slot == "cue" and tiers != 2:
+                raise ToolFault("INVALID_ARGUMENT", "A cue effect plays when the lower tier appears, so only a two-tier text has one.", field=f"/text/effects/{index}/slot")
             if effect.slot == "loop" and effect.seconds is not None:
                 raise ToolFault("INVALID_ARGUMENT", "A looping effect lasts as long as its position shows: leave seconds out (only enter and exit "
                                 "effects have a length).", field=f"/text/effects/{index}/seconds")
@@ -869,6 +1001,26 @@ class ToolSession:
                   "effects": [{"instance_id": item.instance_id, "title": item.title, "slot": item.slot} for item in block.effects],
                   **({"still": True} if self.still_text else {})},
         ), summaries)
+
+    async def _with_usage(self, effect, index: int):
+        """The effect entry at ``index`` with the title, slot, position and length it leaves out taken from its Preset's usage."""
+        missing = [name for name in ("title", "slot", "target") if getattr(effect, name) is None]
+        if not missing and (effect.seconds is not None or effect.slot == "loop"):
+            return effect
+        field = f"/text/effects/{index}"
+        source = effect.source
+        preset = (await asyncio.to_thread(self._find_preset, source.preset_id) if source.kind == "stored"
+                  else self._draft(self.preset_drafts, source.draft_id, f"{field}/source/draft_id"))
+        usage = preset.usage
+        if usage is None:
+            if missing:
+                raise ToolFault("INVALID_ARGUMENT", f"{effect.instance_id} leaves out {', '.join(missing)} and its Preset records no usage to take them from: give them.",
+                                field=f"{field}/{missing[0]}")
+            return effect
+        filled = {name: getattr(usage, name) for name in missing}
+        if effect.seconds is None and (effect.slot or usage.slot) != "loop" and usage.seconds is not None:
+            filled["seconds"] = usage.seconds
+        return effect.model_copy(update=filled)
 
     def _check_bindings(self, parameters, schema: dict) -> None:
         """Every bound style parameter needs the bounded schema the publish check can sample."""

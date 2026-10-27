@@ -35,6 +35,7 @@ from .publication import current_bundle
 from .models import TemplateVersion
 from .object_store import PREFIX, ObjectStoreError
 from .store import Conflict, NotFound, Store
+from .tools.catalog_store import CatalogStore, preset_sources
 
 PREVIEW_BUNDLE = "interactive.js"
 
@@ -781,18 +782,32 @@ async def publish(service, request: pb.PublishSpriteRequest, device: UUID) -> pb
                 version.spec.composition.model_dump(), version.id,
             )
             if _unchanged(target, request, version):
-                return await _resave(store, target, fresh, name)
-            await _sample(service, version, request.kind)
-            # Serialize with a preview rebuild or deletion of the same asset, so the copy and record stay in step.
-            async with bundle_lock(target.sprite_id):
-                return await run_in_threadpool(_overwrite, store, request, version, target, fresh or bundle)
-        version, sprite, bundle = await run_in_threadpool(_inspect, store, request, device)
-        if sprite is None:
-            await _sample(service, version, request.kind)
-        fresh = None if current_bundle(bundle) else await _rebuild_bundle(
-            service, version.candidate.tsx_code, version.candidate.default_config,
-            version.spec.composition.model_dump(), version.id,
-        )
-        if sprite is None:
-            return await run_in_threadpool(_create, store, request, version, fresh or bundle)
-        return await _resave(store, sprite, fresh, name)
+                summary = await _resave(store, target, fresh, name)
+            else:
+                await _sample(service, version, request.kind)
+                # Serialize with a preview rebuild or deletion of the same asset, so the copy and record stay in step.
+                async with bundle_lock(target.sprite_id):
+                    summary = await run_in_threadpool(_overwrite, store, request, version, target, fresh or bundle)
+        else:
+            version, sprite, bundle = await run_in_threadpool(_inspect, store, request, device)
+            if sprite is None:
+                await _sample(service, version, request.kind)
+            fresh = None if current_bundle(bundle) else await _rebuild_bundle(
+                service, version.candidate.tsx_code, version.candidate.default_config,
+                version.spec.composition.model_dump(), version.id,
+            )
+            if sprite is None:
+                summary = await run_in_threadpool(_create, store, request, version, fresh or bundle)
+            else:
+                summary = await _resave(store, sprite, fresh, name)
+    await run_in_threadpool(_record_published, version)
+    return summary
+
+
+def _record_published(version: TemplateVersion) -> None:
+    """Mark the stored Presets the published version was built from as published, which ranks them first in Preset
+    searches; a database failure only loses that ranking signal, so it is logged instead of failing the publication."""
+    try:
+        CatalogStore().record_uses(str(version.id), preset_sources(version.spec.sprite), published=True)
+    except Exception:
+        logging.getLogger(__name__).warning("Preset uses of published version %s were not recorded", version.id, exc_info=True)

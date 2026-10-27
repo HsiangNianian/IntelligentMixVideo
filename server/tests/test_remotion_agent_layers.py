@@ -35,6 +35,7 @@ class FakeSession:
         self.preset_drafts = {}
         self.latest_sprite_id = "sprite-1"
         self.saved_sprites = {"sprite-1": {"sprite_id": "sprite-1"}}
+        self.review_frames = []
         if (intent or {}).get("accepted_base"):
             self.preset_drafts["base_title"] = {"description": "base"}
 
@@ -760,3 +761,27 @@ def test_no_progress_threshold_counts_rounds_instead_of_tool_calls(monkeypatch, 
     assert run.stalled_turns == 6
     assert len(harness.roles) == 7  # 一轮新观察后，确实经历六轮空转。
     assert run.state.calls == 28
+
+
+def test_the_executor_sees_its_saved_sprites_frames_until_the_step_ends(monkeypatch, tmp_path):
+    """保存后的回看帧接在参考图之后，只在 Executor 层、该步骤结束前附带，快照给出图片序号、帧号与应显示的内容；
+    Outer 看不到它们，步骤结束（不论结果）即不再附带。"""
+    from server.remotion_templates.agent import Layer
+    from server.remotion_templates.planning import StepResult
+
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    reference = tmp_path / "reference.png"
+    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [reference], lambda *_: None)
+    run._outer_control(SimpleNamespace(action="delegate", model_dump=lambda **_: {"action": "delegate", "reason": "make it"}))
+    run.layer = Layer.EXECUTOR
+    frame = tmp_path / "frame-7.png"
+    run.session.review_frames = [(frame, 7, "half way into the entrance")]
+    data, images = run.snapshot()
+    assert images == [reference, frame]
+    assert data["candidate_frames"] == [{"image": 2, "frame": 7, "label": "half way into the entrance"}]
+    run.layer = Layer.OUTER
+    data, images = run.snapshot()
+    assert images == [reference] and "candidate_frames" not in data
+    run.layer = Layer.EXECUTOR
+    run._accept_report(StepResult(status="blocked", summary="cannot"))
+    assert run.session.review_frames == []
