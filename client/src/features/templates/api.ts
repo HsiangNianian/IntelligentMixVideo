@@ -9,11 +9,13 @@ import {
   ListTemplatesResponseSchema,
   SaveTemplateRequestSchema,
   SaveTemplateResponseSchema,
+  SplitScreenSchema,
   type TemplateRecord,
 } from "@/generated/imv/template/v1/template_pb";
 import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
 import { validateTemplateTracks } from "./tracks";
 import { BOUND_TEXT_PARAMETERS, validateClipSlots } from "./clips";
+import { defaultSplitScreen, validateSplitScreen, type SplitScreen } from "./splitScreen";
 
 /** 还原现有模板视图的字段名称、可空时长及 UTC 时间；`remotion` 轨道拆成独立的片段列表，不进入 IMS 对象。 */
 function toTemplate(record: TemplateRecord): Template {
@@ -29,6 +31,14 @@ function toTemplate(record: TemplateRecord): Template {
     transition_duration_seconds: record.transitionDurationSeconds,
     transition_mode: record.transitionMode as Draft["transition_mode"],
     transition_enabled: record.transitionEnabled ?? true,
+    ...(record.splitScreen ? { split_screen: (() => {
+      const raw = toJson(SplitScreenSchema, record.splitScreen) as Partial<SplitScreen>;
+      const defaults = defaultSplitScreen();
+      const layout = { ...defaults, ...raw, material: { ...defaults.material, ...raw.material }, avatar: { ...defaults.avatar, ...raw.avatar },
+        subtitle: { ...defaults.subtitle, ...raw.subtitle }, subtitleEn: { ...defaults.subtitleEn, ...raw.subtitleEn } };
+      validateSplitScreen(layout);
+      return layout;
+    })() } : {}),
     template_id: record.templateId,
     created_at: timestampDate(record.createdAt).toISOString(),
     updated_at: timestampDate(record.updatedAt).toISOString(),
@@ -196,6 +206,7 @@ export async function saveTemplate(draft: Draft, id?: string): Promise<Template>
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
   validateTemplateTracks(draft.tracks);
   validateClipSlots(draft);
+  if (draft.split_screen) validateSplitScreen(draft.split_screen);
   for (const target of ["title", "subtitle"])
     if (draft.tracks.filter((track) => track.target === target && track.language !== "en").length !== 1)
       throw new Error("保存模板需要标题和底部字幕各一个");
@@ -207,6 +218,7 @@ export async function saveTemplate(draft: Draft, id?: string): Promise<Template>
     transitionDurationSeconds: draft.transition_duration_seconds,
     transitionMode: draft.transition_mode ?? "sequence",
     transitionEnabled: draft.transition_enabled ?? true,
+    splitScreen: draft.split_screen,
     tracks: {
       tracks: [
         ...draft.tracks.map((track) => ({
