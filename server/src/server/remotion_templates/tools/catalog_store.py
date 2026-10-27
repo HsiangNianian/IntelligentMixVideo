@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from threading import Lock
 
+import json
 from collections.abc import Iterable
+from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, Column, MetaData, String, Table, case, func, select
 
@@ -35,9 +38,8 @@ preset_uses = Table(
 _schema_lock = Lock()
 
 
-def preset_sources(sprite: SpriteDraft | None) -> list[str]:
-    """The stored Presets a composed Sprite was built from (each instance's direct source), without repeats."""
-    return list(dict.fromkeys(item.preset.source_preset_id for item in (sprite.instances if sprite else []) if item.preset.source_preset_id))
+# 判断两份 Preset 画法是否相同时比较的字段：源码、参数契约、默认参数、角色与特效用法（描述只是说明）。
+_DRAWING = {"code", "parameter_schema", "default_parameters", "role", "usage"}
 _ready_engine = None
 
 
@@ -72,9 +74,36 @@ class CatalogStore:
             ))
         return "mysql"
 
-    def record_uses(self, version_id: str, preset_ids: Iterable[str], *, published: bool = False) -> None:
-        """Record that the accepted version ``version_id`` uses ``preset_ids``; ``published`` also marks them saved to the
-        asset library. Repeating a record changes nothing, except that a later publication marks it published."""
+    def solidify(self, sprite: SpriteDraft | None) -> list[str]:
+        """The stored Presets an accepted Sprite draws with, storing those it changed: an instance drawn exactly as its
+        source Preset (`source_preset_id`) is that Preset; a modified copy (a fix the task made with `preset.modify`) is
+        kept as a Preset of its own, or found again when an identical one is stored, so a working fix becomes reusable
+        and the broken original is not credited for it. Instances without a source (older snapshots) are skipped."""
+        drawing = lambda preset: json.dumps(preset.model_dump(mode="json", include=_DRAWING, exclude_unset=True), sort_keys=True)
+        records = self.read_presets()
+        stored = {drawing(record): record.preset_id for record in records}
+        by_id = {record.preset_id: record for record in records}
+        used: list[str] = []
+        for item in sprite.instances if sprite else []:
+            source = item.preset.source_preset_id
+            if not source:
+                continue
+            original = by_id.get(source)
+            key = drawing(item.preset)
+            if original is not None and drawing(original) == key:
+                used.append(source)
+            elif key in stored:
+                used.append(stored[key])
+            else:
+                record = PresetRecord(preset_id=uuid4().hex, created_at=datetime.now(UTC).isoformat(),
+                                      **item.preset.model_dump(mode="json", exclude_unset=True))
+                self.append_preset(record)
+                stored[key] = record.preset_id
+                used.append(record.preset_id)
+        return list(dict.fromkeys(used))
+
+    def record_uses(self, version_id: str, preset_ids: Iterable[str]) -> None:
+        """Record that the accepted version ``version_id`` uses ``preset_ids``; repeating a record changes nothing."""
         preset_ids = list(dict.fromkeys(preset_ids))
         if not preset_ids:
             return
@@ -82,9 +111,12 @@ class CatalogStore:
             known = set(connection.execute(select(preset_uses.c.preset_id).where(preset_uses.c.version_id == version_id)).scalars())
             fresh = [item for item in preset_ids if item not in known]
             if fresh:
-                connection.execute(preset_uses.insert(), [{"preset_id": item, "version_id": version_id, "published": published} for item in fresh])
-            if published and known:
-                connection.execute(preset_uses.update().where(preset_uses.c.version_id == version_id, preset_uses.c.preset_id.in_(known)).values(published=True))
+                connection.execute(preset_uses.insert(), [{"preset_id": item, "version_id": version_id, "published": False} for item in fresh])
+
+    def mark_published(self, version_id: str) -> None:
+        """Mark the Presets the accepted version ``version_id`` was recorded with as saved to the asset library."""
+        with self._engine().begin() as connection:
+            connection.execute(preset_uses.update().where(preset_uses.c.version_id == version_id).values(published=True))
 
     def use_counts(self) -> dict[str, tuple[int, int]]:
         """For each used Preset, the number of accepted versions using it and how many of them were published."""

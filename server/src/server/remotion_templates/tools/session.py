@@ -868,8 +868,10 @@ class ToolSession:
         """Resolve immutable Presets, generate deterministic local-frame Sprite code and keep it as a draft.
 
         A text effect is composed from a text block (`request.text`), which the host lays out; every other Sprite, and
-        an edit that keeps an older text effect's boxes, places its instances by their own layout.
+        an edit that keeps an older text effect's boxes, places its instances by their own layout. The review frames of
+        the last saved Sprite go: they no longer show what is being composed, and only `sprite.create` renders it.
         """
+        self.review_frames = []
         if request.text is not None:
             return await self._compose_text(request)
         if request.kind == "text" and self.spec is None:

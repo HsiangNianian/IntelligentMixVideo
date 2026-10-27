@@ -35,7 +35,7 @@ from .publication import current_bundle
 from .models import TemplateVersion
 from .object_store import PREFIX, ObjectStoreError
 from .store import Conflict, NotFound, Store
-from .tools.catalog_store import CatalogStore, preset_sources
+from .tools.catalog_store import CatalogStore
 
 PREVIEW_BUNDLE = "interactive.js"
 
@@ -805,9 +805,9 @@ async def publish(service, request: pb.PublishSpriteRequest, device: UUID) -> pb
 
 
 def _record_published(version: TemplateVersion) -> None:
-    """Mark the stored Presets the published version was built from as published, which ranks them first in Preset
+    """Mark the Presets recorded when the published version was accepted as published, which ranks them first in Preset
     searches; a database failure only loses that ranking signal, so it is logged instead of failing the publication."""
     try:
-        CatalogStore().record_uses(str(version.id), preset_sources(version.spec.sprite), published=True)
+        CatalogStore().mark_published(str(version.id))
     except Exception:
         logging.getLogger(__name__).warning("Preset uses of published version %s were not recorded", version.id, exc_info=True)

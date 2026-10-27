@@ -116,8 +116,11 @@ words their description or effect usage title contains, leaving out those that c
 the Presets that versions saved to the asset library used come first, then those accepted versions used, then the
 newest; an empty query lists every Preset in that order. Uses live in a second table, `remotion_preset_uses` (one
 row per Preset and accepted version, marked `published` when that version is saved to the asset library): a
-successful Agent job records the stored Presets its version was built from (each instance snapshot names its direct
-source as `source_preset_id`), and `POST /api/sprites/publish` marks them published. Recording is best effort: a
+successful Agent job records the stored Presets its version draws with (each instance snapshot names its direct source
+as `source_preset_id`; `CatalogStore.solidify`). A copy the task changed (a fix made with `preset.modify`) is stored as
+a Preset of its own (or found again when an identical one is stored) and credited instead of its original, so a fix
+becomes reusable and a broken original is not ranked up for it. `POST /api/sprites/publish` marks the version's rows
+published. Recording is best effort: a
 database failure is logged and only loses the ranking signal. Optional `role` and `slot` (an effect's usage slot)
 filter the list, and summaries carry an effect's usage and both counts. An effect Preset records its `usage`
 (`title`, `slot`, `target`, `seconds`) when it is created, so a text block's effect entry may name only its source
@@ -145,7 +148,9 @@ told is not content; a text effect whose defaults have no keywords is captured w
 keyword (`sample_keywords`), listed in `review.keywords`, so keyword effects show. The receipt lists the frames in
 `review.frames` with what each should show (each entrance gets its own, so their order shows), and they follow the
 reference images in every Executor turn of the step (`candidate_frames` in the snapshot maps them) until the step
-ends; a later save replaces them. The rules have the Executor compare them with the request and the reference images
+ends, a `sprite.compose` takes them away (they only describe the saved Sprite; seen in work eb692e7e, where frames of
+an earlier save stayed attached through 20 recompositions and the Executor kept "fixing" them) and a later save
+replaces them. The rules have the Executor compare them with the request and the reference images
 and change only what is clearly missing or wrong. The host draws no verdict from them.
 
 ## Preview

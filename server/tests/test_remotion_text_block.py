@@ -687,7 +687,7 @@ def test_only_effect_presets_record_a_usage(tmp_path, role, usage, field, messag
 def test_an_effect_entry_takes_what_it_leaves_out_from_its_presets_usage(tmp_path, monkeypatch):
     """检索到的特效只要按 instance_id 与 source 引用：省略的名称、类型、位置与时长取自 Preset 记下的默认用法，给出的优先；
     Preset 没有记下用法时省略即按字段拒绝。组合的实例快照记下取自的库内 Preset，版本据此登记用到的配方。"""
-    from server.remotion_templates.tools.catalog_store import CatalogStore, preset_sources
+    from server.remotion_templates.tools.catalog_store import CatalogStore
     from server.remotion_templates.tools.contracts import PresetRecord
 
     monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
@@ -705,7 +705,7 @@ def test_an_effect_entry_takes_what_it_leaves_out_from_its_presets_usage(tmp_pat
         assert [(item.title, item.slot) for item in sprite.text.effects] == [("打字", "enter"), ("淡出", "exit")]
         defaults = sprite.default_parameters
         assert (defaults["effect1Target"], defaults["effect1Seconds"], defaults["effect2Target"], defaults["effect2Seconds"]) == ("tiers", 1.2, "block", 0.5)
-        assert preset_sources(sprite) == [tier, glow, typing["preset"]["preset_id"], fade]
+        assert [item.preset.source_preset_id for item in sprite.instances] == [tier, tier, glow, typing["preset"]["preset_id"], fade]
         # An effect Preset stored before usages existed.
         CatalogStore().append_preset(PresetRecord(preset_id="older-fade", created_at="2026-10-20T00:00:00+00:00",
                                                   **effect_preset(FADE_CODE).model_dump(mode="json", exclude_unset=True, exclude={"usage"})))
@@ -742,7 +742,8 @@ def test_review_frames_follow_the_sprites_own_timing():
 @needs_bundler
 def test_a_saved_sprite_comes_back_as_frames_for_two_reviews(tmp_path, monkeypatch):
     """保存时同一次挂载截下的帧在回执里依次列出（排在参考图之后的图片序号、帧号与应显示的内容）；默认没有关键词的字效按工作区预览的
-    示例关键词截帧（挂载时作为参数覆盖传入）。每个任务两次回看，第三次保存不再截帧，之前的帧也不再附带。"""
+    示例关键词截帧（挂载时作为参数覆盖传入）。每个任务两次回看，第三次保存不再截帧，之前的帧也不再附带。审计复现（作品 eb692e7e）：
+    回看后只重新组合、没有再保存，上一版的帧一直附着，模型以为改动无效，空转 40 轮直到超时；现在重新组合即撤下旧帧。"""
     monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
 
     async def run():
@@ -772,6 +773,10 @@ def test_a_saved_sprite_comes_back_as_frames_for_two_reviews(tmp_path, monkeypat
         assert [(item["frame"], item["label"]) for item in first["frames"]] == [
             (7, "half way into the entrance 淡入"), (11, "just before the lower tier appears"), (14, "shown in full (middle frame)"), (22, "half way out of the exit")]
         assert receipts[1]["review"]["rounds_left"] == 0 and "review" not in receipts[2]
+        assert current.review_frames == []
+        # Frames show the saved Sprite only: composing anew takes them away until the next save.
+        current.review_frames = [(tmp_path / "frame-7.png", 7, "half way into the entrance 淡入")]
+        await current.execute("sprite.compose", two_tiers(tier, glow, fade), available())
         assert current.review_frames == []
 
     asyncio.run(run())
@@ -803,7 +808,7 @@ def test_preset_search_ranks_by_matched_words_and_proven_uses(tmp_path):
         assert found(query="金色 描边", role="text") == ["金色描边大字，双栏下栏"]
         assert found(query="描边") == ["金色描边旧字效", "金色描边大字，双栏下栏"]
         CatalogStore().record_uses("version-1", [tier["preset"]["preset_id"]])
-        CatalogStore().record_uses("version-1", [tier["preset"]["preset_id"]], published=True)
+        CatalogStore().mark_published("version-1")
         assert found(query="描边") == ["金色描边大字，双栏下栏", "金色描边旧字效"]
         summary = current.search_presets(PresetSearchInput(query="描边")).presets[0]
         assert (summary.accepted_uses, summary.published_uses) == (1, 1)
@@ -906,6 +911,16 @@ def test_the_executor_draws_a_tiers_look_on_its_block():
     assert "draws the tier's look on that same block" in EXECUTOR_RULES
     assert "renders {props.children} inside one block of its own" in EXECUTOR_RULES
     assert "so the whole line inherits it" in EXECUTOR_RULES
+
+
+def test_the_executor_knows_what_hides_a_gradient_fill_and_how_to_order_parts():
+    """审计复现（作品 c0993bf2、eb692e7e）：上栏用 background-clip: text 画渐变、同一元素又用 text-shadow 叠出描边，阴影画在渐变上面，
+    整行成了深棕色块；要「关键词先出、其余随后」时模型只放了一个逐字入场。规则说明这条渲染事实，以及分开的入场用延迟排先后。"""
+    from server.remotion_templates.agent import EXECUTOR_RULES
+
+    assert "a text-shadow on the same element is painted on top of it" in EXECUTOR_RULES
+    assert "order them with delay" in EXECUTOR_RULES
+    assert "a sprite_compose takes them away" in EXECUTOR_RULES
 
 
 def test_the_executor_makes_transparency_an_effect_and_allows_negative_line_gaps():

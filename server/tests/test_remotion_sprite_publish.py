@@ -175,9 +175,9 @@ def objects(store: Store) -> Path:
 
 def another_version(
     published, *, code: str = CODE, defaults: dict | None = None, description: str = "新版标题",
-    schema: dict | None = None, bound: list[str] | None = None, source_preset_id: str | None = None,
+    schema: dict | None = None, bound: list[str] | None = None,
 ):
-    """用同一份临时数据再封存一个成功版本（新的会话），供覆盖保存用例验证资产确实换成了新内容；``source_preset_id`` 是实例取自的库内 Preset。"""
+    """用同一份临时数据再封存一个成功版本（新的会话），供覆盖保存用例验证资产确实换成了新内容。"""
     settings = published.settings
     harness = Harness(SimpleNamespace(settings=settings), OfflineRenderer(settings, CodeOnlyRenderer(settings)))
     schema = SCHEMA if schema is None else schema
@@ -191,8 +191,7 @@ def another_version(
         composition={"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
         instances=[{
             "instance_id": "title",
-            "preset": {"code": code, "parameter_schema": schema, "default_parameters": parameters, "description": "标题",
-                       **({"source_preset_id": source_preset_id} if source_preset_id else {})},
+            "preset": {"code": code, "parameter_schema": schema, "default_parameters": parameters, "description": "标题"},
             "parameters": parameters,
             "layout": LAYOUT,
             "timing": {"start_frame": 0, "duration_frames": 30},
@@ -282,11 +281,11 @@ def test_publish_copies_content_and_lists_summary_without_source(client: TestCli
 
 
 def test_publishing_marks_the_versions_presets_published(client: TestClient, published) -> None:
-    """存进资产库时，版本里取自库内的 Preset 记为已发布（成功版本还没登记过也一样），Preset 检索据此把验证过的配方排在前面；
-    重复保存同一版本不重复计数。"""
+    """存进资产库时，版本生成成功时登记的 Preset 记为已发布，Preset 检索据此把验证过的配方排在前面；重复保存同一版本不重复计数。"""
     from server.remotion_templates.tools.catalog_store import CatalogStore
 
-    version = another_version(published, source_preset_id="stored-tier")
+    version = another_version(published)
+    CatalogStore().record_uses(str(version.id), ["stored-tier"])
     published_sprite(client, version.id)
     published_sprite(client, version.id)
     assert CatalogStore().use_counts() == {"stored-tier": (1, 1)}
