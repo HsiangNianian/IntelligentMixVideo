@@ -13,13 +13,16 @@ function completed(taskId = "task-1"): CompositionTask {
   return { taskId, status: "succeeded", stage: "completed", result: { videoUrl: "https://media.test/playground.mp4", durationSeconds: 8 }, error: null, createdAt: "2026-10-26T00:00:00Z", updatedAt: "2026-10-26T00:01:00Z" };
 }
 
-/** 通过真实下拉选择模板，确保用户能看到 UUID 与名称。 */
+/** 模板列表里已保存模板对应的单选项（名称与 ID 前 8 位组成可读名称）。 */
+function templateRadio() {
+  return screen.findByRole<HTMLInputElement>("radio", { name: new RegExp(savedTemplate().name) });
+}
+
+/** 在模板列表里点选已保存的模板，等列表可用后再点。 */
 async function selectTemplate() {
-  const template = savedTemplate();
-  const control = await screen.findByRole<HTMLButtonElement>("combobox", { name: "styleId（模板）" });
-  await waitFor(() => expect(control.disabled).toBe(false));
-  fireEvent.keyDown(control, { key: "ArrowDown" });
-  fireEvent.click(await screen.findByRole("option", { name: `${template.template_id}（${template.name}）` }));
+  const radio = await templateRadio();
+  await waitFor(() => expect(radio.disabled).toBe(false));
+  fireEvent.click(radio);
 }
 
 /** 桌面替换设置 IPC；浏览器使用实际 localStorage，允许检查原始损坏记录是否被覆盖。 */
@@ -63,7 +66,7 @@ test("模板选择后只提交一次，完成后重开恢复视频", async () =>
   view.unmount();
   render(<PlaygroundWorkspace />);
   expect((await screen.findByLabelText<HTMLVideoElement>("合成视频播放器")).src).toBe(player.src);
-  expect((await screen.findByRole("combobox", { name: "styleId（模板）" })).textContent).toContain(savedTemplate().name);
+  await waitFor(async () => expect((await templateRadio()).checked).toBe(true));
   expect(requests.filter((item) => item.body)).toHaveLength(1);
 });
 
@@ -89,11 +92,60 @@ test.each(["network", "503"])("查询失败可继续查询，任务失败保留�
   await screen.findByText(/测试查询不可用/);
   expect(screen.queryByRole("button", { name: "清除失效任务" })).toBeNull();
   expect((await loadPlayground(apiBase())).state.task?.status).toBe("processing");
+  expect(screen.getByText("上一条成片")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "查询进度" }));
   await screen.findByText("测试渲染失败");
   expect(screen.getByLabelText<HTMLVideoElement>("合成视频播放器").src).toBe(previous.result!.videoUrl);
   expect(reads).toBe(2);
   expect(screen.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("失败于正在 IMS 渲染");
+  // 新任务失败后没有更新的成片，保留的视频就是最新可用结果。
+  expect(screen.getByText("最新成片")).toBeTruthy();
+  expect(screen.queryByText("上一条成片")).toBeNull();
+});
+
+// 场景：提交请求还没返回时，已有成片标为「上一条成片」，没有成片时空画框显示正在合成；返回后照常记录新任务。
+test.each([["有旧成片", true], ["没有成片", false]] as const)("提交等待中画面显示新任务：%s", async (_name, hasVideo) => {
+  const old = completed("old-task");
+  const { key } = await loadPlayground(apiBase());
+  await savePlayground(key, { ...emptyPlayground(), styleId: savedTemplate().template_id,
+    ...(hasVideo ? { task: old, taskStyleId: savedTemplate().template_id, taskTemplateName: savedTemplate().name,
+      video: { ...old.result!, taskId: old.taskId, styleId: savedTemplate().template_id, templateName: savedTemplate().name } } : {}) });
+  let respond!: (response: Response) => void;
+  fetchMock.mockImplementation((async (url) => {
+    if (String(url).endsWith("/template")) return jsonListResponse([savedTemplate()]);
+    if (String(url).endsWith("/playground")) return new Promise<Response>((resolve) => { respond = resolve; });
+    return Response.json({ ...completed("new-task"), status: "processing", stage: "rendering", result: null });
+  }) as typeof fetch);
+  render(<PlaygroundWorkspace />);
+  const submit = await screen.findByRole<HTMLButtonElement>("button", { name: "开始合成" });
+  await waitFor(() => expect(submit.disabled).toBe(false));
+  expect(screen.queryByText(hasVideo ? "最新成片" : "还没有成片")).toBeTruthy();
+  fireEvent.click(submit);
+  await screen.findByRole("button", { name: "正在提交…" });
+  if (hasVideo) {
+    expect(screen.getByText("上一条成片")).toBeTruthy();
+    expect(screen.getByText("新视频合成中，完成后替换")).toBeTruthy();
+  } else expect(screen.getByText("视频正在合成")).toBeTruthy();
+  respond(Response.json({ code: 200, data: "new-task" }));
+  await waitFor(async () => expect((await loadPlayground(apiBase())).state.task?.taskId).toBe("new-task"));
+  expect(screen.getByText(hasVideo ? "上一条成片" : "视频正在合成")).toBeTruthy();
+});
+
+// 场景：操练场的模板已在受理时固定，template 阶段失败是 Remotion 环境检查，显示在「生成画面与字效」步骤下。
+test("模板阶段失败显示在生成画面与字效步骤", async () => {
+  const { key } = await loadPlayground(apiBase());
+  await savePlayground(key, { ...emptyPlayground(), styleId: savedTemplate().template_id,
+    taskStyleId: savedTemplate().template_id, taskTemplateName: savedTemplate().name,
+    task: { ...completed("pending"), status: "queued", stage: "queued", result: null } });
+  fetchMock.mockImplementation((async (url) => {
+    if (String(url).endsWith("/template")) return jsonListResponse([savedTemplate()]);
+    return Response.json({ ...completed("pending"), status: "failed", stage: "queued", result: null,
+      error: { code: "remotion_render_environment_unavailable", stage: "template", message: "Remotion 渲染环境不可用" } });
+  }) as typeof fetch);
+  render(<PlaygroundWorkspace />);
+  const message = await screen.findByText("Remotion 渲染环境不可用");
+  expect(screen.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("失败于生成画面与字效");
+  expect(message.parentElement?.textContent).toContain("生成画面与字效");
 });
 
 // 场景：旧任务 404 后由用户清除任务，保留选择与成片，重开不再查询旧任务且可以重新合成。
@@ -156,12 +208,12 @@ test.each([
   const view = render(<PlaygroundWorkspace />);
   await screen.findByText(/无法恢复操练场/);
   expect(storage.read(key)).toBe(serialized);
-  expect(screen.getByRole<HTMLButtonElement>("combobox").disabled).toBe(true);
+  expect((await templateRadio()).disabled).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "重试读取" }));
   await screen.findByText(/无法恢复操练场/);
   expect(storage.read(key)).toBe(serialized);
   fireEvent.click(screen.getByRole("button", { name: "重置操练场记录" }));
-  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("combobox").disabled).toBe(false));
+  await waitFor(async () => expect((await templateRadio()).disabled).toBe(false));
   expect((await loadPlayground(apiBase())).state).toEqual(emptyPlayground());
   expect(storage.read("$playground:other")).toBe("untouched");
   expect(storage.settings.ims).toEqual({ region: "keep" });
@@ -191,10 +243,10 @@ test("重置写入失败可再次尝试", async () => {
   fireEvent.click(screen.getByRole("button", { name: "重置操练场记录" }));
   await screen.findByText(/无法重置操练场：测试存储不可写/);
   expect(serialized).toBe("{");
-  expect(screen.getByRole<HTMLButtonElement>("combobox").disabled).toBe(true);
+  expect((await templateRadio()).disabled).toBe(true);
   writable = true;
   fireEvent.click(screen.getByRole("button", { name: "重置操练场记录" }));
-  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("combobox").disabled).toBe(false));
+  await waitFor(async () => expect((await templateRadio()).disabled).toBe(false));
 });
 
 // 场景：设置文件暂时读不到时只提供重试，不猜作用域或重置整个设置；读取恢复后原选择仍在。
@@ -212,7 +264,7 @@ test("本地读取失败可重试且不显示重置入口", async () => {
   expect(screen.queryByRole("button", { name: "重置操练场记录" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "重试读取" }));
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始合成" }).disabled).toBe(false));
-  expect(screen.getByRole("combobox").textContent).toContain(savedTemplate().name);
+  await waitFor(async () => expect((await templateRadio()).checked).toBe(true));
 });
 
 // 场景：恢复进行中任务时显示阶段；状态推进不会额外查询，15 秒轮询与手动查询串行，成功后停止轮询。
@@ -269,7 +321,7 @@ test("未初始化提示保留模板选择", async () => {
   await selectTemplate();
   fireEvent.click(screen.getByRole("button", { name: "开始合成" }));
   await screen.findByText(/该模式的操练场样本尚未初始化/);
-  expect(screen.getByRole("combobox", { name: "styleId（模板）" }).textContent).toContain(savedTemplate().name);
+  expect((await templateRadio()).checked).toBe(true);
   expect((await loadPlayground(apiBase())).state.styleId).toBe(savedTemplate().template_id);
 });
 
@@ -301,11 +353,14 @@ test("后端切换恢复各自的选择", async () => {
   const { key } = await loadPlayground(original);
   await savePlayground(key, { ...emptyPlayground(), styleId: savedTemplate().template_id });
   const view = render(<PlaygroundWorkspace />);
-  await waitFor(() => expect(screen.getByRole("combobox").textContent).toContain(savedTemplate().name));
+  await waitFor(async () => expect((await templateRadio()).checked).toBe(true));
   try {
     setApiBase("https://other-backend.test");
     view.rerender(<PlaygroundWorkspace />);
-    await waitFor(() => expect(screen.getByRole("combobox").textContent).toBe("请选择模板"));
+    // 切换瞬间会先清空选择；等新服务的记录读完、列表可选后再断言，避免旧选择迟到恢复也被放过。
+    const radio = await templateRadio();
+    await waitFor(() => expect(radio.disabled).toBe(false));
+    expect(radio.checked).toBe(false);
   } finally {
     setApiBase(original);
   }
