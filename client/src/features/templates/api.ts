@@ -10,12 +10,14 @@ import {
   SaveTemplateRequestSchema,
   SaveTemplateResponseSchema,
   SplitScreenSchema,
+  AvatarEffectsSchema,
   type TemplateRecord,
 } from "@/generated/imv/template/v1/template_pb";
 import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
 import { validateTemplateTracks } from "./tracks";
 import { BOUND_TEXT_PARAMETERS, validateClipSlots } from "./clips";
 import { defaultSplitScreen, validateSplitScreen, type SplitScreen } from "./splitScreen";
+import { defaultAvatarEffects, validateAvatarEffects, type AvatarEffects } from "./avatarEffects";
 
 /** 还原现有模板视图的字段名称、可空时长及 UTC 时间；`remotion` 轨道拆成独立的片段列表，不进入 IMS 对象。 */
 function toTemplate(record: TemplateRecord): Template {
@@ -31,6 +33,11 @@ function toTemplate(record: TemplateRecord): Template {
     transition_duration_seconds: record.transitionDurationSeconds,
     transition_mode: record.transitionMode as Draft["transition_mode"],
     transition_enabled: record.transitionEnabled ?? true,
+    ...(record.avatarEffects ? { avatar_effects: (() => {
+      const value = { ...defaultAvatarEffects(), ...toJson(AvatarEffectsSchema, record.avatarEffects) as Partial<AvatarEffects> };
+      validateAvatarEffects(value);
+      return value;
+    })() } : {}),
     ...(record.splitScreen ? { split_screen: (() => {
       const raw = toJson(SplitScreenSchema, record.splitScreen) as Partial<SplitScreen>;
       const defaults = defaultSplitScreen();
@@ -207,6 +214,7 @@ export async function saveTemplate(draft: Draft, id?: string): Promise<Template>
   validateTemplateTracks(draft.tracks);
   validateClipSlots(draft);
   if (draft.split_screen) validateSplitScreen(draft.split_screen);
+  if (draft.avatar_effects) validateAvatarEffects(draft.avatar_effects);
   for (const target of ["title", "subtitle"])
     if (draft.tracks.filter((track) => track.target === target && track.language !== "en").length !== 1)
       throw new Error("保存模板需要标题和底部字幕各一个");
@@ -219,6 +227,7 @@ export async function saveTemplate(draft: Draft, id?: string): Promise<Template>
     transitionMode: draft.transition_mode ?? "sequence",
     transitionEnabled: draft.transition_enabled ?? true,
     splitScreen: draft.split_screen,
+    avatarEffects: draft.avatar_effects,
     tracks: {
       tracks: [
         ...draft.tracks.map((track) => ({

@@ -17,8 +17,8 @@ import { sampleMedia, savedTemplate, jsonTemplateResponse } from "./fixtures";
 import { fetchMock } from "./setup";
 
 // 保存用真实 Protobuf 编解码，验证零值和关闭参数完整往返，避免只测试 JS 内存副本。
-test("同屏配置保存读取和另存草稿保留零值及独立窗口", async () => {
-  const layout = { ...defaultSplitScreen(), enabled: true, backgroundColor: "#224466" };
+test.each(["split", "overlay", "circle"] as const)("同屏 %s 配置保存读取和另存草稿保留零值及独立窗口", async (mode) => {
+  const layout = { ...defaultSplitScreen(), layout: mode, enabled: true, backgroundColor: "#224466" };
   layout.avatar.radius = 0; layout.avatar.borderWidth = 0; layout.avatar.x = 0;
   let stored = savedTemplate();
   fetchMock.mockImplementation((async (_url, init) => {

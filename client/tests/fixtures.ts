@@ -76,6 +76,7 @@ function templateRecord(template: Template): TemplateRecord {
     transitionDurationSeconds: template.transition_duration_seconds,
     transitionMode: template.transition_mode,
     splitScreen: template.split_screen,
+    avatarEffects: template.avatar_effects,
     templateId: template.template_id,
     tracks: { tracks: [
       ...template.tracks.map((track) => ({

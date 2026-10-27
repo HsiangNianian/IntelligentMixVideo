@@ -12,6 +12,7 @@ export interface ScreenWindow extends ScreenPoint {
 }
 export interface SplitScreen {
   enabled: boolean;
+  layout: "split" | "overlay" | "circle";
   backgroundColor: string;
   material: ScreenWindow;
   avatar: ScreenWindow;
@@ -22,7 +23,7 @@ export interface SplitScreen {
 /** 每份草稿持有独立对象；数字人来源仅是本机预览选择，不属于模板。 */
 export function defaultSplitScreen(): SplitScreen {
   return {
-    enabled: false, backgroundColor: "#000000",
+    enabled: false, layout: "split", backgroundColor: "#000000",
     material: { x: 8, y: 12, width: 84, height: 48, fit: "Contain", radius: 0, borderWidth: 0, borderColor: "#FFFFFF" },
     avatar: { x: 35, y: 68, width: 30, height: 21, fit: "Contain", radius: 30, borderWidth: 6, borderColor: "#FFFFFF" },
     subtitle: { x: 50, y: 62 }, subtitleEn: { x: 50, y: 65.5 },
@@ -33,6 +34,7 @@ export function defaultSplitScreen(): SplitScreen {
 export function validateSplitScreen(value: SplitScreen): void {
   const color = (text: string) => /^#[0-9a-f]{6}$/i.test(text);
   if (typeof value.enabled !== "boolean" || !color(value.backgroundColor)) throw new Error("同屏开关或背景色无效");
+  if (!["split", "overlay", "circle"].includes(value.layout)) throw new Error("同屏布局类型无效");
   for (const point of [value.subtitle, value.subtitleEn, value.material, value.avatar])
     if (![point.x, point.y].every((n) => Number.isFinite(n) && n >= 0 && n <= 100)) throw new Error("同屏坐标必须在 0～100% 之间");
   for (const window of [value.material, value.avatar]) {
