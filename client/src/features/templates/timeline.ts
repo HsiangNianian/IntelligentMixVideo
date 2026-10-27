@@ -17,7 +17,7 @@ import { trackLabel, trackLayers, type ResolvedTimeline } from "./tracks";
 import { previewVideos } from "./media";
 import type { ClipSlot } from "./clips";
 import { previewFont } from "./fonts";
-import { screenRect, borderSvg, previewMaterial, previewMaskUrl } from "./splitScreen";
+import { previewRect, borderSvg, previewMaterial, previewMaskUrl } from "./splitScreen";
 
 /** 预览轨道保留源素材范围，缩略图采样使用源时间，游标使用预览时间。 */
 export interface PreviewClip extends TimelineAction {
@@ -273,14 +273,15 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
   const splitTracks: { VideoTrackClips: PreviewVideo[] }[] = [];
   if (layout) {
     const bg = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920"><path fill="${layout.backgroundColor}" d="M0 0h1080v1920H0z"/></svg>`)}`;
-    splitTracks.push({ VideoTrackClips: [{ Type: "Image", MediaURL: bg, Duration: resolvedTimeline.duration, TimelineIn: 0, TimelineOut: resolvedTimeline.duration, Width: 0.9999, Height: 0.9999, AdaptMode: "Fill", Effects: [] }] });
+    if (layout.layout === "split") splitTracks.push({ VideoTrackClips: [{ Type: "Image", MediaURL: bg, Duration: resolvedTimeline.duration, TimelineIn: 0, TimelineOut: resolvedTimeline.duration, Width: 0.9999, Height: 0.9999, AdaptMode: "Fill", Effects: [] }] });
     for (const role of ["material", "avatar"] as const) {
       const clips: PreviewVideo[] = [], borders: PreviewVideo[] = [];
       for (const range of ranges) {
         const video = sources[role === "avatar" ? avatarSource : previewMaterial(range.source, avatarSource)];
-        const rect = screenRect(layout[role], video);
-        const geometry = { X: rect.x / 1080, Y: rect.y / 1920, Width: Math.min(rect.width / 1080, 0.9999), Height: Math.min(rect.height / 1920, 0.9999), AdaptMode: "Cover" };
-        const effects: Effect[] = [{ Type: "Volume", Gain: 0 }];
+        const rect = previewRect(layout, role, video);
+        const fullMaterial = role === "material" && layout.layout !== "split";
+        const geometry = { X: rect.x / 1080, Y: rect.y / 1920, Width: Math.min(rect.width / 1080, 0.9999), Height: Math.min(rect.height / 1920, 0.9999), AdaptMode: fullMaterial ? "Contain" : "Cover" };
+        const effects: Effect[] = [{ Type: "Volume", Gain: 0 }, ...(fullMaterial ? letterbox(video) : [])];
         // 短示例在预览内循环；正式合成的数字人始终使用口播绝对源时间。
         let at = range.start;
         while (at < range.end - 1e-8) {

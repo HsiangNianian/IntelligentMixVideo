@@ -1,5 +1,7 @@
 /** 模板编辑工作区：接收主页选择，展示模板信息，协调效果编辑、保存和未保存切换保护。 */
 import { SplitScreenEditor } from "./SplitScreenEditor";
+import { defaultAvatarEffects } from "./avatarEffects";
+import { AvatarEffectsEditor } from "./AvatarEffectsEditor";
 import { validateSplitScreen } from "./splitScreen";
 import { useUpdateBlocker } from "@/lib/update-guard";
 import { recovery } from "@/features/updates/recovery";
@@ -93,7 +95,11 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const [transitionRandom, setTransitionRandom] = useState<readonly [number, number]>(() => [Math.random(), Math.random()]);
   const visibleDraft = useMemo(() => draft ? activeDraft(draft) : null, [draft]);
   const previewSelection = useMemo(() => visibleDraft ? previewTransitions(visibleDraft, transitionRandom, spriteCatalog.assets ?? []) : null, [visibleDraft, transitionRandom, spriteCatalog.assets]);
-  const previewDraft = previewSelection?.draft;
+  const previewDraft = useMemo(() => {
+    const selected = previewSelection?.draft;
+    if (!selected?.avatar_effects?.removeBackground || !selected.split_screen?.enabled) return selected;
+    return { ...selected, split_screen: { ...selected.split_screen, avatar: { ...selected.split_screen.avatar, radius: 0, borderWidth: 0 } } };
+  }, [previewSelection?.draft]);
   const preview = useMemo(() => {
     if (!previewDraft || !media) return { timeline: undefined, error: "" };
     try {
@@ -382,7 +388,10 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
               </main>}
               inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={visibleDraft!} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
                 <SpriteClips clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
-                <SplitScreenEditor value={draft.split_screen} onChange={(split_screen) => editTrack(() => ({ ...draft, split_screen }))} />
+                <SplitScreenEditor value={draft.split_screen} removeBackground={draft.avatar_effects?.removeBackground} onChange={(split_screen) => editTrack(() => ({ ...draft, split_screen,
+                  ...(split_screen.layout !== (draft.split_screen?.layout ?? "split") ? { avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground: split_screen.layout === "overlay" } } : {}),
+                }))} />
+                <AvatarEffectsEditor value={draft.avatar_effects} sameScreen={!!draft.split_screen?.enabled} circle={!!draft.split_screen?.enabled && draft.split_screen.layout === "circle"} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} />
                 {bilingualTarget && <div className="space-y-2 border-b px-4 py-3">
                   <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!english && english.enabled !== false} onChange={(event) => {
                     const enabled = event.target.checked;

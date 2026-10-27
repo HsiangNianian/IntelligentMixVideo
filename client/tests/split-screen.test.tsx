@@ -98,3 +98,30 @@ test("基础预览展示同屏角色并跟随定位", () => {
   expect(avatar.currentTime).toBe(2);
   expect(screen.getByLabelText("素材同屏预览").getAttribute("src")).toBe(sampleMedia[0].url);
 });
+
+// 新布局共用同一份几何：素材完整铺底，头像用正圆示意，保留独立源进度及字幕。
+test.each(["overlay", "circle"] as const)("%s 的 SDK 与基础预览一致使用完整素材和独立人物窗口", (mode) => {
+  const media: typeof sampleMedia = [{ ...sampleMedia[0], width: 1920, height: 1080 }, sampleMedia[1], sampleMedia[2]];
+  const layout = { ...defaultSplitScreen(), layout: mode, enabled: true };
+  const draft: Draft = { ...newDraft(), split_screen: layout };
+  const resolved = resolveTemplate(draft, previewContext(media));
+  const timeline = buildTimeline(draft, [], media, resolved, [0, 1, 2], 1);
+  const [material, avatar] = timeline.VideoTracks;
+  expect(timeline.VideoTracks).toHaveLength(2);
+  expect(material.VideoTrackClips[0]).toMatchObject({ X: 0, Y: 0, Width: 0.9999, Height: 0.9999, AdaptMode: "Contain" });
+  expect(material.VideoTrackClips[0].Effects).toContainEqual({ Type: "Background", SubType: "Blur", Radius: 0.1 });
+  const clip = avatar.VideoTrackClips[0];
+  if (mode === "circle") {
+    expect(clip.Width! * 1080).toBe(clip.Height! * 1920);
+    const mask = new URL(clip.MaskVideoURL!);
+    expect(Number(mask.searchParams.get("radius")) * 2).toBe(Number(mask.searchParams.get("box_width")));
+  } else expect(clip.MaskVideoURL).toBeUndefined();
+  const ref = createRef<PlaybackHandle>();
+  render(<BasicVideoPreview ref={ref} media={media} resolved={resolved} order={[0, 1, 2]} layout={layout} avatarSource={1}
+    onTime={() => {}} onReady={() => {}} onError={() => {}} onPlayingChange={() => {}} onEnd={() => {}} />);
+  expect(screen.getByLabelText("素材同屏预览").className).toContain("object-contain");
+  act(() => ref.current!.seek(2));
+  expect(screen.getByLabelText<HTMLVideoElement>("数字人同屏预览").currentTime).toBe(2);
+  expect(document.querySelector<HTMLVideoElement>("video.blur-xl")?.currentTime).toBe(2);
+  if (mode === "circle") expect(screen.getByLabelText("数字人同屏预览").parentElement!.style.borderRadius).toBe("50%");
+});

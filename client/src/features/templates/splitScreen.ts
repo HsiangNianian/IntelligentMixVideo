@@ -46,6 +46,17 @@ export function validateSplitScreen(value: SplitScreen): void {
   }
 }
 
+/** SDK 和基础播放器共用布局几何；圆形仅示意居中裁切，真实头部位置在合成时检测。 */
+export function previewRect(layout: SplitScreen, role: "material" | "avatar", source: { width: number; height: number }) {
+  if (role === "material" && layout.layout !== "split") return { x: 0, y: 0, width: 1080, height: 1920, radius: 0, border: 0 };
+  if (role === "avatar" && layout.layout === "circle") {
+    const rect = screenRect({ ...layout.avatar, fit: "Contain" }, { width: 1, height: 1 });
+    return { ...rect, radius: rect.width / 2, border: 0 };
+  }
+  const rect = screenRect(layout.layout === "overlay" ? { ...layout[role], fit: "Contain" } : layout[role], source);
+  return layout.layout === "overlay" ? { ...rect, radius: 0, border: 0 } : rect;
+}
+
 /** 完整显示按源比例居中缩进窗口；圆角和内边框围住实际可见画面，留白属于画布背景。 */
 export function screenRect(window: ScreenWindow, source: { width: number; height: number }, canvas = { width: 1080, height: 1920 }) {
   let x = window.x * canvas.width / 100, y = window.y * canvas.height / 100;
