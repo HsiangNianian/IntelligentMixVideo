@@ -2174,19 +2174,38 @@ def test_real_browser_shrinks_an_english_subtitle_to_one_line(tmp_path: Path) ->
     assert 24 <= one.instances[0]["config"]["fontSize"] < 128
 
 
-# 场景：字幕轨的单行字效即使缩到最小字号也放不下一行时，换行后的文字朝远离另一语言的方向展开：英文向下、中文向上，
-# 靠近另一语言的一行留在原单行的位置；没有方向要求的摆放保持原来的居中位置。
+# 场景：字幕轨的单行字效即使缩到最小字号也放不下一行时，靠近另一语言的一行留在原单行的位置，多出的行朝远离另一语言
+# 的方向展开：顶部对齐的英文首行本来就在单行位置，不再下移；中文末行要上移整段多出的高度；垂直居中的文字仍各移一半。
+CENTERED_BOX = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 400, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, wordBreak: "break-all", whiteSpace: "normal", color: "#fff" }}>{props.text}</div>
+    </AbsoluteFill>
+  );
+}
+"""
+
+
 @pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
 def test_real_browser_grows_a_wrapped_subtitle_away_from_the_other_language(tmp_path: Path) -> None:
-    """宽 400 的字幕框里长英文在 60 字号折成多行：英文向下时宿主 y 从内容区域中心下移，中文向上时上移，不要求的没有宿主变换。"""
+    """顶部对齐的五行为例：英文向下不移动，中文向上移过整段多出的高度；居中的文字仍只移一半；没有 grow 的不移动。"""
     code = FIXED_BOX.replace("WRAP", '"normal"').replace("width: 972", "width: 400").replace("height: 360", "height: 1200")
     text = "detectors spinning round and round and round and round"
     down = fit_for_real(tmp_path / "down", code, [titled(text, font_size=60)], 1.0, one_line=True, grow="down")
     up = fit_for_real(tmp_path / "up", code, [titled(text, font_size=60)], 1.0, grow="up")
     stayed = fit_for_real(tmp_path / "stayed", code, [titled(text, font_size=60)], 1.0)
+    centered_down = fit_for_real(tmp_path / "centered-down", CENTERED_BOX, [titled(text, font_size=60)], 1.0, one_line=True, grow="down")
+    centered_up = fit_for_real(tmp_path / "centered-up", CENTERED_BOX, [titled(text, font_size=60)], 1.0, grow="up")
     assert down.instances[0]["config"]["fontSize"] == 60 and up.instances[0]["config"]["fontSize"] == 60
-    assert down.instances[0]["host"]["transform"]["y"] > 960
+    # Top-aligned: the first line already sits where a single line would, and the last line moves up by the whole extra height.
+    assert down.instances[0]["host"]["transform"] == {}
+    # Centred: both directions move by half the extra height, so the top-aligned last line moves twice as far.
+    assert centered_down.instances[0]["host"]["transform"]["y"] > 960
+    assert centered_up.instances[0]["host"]["transform"]["y"] < 960
     assert up.instances[0]["host"]["transform"]["y"] < 960
+    assert abs(up.instances[0]["host"]["transform"]["y"] - 960) > abs(centered_up.instances[0]["host"]["transform"]["y"] - 960) * 1.5
     assert stayed.instances[0]["host"]["transform"] == {}
 
 

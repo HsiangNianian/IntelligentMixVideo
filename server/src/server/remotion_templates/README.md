@@ -681,12 +681,14 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   video composition is marked `one_line`: its effect is laid out for one line, and a wrapped translation would reach into the
   other language's text, so it is lowered to the largest size that also shows it on one line, and only a text that still
   wraps at that minimum keeps the largest size that fits it whole (single line is best effort, never a failure). A video
-  composition's subtitle is marked `grow`: a text block is centred where a single line would be, so when it still wraps
-  the placement is moved along that axis by half the height the extra lines add, keeping the line nearest the other
-  language in place — the English subtitle (`down`) keeps its first line and grows below, the Chinese one (`up`) keeps its
-  last line and grows above, so the two never run into each other (never past the canvas the video shows; the move is
-  logged and the saved placement is untouched). The Chinese subtitle is only marked `up` while an English subtitle is
-  enabled; without one it keeps the original centred growth. A `keywordSize` above 0 is
+  composition's subtitle is marked `grow`: when it still wraps, the line nearest the other language (the first line for
+  `down`, the last for `up`) is measured again on one line, and the placement is moved vertically so that line sits where
+  the single line would — whatever vertical alignment the effect uses (centred text moves by about half the added height,
+  top- or bottom-aligned text by its full height at the far end) — keeping the line nearest the other language in place:
+  the English subtitle (`down`) keeps its first line and grows below, the Chinese one (`up`) keeps its last line and grows
+  above, so the two never run into each other (never past the canvas the video shows; the move is logged and the saved
+  placement is untouched). The Chinese subtitle is only marked `up` while an English subtitle is enabled; without one it
+  keeps the original centred growth. A `keywordSize` above 0 is
   an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's
   proportion to the text instead of crowding the smaller text. If at the minimum the text
   still leaves the canvas only because of where it is placed (a long title whose centre sits near the top edge), the
