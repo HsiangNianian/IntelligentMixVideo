@@ -55,11 +55,16 @@ PORT=8010 uv run --locked server
 | POST | `/template` | 接收 `SaveTemplateRequest`；无 `template_id` 创建，携带 ID 完整更新，返回 `SaveTemplateResponse` |
 | GET | `/template/{template_id}` | 返回 `GetTemplateResponse` |
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
+| GET | `/template/preview-mask` | 几何圆角蒙版 MP4，供 SDK 实时预览；不访问用户媒体或数据库 |
 
 GET 与 POST 成功响应默认使用 `application/json`，采用 Protobuf JSON 映射：字段为 camelCase（如 `templateId`、`createdAt`、`effectIds`），时间为 UTC RFC 3339 字符串；列表为 `{"templates":[...]}`，空库为 `{"templates":[]}`，详情和保存为 `{"template":{...}}`，轨道保留 `template.tracks.tracks` 结构。空数组、空映射和非 optional 标量默认值保留，未设置的 optional 字段省略。POST 请求仍使用 `application/x-protobuf`，JSON 请求返回 415，损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422；错误响应使用 JSON，删除成功仍为 204 空响应。为兼容旧客户端，单一 `Accept: application/x-protobuf` 仍返回 Protobuf 二进制；其他请求（含省略 Accept、`*/*` 或 `application/json`）默认返回 JSON，成功响应带 `Vary: Accept`。新客户端按响应 `Content-Type` 解析 JSON 或旧服务端的 Protobuf 二进制，JSON 解析忽略未知字段；仅响应格式迁移不要求两端同时升级。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
 
 列表返回逐条校验的 `TemplateSummary`，包含名称、ID、更新时间、有效模板的标题/字幕及对象数量，无效记录通过 `validationError` 说明原因。无效记录的详情读取返回 409，删除仍按 ID 执行，不影响同库有效模板。保存必须包含中文标题和中文字幕各一个；双语模板另有对应的英文对象。列表消息与转场字段需要客户端、服务端一起升级；已有记录不自动转换。
+
+同屏配置通过 `SaveTemplateRequest.split_screen` 保存，JSON 响应为 `splitScreen`：包含 `enabled`、`backgroundColor`、`material`、`avatar`、`subtitle`、`subtitleEn`。窗口位置和尺寸为画布百分比，圆角和内边框宽度为 1080×1920 基准像素，显示方式为 `Contain` / `Cover`。旧模板缺省关闭，旧客户端更新时省略此字段保留已有配置，关闭用 `enabled=false`。标准合成仅命中素材时同屏，未命中全屏数字人；纯素材模式忽略配置。进出同屏及同屏内均不使用转场。
+
+圆角预览资源接收 `width`、`height`（源尺寸，2～32768）、`box_width`（2～1080）、`box_height`（2～1920）、`radius`（大于 0 且不超过窗口短边一半）、`seconds`（正整数持续秒数）。在工作线程用 Pillow/FFmpeg 编码单帧 MP4，最多缓存 32 份，缺编码器返回 503。云合成另用 ffprobe 探测实际尺寸、IMS 原生蒙版与 ZOS 透明边框，不重编码用户源视频。SDK 预览保留实时花字和滤镜。
 
 `SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
@@ -166,7 +171,7 @@ Remotion 新私有诊断也保存到任务的 `errors/`：异常链为 `remotion
 
 - `src/server/database.py`：`DatabaseSettings` 自动加载并校验环境配置，启动时创建缺失数据库，管理 MySQL 连接池。
 - `src/server/template/`：模板模块，与用户示例目录 `sub_api/` 平级。
-- `src/server/template/router.py`：四个模板接口，向 `app.py` 注册 APIRouter。
+- `src/server/template/router.py`：模板读写及几何预览资源接口，向 `app.py` 注册 APIRouter。
 - `src/server/template/schema.py`：请求、响应、数值范围与效果组合校验。
 - `src/server/template/store.py`：建表、查询和事务写入。
 - `src/server/segmentation/`：独立切片函数、`IMV_` 模型配置与 `router.py` 切片路由。
