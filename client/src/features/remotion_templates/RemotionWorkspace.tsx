@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -24,9 +25,13 @@ import { useWorkHistory } from "./useWorkHistory";
 import { HistorySidebar } from "./HistorySidebar";
 import { useTemplateSession } from "./useTemplateSession";
 import { useBackgroundSync } from "./backgroundSync";
-import { publishSprite } from "@/features/sprites/api";
+import { listSprites, publishSprite } from "@/features/sprites/api";
+import type { SpriteAsset } from "@/features/sprites/model";
 import type { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
-import { defaultKind, publishChoice } from "./spriteChoice";
+import { defaultKind, PUBLISH_KINDS, publishChoice } from "./spriteChoice";
+
+/** 保存方式：默认覆盖本会话上次保存的资产，也可以另存为新资产。 */
+type SaveMode = "overwrite" | "new";
 
 /** 宽屏左右分栏，小屏切换聊天和预览但保留会话与播放器实例。 */
 export function RemotionWorkspace() {
@@ -45,6 +50,29 @@ export function RemotionWorkspace() {
   const publishScope = useRef({ active: true, pending: false });
   // 版本卡片下拉改选的资产分类，按版本 ID 记录：版本列表刷新重建对象或聊天重新挂载都不会改回默认值。
   const [kinds, setKinds] = useState<Record<string, SpriteKind>>({});
+  // 当前会话上次保存到资产的条目；目录读取失败时保持 null，仅能另存为新资产。
+  const [assets, setAssets] = useState<SpriteAsset[] | null>(null);
+  const [saveMode, setSaveMode] = useState<SaveMode>("overwrite");
+  // 切换会话重新读取目录：覆盖目标只来自当前会话的版本，不能拿上一个会话的资产去覆盖。
+  useEffect(() => {
+    const controller = new AbortController();
+    setAssets(null);
+    setSaveMode("overwrite");
+    if (session.workId)
+      void listSprites(controller.signal).then(
+        (items) => { if (!controller.signal.aborted) setAssets(items); },
+        () => { if (!controller.signal.aborted) setAssets([]); },
+      );
+    return () => controller.abort();
+  }, [session.workId]);
+  /** 本会话保存过的资产：目录按发布时间倒序，取最新的一条作为默认覆盖目标。 */
+  const workVersions = new Set(catalog.versions.map((item) => item.id));
+  const overwriteTarget = assets?.find((asset) => !!asset.sourceVersionId && workVersions.has(asset.sourceVersionId)) ?? null;
+  const targetKindLabel = overwriteTarget ? PUBLISH_KINDS.find((item) => item.kind === overwriteTarget.kind)?.label : undefined;
+  // 用户显式为当前版本改选的分类；没有改选时覆盖沿用资产自己的分类，改选了其他分类则只能另存为新资产。
+  const chosenKind = viewed ? kinds[viewed.id] : undefined;
+  const kindConflict = !!overwriteTarget && chosenKind !== undefined && chosenKind !== overwriteTarget.kind;
+  const overwriting = saveMode === "overwrite" && !!overwriteTarget && !kindConflict;
   // 切换预览后只展示当前版本的保存反馈，迟到响应不能覆盖新版本的状态。
   useEffect(() => {
     const scope = { active: true, pending: false };
@@ -82,16 +110,25 @@ export function RemotionWorkspace() {
     session.retryMode === "read";
   useUpdateBlocker("字效参数尚未保存或会话正在处理", pending || session.dirty);
   const locked = pending || previewBusy || session.previewLoading;
-  /** 顶栏保存当前预览版本，分类取它卡片上的选择（未改选为 Agent 的判断）；只发布已保存参数，失败由用户显式重试。 */
+  /**
+   * 顶栏保存当前预览版本：默认覆盖本会话上次保存的资产，切换为另存时再新建。
+   * 覆盖沿用目标资产的分类、画布与文字字段，只发布已保存参数；失败由用户显式重试。
+   */
   async function saveAsset() {
     const scope = publishScope.current;
     if (!viewed || locked || session.dirty || scope.pending) return;
     scope.pending = true;
     setPublishing(true);
     setPublishError("");
+    const target = overwriting ? overwriteTarget : null;
     try {
-      const asset = await publishSprite(viewed.id, publishChoice(viewed, kinds[viewed.id] ?? defaultKind(viewed.spec.sprite?.kind)));
-      if (scope.active) toast.success(`已保存到资产「${asset.name}」，可在云端模板的 AI 资产中添加。`);
+      const kind = target?.kind ?? kinds[viewed.id] ?? defaultKind(viewed.spec.sprite?.kind);
+      const asset = await publishSprite(viewed.id, publishChoice(viewed, kind), target?.id);
+      setAssets((current) => [asset, ...(current ?? []).filter((item) => item.id !== asset.id)]);
+      if (scope.active)
+        toast.success(target
+          ? `已覆盖资产「${asset.name}」，引用它的模板将使用新版本。`
+          : `已保存到资产「${asset.name}」，可在云端模板的 AI 资产中添加。`);
     } catch (reason) {
       if (scope.active) setPublishError(reason instanceof Error ? reason.message : "保存资产失败，请重试。");
     } finally {
@@ -159,10 +196,23 @@ export function RemotionWorkspace() {
       </Tabs>
       <WorkspacePanels
         action={
-          <Button size="sm" disabled={!viewed || locked || session.dirty || publishing} onClick={() => void saveAsset()}
-            title={session.dirty ? "请先保存或撤销参数修改" : viewed ? `保存当前预览 V${viewed.number} 为资产` : "生成成功后可保存资产"}>
-            <Wand2 className="size-3.5" />{publishing ? "保存中…" : "保存资产"}
-          </Button>
+          <div className="flex items-center gap-1.5">
+            {overwriteTarget && (
+              <Select value={overwriting ? "overwrite" : "new"} onValueChange={(value) => setSaveMode(value as SaveMode)} disabled={locked || publishing}>
+                <SelectTrigger size="sm" aria-label="保存方式" className="h-8 w-40 max-w-[45vw] text-xs" title={`覆盖保存沿用资产「${overwriteTarget.name}」的分类（${targetKindLabel ?? "未知"}）与画布`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="overwrite" disabled={kindConflict}>覆盖「{overwriteTarget.name}」</SelectItem>
+                  <SelectItem value="new">另存为新资产</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+            <Button size="sm" disabled={!viewed || locked || session.dirty || publishing} onClick={() => void saveAsset()}
+              title={session.dirty ? "请先保存或撤销参数修改" : viewed ? (overwriting ? `用当前预览 V${viewed.number} 覆盖资产「${overwriteTarget?.name}」` : `保存当前预览 V${viewed.number} 为新资产`) : "生成成功后可保存资产"}>
+              <Wand2 className="size-3.5" />{publishing ? "保存中…" : "保存资产"}
+            </Button>
+          </div>
         }
         mobile={mobile}
         status={

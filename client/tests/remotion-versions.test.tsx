@@ -1,7 +1,7 @@
 /** 成功版本交互回归：目录、折叠复制、只读预览、导航保护与并发清理；执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { PublishSpriteRequestSchema, PublishSpriteResponseSchema, SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
+import { PublishSpriteRequestSchema, PublishSpriteResponseSchema, ListSpritesResponseSchema, SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import {
   act,
   fireEvent,
@@ -65,9 +65,19 @@ async function ready() {
 }
 
 /** 发布成功的最小 Protobuf 回执，不访问真实资产库。 */
-function publishedAsset() {
+function publishedAsset(sourceVersionId = "version-2") {
   return new Response(Uint8Array.from(toBinary(PublishSpriteResponseSchema, create(PublishSpriteResponseSchema, {
-    sprite: { spriteId: "sprite-1", name: "今日灵感", kind: SpriteKind.TEXT },
+    sprite: { spriteId: "sprite-1", name: "今日灵感", kind: SpriteKind.TEXT, sourceVersionId },
+  }))), { headers: { "Content-Type": "application/x-protobuf" } });
+}
+
+/** 资产目录：本会话的 version-2 已经保存为 sprite-1，工作区应默认提议覆盖它。 */
+function spriteCatalog() {
+  return new Response(Uint8Array.from(toBinary(ListSpritesResponseSchema, create(ListSpritesResponseSchema, {
+    sprites: [{
+      spriteId: "sprite-1", name: "今日灵感", kind: SpriteKind.TEXT, sourceVersionId: "version-2",
+      canvas: { width: 1080, height: 1920, fps: 30, previewFrames: 150 },
+    }],
   }))), { headers: { "Content-Type": "application/x-protobuf" } });
 }
 
@@ -112,6 +122,73 @@ test("顶栏保存当前预览版本为资产并防止重复提交", async () =>
   await waitFor(() => expect(requests).toHaveLength(2));
   expect(requests[1]).toMatchObject({ sourceVersionId: "version-1", kind: SpriteKind.FILTER_OVERLAY, textProp: "", keywordsProp: "" });
   await waitFor(() => expect(save.disabled).toBe(false));
+});
+
+// Issue #246：本会话保存过资产后默认覆盖它；保存处可切换为另存为新资产，覆盖请求带上目标资产 ID。
+test("保存资产默认覆盖本会话上一次保存的资产，也可以另存为新资产", async () => {
+  const requests: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>>[] = [];
+  await history((path, options) => {
+    if (/^\/versions\/version-\d+$/.test(path)) {
+      const version = remotionVersion(path.split("/")[2]);
+      version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywords", title: "关键词" }] };
+      return Response.json(version);
+    }
+    if (path === "/api/sprites" && (options?.method ?? "GET") === "GET") return spriteCatalog();
+    if (path === "/api/sprites/publish") {
+      requests.push(fromBinary(PublishSpriteRequestSchema, new Uint8Array(options!.body as Uint8Array)));
+      return publishedAsset();
+    }
+  });
+  render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  const mode = await screen.findByRole("combobox", { name: "保存方式" });
+  expect(mode.textContent).toContain("覆盖「今日灵感」");
+  const save = screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" });
+  expect(save.title).toContain("覆盖资产「今日灵感」");
+  fireEvent.click(save);
+  await waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]).toMatchObject({
+    sourceVersionId: "version-2", targetSpriteId: "sprite-1", kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "keywords",
+  });
+  await waitFor(() => expect(save.disabled).toBe(false));
+  fireEvent.keyDown(mode, { key: "ArrowDown" });
+  fireEvent.keyDown(await screen.findByRole("option", { name: "另存为新资产" }), { key: "Enter" });
+  await waitFor(() => expect(mode.textContent).toContain("另存为新资产"));
+  expect(save.title).toContain("保存当前预览 V2 为新资产");
+  fireEvent.click(save);
+  await waitFor(() => expect(requests).toHaveLength(2));
+  expect(requests[1].targetSpriteId).toBe("");
+  expect(requests[1]).toMatchObject({ sourceVersionId: "version-2", kind: SpriteKind.TEXT });
+});
+
+// 改选其他分类表示要一个新资产：覆盖不能再改变已有片段依赖的类型，选项不可用且按卡片分类保存为新资产。
+test("为版本改选其他分类时覆盖不可用，按新分类另存", async () => {
+  const requests: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>>[] = [];
+  await history((path, options) => {
+    if (/^\/versions\/version-\d+$/.test(path)) {
+      const version = remotionVersion(path.split("/")[2]);
+      version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywords", title: "关键词" }] };
+      return Response.json(version);
+    }
+    if (path === "/api/sprites" && (options?.method ?? "GET") === "GET") return spriteCatalog();
+    if (path === "/api/sprites/publish") {
+      requests.push(fromBinary(PublishSpriteRequestSchema, new Uint8Array(options!.body as Uint8Array)));
+      return publishedAsset();
+    }
+  });
+  render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  await screen.findByRole("combobox", { name: "保存方式" });
+  const kind = within(screen.getByLabelText("成功版本 V2")).getByRole("combobox", { name: "资产分类" });
+  fireEvent.keyDown(kind, { key: "ArrowDown" });
+  fireEvent.keyDown(await screen.findByRole("option", { name: "滤镜" }), { key: "Enter" });
+  await waitFor(() => expect(kind.textContent).toContain("滤镜"));
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" }).disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "保存资产" }));
+  await waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]).toMatchObject({ targetSpriteId: "", kind: SpriteKind.FILTER_OVERLAY });
 });
 
 // 发布被服务端拒绝时保留具体原因、不自动重试，用户再次保存后可恢复。

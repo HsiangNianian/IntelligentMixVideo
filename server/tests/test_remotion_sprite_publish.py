@@ -171,6 +171,38 @@ def objects(store: Store) -> Path:
     return store.root / "objects" / "imv" / "remotion"
 
 
+def another_version(
+    published, *, code: str = CODE, defaults: dict | None = None, description: str = "新版标题",
+):
+    """用同一份临时数据再封存一个成功版本（新的会话），供覆盖保存用例验证资产确实换成了新内容。"""
+    settings = published.settings
+    harness = Harness(SimpleNamespace(settings=settings), OfflineRenderer(settings, CodeOnlyRenderer(settings)))
+    parameters = {**DEFAULTS, **(defaults or {})}
+    sprite = SpriteDraft(
+        description=description,
+        code=code,
+        parameter_schema=SCHEMA,
+        default_parameters=parameters,
+        composition={"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
+        instances=[{
+            "instance_id": "title",
+            "preset": {"code": code, "parameter_schema": SCHEMA, "default_parameters": parameters, "description": "标题"},
+            "parameters": parameters,
+            "layout": LAYOUT,
+            "timing": {"start_frame": 0, "duration_frames": 30},
+        }],
+        bindings=[{"name": name, "title": name, "targets": [{"instance_id": "title", "parameter": name}]} for name in BOUND],
+        kind="text",
+    )
+    _work, job = published.store.create(GenerateTemplateRequest(description="新版本"), DEVICE)
+    published.store.claim()
+    result = asyncio.run(harness.finalize_sprite(
+        SimpleNamespace(saved_sprite=lambda _id: _SavedSprite(sprite), validation_for=lambda _r: runtime_report(sprite)),
+        "saved", Budget(), published.store.job_dir(job.id),
+    ))
+    return published.store.publish(job.id, *result)
+
+
 def bundle_copy(store: Store, sprite_id: str) -> Path:
     """一个资产的播放器包副本（对象）。"""
     return objects(store) / "sprites" / sprite_id / "interactive.js"
@@ -273,6 +305,93 @@ def test_republishing_returns_the_original_sprite(client: TestClient, published)
     assert again.sprite_id == first.sprite_id and first.keywords_supported
     assert other.sprite_id != first.sprite_id and not other.keywords_supported
     assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 2
+
+
+def test_overwrite_replaces_the_target_under_its_id_and_name(client: TestClient, published, template_db: Engine) -> None:
+    """Issue #246：覆盖保存把新版本写进同一个资产（同一 sprite_id），保留目录名称，模板里的引用不用改动。
+
+    目录仍只有一个条目；记录的来源版本、源码、默认参数与预览页注入的默认值都换成新版本。
+    """
+    first = published_sprite(client, published.version.id)
+    renamed = client.post(
+        f"/api/sprites/{first.sprite_id}/rename", content=pb.RenameSpriteRequest(name="海报名").SerializeToString(),
+        headers=PROTOBUF,
+    )
+    assert renamed.status_code == 200
+    new_code = 'import React from "react";\nexport default function Sprite(p: {text: string}) { return <section>{p.text}</section>; }\n'
+    version = another_version(published, code=new_code, defaults={"text": "新标题"})
+    response = publish(client, publish_request(version.id, target_sprite_id=first.sprite_id))
+    assert response.status_code == 200, response.text
+    summary = pb.PublishSpriteResponse.FromString(response.content).sprite
+    assert (summary.sprite_id, summary.name) == (first.sprite_id, "海报名")
+    assert summary.source_version_id == str(version.id)
+    listed = pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites
+    assert [item.sprite_id for item in listed] == [first.sprite_id]
+    with template_db.connect() as connection:
+        row = connection.execute(select(sprite_store.sprites)).one()
+    assert (row.source_version_id, row.kind, row.text_prop, row.keywords_prop) == (
+        str(version.id), pb.SPRITE_KIND_TEXT, "text", "keywords",
+    )
+    assert row.data["tsx_code"] == new_code and row.data["sprite_id"] == first.sprite_id
+    assert json.loads(row.data["default_config_json"])["text"] == "新标题"
+    page = client.get(summary.preview_url).text
+    data = page.split('<script type="application/json" id="imv-preview-host">', 1)[1].split("</script>", 1)[0]
+    assert json.loads(data)["config"]["text"] == "新标题"
+
+
+def test_overwriting_an_unknown_target_is_a_404(client: TestClient, published) -> None:
+    """覆盖目标不存在或不是 UUID 时是 404，不能悄悄退化成新建。"""
+    for target in ("00000000-0000-4000-8000-000000000000", "not-a-uuid"):
+        response = publish(client, publish_request(published.version.id, target_sprite_id=target))
+        assert response.status_code == 404
+    assert client.get("/api/sprites").content == b""
+
+
+@pytest.mark.parametrize(("fields", "detail"), [
+    ({"kind": pb.SPRITE_KIND_VIDEO_OVERLAY, "text_prop": "", "keywords_prop": ""}, "不能改变资产分类"),
+], ids=["video"])
+def test_overwrite_refuses_a_different_kind(client: TestClient, published, fields, detail) -> None:
+    """覆盖不能让已有片段变成另一个类型；需要时改为另存为新资产。"""
+    first = published_sprite(client, published.version.id)
+    response = publish(client, publish_request(published.version.id, target_sprite_id=first.sprite_id, **fields))
+    assert response.status_code == 422 and detail in response.json()["detail"]
+    assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites[0].kind == pb.SPRITE_KIND_TEXT
+
+
+def test_overwrite_refuses_a_different_canvas(published) -> None:
+    """模板只摆放同画布的资产：覆盖必须保持宽、高和帧率一致，否则只能另存为新资产。"""
+    target = pb.PublishedSprite(kind=pb.SPRITE_KIND_TEXT, text_prop="text", keywords_prop="keywords")
+    target.canvas.CopyFrom(pb.SpriteCanvas(width=720, height=1280, fps=30))
+    with pytest.raises(HTTPException) as caught:
+        sprites._validated_overwrite(publish_request(published.version.id), published.version, target)
+    assert caught.value.status_code == 422 and "画布" in caught.value.detail
+
+
+def test_a_version_already_saved_as_another_asset_cannot_also_overwrite(client: TestClient, published) -> None:
+    """同一版本与字段选择已经是一个独立资产时，再拿它覆盖另一个资产会撞唯一键并说明原因。"""
+    first = published_sprite(client, published.version.id)
+    version = another_version(published)
+    other = published_sprite(client, version.id)
+    response = publish(client, publish_request(version.id, target_sprite_id=first.sprite_id))
+    assert response.status_code == 409 and "已经保存为另一个资产" in response.json()["detail"]
+    listed = pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites
+    assert {item.sprite_id for item in listed} == {first.sprite_id, other.sprite_id}
+
+
+def test_repeating_an_overwrite_skips_samples_and_returns_the_same_asset(client: TestClient, published) -> None:
+    """重复点击覆盖不会重复渲染参数边界样本；目标已经是这个版本时直接返回它。"""
+    first = published_sprite(client, published.version.id)
+    version = another_version(published)
+    before = len(published.renderer.samples)
+    first_response = publish(client, publish_request(version.id, target_sprite_id=first.sprite_id))
+    assert first_response.status_code == 200
+    samples = len(published.renderer.samples)
+    assert samples == before + 1
+    again = publish(client, publish_request(version.id, target_sprite_id=first.sprite_id))
+    assert again.status_code == 200
+    assert pb.PublishSpriteResponse.FromString(again.content).sprite.sprite_id == first.sprite_id
+    assert len(published.renderer.samples) == samples
+    assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 1
 
 
 def test_published_sprite_survives_deleting_its_source_version(client: TestClient, published) -> None:
