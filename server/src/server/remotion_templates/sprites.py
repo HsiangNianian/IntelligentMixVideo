@@ -426,7 +426,8 @@ def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None
     """Replace a publication's player copy and its recorded hash; the source and parameters are untouched.
 
     The object is written before the hash is recorded. If the second step fails, the copy no longer matches and
-    the next preview rebuilds it, so a partial update never leaves an unusable asset.
+    the next preview rebuilds it, so a partial update never leaves an unusable asset. Callers hold bundle_lock
+    and pass the publication re-read under that lock, so an old source cannot replace a newer source's player.
     """
     staged = store.root / "sprites" / f".bundle-{uuid4().hex}.js"
     staged.parent.mkdir(parents=True, exist_ok=True)
@@ -493,12 +494,38 @@ def _inspect(
     return version, sprite, _bundle_bytes(store, sprite) or b""
 
 
+def _accepts_previous_parameter(previous: dict | None, current: dict | None) -> bool:
+    """Conservatively compare the independent parameter schemas supported by published controls.
+
+    Labels/defaults may change, bounds and enums may widen, and integers may become numbers. Unknown constraints
+    are not guessed at: their compatibility needs a new asset instead. Array items use the same comparison.
+    """
+    known = {"type", "title", "description", "default", "minimum", "maximum", "minLength", "maxLength",
+             "minItems", "maxItems", "enum", "pattern", "items"}
+    if not isinstance(previous, dict) or not isinstance(current, dict) or (set(previous) | set(current)) - known:
+        return False
+    if previous.get("type") != current.get("type") and (previous.get("type"), current.get("type")) != ("integer", "number"):
+        return False
+    for key in ("minimum", "minLength", "minItems"):
+        if key in current and current[key] > previous.get(key, float("-inf") if key == "minimum" else 0):
+            return False
+    for key in ("maximum", "maxLength", "maxItems"):
+        if key in current and current[key] < previous.get(key, float("inf")):
+            return False
+    if "enum" in current and ("enum" not in previous or any(value not in current["enum"] for value in previous["enum"])):
+        return False
+    if "pattern" in current and current["pattern"] != previous.get("pattern"):
+        return False
+    return "items" not in current or _accepts_previous_parameter(previous.get("items"), current["items"])
+
+
 def _validated_overwrite(request: pb.PublishSpriteRequest, version: TemplateVersion, target: pb.PublishedSprite) -> None:
     """Refuse an overwrite that would change what templates already rely on.
 
     Templates place a Sprite by ID and keep only their own parameter overrides, so replacing the content is safe
-    only while the kind, the text field contract and the render canvas stay the same. Any other change has to be
-    saved as a new asset, where templates can opt into it.
+    only while the kind, text fields, canvas and every previously editable parameter stay compatible. Defaults
+    and internal instance schemas may change; existing overrides must still be accepted against the new defaults.
+    Cross-parameter constraints cannot be proven compatible here and require a new asset.
     """
     if request.kind != target.kind:
         raise _invalid("覆盖保存不能改变资产分类；如需保存为其他分类，请另存为新资产")
@@ -507,6 +534,25 @@ def _validated_overwrite(request: pb.PublishSpriteRequest, version: TemplateVers
     composition, canvas = version.spec.composition, target.canvas
     if (composition.width, composition.height, round(composition.fps)) != (canvas.width, canvas.height, canvas.fps):
         raise _invalid("覆盖保存要求画布宽、高和帧率与目标资产一致；如需使用其他画布，请另存为新资产")
+    if _unchanged(target, request, version):
+        return
+    previous = [item for item in operator_parameters(target) if item.access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE]
+    if not previous:
+        return
+    schema = open_font_schema(version.candidate.config_schema)
+    # Independent properties are safe to merge with new defaults. Arbitrary root constraints can couple an old
+    # override to a changed internal default, even when those constraints themselves have not changed.
+    independent = {"type", "properties", "required", "additionalProperties", "title", "description", "default",
+                   "$schema", "$id", "$comment", "$defs", "definitions"}
+    if set(schema) - independent:
+        raise _invalid("覆盖保存无法确认跨参数约束与已有模板兼容；请另存为新资产")
+    old_properties = open_font_schema(json.loads(target.config_schema_json or "{}")).get("properties", {})
+    properties = schema.get("properties", {})
+    editable = {item.key for item in _parameters(schema, version.candidate.default_config, _bound_names(version))}
+    incompatible = [item.key for item in previous if item.key not in editable
+                    or not _accepts_previous_parameter(old_properties.get(item.key), properties.get(item.key))]
+    if incompatible:
+        raise _invalid(f"覆盖保存不能删除、改型或收紧已有参数（{'、'.join(incompatible)}）；请另存为新资产")
 
 
 def _inspect_target(
@@ -600,7 +646,7 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
     sprite_id = str(uuid4())
     published_at = datetime.now(UTC)
     sprite = _publication(
-        request, version, sprite_id=sprite_id, name=version.spec.name,
+        request, version, sprite_id=sprite_id, name=request.name.strip() or version.spec.name,
         canvas=pb.SpriteCanvas(
             width=composition.width, height=composition.height,
             fps=round(composition.fps), preview_frames=composition.duration_in_frames,
@@ -661,6 +707,7 @@ def _overwrite(
                 target.sprite_id, source_version_id=str(version.id), kind=request.kind,
                 text_prop=request.text_prop, keywords_prop=request.keywords_prop,
                 published_at=published_at, data=MessageToDict(sprite, preserving_proto_field_name=True),
+                name=request.name.strip() or None,
             )
         except IntegrityError as exc:
             if exc.orig.args[0] != 1062:
@@ -687,6 +734,24 @@ def _unchanged(target: pb.PublishedSprite, request: pb.PublishSpriteRequest, ver
     )
 
 
+async def _resave(store: Store, sprite: pb.PublishedSprite, fresh: bytes | None, name: str) -> pb.SpriteSummary:
+    """Commit a repeated save only while its publication still holds the inspected source.
+
+    Rebuilding may overlap an overwrite. Take the same lock as overwrite, preview repair and deletion, then
+    re-read before writing either the bundle/hash or a name; a stale request must not modify the newer asset.
+    """
+    async with bundle_lock(sprite.sprite_id):
+        current = await run_in_threadpool(get, sprite.sprite_id)
+        identity = ("source_version_id", "kind", "text_prop", "keywords_prop", "code_sha256")
+        if any(getattr(current, field) != getattr(sprite, field) for field in identity):
+            raise Conflict("资产已被其他版本覆盖，请刷新后重试或另存为新资产")
+        if fresh:
+            await run_in_threadpool(_store_bundle, store, current, fresh)
+        if name:
+            return await run_in_threadpool(rename, current.sprite_id, name)
+        return summarize(await run_in_threadpool(get, current.sprite_id))
+
+
 async def publish(service, request: pb.PublishSpriteRequest, device: UUID) -> pb.SpriteSummary:
     """Copy a verified accepted version into a publication; repeating returns the original, or replaces a target.
 
@@ -699,6 +764,9 @@ async def publish(service, request: pb.PublishSpriteRequest, device: UUID) -> pb
     browser work is awaited, so the event loop stays free; identical publications take turns, and overwrites of one
     asset are serialized, so a double click samples and rebuilds once.
     """
+    name = request.name.strip()
+    if len(name) > NAME_MAX_LENGTH:
+        raise _invalid(f"资产名称去除首尾空白后不能超过 {NAME_MAX_LENGTH} 个字符")
     store = service.store
     key = (
         ("overwrite", request.target_sprite_id) if request.target_sprite_id
@@ -713,9 +781,7 @@ async def publish(service, request: pb.PublishSpriteRequest, device: UUID) -> pb
                 version.spec.composition.model_dump(), version.id,
             )
             if _unchanged(target, request, version):
-                if fresh:
-                    await run_in_threadpool(_store_bundle, store, target, fresh)
-                return summarize(target)
+                return await _resave(store, target, fresh, name)
             await _sample(service, version, request.kind)
             # Serialize with a preview rebuild or deletion of the same asset, so the copy and record stay in step.
             async with bundle_lock(target.sprite_id):
@@ -729,6 +795,4 @@ async def publish(service, request: pb.PublishSpriteRequest, device: UUID) -> pb
         )
         if sprite is None:
             return await run_in_threadpool(_create, store, request, version, fresh or bundle)
-        if fresh:
-            await run_in_threadpool(_store_bundle, store, sprite, fresh)
-        return summarize(sprite)
+        return await _resave(store, sprite, fresh, name)

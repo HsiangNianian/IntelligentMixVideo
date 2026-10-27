@@ -309,6 +309,42 @@ test("同一播放器更换资产后重新等待就绪", async () => {
   }
 });
 
+// 回归：覆盖同一资产必须重新加载；新页面 ready 可能早于 load，旧通道不能唤醒新页面，参数与当前时间须重发。
+test("同 ID 资产覆盖后立即清除握手并向新版重发摆放", async () => {
+  const ref = createRef<SpriteOverlayHandle>();
+  const version1 = { ...clip, sourceVersionId: "v1", values: { fontSize: 200 }, transform: { x: 300 } };
+  const view = render(<SpriteOverlay ref={ref} clips={[version1]} stageAspect={1} initialTime={2} />);
+  const frame = screen.getByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
+  const oldSrc = frame.src;
+  const oldChannel = new URL(oldSrc).hash.slice(1);
+  /** 模拟页面经指定通道就绪；保留旧通道用于验证迟到消息。 */
+  const ready = (channel: string) => act(async () => {
+    window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, data: { type: "imv-preview-ready", channel, sync: true, host: true } }));
+  });
+  await ready(oldChannel);
+  await waitFor(() => expect(frame.style.visibility).toBe("visible"));
+  fireEvent.load(frame);
+  view.rerender(<SpriteOverlay ref={ref} clips={[{ ...version1, name: "改名" }]} stageAspect={1} initialTime={2} />);
+  expect(frame.src).toBe(oldSrc);
+  view.rerender(<SpriteOverlay ref={ref} clips={[{ ...version1, sourceVersionId: "v2" }]} stageAspect={1} initialTime={2} />);
+  expect(new URL(frame.src).searchParams.get("version")).toBe("v2");
+  const channel = new URL(frame.src).hash.slice(1);
+  expect(channel).not.toBe(oldChannel);
+  expect(frame.style.visibility).toBe("hidden");
+  const freshPost = spyOn(frame.contentWindow!, "postMessage");
+  freshPost.mockClear();
+  await ready(oldChannel);
+  expect(freshPost).not.toHaveBeenCalled();
+  expect(frame.style.visibility).toBe("hidden");
+  await ready(channel);
+  await waitFor(() => expect(frame.style.visibility).toBe("visible"));
+  expect(freshPost.mock.calls.some(([message]) => message.type === "imv-preview-update" && message.values.fontSize === 200 && message.host.transform.x === 300)).toBe(true);
+  expect(freshPost).toHaveBeenCalledWith({ type: "imv-preview-sync", channel, time: 1, duration: 5 }, "*");
+  fireEvent.load(frame);
+  await act(async () => { ref.current!.setTime(3); });
+  await waitFor(() => expect(freshPost).toHaveBeenLastCalledWith({ type: "imv-preview-sync", channel, time: 2, duration: 5 }, "*"));
+});
+
 // 场景：AI 资产在预览上显示不对。预览页自己发现的问题（如字体加载失败）写进日志；调试模式下参数或位置更新
 // 超过 0.5 秒才画到画面上记一条警告，及时画完的不记录。
 test("记录预览页报错与偏慢的参数更新", async () => {

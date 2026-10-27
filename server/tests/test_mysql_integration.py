@@ -154,6 +154,29 @@ def test_mysql_sprite_table_keeps_field_names_binary_and_selections_unique(mysql
     assert [sprite_id for sprite_id, _ in sprite_store.listing()].count(first) == 1
 
 
+def test_mysql_sprite_overwrite_name_and_conflict_rollback(mysql_database):
+    """真实 MySQL 覆盖保留已提交的新名称，显式名称随内容更新，来源冲突回滚且不丢失原内容。"""
+    database.initialize_database()
+    identifier = seed_sprite()
+    stale = sprite_store.get(identifier)
+    sprite_store.update_data(identifier, {"name": "模板编辑处改名"})
+    source = str(uuid4())
+    fields = dict(source_version_id=source, kind=1, text_prop="", keywords_prop="", published_at=datetime.now(UTC))
+    data = {**stale, "source_version_id": source}
+    result = sprite_store.replace(identifier, data=data, **fields)
+    assert result["name"] == "模板编辑处改名"
+    assert sprite_store.find(source, 1, "", "") == result
+    result = sprite_store.replace(identifier, data=data, name="保存时填写的名称", **fields)
+    assert sprite_store.get(identifier) == result and result["name"] == "保存时填写的名称"
+    other_source = str(uuid4())
+    sprite_store.insert(sprite_id=str(uuid4()), data={}, **{**fields, "source_version_id": other_source})
+    with pytest.raises(IntegrityError) as caught:
+        sprite_store.replace(identifier, data=data, name="不能写入的名称", **{**fields, "source_version_id": other_source})
+    assert caught.value.orig.args[0] == 1062
+    assert sprite_store.get(identifier) == result
+    assert sprite_store.find(source, 1, "", "") == result
+
+
 def test_mysql_conflict_rollback_update_and_delete(mysql_database, template_payload):
     """MySQL 唯一约束冲突返回 409，回滚后仍可更新/删除；无效请求不得写入数据。"""
     with TestClient(app) as client:

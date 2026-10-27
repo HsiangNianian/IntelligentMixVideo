@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -25,7 +26,7 @@ import { useWorkHistory } from "./useWorkHistory";
 import { HistorySidebar } from "./HistorySidebar";
 import { useTemplateSession } from "./useTemplateSession";
 import { useBackgroundSync } from "./backgroundSync";
-import { listSprites, publishSprite } from "@/features/sprites/api";
+import { listSprites, publishSprite, watchCatalog } from "@/features/sprites/api";
 import type { SpriteAsset } from "@/features/sprites/model";
 import type { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import { defaultKind, PUBLISH_KINDS, publishChoice } from "./spriteChoice";
@@ -50,20 +51,42 @@ export function RemotionWorkspace() {
   const publishScope = useRef({ active: true, pending: false });
   // 版本卡片下拉改选的资产分类，按版本 ID 记录：版本列表刷新重建对象或聊天重新挂载都不会改回默认值。
   const [kinds, setKinds] = useState<Record<string, SpriteKind>>({});
-  // 当前会话上次保存到资产的条目；目录读取失败时保持 null，仅能另存为新资产。
+  // 目录随共享资产的改名、保存和删除更新；名称草稿独立保存，后台更新不覆盖用户输入。
   const [assets, setAssets] = useState<SpriteAsset[] | null>(null);
+  const [assetError, setAssetError] = useState("");
+  const [assetName, setAssetName] = useState("");
+  const refreshAssets = useRef<(() => void) | null>(null);
+  const activeWork = useRef(session.workId);
+  activeWork.current = session.workId;
   const [saveMode, setSaveMode] = useState<SaveMode>("overwrite");
-  // 切换会话重新读取目录：覆盖目标只来自当前会话的版本，不能拿上一个会话的资产去覆盖。
+  // 只保留最近一次目录读取；保存回执之后再刷新会取消旧读取，防止迟到目录把新名称换回去。
   useEffect(() => {
-    const controller = new AbortController();
+    let controller: AbortController | undefined;
     setAssets(null);
+    setAssetError("");
     setSaveMode("overwrite");
-    if (session.workId)
-      void listSprites(controller.signal).then(
-        (items) => { if (!controller.signal.aborted) setAssets(items); },
-        () => { if (!controller.signal.aborted) setAssets([]); },
+    setAssetName("");
+    if (!session.workId) return;
+    /** 目录更新失败保留已有条目并提示重试，不能因读取失败把覆盖保存变成新建。 */
+    function refresh() {
+      controller?.abort();
+      const request = new AbortController();
+      controller = request;
+      void listSprites(request.signal).then(
+        (items) => { if (!request.signal.aborted) { setAssets(items); setAssetError(""); } },
+        () => { if (!request.signal.aborted) setAssetError("资产目录读取失败，请重试后保存。"); },
       );
-    return () => controller.abort();
+    }
+    refreshAssets.current = refresh;
+    refresh();
+    const stop = watchCatalog(refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      controller?.abort();
+      stop();
+      window.removeEventListener("focus", refresh);
+      refreshAssets.current = null;
+    };
   }, [session.workId]);
   /** 本会话保存过的资产：目录按发布时间倒序，取最新的一条作为默认覆盖目标。 */
   const workVersions = new Set(catalog.versions.map((item) => item.id));
@@ -116,19 +139,25 @@ export function RemotionWorkspace() {
    */
   async function saveAsset() {
     const scope = publishScope.current;
-    if (!viewed || locked || session.dirty || scope.pending) return;
+    if (!viewed || locked || session.dirty || scope.pending || assets === null || assetError) return;
     scope.pending = true;
     setPublishing(true);
     setPublishError("");
     const target = overwriting ? overwriteTarget : null;
+    const work = session.workId;
     try {
       const kind = target?.kind ?? kinds[viewed.id] ?? defaultKind(viewed.spec.sprite?.kind);
-      const asset = await publishSprite(viewed.id, publishChoice(viewed, kind), target?.id);
-      setAssets((current) => [asset, ...(current ?? []).filter((item) => item.id !== asset.id)]);
-      if (scope.active)
+      const asset = await publishSprite(viewed.id, publishChoice(viewed, kind), target?.id, assetName);
+      if (activeWork.current === work) {
+        setAssets((current) => [asset, ...(current ?? []).filter((item) => item.id !== asset.id)]);
+        refreshAssets.current?.();
+      }
+      if (scope.active) {
+        setAssetName("");
         toast.success(target
           ? `已覆盖资产「${asset.name}」，引用它的模板将使用新版本。`
           : `已保存到资产「${asset.name}」，可在云端模板的 AI 资产中添加。`);
+      }
     } catch (reason) {
       if (scope.active) setPublishError(reason instanceof Error ? reason.message : "保存资产失败，请重试。");
     } finally {
@@ -188,6 +217,9 @@ export function RemotionWorkspace() {
         </div>
       )}
       {publishError && <p role="alert" className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-sm text-destructive">{publishError}</p>}
+      {assetError && <div role="alert" className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-sm text-destructive">
+        {assetError}<Button variant="ghost" size="sm" onClick={() => refreshAssets.current?.()}>重试资产目录</Button>
+      </div>}
       <Tabs value={mobile} onValueChange={setMobile} className="lg:hidden">
         <TabsList aria-label="工作区面板">
           <TabsTrigger value="chat">聊天</TabsTrigger>
@@ -196,10 +228,14 @@ export function RemotionWorkspace() {
       </Tabs>
       <WorkspacePanels
         action={
-          <div className="flex items-center gap-1.5">
+          <div className="flex max-w-[calc(100vw-6rem)] items-center gap-1.5">
+            <Input aria-label="资产名称" value={assetName} onChange={(event) => setAssetName(event.target.value)}
+              placeholder={overwriting ? overwriteTarget.name : "资产名称（选填）"} maxLength={100}
+              title={overwriting ? `留空保留「${overwriteTarget.name}」` : `留空使用 AI 名称「${viewed?.spec.name ?? ""}」`}
+              disabled={!viewed || locked || publishing} className="h-8 w-40 max-w-[30vw] text-xs" />
             {overwriteTarget && (
               <Select value={overwriting ? "overwrite" : "new"} onValueChange={(value) => setSaveMode(value as SaveMode)} disabled={locked || publishing}>
-                <SelectTrigger size="sm" aria-label="保存方式" className="h-8 w-40 max-w-[45vw] text-xs" title={`覆盖保存沿用资产「${overwriteTarget.name}」的分类（${targetKindLabel ?? "未知"}）与画布`}>
+                <SelectTrigger size="sm" aria-label="保存方式" className="h-8 min-w-0 w-40 max-w-[30vw] text-xs" title={`覆盖保存沿用资产「${overwriteTarget.name}」的分类（${targetKindLabel ?? "未知"}）与画布`}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -208,7 +244,7 @@ export function RemotionWorkspace() {
                 </SelectContent>
               </Select>
             )}
-            <Button size="sm" disabled={!viewed || locked || session.dirty || publishing} onClick={() => void saveAsset()}
+            <Button size="sm" disabled={!viewed || locked || session.dirty || publishing || assets === null || !!assetError} onClick={() => void saveAsset()}
               title={session.dirty ? "请先保存或撤销参数修改" : viewed ? (overwriting ? `用当前预览 V${viewed.number} 覆盖资产「${overwriteTarget?.name}」` : `保存当前预览 V${viewed.number} 为新资产`) : "生成成功后可保存资产"}>
               <Wand2 className="size-3.5" />{publishing ? "保存中…" : "保存资产"}
             </Button>

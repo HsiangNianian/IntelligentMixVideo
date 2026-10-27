@@ -95,13 +95,14 @@ export async function listSprites(signal?: AbortSignal): Promise<SpriteAsset[]> 
 
 /**
  * 把本机会话的成功版本保存为资产（服务端先渲染参数边界样本）；相同选择重复调用返回原资产。
- * 提供 `target` 时覆盖该资产（同一 sprite_id 与名称，模板里的片段随即使用新版本），否则保存为新资产。
+ * 提供 `target` 时覆盖该资产（保留 sprite_id），否则保存为新资产；可同时命名，留空使用服务端默认名称。
  */
-export async function publishSprite(versionId: string, choice: PublishChoice, target?: string): Promise<SpriteAsset> {
+export async function publishSprite(versionId: string, choice: PublishChoice, target?: string, name?: string): Promise<SpriteAsset> {
   const body = toBinary(PublishSpriteRequestSchema, create(PublishSpriteRequestSchema, {
     sourceVersionId: versionId,
     ...choice,
     ...(target ? { targetSpriteId: target } : {}),
+    ...(name?.trim() ? { name: name.trim() } : {}),
   }));
   const device = await deviceId();
   const { sprite } = fromBinary(PublishSpriteResponseSchema, await request("/api/sprites/publish", "POST", undefined, body, PUBLISH_TIMEOUT_MS, device));

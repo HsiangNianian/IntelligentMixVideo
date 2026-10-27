@@ -186,18 +186,20 @@ class ListSpritesResponse(_message.Message):
     def __init__(self, sprites: _Optional[_Iterable[_Union[SpriteSummary, _Mapping]]] = ...) -> None: ...
 
 class PublishSpriteRequest(_message.Message):
-    __slots__ = ("source_version_id", "kind", "text_prop", "keywords_prop", "target_sprite_id")
+    __slots__ = ("source_version_id", "kind", "text_prop", "keywords_prop", "target_sprite_id", "name")
     SOURCE_VERSION_ID_FIELD_NUMBER: _ClassVar[int]
     KIND_FIELD_NUMBER: _ClassVar[int]
     TEXT_PROP_FIELD_NUMBER: _ClassVar[int]
     KEYWORDS_PROP_FIELD_NUMBER: _ClassVar[int]
     TARGET_SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
     source_version_id: str
     kind: SpriteKind
     text_prop: str
     keywords_prop: str
     target_sprite_id: str
-    def __init__(self, source_version_id: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., text_prop: _Optional[str] = ..., keywords_prop: _Optional[str] = ..., target_sprite_id: _Optional[str] = ...) -> None: ...
+    name: str
+    def __init__(self, source_version_id: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., text_prop: _Optional[str] = ..., keywords_prop: _Optional[str] = ..., target_sprite_id: _Optional[str] = ..., name: _Optional[str] = ...) -> None: ...
 
 class PublishSpriteResponse(_message.Message):
     __slots__ = ("sprite",)

@@ -105,6 +105,42 @@ test("旧资产显示暂无封面，预览页报错显示加载失败", async ()
   expect(screen.getByText("封面加载失败")).toBeTruthy();
 });
 
+// 回归：覆盖保留资产 ID；来源版本变化时加载新页面，清除旧就绪状态，并忽略旧页面迟到的消息。
+test("覆盖资产后封面加载新版本并重新握手，改名不重载", async () => {
+  const view = render(<SpriteCover asset={{ ...asset, sourceVersionId: "v1" }} active={false} />);
+  await intersect(true);
+  const old = player();
+  await old.ready(true);
+  await waitFor(() => expect(old.frame.style.visibility).toBe("visible"));
+  view.rerender(<SpriteCover asset={{ ...asset, name: "改名", sourceVersionId: "v1" }} active={false} />);
+  expect(screen.getByTitle("AI 资产封面：改名")).toBe(old.frame);
+  view.rerender(<SpriteCover asset={{ ...asset, sourceVersionId: "v2" }} active={false} />);
+  await intersect(true);
+  const fresh = player();
+  expect(fresh.frame).not.toBe(old.frame);
+  expect(new URL(fresh.frame.src).searchParams.get("version")).toBe("v2");
+  expect(fresh.channel).not.toBe(old.channel);
+  await old.ready(true);
+  expect(fresh.frame.style.visibility).toBe("hidden");
+  expect(fresh.post).not.toHaveBeenCalled();
+  await fresh.ready(true);
+  await waitFor(() => expect(fresh.frame.style.visibility).toBe("visible"));
+});
+
+// 回归：旧版本封面失败后，新的发布版本应重新尝试，不继承旧的失败状态。
+test("覆盖后可以从封面加载失败恢复", async () => {
+  const view = render(<SpriteCover asset={{ ...asset, sourceVersionId: "v1" }} active={false} />);
+  await intersect(true);
+  await player().send({ type: "imv-preview-error" });
+  expect(screen.getByText("封面加载失败")).toBeTruthy();
+  view.rerender(<SpriteCover asset={{ ...asset, sourceVersionId: "v2" }} active={false} />);
+  await intersect(true);
+  expect(screen.queryByText("封面加载失败")).toBeNull();
+  const fresh = player();
+  await fresh.ready(true);
+  await waitFor(() => expect(fresh.frame.style.visibility).toBe("visible"));
+});
+
 // 场景：Remotion 目录按分类显示，分类内按名称搜索；卡片仍以“添加 AI 资产”为操作名并带封面播放器，点击把资产交给 onAdd。
 test("Remotion 目录在分类内按名称搜索并添加", async () => {
   const added: SpriteAsset[] = [];

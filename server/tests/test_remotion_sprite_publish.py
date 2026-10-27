@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import shutil
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -37,7 +38,8 @@ from server.remotion_templates.tools.contracts import SpriteDraft
 from server.video_composition import zos
 from server.video_composition.settings import ZosSettings
 
-from .conftest import DEVICE, DEVICE_HEADERS, seed_sprite
+from .conftest import DEVICE, DEVICE_HEADERS, remotion_track, seed_sprite
+from .template_wire import post_template, saved_template
 from .test_remotion_object_store import ZOS_ENV
 from .test_remotion_version_diagnostics import (
     CodeOnlyRenderer,
@@ -173,25 +175,28 @@ def objects(store: Store) -> Path:
 
 def another_version(
     published, *, code: str = CODE, defaults: dict | None = None, description: str = "新版标题",
+    schema: dict | None = None, bound: list[str] | None = None,
 ):
     """用同一份临时数据再封存一个成功版本（新的会话），供覆盖保存用例验证资产确实换成了新内容。"""
     settings = published.settings
     harness = Harness(SimpleNamespace(settings=settings), OfflineRenderer(settings, CodeOnlyRenderer(settings)))
-    parameters = {**DEFAULTS, **(defaults or {})}
+    schema = SCHEMA if schema is None else schema
+    bound = BOUND if bound is None else bound
+    parameters = {key: value for key, value in {**DEFAULTS, **(defaults or {})}.items() if key in schema["properties"]}
     sprite = SpriteDraft(
         description=description,
         code=code,
-        parameter_schema=SCHEMA,
+        parameter_schema=schema,
         default_parameters=parameters,
         composition={"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
         instances=[{
             "instance_id": "title",
-            "preset": {"code": code, "parameter_schema": SCHEMA, "default_parameters": parameters, "description": "标题"},
+            "preset": {"code": code, "parameter_schema": schema, "default_parameters": parameters, "description": "标题"},
             "parameters": parameters,
             "layout": LAYOUT,
             "timing": {"start_frame": 0, "duration_frames": 30},
         }],
-        bindings=[{"name": name, "title": name, "targets": [{"instance_id": "title", "parameter": name}]} for name in BOUND],
+        bindings=[{"name": name, "title": name, "targets": [{"instance_id": "title", "parameter": name}]} for name in bound],
         kind="text",
     )
     _work, job = published.store.create(GenerateTemplateRequest(description="新版本"), DEVICE)
@@ -337,6 +342,168 @@ def test_overwrite_replaces_the_target_under_its_id_and_name(client: TestClient,
     page = client.get(summary.preview_url).text
     data = page.split('<script type="application/json" id="imv-preview-host">', 1)[1].split("</script>", 1)[0]
     assert json.loads(data)["config"]["text"] == "新标题"
+
+
+def test_incompatible_overwrite_keeps_an_existing_template_usable(client, published, template_payload) -> None:
+    """字号 200 的模板不能因覆盖时上限缩到 160 而失效：覆盖返回 422，原资产和预览不变、模板仍可保存。"""
+    first = published_sprite(client, published.version.id)
+    template_payload["tracks"].append(remotion_track(
+        sprite_id=first.sprite_id, text_target="title",
+        editor={"remotion": {"parameters": [{"key": "fontSize", "numberValue": 200}]}},
+    ))
+    saved = post_template(client, template_payload)
+    assert saved.status_code == 201, saved.text
+    template_payload["template_id"] = saved_template(saved)["template_id"]
+    schema = deepcopy(SCHEMA)
+    schema["properties"]["fontSize"]["maximum"] = 160
+    newer = another_version(published, schema=schema)
+    before, bundle = sprites.get(first.sprite_id), bundle_copy(published.store, first.sprite_id).read_bytes()
+    samples = len(published.renderer.samples)
+    response = publish(client, publish_request(newer.id, target_sprite_id=first.sprite_id, name="不能写入"))
+    assert response.status_code == 422 and "fontSize" in response.json()["detail"]
+    assert "另存为新资产" in response.json()["detail"]
+    assert sprites.get(first.sprite_id) == before
+    assert bundle_copy(published.store, first.sprite_id).read_bytes() == bundle
+    assert len(published.renderer.samples) == samples
+    assert post_template(client, template_payload).status_code == 200
+    # 用户仍可选择另存为新资产，在新模板里使用更窄的契约。
+    assert published_sprite(client, newer.id).sprite_id != first.sprite_id
+
+
+@pytest.mark.parametrize("change", ["remove", "unbind", "type", "enum", "length", "items", "root"])
+def test_overwrite_preserves_the_complete_override_contract(client, published, change) -> None:
+    """删除、隐藏、改型、缩小枚举/长度/项数或引入跨参数约束必须在覆盖前拒绝。"""
+    original = deepcopy(SCHEMA)
+    original["properties"]["label"] = {"type": "string", "maxLength": 20, "enum": ["one", "two"]}
+    bound = [*BOUND, "label"]
+    version = another_version(published, schema=original, bound=bound, defaults={"label": "one"})
+    first = published_sprite(client, version.id)
+    schema, defaults = deepcopy(original), {"label": "one"}
+    if change == "remove":
+        del schema["properties"]["label"]
+        bound.remove("label")
+    elif change == "unbind":
+        bound.remove("label")
+    elif change == "type":
+        schema["properties"]["label"] = {"type": "boolean"}
+        defaults["label"] = False
+    elif change == "enum":
+        schema["properties"]["label"]["enum"] = ["one"]
+    elif change == "length":
+        schema["properties"]["keywords"]["items"]["maxLength"] = 40
+    elif change == "items":
+        schema["properties"]["keywords"]["maxItems"] = 10
+    else:
+        schema["allOf"] = [{"if": {"properties": {"shadow": {"const": True}}}, "then": {"properties": {"fontSize": {"maximum": 100}}}}]
+    newer = another_version(published, schema=schema, bound=bound, defaults=defaults)
+    response = publish(client, publish_request(newer.id, target_sprite_id=first.sprite_id))
+    assert response.status_code == 422 and "覆盖保存" in response.json()["detail"], response.text
+    assert sprites.get(first.sprite_id).source_version_id == str(version.id)
+
+
+def test_overwrite_accepts_wider_parameters_and_changed_internal_defaults(client, published) -> None:
+    """扩展范围/枚举、新增参数及修改内部结构不破坏旧覆盖；样式默认值与说明可更新。"""
+    schema = deepcopy(SCHEMA)
+    schema["properties"]["fontSize"].update(minimum=16, maximum=300, title="新版字号")
+    schema["properties"]["label"] = {"type": "string", "enum": ["one", "two"], "maxLength": 20}
+    schema["properties"]["title"] = {"type": "object", "properties": {"blur": {"type": "number"}}, "additionalProperties": False}
+    first = published_sprite(client, published.version.id)
+    newer = another_version(published, schema=schema, bound=[*BOUND, "label"], defaults={"fontSize": 80, "label": "one", "title": {"blur": 4}})
+    summary = published_sprite(client, newer.id, target_sprite_id=first.sprite_id)
+    assert summary.sprite_id == first.sprite_id and summary.source_version_id == str(newer.id)
+    # 继续扩展新增参数的枚举和文字长度，旧的 one/two 仍然有效。
+    schema["properties"]["label"].update(enum=["one", "two", "three"], maxLength=30)
+    wider = another_version(published, schema=schema, bound=[*BOUND, "label"], defaults={"label": "three", "title": {"blur": 2}})
+    assert published_sprite(client, wider.id, target_sprite_id=first.sprite_id).sprite_id == first.sprite_id
+
+
+def test_old_republish_cannot_replace_a_newer_preview(client, published, monkeypatch) -> None:
+    """旧版本重建预览时新版本完成覆盖：旧请求返回冲突，不能写回旧包、哈希或名称。"""
+    first = published_sprite(client, published.version.id)
+    old = sprites.get(first.sprite_id)
+    sprites._store_bundle(published.store, old, b"// outdated player")
+    new_code = CODE.replace("<div>", "<section>").replace("</div>", "</section>")
+    newer = another_version(published, code=new_code)
+
+    async def scenario():
+        """用事件固定交错顺序，避免依赖线程时机；所有等待有界，失败也释放旧请求。"""
+        started, resume = asyncio.Event(), asyncio.Event()
+
+        async def rebuild(service, code, config, composition, label):
+            """只暂停旧源码的构建，让新版覆盖先提交。"""
+            if code == old.tsx_code:
+                started.set()
+                await asyncio.wait_for(resume.wait(), 5)
+                return (CURRENT + "// V1 player").encode()
+            return (CURRENT + "// V2 player").encode()
+
+        monkeypatch.setattr(sprites, "_rebuild_bundle", rebuild)
+        resave = asyncio.create_task(sprites.publish(published.service, publish_request(published.version.id, name="过时的名称"), DEVICE))
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            await sprites.publish(published.service, publish_request(newer.id, target_sprite_id=first.sprite_id, name="新版名称"), DEVICE)
+        finally:
+            resume.set()
+        with pytest.raises(sprites.Conflict, match="已被其他版本覆盖"):
+            await asyncio.wait_for(resave, 5)
+        stored = sprites.get(first.sprite_id)
+        assert (stored.source_version_id, stored.tsx_code, stored.name) == (str(newer.id), new_code, "新版名称")
+        script, _host = await sprites.preview_script(published.service, first.sprite_id)
+        assert "// V2 player" in script and "// V1 player" not in script
+
+    asyncio.run(asyncio.wait_for(scenario(), 15))
+
+
+@pytest.mark.parametrize(("name", "expected"), [("  我的片头  ", "我的片头"), ("", "标题字效"), (" \n\t ", "标题字效")])
+def test_publish_accepts_a_name_or_uses_the_generated_default(client: TestClient, published, name, expected) -> None:
+    """首次保存可选命名，去除首尾空白；未填写或全空白时使用 AI 生成的名称。"""
+    summary = published_sprite(client, published.version.id, name=name)
+    assert summary.name == expected
+    assert sprites.get(summary.sprite_id).name == expected
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_repeated_publish_can_rename_without_creating_another_asset(client: TestClient, published, overwrite) -> None:
+    """同一版本重复保存或覆盖都能改名；留空保留新名称，不新建资产、不再抽样。"""
+    first = published_sprite(client, published.version.id)
+    samples = len(published.renderer.samples)
+    fields = {"target_sprite_id": first.sprite_id} if overwrite else {}
+    renamed = published_sprite(client, published.version.id, name="新资产名", **fields)
+    unchanged = published_sprite(client, published.version.id, name="  ", **fields)
+    assert renamed.sprite_id == unchanged.sprite_id == first.sprite_id
+    assert renamed.name == unchanged.name == "新资产名"
+    assert len(published.renderer.samples) == samples
+    assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 1
+
+
+@pytest.mark.parametrize("name", ["", "  覆盖时填写的新名称  "])
+def test_overwrite_resolves_the_name_at_commit(client: TestClient, published, monkeypatch, name) -> None:
+    """覆盖期间成功的重命名不能被旧快照还原；用户在本次保存显式填了名称时随新内容一起更新。"""
+    first = published_sprite(client, published.version.id)
+    newer = another_version(published)
+    sample = sprites._sample
+
+    async def renamed_during_sampling(service, version, kind):
+        """在读取目标之后、提交覆盖之前完成另一次重命名，模拟实际的并发顺序。"""
+        sprites.rename(first.sprite_id, "模板编辑处的新名称")
+        await sample(service, version, kind)
+
+    monkeypatch.setattr(sprites, "_sample", renamed_during_sampling)
+    summary = published_sprite(client, newer.id, target_sprite_id=first.sprite_id, name=name)
+    assert summary.name == (name.strip() or "模板编辑处的新名称")
+    assert sprites.get(first.sprite_id).name == summary.name
+    assert summary.source_version_id == str(newer.id)
+
+
+def test_an_overlong_publish_name_does_not_change_the_catalog(client: TestClient, published) -> None:
+    """超长名称在发布前以 422 拒绝；已有名称、来源版本和发布数保持不变。"""
+    first = published_sprite(client, published.version.id)
+    newer = another_version(published)
+    before = client.get("/api/sprites").content
+    for fields in ({}, {"target_sprite_id": first.sprite_id}):
+        response = publish(client, publish_request(newer.id, name="字" * 101, **fields))
+        assert response.status_code == 422 and "名称" in response.json()["detail"]
+        assert client.get("/api/sprites").content == before
 
 
 def test_overwriting_an_unknown_target_is_a_404(client: TestClient, published) -> None:
