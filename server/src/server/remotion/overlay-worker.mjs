@@ -39,7 +39,8 @@ function entrypoint() {
     const host = item.host ?? {box: {x: 0, y: 0, width, height}, transform: {}};
     const layer = `<HostLayer box={${JSON.stringify(host.box)}} transform={${JSON.stringify(host.transform)}}><Sprite${codes.indexOf(item.code)} {...${JSON.stringify(item.config)}} /></HostLayer>`;
     const content = item.hold ? `<Hold frame={${item.hold.frame}} frames={${item.hold.frames}} length={${item.hold.length}}>${layer}</Hold>` : layer;
-    return `<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}} width={${width}} height={${height}} style={{width:${width},height:${height},left:${(composition.width-width*scale)/2},top:${(composition.height-height*scale)/2},transform:'scale(${scale})',transformOrigin:'top left'}}>${content}</Sequence>`;
+    const visible = item.visible_start_frame === undefined ? "" : `frame >= ${item.visible_start_frame} && frame < ${item.visible_end_frame} && `;
+    return `{${visible}<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}} width={${width}} height={${height}} style={{width:${width},height:${height},left:${(composition.width-width*scale)/2},top:${(composition.height-height*scale)/2},transform:'scale(${scale})',transformOrigin:'top left'}}>${content}</Sequence>}`;
   }).join("");
   return `/** Trusted overlay host waits for both managed font weights. */
 import React from 'react';
@@ -54,7 +55,7 @@ Promise.all([400,700].map(async weight => {
 /** A still instance: frozen on one frame of a \`length\`-frame timeline and shown only for its first \`frames\` frames. */
 const Hold = ({frame, frames, length, children}) => useCurrentFrame() < frames ? <Freeze frame={frame}><Sequence durationInFrames={length}>{children}</Sequence></Freeze> : null;
 /** Transparent canvas: nothing paints a background, so unplaced frames stay fully transparent. */
-const Overlay = () => <AbsoluteFill>${placed}</AbsoluteFill>;
+const Overlay = () => { const frame = useCurrentFrame(); return <AbsoluteFill>${placed}</AbsoluteFill>; };
 const Root = () => <Composition id="Overlay" component={Overlay} width={${composition.width}} height={${composition.height}} fps={${composition.fps}} durationInFrames={${composition.duration_in_frames}} />;
 registerRoot(Root);
 `;

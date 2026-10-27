@@ -1,5 +1,8 @@
 """同屏保存、几何、业务时间线及跨布局字幕回归；pytest tests/test_split_screen.py，不访问云服务。"""
 from copy import deepcopy
+import asyncio
+from pathlib import Path
+import subprocess
 
 import pytest
 from google.protobuf.json_format import ParseDict
@@ -7,9 +10,12 @@ from generated.imv.template.v1 import template_pb2 as pb
 
 from server.template.split_screen import SplitScreen, ScreenWindow, screen_rect
 from server.video_composition.timeline import build_timeline
-from server.video_composition import split_screen
+from server.video_composition import split_screen, remotion
+from server.remotion_templates.overlay_render import _fit_frames
 from .conftest import template_track
 from .template_wire import post_template
+from .test_video_composition_remotion import case as remotion_case
+from .test_video_composition_remotion import REAL_RENDER, RENDER_PATHS
 
 
 def enable(case):
@@ -142,6 +148,22 @@ async def test_assembly_recovery_reuses_layout_assets(composition_case, composit
     assert len(calls) == (0 if cached else 1)
 
 
+def test_remotion_crossing_keeps_original_clock(composition_case, monkeypatch):
+    """跨界字幕保持内容和动画长度，显示区间互斥，排版只检查该位置真正可见的帧。"""
+    case = enable(composition_case)
+    data = remotion_case(case)
+    data.update(template=case["template"], matches=case["matches"])
+    monkeypatch.setattr(remotion, "subtitle_events", lambda *args: [("跨界字幕", "", 0, 8)])
+    result = remotion.plan(data, 120)
+    assert [(i["visible_start_frame"], i["visible_end_frame"]) for i in result.instances] == [(0, 30), (30, 90), (90, 120), (120, 180), (180, 240)]
+    assert {(i["start_frame"], i["duration_frames"]) for i in result.instances} == {(0, 240)}
+    assert all(i["config"] == result.instances[0]["config"] for i in result.instances)
+    assert result.instances[0]["host"] == result.instances[2]["host"]
+    assert result.instances[1]["host"] == result.instances[3]["host"] != result.instances[0]["host"]
+    frames, length = _fit_frames(result.instances[1], 240)
+    assert (min(frames), max(frames), length) == (30, 89, 240)
+
+
 @pytest.mark.anyio
 async def test_prepare_reads_distinct_media_and_ignores_no_matches(composition_case, monkeypatch):
     """同一素材只探测一次，旋转和非方形像素计入比例，无命中不上传。"""
@@ -159,3 +181,44 @@ async def test_prepare_reads_distinct_media_and_ignores_no_matches(composition_c
     data["matches"] = []
     assert await split_screen.prepare("job", data, 30) is None
     assert len(calls) == 3
+
+
+def test_split_disables_both_transition_engines(composition_case):
+    """同屏关闭 IMS 与 Remotion 转场；纯素材模式仍保留原有转场摆放。"""
+    case = enable(composition_case)
+    track = template_track("transition", transition="transition/normal/directional")
+    track["duration"] = 1
+    track["transition_boundary"] = 1
+    track["editor"]["transition"] = "transition/normal/directional"
+    case["template"]["tracks"].append(track)
+    timeline, _ = build_timeline(**case)
+    assert not any(effect["Type"] in {"Transition", "DLTransition"} for row in timeline["VideoTracks"] for clip in row["VideoTrackClips"] for effect in clip.get("Effects", []))
+    data = {"request": case["request"], "template": case["template"], "remotion": {"placements": [{"id": "transition", "transition_boundary": 1}, {"id": "text"}]}}
+    assert [item["id"] for item in remotion.active_placements(data)] == ["text"]
+    data["request"]["compositionMode"] = "materials_voice"
+    assert len(remotion.active_placements(data)) == 2
+
+
+@pytest.mark.skipif(not REAL_RENDER, reason="set IMV_TEST_RENDERER=1 for split subtitle clock integration")
+def test_real_visible_intervals_preserve_animation_clock(tmp_path):
+    """实际 VP9 Alpha 帧证明换位置后保持第 15 帧时钟，旧位置消失，不重播动画。"""
+    from server.remotion_templates.overlay_render import Overlay, render_overlay
+    from server.remotion_templates.renderer import Renderer
+    from server.remotion_templates.settings import Settings
+
+    code = """import React from 'react'; import {useCurrentFrame} from 'remotion';
+export default function Mark() { const frame = useCurrentFrame();
+ return <div style={{width:20,height:20,background:frame < 15 ? '#ff0000' : '#0000ff'}}/>; }"""
+    base = dict(code=code, config={}, width=100, height=100, start_frame=0, duration_frames=30)
+    instances = [{**base, "visible_start_frame": start, "visible_end_frame": end,
+        "host": {"box": {"x": 0, "y": 0, "width": 100, "height": 100}, "transform": {"x": center, "y": center}}}
+        for start, end, center in [(0, 15, 50), (15, 30, 70)]]
+    configured = {field: Path(RENDER_PATHS[key]) for field, key in [("browser_executable", "IMV_BROWSER_EXECUTABLE"), ("font_regular", "IMV_FONT_REGULAR"), ("font_bold", "IMV_FONT_BOLD")] if RENDER_PATHS[key]}
+    renderer = Renderer(Settings(_env_file=None, data_dir=tmp_path / "state", **configured))
+    video = asyncio.run(render_overlay(renderer, Overlay(100, 100, 30, 30, instances), tmp_path / "render", frame_concurrency=1))
+    for frame, x, channel in [(14, 10, 0), (15, 30, 2), (29, 30, 2)]:
+        pixels = subprocess.run(["ffmpeg", "-v", "error", "-c:v", "libvpx-vp9", "-i", str(video), "-vf", f"select=eq(n\\,{frame})", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-"], check=True, capture_output=True).stdout
+        pixel = pixels[(x * 100 + x) * 4:][:4]
+        assert pixel[channel] > 240 and pixel[3] > 240
+        old = 30 if frame == 14 else 10
+        assert pixels[(old * 100 + old) * 4 + 3] < 5
