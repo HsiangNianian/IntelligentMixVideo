@@ -9,6 +9,7 @@ import httpx
 from botocore.exceptions import BotoCoreError, ClientError
 
 from ..template.split_screen import SplitScreen, screen_rect
+from ..template.avatar import AvatarEffects
 from .errors import CompositionError
 from .media import ffprobe_json
 from .settings import ZosSettings
@@ -30,7 +31,7 @@ def border_image(rect: dict, color: str) -> Image.Image:
 async def prepare(task_id: str, data: dict, timeout: float) -> dict | None:
     """准备一次任务真正命中的媒体；结果随任务保存，恢复时不重传装饰图片。"""
     layout = SplitScreen.model_validate(data["template"].get("split_screen") or {})
-    if not layout.enabled:
+    if not layout.enabled or (layout.layout == "circle" and not data.get("avatar_opening")):
         return None
     urls = list(dict.fromkeys(item["matched_candidate_url"] for item in data.get("matches", []) if item.get("matched_candidate_url")))
     if not urls:
@@ -39,6 +40,8 @@ async def prepare(task_id: str, data: dict, timeout: float) -> dict | None:
     sizes = {}
     try:
         for url in dict.fromkeys([avatar, *urls]):
+            if layout.layout != "split" and url != avatar:
+                continue
             info = await ffprobe_json(url, timeout, "-select_streams", "v:0", "-show_entries", "stream=width,height,sample_aspect_ratio:stream_side_data=rotation")
             stream = info["streams"][0]
             w, h = int(stream["width"]), int(stream["height"])
@@ -59,14 +62,17 @@ def _images(task_id: str, data: dict, layout: SplitScreen, urls: list[str], avat
     """CPU 绘图和对象存储都在工作线程；图片只包含几何、颜色，不复制用户视频。"""
     width, height = (data["output"][key] for key in ("width", "height"))
     result = {"media": sizes, "material_borders": {}}
+    if layout.layout != "split":
+        return result
     prefix = f"{object_prefix(data)}/{task_id}/split-screen"
     with TemporaryDirectory() as directory:
         root = Path(directory)
         Image.new("RGB", (width, height), layout.background_color).save(root / "background.png")
         files = [(root / "background.png", f"{prefix}/background.png", "image/png")]
         borders = []
+        cutout = AvatarEffects.model_validate(data["template"].get("avatar_effects") or {}).remove_background
         for role, window, sources in (("material", layout.material, urls), ("avatar", layout.avatar, [avatar])):
-            if not window.border_width:
+            if not window.border_width or (role == "avatar" and cutout):
                 continue
             for url in sources:
                 rect = screen_rect(window, sizes[url], width, height)
@@ -84,11 +90,24 @@ def _images(task_id: str, data: dict, layout: SplitScreen, urls: list[str], avat
     return result
 
 
-def window_clip(clip: dict, window, source: list[float], width: int, height: int) -> dict:
-    """移除全屏模糊底，保留静音等原效果，将圆角绑定到这一片段。"""
-    rect = screen_rect(window, source, width, height)
+def window_clip(clip: dict, window, source: list[float], width: int, height: int, *, remove_background: bool = False,
+                circle: dict | None = None, feather: float = 0.02) -> dict:
+    """窗口保留静音；圆形头像先截头部再等比放入窗口，普通窗口可选择抠像或圆角。"""
+    rect = screen_rect(window.model_copy(update={"fit": "Contain"}) if circle else window,
+                       [1, 1] if circle else source, width, height)
     effects = [effect for effect in clip.get("Effects", []) if effect["Type"] != "Background"]
-    if rect["radius"]:
+    if circle:
+        r = circle["radius"]
+        effects.extend([
+            # Crop 的比例值上限为 0.9999；1 不属于其比例/像素有效区间。
+            {"Type": "Crop", "X": max(0, circle["x"] - r), "Y": max(0, circle["y"] - r * circle["aspect"]),
+             "Width": min(0.9999, r * 2), "Height": min(0.9999, r * 2 * circle["aspect"])},
+            {"Type": "VFX", "SubType": "mask_circle", "ExtParams":
+             f"x=0.5,y=0.5,width=1.0,height=1.0,antialias={feather:.6f}"},
+        ])
+    elif remove_background:
+        effects.append({"Type": "AI_RealMatting"})
+    elif rect["radius"]:
         radius = rect["radius"] if rect["radius"] > 1 else rect["radius"] / max(rect["width"], rect["height"])
         effects.append({"Type": "VFX", "SubType": "mask_rec", "ExtParams":
                         f'x=0.5,y=0.5,width=1.0,height=1.0,radius={radius:.6f},antialias={0.5 / max(rect["width"], rect["height"]):.8f}'})

@@ -72,7 +72,7 @@ def build_timeline(
     duration_ms: int | float, *, width: int, height: int, fps: int,
     material_durations: list[float] | None = None, title_keyword: str = "", transition_seed: str = "",
     title_en: str | None = None, title_keyword_en: str = "",
-    split_assets: dict | None = None,
+    split_assets: dict | None = None, avatar_opening: dict | None = None,
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
     request = CompositionRequest.from_snapshot(request)
@@ -83,6 +83,11 @@ def build_timeline(
     source = TypeAdapter(list[Segment]).validate_python(segments) if has_subtitles else []
     matched = TypeAdapter(list[MatchedSegment]).validate_python(matches) if standard else []
     layout = template.split_screen if standard and template.split_screen and template.split_screen.enabled else None
+    opening = avatar_opening if standard and template.avatar_effects and template.avatar_effects.opening_enabled else None
+    opening_end = opening["duration"] if opening else 0
+    circle = avatar_opening if layout and layout.layout == "circle" else None
+    circle_missing = bool(layout and layout.layout == "circle" and not circle)
+    cutout = bool(layout and layout.layout != "circle" and template.avatar_effects and template.avatar_effects.remove_background)
     material_clips, material_borders, avatar_clips, avatar_borders = [], [], [], []
     if has_subtitles:
         validate_segments(source, duration_ms)
@@ -137,26 +142,31 @@ def build_timeline(
             if cursor < item.start_time:
                 clips.append(video(request.video_url, "video", cursor, item.start_time, cursor))
             material = video(match.matched_candidate_url, match.matched_candidate_type, item.start_time, item.end_time, 0)
-            if layout:
+            if layout and not circle_missing:
                 if split_assets is None:
                     raise ValueError("同屏布局图片尚未准备")
-                material = window_clip(material, layout.material, split_assets["media"][match.matched_candidate_url], width, height)
-                material_clips.append(material)
-                if border := split_assets["material_borders"].get(match.matched_candidate_url):
-                    material_borders.append(border_clip(material, border))
-                avatar = window_clip(video(request.video_url, "video", item.start_time, item.end_time, item.start_time),
-                                     layout.avatar, split_assets["media"][request.video_url], width, height)
-                if avatar_clips and avatar_clips[-1]["TimelineOut"] == item.start_time:
+                if layout.layout == "split":
+                    material = window_clip(material, layout.material, split_assets["media"][match.matched_candidate_url], width, height)
+                    material_clips.append(material)
+                    if border := split_assets["material_borders"].get(match.matched_candidate_url):
+                        material_borders.append(border_clip(material, border))
+                avatar_start = max(item.start_time, opening_end)
+                if avatar_start < item.end_time and avatar_clips and avatar_clips[-1]["TimelineOut"] == avatar_start:
                     avatar_clips[-1].update(TimelineOut=item.end_time, Out=item.end_time)
                     if avatar_borders:
                         avatar_borders[-1].update(TimelineOut=item.end_time, Duration=item.end_time - avatar_borders[-1]["TimelineIn"])
-                else:
+                elif avatar_start < item.end_time:
+                    avatar = window_clip(video(request.video_url, "video", avatar_start, item.end_time, avatar_start),
+                                         layout.avatar if layout.layout == "split" else layout.avatar.model_copy(update={"radius": 0, "fit": "Contain"}),
+                                         split_assets["media"][request.video_url], width, height, remove_background=cutout,
+                                         circle=circle, feather=template.avatar_effects.feather if template.avatar_effects else 0.02)
                     avatar_clips.append(avatar)
-                    if border := split_assets.get("avatar_border"):
+                    if layout.layout == "split" and not cutout and (border := split_assets.get("avatar_border")):
                         avatar_borders.append(border_clip(avatar, border))
-                # 第 0 轨继续保持业务片段边界；同屏区间由底色占位，上层独立摆放窗口。
-                material = {"Type": "Image", "MediaURL": split_assets["background"], "Duration": item.end_time - item.start_time,
-                            "TimelineIn": item.start_time, "TimelineOut": item.end_time, "Width": width, "Height": height, "AdaptMode": "Fill"}
+                # 分区用底色占位，叠加布局直接保留完整素材及模糊填充；业务时间不变。
+                if layout.layout == "split":
+                    material = {"Type": "Image", "MediaURL": split_assets["background"], "Duration": item.end_time - item.start_time,
+                                "TimelineIn": item.start_time, "TimelineOut": item.end_time, "Width": width, "Height": height, "AdaptMode": "Fill"}
             clips.append(material)
             cursor = item.end_time
         if cursor < duration:
@@ -217,6 +227,18 @@ def build_timeline(
     timeline = {"VideoTracks": [{"VideoTrackClips": clips}], "AudioTracks": audio_tracks,
                 "SubtitleTracks": subtitle_tracks}
     timeline["VideoTracks"].extend({"VideoTrackClips": items} for items in (material_clips, material_borders, avatar_clips, avatar_borders) if items)
+    if opening:
+        # 覆盖原业务轨，不拆素材、不改变转场数量；原素材在遮挡期间仍按原进度播放。
+        w, h = min(width, height * opening["aspect"]), min(height, width / opening["aspect"])
+        diameter = opening["radius"] * 2
+        timeline["VideoTracks"].extend([
+            {"VideoTrackClips": [{"Type": "Image", "MediaURL": opening["background"], "Duration": opening_end,
+                "TimelineIn": 0, "TimelineOut": opening_end, "Width": width, "Height": height, "AdaptMode": "Fill"}]},
+            {"VideoTrackClips": [{**video(request.video_url, "video", 0, opening_end, 0),
+                "X": round((width - w) / 2), "Y": round((height - h) / 2), "Width": round(w), "Height": round(h), "AdaptMode": "Cover",
+                "Effects": [{"Type": "Volume", "Gain": 0}, {"Type": "VFX", "SubType": "mask_circle", "ExtParams":
+                    f'x={opening["x"]:.8f},y={opening["y"]:.8f},width={diameter:.8f},height={diameter * opening["aspect"]:.8f},antialias={template.avatar_effects.feather:.6f}'}]}]},
+        ])
     # IMS 独立叠加轨的结束点包含该时刻；减去接口最小精度，表达 [start,end)。
     # 只改显示终点，源 In/Out、业务边界与总时长不变，避免切换帧出现大小两个人像。
     for row in timeline["VideoTracks"][1:]:
@@ -298,17 +320,29 @@ def build_timeline(
                     # 持续到结束的标题覆盖请求终点，固定时长标题遵循用户设置。
                     end = duration if track.target == "title" and track.duration is None else segment.end
                     clip = text(track.target, content, segment.start, end, segment.editor, track_parameters)
-                    same_screen = layout and track.target == "subtitle" and any(
+                    same_screen = layout and not circle_missing and track.target == "subtitle" and any(
                         item.start_time <= segment.start < item.end_time and match.matched_candidate_url
                         for item, match in zip(source, matched)
                     )
                     if track.language == "en":
                         clip.update(AdaptMode="AutoScale", TextWidth=0.9)
-                    if same_screen:
-                        point = layout.subtitle_en if track.language == "en" else layout.subtitle
-                        clip.update(X=min(point.x / 100, 0.9999), Y=min(point.y / 100, 0.9999),
-                                    TimelineOut=round(end - 0.0001, 4) if end < duration else end)
-                    text_clips.append(clip)
+                    cuts = [segment.start, end]
+                    if same_screen and segment.start < opening_end < end:
+                        cuts.insert(1, opening_end)
+                    for left, right in zip(cuts, cuts[1:]):
+                        part = {**clip, "TimelineIn": left,
+                                "TimelineOut": round(right - 0.0001, 4) if same_screen and right < duration else right}
+                        if same_screen and left >= opening_end:
+                            point = layout.subtitle_en if track.language == "en" else layout.subtitle
+                            part.update(X=min(point.x / 100, 0.9999), Y=min(point.y / 100, 0.9999))
+                        # 布局切点不触发额外入出场；花字与循环样式保留。
+                        for motion, cropped in (("In", left > segment.start), ("Out", right < end)):
+                            if cropped:
+                                part.pop(f"AaiMotion{motion}Effect", None)
+                                part.pop(f"AaiMotion{motion}", None)
+                            elif f"AaiMotion{motion}" in part:
+                                part[f"AaiMotion{motion}"] = min(part[f"AaiMotion{motion}"], right - left)
+                        text_clips.append(part)
             if text_clips:
                 timeline["SubtitleTracks"].append({"SubtitleTrackClips": text_clips})
     if effects:

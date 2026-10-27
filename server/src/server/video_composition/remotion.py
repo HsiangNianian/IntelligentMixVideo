@@ -157,11 +157,14 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
     template = data.get("template", {})
     layout = SplitScreen.model_validate(template["split_screen"]) if request.composition_mode == "standard" and (template.get("split_screen") or {}).get("enabled") else None
     intervals = []
-    if layout:
+    if layout and not (layout.layout == "circle" and not data.get("avatar_opening")):
         matched_ids = {item["segment_id"] for item in data.get("matches", []) if item.get("matched_candidate_url")}
         for segment in segments:
             if segment.segment_id in matched_ids:
                 a, b = to_frames(segment.start_time, fps), to_frames(segment.end_time, fps)
+                a = max(a, to_frames((data.get("avatar_opening") or {}).get("duration", 0), fps))
+                if a >= b:
+                    continue
                 if intervals and intervals[-1][1] == a:
                     intervals[-1] = (intervals[-1][0], b)
                 else:

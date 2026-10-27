@@ -24,7 +24,7 @@ from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, MatchedSegment, PlaygroundRequest, PositiveSeconds, Segment, TaskResponse
 from .settings import ClientSettings, Settings, ZosSettings
 from .timeline import build_timeline, validate_segments
-from . import split_screen
+from . import avatar, split_screen
 
 logger = logging.getLogger(__name__)
 
@@ -584,7 +584,23 @@ class Job:
                       **{key: data["output"][key] for key in ("width", "height", "fps")})
         if request.composition_mode != "standard":
             inputs["material_durations"] = data["material_durations"]
-        if request.composition_mode == "standard" and data["template"].get("split_screen", {}).get("enabled"):
+        layout = data["template"].get("split_screen") or {}
+        avatar_effects = data["template"].get("avatar_effects") or {}
+        needs_circle = layout.get("enabled") and layout.get("layout") == "circle" and any(
+            item.get("matched_candidate_url") for item in data.get("matches", []))
+        if request.composition_mode == "standard" and (avatar_effects.get("openingEnabled") or needs_circle):
+            if "avatar_opening" not in data:
+                opening = await self.runtime.step(self.record, "avatar_opening", lambda: avatar.prepare(
+                    self.record["task_id"], data, self.settings.composition_http_timeout_seconds), {})
+                await self.save("assembling", avatar_opening=opening)
+                data = self.record["data"]
+            inputs["avatar_opening"] = data["avatar_opening"]
+        if request.composition_mode == "standard" and layout.get("enabled"):
+            if layout.get("layout") != "circle" and avatar_effects.get("removeBackground") and any(
+                item.get("matched_candidate_url") and item["end_time"] > (data.get("avatar_opening") or {}).get("duration", 0)
+                for item in data.get("matches", [])
+            ) and data["output"]["region_id"] not in ("cn-beijing", "cn-shanghai", "cn-hangzhou"):
+                raise CompositionError("avatar_matting_region_unsupported", "数字人抠像仅支持 IMS 北京、上海、杭州地域", "assembling")
             if "split_assets" not in data:
                 assets = await self.runtime.step(self.record, "split_screen", lambda: split_screen.prepare(
                     self.record["task_id"], data, self.settings.composition_http_timeout_seconds), {})
