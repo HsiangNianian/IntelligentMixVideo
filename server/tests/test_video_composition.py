@@ -1141,9 +1141,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
         keywords["title_keyword"] = title_keyword
     model = MagicMock()
     model.chat.completions.create.side_effect = [
-        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(output)))])
-        for output in [{"boundaries_after": []}, keywords]
-    ]
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(keywords)))])]
     factory = MagicMock()
     factory.return_value.__enter__.return_value = model
     monkeypatch.setattr(segmentation, "OpenAI", factory)
@@ -1165,17 +1163,20 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     snapshot = store.get(task_id)["data"]
     assert snapshot["segmentation"]["trace"]["edit_cost"] == 0
     assert "".join(s["text"] for s in snapshot["segmentation"]["segments"]) == snapshot["request"]["text"]
-    assert snapshot["segmentation"]["segments"] == [{
-        "segment_id": 1, "text": "甲乙丙丁。戊己庚辛。", "start_time": 1, "end_time": 6,
-        "keyword": "甲乙", "level": 2, "group_id": [1, 1],
-    }]
+    # 句号处切开，两段都不超过上限，不请求语义切分。
+    assert snapshot["segmentation"]["segments"] == [
+        {"segment_id": 1, "text": "甲乙丙丁。", "start_time": 1, "end_time": 3,
+         "keyword": "甲乙", "level": 2, "group_id": [1, 2]},
+        {"segment_id": 2, "text": "戊己庚辛。", "start_time": 4, "end_time": 6,
+         "keyword": "", "level": 1, "group_id": [2, 2]},
+    ]
     if mode == "matching":
         assert json.loads(upstreams["posts"][0]["llm"])["segments"] == snapshot["segmentation"]["segments"]
     else:
         assert upstreams["posts"] == []
     subtitle_index = 0 if title_keyword is None else 1
     assert [clip["Content"] for clip in snapshot["timeline"]["SubtitleTracks"][subtitle_index]["SubtitleTrackClips"]] == [
-        "甲乙丙丁戊己庚辛",
+        "甲乙丙丁", "戊己庚辛",
     ]
     if title_keyword is None:
         assert "title_keyword" not in snapshot["segmentation"]
@@ -1187,7 +1188,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
         messages = model.chat.completions.create.call_args.kwargs["messages"]
         assert json.loads(messages[1]["content"])["title"] == request["title"]
     assert json.loads(upstreams["submits"][0]["timeline"]) == snapshot["timeline"]
-    assert model.chat.completions.create.call_count == 2 and factory.return_value.__exit__.call_count == 1
+    assert model.chat.completions.create.call_count == 1 and factory.return_value.__exit__.call_count == 1
 
 
 def test_template_changes_do_not_change_running_snapshot(upstreams, client, composition_case):
