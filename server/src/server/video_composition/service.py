@@ -17,7 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..segmentation import segment, translate
 from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
-from . import ims, media, playground, remotion, store, zos
+from . import ims, media, playground, remotion, store, subtitle_capacity, zos
 from .errors import CompositionError, remaining
 from .execution_log import close_logs, exception_details, log_dispatch_error
 from .matching import Matching, payload, validated_matches
@@ -474,6 +474,9 @@ class Job:
         template = self.record["data"]["template"]
         # 恢复时同样复核：叠加渲染环境缺失要在 ASR 与切片模型产生成本前失败。
         await remotion.require_environment(self.record["data"])
+        if request.text and request.composition_mode != "materials_silent" and "max_segment_chars" not in self.record["data"]:
+            limit = await subtitle_capacity.calculate(self.record["task_id"], self.record["data"])
+            await self.save("template", max_segment_chars=limit)
         if request.composition_mode == "materials_silent":
             prepared = dict(template=template,
                             duration_ms=request.process_rules.video_duration * 1000)
@@ -497,8 +500,7 @@ class Job:
         if request.text:
             await self.save("segmentation", duration_ms=duration_ms)
             segment_input = {"title": request.title, "script": request.text, "asr_result": asr_result}
-            if request.process_rules.subtitle_max_chars is not None:
-                segment_input["max_segment_chars"] = request.process_rules.subtitle_max_chars
+            segment_input["max_segment_chars"] = self.record["data"]["max_segment_chars"]
             segmented = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
             segments = TypeAdapter(list[Segment]).validate_python(segmented["segments"])
             validate_segments(segments, duration_ms)

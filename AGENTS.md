@@ -4,12 +4,14 @@
 
 ## 项目结构与当前范围
 
+- 视频合成有字幕文案时，ASR 前按冻结模板计算 `max(1, 最小单行全角字容量 - 2)`，传给切片 `max_segment_chars`；另传 `processRules.subtitleMaxChars` 时取较小者。IMS 按居中位置到较近画布边缘的两倍宽度除以正文/关键词较大字号估算（云端字体/花字按一 em 全角字）；Remotion 复用隔离校验 worker 的 `capacity` 模式，按实际字体、字号、栏宽、宿主变换和成片可见区域测量，双栏/多个中文字幕样式取最小值并遵守正文参数长度上限，不缩字号或移动位置。容量随任务保存，恢复复用；标题、英文译文和操练场已有切片不重切，实际关键词及长串仍走成片排版预检。无法容纳一字或测量失败在 template 阶段明确失败，不产生 ASR/模型调用。独立切片不传上限仍为 8。
+
 - 这是一个 monorepo，目录名使用小写的 `client/` 和 `server/`。
 - `client/` 是 Rust + Tauri 2 + React + TypeScript 桌面客户端，前端使用 Vite，包管理器与脚本运行时使用 Bun。
 - `client/src/` 存放 React 前端；`client/src-tauri/` 存放 Rust 桌面入口、Tauri 配置和图标。
 - `server/` 使用 Python + FastAPI + MySQL，提供模板持久化 API 与 `POST /segmentations` 文案切片接口，首页与用户路由仍为示例、尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
 - 模板模块位于 `server/src/server/template/`，与用户示例目录 `sub_api/` 平级；路由、配置校验、数据库存储与效果目录均放在该模块内。
-- `POST /segmentations`（细节见 `server/README.md`）：`title`、`script`、`asr_result` 均可省略或为 null，`max_segment_chars` 为每段最多字数（正整数，默认 8，不计标点空白；视频合成由请求 `processRules.subtitleMaxChars` 传入）。有 ASR 时须有有效文案，模型以 `json_object` 先对超长片段语义切分、再按最终片段 ID 返回关键词映射，代码按 ID 填回，缺失、不在原文或超过 12 字的词置空；非 null 标题在提词调用里同时返回 `title_keyword`（标题内连续原文、最多 12 字）。提词 JSON、结构、ID、标题词不合法或回复为空时，把原回复（空回复不回填）与错误反馈给模型，共尝试 3 次，耗尽返回 502；只有标题时只调用一次、不纠错、不校验内容，缺失或非字符串按空串。单次请求最多 30 秒，共用 90 秒软预算，关闭 SDK 重试。`IMV_LLM_DISABLE_THINKING=true`（`config.llm_disable_thinking`）时切分、提词与翻译请求附带 `thinking=disabled`，默认不发送；DeepSeek 等默认开启思考的模型须开启。
+- `POST /segmentations`（细节见 `server/README.md`）：`title`、`script`、`asr_result` 均可省略或为 null，`max_segment_chars` 为每段最多字数（正整数，默认 8，不计标点空白；视频合成按模板自动计算，另传 `processRules.subtitleMaxChars` 时取较小值）。有 ASR 时须有有效文案，模型以 `json_object` 先对超长片段语义切分、再按最终片段 ID 返回关键词映射，代码按 ID 填回，缺失、不在原文或超过 12 字的词置空；非 null 标题在提词调用里同时返回 `title_keyword`（标题内连续原文、最多 12 字）。提词 JSON、结构、ID、标题词不合法或回复为空时，把原回复（空回复不回填）与错误反馈给模型，共尝试 3 次，耗尽返回 502；只有标题时只调用一次、不纠错、不校验内容，缺失或非字符串按空串。单次请求最多 30 秒，共用 90 秒软预算，关闭 SDK 重试。`IMV_LLM_DISABLE_THINKING=true`（`config.llm_disable_thinking`）时切分、提词与翻译请求附带 `thinking=disabled`，默认不发送；DeepSeek 等默认开启思考的模型须开启。
 - 切分先在句读标点、换行与中文之间的空白处切开（引号括号不切，标点留在前段），不再按 2 秒合并短句；英文字母数字串、有限的数字列表模式与 ASR 修复块内部不切，普通逗号两侧的数字（如 `99，3件`）照常切开。超过上限的片段按 VideoLingo 的做法交给模型：代码算出 `ceil(字数/上限)` 段写进提示，模型用 `[br]` 给两种切法并自选，并行请求；代码依次取第一个合格切法（至少两段、汉字字母数字与原文逐字相同、切点不在受保护串或修复块内，非首段以单独助词开头只在最后一轮作后备），仍超长的段落最多共 3 轮继续切，之后完整保留并返回 `segment_over_max_chars` 警告，代码不硬切；整段受保护的超长串不请求模型。关键词在最终片段上提取；下游字幕去标点但保留问号和数字小数点。
 - 切片日志：INFO 只记摘要，完整回复与成功 trace 脱敏后记 DEBUG；最终失败记脱敏详情，提词失败的 `keyword_response` 由视频合成写入任务 `segmentation.json` 与 `errors/*.log`，不回显到接口。
 - `translate`（供双语视频合成调用）：一次模型调用增加 `text_en`/`keyword_en`，传标题时增加 `title_en`/`title_keyword_en`；英文关键词复用中文校验但不限长度，不纠错。

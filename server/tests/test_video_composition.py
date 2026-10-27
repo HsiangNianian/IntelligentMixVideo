@@ -325,6 +325,37 @@ def test_materials_presence_selects_matching(upstreams, client, composition_case
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("requested,expected", [(None, 9), (4, 4), (100, 9)])
+async def test_template_capacity_reaches_segmentation(upstreams, client, composition_case, composition_runtime, requested, expected):
+    """字幕字号由模板决定，计算值减二后传给切片并保存；手动上限只能收紧它。"""
+    template = composition_case["template"]
+    subtitle = next(track for track in template["tracks"] if track["target"] == "subtitle")
+    subtitle["editor"].update(subtitleSize=96, subtitleX=50, subtitleKeywordSize=0)
+    assert post_template(client, {key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}).status_code == 200
+    request = {**composition_case["request"], "processRules": {} if requested is None else {"subtitleMaxChars": requested}}
+    record = await composition_runtime.accept(CompositionRequest.model_validate(request), "http://testserver")
+    await service.Job(composition_runtime, record, composition_runtime.settings).prepare()
+    assert upstreams["max_segment_chars"] == expected
+    assert store.get(record["task_id"])["data"]["max_segment_chars"] == expected
+
+
+@pytest.mark.anyio
+async def test_recovery_reuses_saved_capacity(upstreams, composition_case, composition_runtime, monkeypatch):
+    """已经保存单行容量的任务恢复准备阶段时沿用旧值，不再次测量或取新模板样式。"""
+    store.initialize_schema()
+    record = await composition_runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
+    store.advance(record, "template", max_segment_chars=5)
+
+    async def unexpected(*args):
+        raise AssertionError("不应重复计算")
+
+    monkeypatch.setattr(service.subtitle_capacity, "calculate", unexpected)
+    restored = store.get(record["task_id"])
+    await service.Job(composition_runtime, restored, composition_runtime.settings).prepare()
+    assert upstreams["max_segment_chars"] == 5
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("stage", ["queued", "template", "assembling"])
 async def test_avatar_recovery_keeps_omitted_materials(upstreams, composition_case, composition_runtime, stage):
     """从数据库恢复缺省字段的任务仍跳过匹配，已保存的切片不重复调用 ASR 或切片。"""
@@ -441,7 +472,8 @@ def upstreams(monkeypatch, composition_settings, composition_case):
             assert set(body) == {"title"}
             return {"title_keyword": ""}
         assert body["asr_result"] is raw
-        assert set(body) == {"title", "script", "asr_result"}
+        assert set(body) == {"title", "script", "asr_result", "max_segment_chars"}
+        state["max_segment_chars"] = body["max_segment_chars"]
         return {"segments": deepcopy(composition_case["segments"]), "warnings": [{"code": "example-warning"}], "trace": {"example": True}}
 
     async def handle(request):

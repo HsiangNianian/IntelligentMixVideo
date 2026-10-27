@@ -7,6 +7,7 @@ the API process; the worker bundles them and drives a fixed Chromium Player.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from pathlib import Path
@@ -344,10 +345,42 @@ class ToolValidator:
         move of the placement, in canvas pixels, that brings it back in; ``fits`` is false when not even that helps.
         A worker that cannot answer is an infrastructure failure, never a pass.
         """
-        try:
-            directory = self._attempt("fit-texts")
+        payload = await self._measure_texts(sprites, composition, "fit", timeout_seconds, cpu_seconds)
+        fits = payload.get("fits") if isinstance(payload, dict) else None
+        if not isinstance(fits, list) or len(fits) != len(sprites) or not all(
+            isinstance(answers, list)
+            and [answer.get("index") for answer in answers if isinstance(answer, dict)] == [item["index"] for item in sprite.items]
+            and all(isinstance(answer.get("fits"), bool) and isinstance(answer.get("size"), (int, float)) and _valid_shift(answer.get("shift")) and _valid_size(answer.get("keyword_size")) for answer in answers)
+            for answers, sprite in zip(fits, sprites)
+        ):
+            raise ValidationUnavailable("Text fit worker returned an incomplete report")
+        return fits
+
+    async def line_capacities(
+        self, sprites: list[FitSprite], composition: dict[str, int],
+        timeout_seconds: float | None = None, cpu_seconds: int = CPU_SECONDS,
+    ) -> list[list[int]]:
+        """Measure full-width Chinese characters per line at the requested style, without shrinking the font.
+
+        Each item supplies resolved values, text parameter paths, tier count, maximum probe length, preview
+        length and placement transform. The result is the smallest capacity of its tiers, before the two-character margin.
+        """
+        payload = await self._measure_texts(sprites, composition, "capacity", timeout_seconds, cpu_seconds)
+        capacities = payload.get("capacities") if isinstance(payload, dict) else None
+        if not isinstance(capacities, list) or len(capacities) != len(sprites) or not all(
+            isinstance(answers, list) and len(answers) == len(sprite.items)
+            and all(type(value) is int and 0 <= value <= item["max_chars"] for value, item in zip(answers, sprite.items))
+            for answers, sprite in zip(capacities, sprites)
+        ):
+            raise ValidationUnavailable("Line capacity worker returned an incomplete report")
+        return capacities
+
+    async def _measure_texts(self, sprites, composition, mode, timeout_seconds, cpu_seconds):
+        """Share the isolated browser batch transport; prepare its files off the event loop."""
+        def prepare():
+            directory = self._attempt(mode + "-texts")
             request = {
-                "mode": "fit",
+                "mode": mode,
                 "composition": composition,
                 "sprites": [
                     {
@@ -360,6 +393,10 @@ class ToolValidator:
                 "browser": self.renderer.worker_browser_path(),
             }
             (directory / "request.json").write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+            return directory
+
+        try:
+            directory = await asyncio.to_thread(prepare)
             payload = await self.renderer.run_worker(
                 directory, worker="tool-validation-worker.mjs", timeout_seconds=timeout_seconds, cpu_seconds=cpu_seconds,
             )
@@ -368,15 +405,7 @@ class ToolValidator:
         for item in payload.get("checks", []) if isinstance(payload, dict) else []:
             if item.get("name") == "runtime" and item.get("status") == "error":
                 raise ValidationUnavailable(str(item.get("message") or "Fit worker runtime error"))
-        fits = payload.get("fits") if isinstance(payload, dict) else None
-        if not isinstance(fits, list) or len(fits) != len(sprites) or not all(
-            isinstance(answers, list)
-            and [answer.get("index") for answer in answers if isinstance(answer, dict)] == [item["index"] for item in sprite.items]
-            and all(isinstance(answer.get("fits"), bool) and isinstance(answer.get("size"), (int, float)) and _valid_shift(answer.get("shift")) and _valid_size(answer.get("keyword_size")) for answer in answers)
-            for answers, sprite in zip(fits, sprites)
-        ):
-            raise ValidationUnavailable("Text fit worker returned an incomplete report")
-        return fits
+        return payload
 
     async def validate_samples(
         self, component: ComponentDefinition, composition: dict[str, int], box: dict[str, float], samples: list[dict[str, Any]],

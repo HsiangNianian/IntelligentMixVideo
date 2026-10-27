@@ -444,8 +444,8 @@ function visibleWindow(canvas, output) {
  * preflight (`mode: fit`) also counts laid-out transparent text toward completeness: an operator may set one
  * tier's opacity to zero. Only painted text contributes geometry; generation still requires visible text.
  */
-function textFitProblems(page, needle, placement) {
-  return page.evaluate((needle, minLine, tolerance, placement, countTransparentText) => {
+function textFitProblems(page, needle, placement, singleLines = []) {
+  return page.evaluate((needle, minLine, tolerance, placement, countTransparentText, singleLines) => {
     const canvasNode = document.querySelector("[data-imv-validation-canvas]");
     const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
     if (!canvasNode || !layer) return null;
@@ -489,6 +489,7 @@ function textFitProblems(page, needle, placement) {
     const wanted = compact(needle);
     const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
     const problems = new Set();
+    const tierRects = singleLines.map(() => []);
     let joined = "";
     let area = 0;
     let extent = null; // canvas rectangle of all shown text after the transform
@@ -506,6 +507,14 @@ function textFitProblems(page, needle, placement) {
       // preflight, but do not let its invisible boxes affect the full-size frames, clipping, or placement shift.
       joined += shown;
       if (!isPainted) continue;
+      // Capacity probes use a different full-width glyph per tier, so a wrapped upper tier cannot hide behind an empty lower one.
+      singleLines.forEach((glyph, index) => {
+        const start = node.nodeValue.indexOf(glyph);
+        if (start < 0) return;
+        range.setStart(node, start);
+        range.setEnd(node, node.nodeValue.lastIndexOf(glyph) + 1);
+        tierRects[index].push(...lineBoxes(range, node.parentElement));
+      });
       const bounds = {
         left: Math.min(...lines.map((rect) => rect.left)), right: Math.max(...lines.map((rect) => rect.right)),
         top: Math.min(...lines.map((rect) => rect.top)), bottom: Math.max(...lines.map((rect) => rect.bottom)),
@@ -536,9 +545,19 @@ function textFitProblems(page, needle, placement) {
       }
     }
     if (!extent) return null;
+    for (const rects of tierRects) {
+      const rows = [];
+      for (const rect of rects) {
+        const row = rows.find((other) => Math.min(other.bottom, rect.bottom) - Math.max(other.top, rect.top)
+          >= Math.min(other.bottom - other.top, rect.height) * 0.5);
+        if (row) { row.top = Math.min(row.top, rect.top); row.bottom = Math.max(row.bottom, rect.bottom); }
+        else rows.push({ top: rect.top, bottom: rect.bottom });
+      }
+      if (rows.length > 1) problems.add("a subtitle tier wraps onto more than one line");
+    }
     if (!joined.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
     return { problems: [...problems], area, extent, view };
-  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, request.mode === "fit");
+  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, ["fit", "capacity"].includes(request.mode), singleLines);
 }
 
 /** No host transform: generation checks mount the Sprite over the whole canvas where it was laid out. */
@@ -555,13 +574,13 @@ const UNPLACED = Object.freeze({ cx: 0, cy: 0, x: 0, y: 0, scale: 1, rotation: 0
  * (`{x, y}` in canvas pixels, zero when none is needed) that brings the text of the middle one of the problem-free
  * full-size frames back inside it; when that text is larger than the window no move helps and it does not fit.
  */
-async function measureTextFit(page, needle, frames = sampleFrames(request.composition.duration_frames), placement = UNPLACED) {
+async function measureTextFit(page, needle, frames = sampleFrames(request.composition.duration_frames), placement = UNPLACED, singleLines = []) {
   const verdicts = [];
   for (const frame of frames) {
     await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
     const error = await page.evaluate(() => window.__imvRuntimeError ?? null);
     if (error) return { error, frame, shown: verdicts.length, full: 0, fits: false, problems: [] };
-    const verdict = await textFitProblems(page, needle, placement);
+    const verdict = await textFitProblems(page, needle, placement, singleLines);
     if (verdict) verdicts.push(verdict);
   }
   const largest = Math.max(0, ...verdicts.map((verdict) => verdict.area));
@@ -939,7 +958,8 @@ async function fitAll() {
   try {
     const opened = await openPage(url);
     browser = opened.browser;
-    result.fits = [];
+    const output = request.mode === "capacity" ? "capacities" : "fits";
+    result[output] = [];
     for (const sprite of request.sprites) {
       sourcePolicy(sprite.code);
       await fs.writeFile(`${root}/Template.tsx`, sprite.code, "utf8");
@@ -949,12 +969,47 @@ async function fitAll() {
         defaults: sprite.default_parameters, configured: sprite.default_parameters, parameter_schema: sprite.parameter_schema,
         composition: { ...request.composition, width, height }, ...(sprite.box ? { box: sprite.box } : {}),
       });
-      result.fits.push(await fitTexts(opened.page, await waitReady(opened.page), sprite));
+      const loaded = await waitReady(opened.page);
+      result[output].push(await (request.mode === "capacity" ? lineCapacities : fitTexts)(opened.page, loaded, sprite));
     }
   } finally {
     if (browser) await browser.close({ silent: true });
     await new Promise((resolve) => server.close(resolve));
   }
+}
+
+/** Largest whole number of full-width glyphs each tier can display on one line at its selected font and placement. */
+async function lineCapacities(page, loadError, sprite) {
+  if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
+  const canvas = sprite.canvas ?? request.composition;
+  const visible = visibleWindow(canvas, request.composition);
+  const answers = [];
+  for (const item of sprite.fit) {
+    const glyphs = [..."测量字宽"].slice(0, item.lines);
+    const placement = hostPlacement(sprite.box, item.transform, visible);
+    await page.evaluate(() => window.__imvTool.reset());
+    await page.evaluate((length) => window.__imvTool.setDuration(length), item.length);
+    const fits = async (count) => {
+      const text = glyphs.map((glyph) => glyph.repeat(count)).join("\n");
+      const values = structuredClone(item.values);
+      for (const path of item.text_paths) {
+        const keys = path.split(".");
+        const parent = keys.slice(0, -1).reduce((value, key) => value[key], values);
+        parent[keys.at(-1)] = text;
+      }
+      await page.evaluate((values) => window.__imvTool.setSample(values, {}), values);
+      const measured = await measureTextFit(page, text, sampleFrames(item.length), placement, glyphs);
+      if (measured.error) throw new Error(`Capacity probe frame ${measured.frame}: ${measured.error}`);
+      return measured.shown > 0 && measured.fits;
+    };
+    let low = 0, high = item.max_chars;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (await fits(middle)) low = middle; else high = middle - 1;
+    }
+    answers.push(low);
+  }
+  return answers;
 }
 
 function scriptPolicy(code) {
@@ -1007,7 +1062,7 @@ async function sampleChecks(page, loadError) {
 }
 
 async function main() {
-  if (request.mode === "fit") return fitAll();
+  if (["fit", "capacity"].includes(request.mode)) return fitAll();
   const valid = await prepareSource();
   if (!valid) { result.passed = false; return; }
   if (request.mode === "code") { result.passed = checks.every((item) => item.status === "passed" || item.status === "pass"); return; }
