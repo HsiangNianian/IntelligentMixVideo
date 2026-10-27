@@ -92,11 +92,32 @@ test.each(["network", "503"])("查询失败可继续查询，任务失败保留�
   await screen.findByText(/测试查询不可用/);
   expect(screen.queryByRole("button", { name: "清除失效任务" })).toBeNull();
   expect((await loadPlayground(apiBase())).state.task?.status).toBe("processing");
+  expect(screen.getByText("上一条成片")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "查询进度" }));
   await screen.findByText("测试渲染失败");
   expect(screen.getByLabelText<HTMLVideoElement>("合成视频播放器").src).toBe(previous.result!.videoUrl);
   expect(reads).toBe(2);
   expect(screen.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("失败于正在 IMS 渲染");
+  // 新任务失败后没有更新的成片，保留的视频就是最新可用结果。
+  expect(screen.getByText("最新成片")).toBeTruthy();
+  expect(screen.queryByText("上一条成片")).toBeNull();
+});
+
+// 场景：操练场的模板已在受理时固定，template 阶段失败是 Remotion 环境检查，显示在「生成画面与字效」步骤下。
+test("模板阶段失败显示在生成画面与字效步骤", async () => {
+  const { key } = await loadPlayground(apiBase());
+  await savePlayground(key, { ...emptyPlayground(), styleId: savedTemplate().template_id,
+    taskStyleId: savedTemplate().template_id, taskTemplateName: savedTemplate().name,
+    task: { ...completed("pending"), status: "queued", stage: "queued", result: null } });
+  fetchMock.mockImplementation((async (url) => {
+    if (String(url).endsWith("/template")) return jsonListResponse([savedTemplate()]);
+    return Response.json({ ...completed("pending"), status: "failed", stage: "queued", result: null,
+      error: { code: "remotion_render_environment_unavailable", stage: "template", message: "Remotion 渲染环境不可用" } });
+  }) as typeof fetch);
+  render(<PlaygroundWorkspace />);
+  const message = await screen.findByText("Remotion 渲染环境不可用");
+  expect(screen.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("失败于生成画面与字效");
+  expect(message.parentElement?.textContent).toContain("生成画面与字效");
 });
 
 // 场景：旧任务 404 后由用户清除任务，保留选择与成片，重开不再查询旧任务且可以重新合成。

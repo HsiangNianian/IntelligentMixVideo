@@ -26,7 +26,8 @@ const steps = ["queued", "assembling", "submitting", "rendering", "uploading", "
 const stepLabels: Record<string, string> = {
   queued: "等待合成", assembling: "生成画面与字效", submitting: "提交云端合成", rendering: "IMS 渲染", uploading: "获取成片并转存 ZOS", completed: "合成完成",
 };
-const failureStages: Record<string, string> = { template: "queued", remotion_render: "assembling", playback: "uploading", zos_upload: "uploading" };
+/** 操练场受理时已固定模板，运行中报 template 阶段的只有 Remotion 资产与渲染环境检查，归入生成画面与字效。 */
+const failureStages: Record<string, string> = { template: "assembling", remotion_render: "assembling", playback: "uploading", zos_upload: "uploading" };
 
 /** 网络查询失败与任务失败分别显示，保留再次查询的机会。 */
 function message(reason: unknown): string {
@@ -222,7 +223,7 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
             <span className="w-8 shrink-0 overflow-hidden rounded-md ring-1 ring-line"><TemplateCover template={selected} compact /></span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13px] font-medium">{selected.name}</span>
-              <span className="block truncate font-mono text-[10.5px] text-fg-subtle" title={selected.template_id}>styleId {selected.template_id}</span>
+              <span className="block break-all font-mono text-[10.5px] text-fg-subtle">styleId {selected.template_id}</span>
             </span>
             <IconButton label="复制 styleId" className="size-7" onClick={() => { void copy(selected.template_id, " styleId"); }}><Icon name="copy" /></IconButton>
           </div>}
@@ -309,7 +310,8 @@ function TemplatePicker({ templates, loading, error, value, disabled, onRefresh,
 }
 
 /**
- * 画面：按竖屏比例在可用空间里放播放器，宽高都不超出。合成中仍显示的上一条成片会标出「上一条成片」，
+ * 画面：按竖屏比例在可用空间里放播放器，宽高都不超出。新任务合成中仍显示的旧成片标为「上一条成片」，
+ * 新任务结束后（失败也一样）它就是最新可用的成片；
  * 没有成片时显示同比例的虚线空画框。
  */
 function Stage({ saved, running, videoRef, mediaError, onMediaError, onRetryMedia }: {
@@ -317,7 +319,7 @@ function Stage({ saved, running, videoRef, mediaError, onMediaError, onRetryMedi
   onMediaError: () => void; onRetryMedia: () => void;
 }) {
   const shown = saved.video;
-  const previous = !!shown && !!saved.task && shown.taskId !== saved.task.taskId;
+  const previous = running && !!shown && shown.taskId !== saved.task?.taskId;
   const frame = "relative w-[min(100cqw,calc(100cqh*9/16))] aspect-[9/16] overflow-hidden rounded-[14px]";
   return <section aria-label="合成视频" className="flex min-h-[560px] flex-1 flex-col xl:min-h-0">
     <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface px-5">
@@ -325,7 +327,7 @@ function Stage({ saved, running, videoRef, mediaError, onMediaError, onRetryMedi
         <span className={cn("shrink-0 rounded-md px-1.5 text-[11px] font-medium leading-5", previous ? "bg-raised text-fg-muted" : "bg-success/12 text-success")}>{previous ? "上一条成片" : "最新成片"}</span>
         <span className="truncate text-[13px] font-medium">{shown.templateName}</span>
         <span className="shrink-0 text-[11.5px] tabular-nums text-fg-subtle">{duration(shown.durationSeconds)}</span>
-        {previous && running && <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[11.5px] text-fg-muted"><Spinner className="size-3 text-brand" />新视频合成中，完成后替换</span>}
+        {previous && <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[11.5px] text-fg-muted"><Spinner className="size-3 text-brand" />新视频合成中，完成后替换</span>}
       </> : <span className="text-[13px] font-medium">合成视频</span>}
     </header>
     <div className="relative min-h-0 flex-1 bg-[radial-gradient(var(--color-line-strong)_1px,transparent_1px)] bg-size-[18px_18px]">
