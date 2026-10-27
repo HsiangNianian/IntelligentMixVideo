@@ -4,6 +4,7 @@
  * 播放按钮、进度条、时间轴、文字选择框与 AI 资产都只跟随这个位置，不等 IMS。卸载时清理订阅和异步任务。
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { frameMaskRects } from "./frameMask";
 import { Maximize2, Pause, Play, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
@@ -162,6 +163,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     const controller = new AbortController();
     const transitionFrames = new Map<string, string>();
     let appliedTracks: Draft["tracks"] | undefined;
+    let appliedMask: Draft["frame_mask"];
     let appliedMedia: PreviewMedia | undefined;
     let appliedOrder: number[] | undefined;
     let appliedTexts: string | undefined;
@@ -312,6 +314,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             debugLog("模板预览", `应用时间线用时 ${((applyFinished - applyStarted) / 1000).toFixed(1)} 秒（生成时间线与转场画面 ${((framesReady - applyStarted) / 1000).toFixed(1)} 秒，播放器载入 ${((applyFinished - framesReady) / 1000).toFixed(1)} 秒）`, "警告");
           if (!disposed && applied === revision) {
             appliedTracks = currentDraft.tracks;
+            appliedMask = currentDraft.frame_mask;
             appliedMedia = currentMedia;
             appliedOrder = currentOrder;
             appliedTexts = currentTexts;
@@ -343,7 +346,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     apply.current = () => {
       if (basicRequested) return;
       // 初始化已应用相同输入时，延迟通知无需再次重置播放位置。
-      if (appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current && appliedResolved === latestResolved.current) return;
+      if (appliedTracks === latest.current.tracks && appliedMask === latest.current.frame_mask && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current && appliedResolved === latestResolved.current) return;
       revision++;
       void update();
     };
@@ -529,13 +532,13 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   useEffect(() => {
     const timer = window.setTimeout(() => apply.current?.(), 250);
     return () => window.clearTimeout(timer);
-  }, [draft.tracks, media, videoOrder, resolved, replacedTexts]);
+  }, [draft.tracks, draft.frame_mask, media, videoOrder, resolved, replacedTexts]);
 
   // 修改模板、视频或排列后回到开头并暂停（IMS 播放器随后重新应用时间线），各画面来源一致。
   useEffect(() => {
     activePlayback().pause();
     clock.seek(0);
-  }, [media, videoOrder, resolved]);
+  }, [media, videoOrder, resolved, draft.frame_mask]);
 
   // 换画面来源（IMS 就绪或开始应用修改、切换基础视频、基础视频可以播放）时交接：新来源从当前位置接着走，
   // 原来在播放就接着播放，AI 资产与时间轴不跳回开头，播放也不因 IMS 就绪或降级中断。
@@ -562,6 +565,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             onPlayingChange={(value) => { if (source !== "basic") return; changePlaying(value); setStatus(value ? "正在播放预览…" : "预览已暂停"); }}
             onError={() => { setFailed(true); setStatus("基础视频预览加载失败，请检查视频编码与跨域访问配置后重试。"); }}
             onEnd={() => { if (source !== "basic") return; changePlaying(false); setStatus("预览结束，点击播放可重播"); }} />}
+          {basicFallback && frameMaskRects(draft.frame_mask, PREVIEW_CANVAS.height).map((rect) => <div key={rect.edge} aria-label={`${rect.edge === "top" ? "上" : "下"}栏蒙版预览`}
+            className="pointer-events-none absolute inset-x-0" style={{ top: `${rect.y / PREVIEW_CANVAS.height * 100}%`, height: `${rect.height / PREVIEW_CANVAS.height * 100}%`, background: rect.color }} />)}
           {controlsReady && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
             const interval = resolved?.tracks[item.id];
             if (!interval || time < interval.start || time >= interval.end) return null;
@@ -591,7 +596,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       {basicFallback && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试 IMS 预览</Button>}
       {notices.length > 0 && <ul aria-label="时间调整说明" className="space-y-1 text-xs text-muted-foreground">{notices.map((notice, index) => <li key={index}>{notice}</li>)}</ul>}
     </div></div>
-    <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2></div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!controlsReady} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onSeek={(value) => activePlayback().seek(value)} />
+    <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2></div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length + (draft.frame_mask ? 1 : 0)} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!controlsReady} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onSeek={(value) => activePlayback().seek(value)} />
     </div></div>
   </section>;
 }
