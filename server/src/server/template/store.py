@@ -181,11 +181,14 @@ def save_template(data: TemplateSave) -> Template:
             now = datetime.now(UTC).replace(tzinfo=None)
             values = {"name": data.name, "configuration": configuration, "updated_at": now}
             if data.template_id:
-                existing = connection.execute(select(templates.c.template_id).where(
+                existing = connection.execute(select(templates.c.template_id, templates.c.configuration).where(
                     templates.c.template_id == template_id,
                 ).with_for_update()).first()
                 if existing is None:
                     raise HTTPException(404, "模板不存在")
+                # 旧客户端不认识蒙版字段；省略更新保留原值，停用须显式关闭两栏。
+                if "frame_mask" not in data.model_fields_set and "frame_mask" in existing.configuration:
+                    configuration["frame_mask"] = existing.configuration["frame_mask"]
                 connection.execute(templates.update().where(
                     templates.c.template_id == template_id,
                 ).values(**values))
