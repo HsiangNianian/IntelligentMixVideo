@@ -230,6 +230,17 @@ message SplitScreen {
   ScreenWindow avatar = 4;
   ScreenPoint subtitle = 5;
   ScreenPoint subtitle_en = 6;
+  // split 分区同屏、overlay 全屏素材叠人物、circle 全屏素材叠圆形头像；省略沿用 split。
+  optional string layout = 7;
+}
+
+// 数字人开场与抠像；具体头部坐标由每次合成自动检测。
+message AvatarEffects {
+  optional bool opening_enabled = 1;
+  optional double opening_duration = 2;
+  optional double circle_scale = 3;
+  optional double feather = 4;
+  optional bool remove_background = 5;
 }
 
 // 创建或完整更新模板；提供 template_id 时更新。
@@ -252,6 +263,8 @@ message SaveTemplateRequest {
   optional bool transition_enabled = 8;
   // 未携带时保留已存同屏配置，显式 enabled=false 表示关闭。
   SplitScreen split_screen = 9;
+  // 未携带时保留原配置；关闭开场或抠像须显式传入 false。
+  AvatarEffects avatar_effects = 10;
 }
 
 // 已保存的模板及效果快照。
@@ -280,6 +293,7 @@ message TemplateRecord {
   optional bool transition_enabled = 11;
   // 缺省为未启用同屏的已有模板。
   SplitScreen split_screen = 12;
+  AvatarEffects avatar_effects = 13;
 }
 
 // 模板列表只返回摘要；无效记录保留标识与原因，不能用于预览和合成。
