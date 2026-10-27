@@ -68,9 +68,9 @@ test("预览从完整列表选择效果且开关不删除候选", () => {
   const sequential = previewTransitions(draft, [0.8, 0.6]);
   expect([...sequential.targets.values()]).toEqual(candidates.slice(0, 2).map((item) => item.id));
   const random = previewTransitions({ ...draft, transition_mode: "random" }, [0.8, 0.6]);
-  expect([...random.targets.values()]).toEqual([candidates[3].id, candidates[1].id]);
+  expect([...random.targets.values()]).toEqual([candidates[3].id, candidates[2].id]);
   const actions = buildPreviewRows(buildTestTimeline(random.draft, catalog)).find((row) => row.id === "transitions")!.actions;
-  expect(actions.map((item) => item.effectName)).toEqual([3, 1].map((index) => catalog.find((asset) => asset.id === draft.tracks[index + 2].editor.transition)!.name));
+  expect(actions.map((item) => item.effectName)).toEqual([3, 2].map((index) => catalog.find((asset) => asset.id === draft.tracks[index + 2].editor.transition)!.name));
   expect(actions.map((item) => [item.start, item.end])).toEqual([[9.5, 10.5], [19.5, 20.5]]);
   const disabled = previewTransitions({ ...draft, transition_enabled: false }, [0.8, 0.6]);
   const timeline = buildTestTimeline(disabled.draft, catalog);
@@ -80,17 +80,19 @@ test("预览从完整列表选择效果且开关不删除候选", () => {
   expect(draft).toEqual(original);
 });
 
-// 两次相同随机输入也只能选中不同候选，预览片段保留各自对象 ID。
-test.each([0, 0.5, 0.999])("随机输入 %s 不重复选择转场", (value) => {
+// 每次从完整候选池抽取；重复效果保留独立实例 ID，并指向同一个可编辑候选。
+test.each([0, 0.5, 0.999])("随机输入 %s 允许重复选择转场", (value) => {
   const catalog = readCatalog();
   let draft = newDraft();
   for (const asset of catalog.filter((item) => item.category === "transition/normal").slice(0, 2))
     draft = addTrack(draft, asset, "transition").draft;
   const preview = previewTransitions({ ...draft, transition_mode: "random" }, [value, value]);
   const ids = transitionItems(draft).map((item) => item.id);
-  expect([...preview.targets.values()].sort()).toEqual([...ids].sort());
+  const selected = ids[Math.floor(value * ids.length)];
+  expect([...preview.targets.values()]).toEqual([selected, selected]);
+  expect(new Set(transitionItems(preview.draft).map((item) => item.id)).size).toBe(2);
   const actions = buildPreviewRows(buildTestTimeline(preview.draft, catalog)).find((row) => row.id === "transitions")!.actions;
-  expect(actions.map((action) => action.targetId).sort()).toEqual([...ids].sort());
+  expect(actions.map((action) => preview.targets.get(action.targetId!))).toEqual([selected, selected]);
 });
 
 // 只有一个候选时，两种选择方式均用于两个连接位置，两个预览片段指向同一个可编辑对象。
