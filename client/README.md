@@ -100,7 +100,7 @@ VITE_PREVIEW_VIDEO_3_URL=https://your-domain.example/preview-3.mp4
 
 ## 模板行为
 
-标题、字幕设置分别提供「中英双语」复选框。开启后英文作为独立对象出现在画面和时间轴，可单独调整字体、字号、位置或绑定 Remotion 字效；英文标题时间跟随中文标题，英文字幕与中文切片同时出现和消失。示例文字可以编辑，成片由服务端翻译实际文案。关闭后隐藏英文并停止输出，配置和字效绑定随模板保存，重新开启即可恢复；从未开启不创建英文配置。普通英文过长时成片自动缩小字号、尽量保持单行；[Web SDK 暂不支持 AutoScale](https://help.aliyun.com/zh/ims/developer-reference/timeline-support-guide-for-editing-and-previewing-the-component-web-sdk)，预览仍使用设置的字号。Remotion 字效沿用资产的文字长度限制和排版预检。
+标题、字幕设置分别提供「中英双语」复选框。开启后英文作为独立对象出现在画面和时间轴，可单独调整字体、字号、位置或绑定 Remotion 字效；英文标题时间跟随中文标题，英文字幕与中文切片同时出现和消失。示例文字可以编辑，成片由服务端翻译实际文案。关闭后隐藏英文并停止输出，配置和字效绑定随模板保存，重新开启即可恢复；从未开启不创建英文配置。普通英文过长时成片自动缩小字号、尽量保持单行；[Web SDK 暂不支持 AutoScale](https://help.aliyun.com/zh/ims/developer-reference/timeline-support-guide-for-editing-and-previewing-the-component-web-sdk)，预览仍使用设置的字号。Remotion 字效沿用资产的文字长度限制和排版预检，英文标题和字幕的译文过长时优先缩到单行；启用英文字幕时，换行的英文字幕向下展开、中文字幕向上展开，画布空间足够时两条字幕不会互相压住（空间不足或字幕被旋转时仍可能接近），未启用英文字幕时中文字幕保持原本的展开方式。
 
 标题和底部字幕分别提供字体选择：阿里巴巴普惠体、方正仿宋简体、方正黑体简体、方正楷体简体、方正书宋简体、宋体、楷体、微软雅黑、站酷快乐体、思源黑体、思源宋体。字体随各自的 `tracks[].editor.titleFont` / `subtitleFont` 保存为 IMS 标识；预览将 `Source Han Sans CN` 转为 `Source Han Sans CN Normal`，将 `Source Han Serif CN` 转为 `思源宋体`。旧模板缺少字段时采用 `Alibaba PuHuiTi`；重置当前对象时恢复该字体，其他对象的选择保留。共享目录维护在 `server/src/server/template/fonts.json`，`value` 是保存及合成标识，`preview` 是 SDK 标识。
 
