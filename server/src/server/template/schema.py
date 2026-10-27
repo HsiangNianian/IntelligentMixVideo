@@ -14,6 +14,8 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from .split_screen import SplitScreen
+
 EffectCategory = Literal[
     "flower",
     "in",
@@ -357,6 +359,7 @@ class TemplateData(BaseModel):
     transition_duration_seconds: float = Field(default=1, ge=0.1, le=3, allow_inf_nan=False)
     transition_mode: Literal["sequence", "random"] | None = Field(default=None, exclude_if=lambda value: value is None)
     transition_enabled: bool = Field(default=True, strict=True)
+    split_screen: SplitScreen | None = Field(default=None, exclude_if=lambda value: value is None)
     tracks: list[EffectTrack] = Field(max_length=100)
 
     @model_validator(mode="after")
