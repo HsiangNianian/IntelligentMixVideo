@@ -1,12 +1,13 @@
-"""关键词前后切镜、候选复用回归；执行 uv run --locked pytest tests/test_video_composition_transitions.py。"""
+"""关键词前后切镜、候选复用及任务恢复回归；执行 uv run --locked pytest tests/test_video_composition_transitions.py。"""
 from copy import deepcopy
 
 import pytest
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.json_format import MessageToDict
+from sqlalchemy import update
 
 from server.template.schema import effect_catalog
-from server.video_composition import remotion
+from server.video_composition import remotion, service, store
 from server.video_composition.timeline import build_timeline
 from .conftest import published_sprite, remotion_track, template_track
 
@@ -187,3 +188,36 @@ def test_mixed_renderers_share_selection_and_duration(transition_case, mode, dur
             assert instances == []
             if mode == "sequence":
                 assert ims_times == [2]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("legacy", [True, False])
+async def test_resume_keeps_accepted_rules_and_saved_overlay(transition_case, composition_runtime, monkeypatch, legacy):
+    """新任务记录规则；缺标识的旧任务组装恢复仍使用原转场，并复用已经上传的叠加产物。"""
+    case = transition_case
+    case["template"]["transition_mode"] = "random"
+    store.initialize_schema()
+    record = store.create(case["request"], composition_runtime.settings.output())
+    assert record["data"]["keyword_transitions"] is True
+    if legacy:
+        # 模拟升级前已持久化且没有规则标识的任务，不使用公开请求字段控制恢复策略。
+        data = {key: value for key, value in record["data"].items() if key != "keyword_transitions"}
+        with store.get_engine().begin() as connection:
+            connection.execute(update(store.tasks).where(store.tasks.c.task_id == record["task_id"]).values(data=data))
+        record = store.get(record["task_id"])
+    record = store.advance(record, "assembling", template=case["template"], duration_ms=case["duration_ms"],
+                           segmentation={"segments": case["segments"]}, material_durations=case["material_durations"],
+                           remotion_result={"video_url": "https://media.test/saved.webm", "duration": 10})
+    async def unexpected_render(*args, **kwargs):
+        """恢复不应再次编码既有产物。"""
+        pytest.fail("重复渲染已保存的 Remotion 视频")
+    async def storage(self):
+        """隔离 IMS 网络请求。"""
+        return "bucket.oss-cn-shanghai.aliyuncs.com"
+    monkeypatch.setattr(remotion, "render", unexpected_render)
+    monkeypatch.setattr(service.ims.IMS, "storage_location", storage)
+    job = service.Job(composition_runtime, record, composition_runtime.settings)
+    await job.assemble()
+    timeline = job.record["data"]["timeline"]
+    assert [time for time, _, _ in applied_transitions(timeline)] == ([2, 5, 8] if legacy else [2, 5])
+    assert timeline["VideoTracks"][-1]["VideoTrackClips"][0]["MediaURL"] == "https://media.test/saved.webm"
