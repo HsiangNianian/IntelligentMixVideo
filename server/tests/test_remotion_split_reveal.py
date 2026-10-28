@@ -102,3 +102,21 @@ def test_split_layout_check_keeps_real_clipping_and_animation_errors(tmp_path, f
         assert ("split failed" if fault == "throw" else "text_fit") in error.value.error.message
 
     asyncio.run(run())
+
+
+@needs_browser
+def test_an_inverted_cue_that_hides_its_tier_is_refused(tmp_path):
+    """分片反挂成 cue（初态已拆开且不可见、终态才完整）时上栏在整个停留期消失，与反挂出场相对，也必须拒绝；
+    排版测量关掉的 cue 由这次额外挂载补上：下栏推到末帧，cue 恒在初态，要求首栏仍完整可见。"""
+    inverted = SPLIT_CODE.replace("const p = Math.max(0, Math.min(1, props.progress));",
+                                  "const p = 1 - Math.max(0, Math.min(1, props.progress));")
+    assert inverted != SPLIT_CODE
+
+    async def run():
+        current, sprite = await split_scene(tmp_path, split_code=inverted)
+        with pytest.raises(ToolFault) as error:
+            await current._require_visible_video(sprite)
+        fault = error.value.error
+        assert fault.code == "CODE_VALIDATION_FAILED" and "cue" in fault.message, fault.message
+
+    asyncio.run(run())

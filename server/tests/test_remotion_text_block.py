@@ -766,7 +766,8 @@ def test_an_effect_entry_takes_what_it_leaves_out_from_its_presets_usage(tmp_pat
 
 
 def test_review_frames_follow_the_sprites_own_timing():
-    """回看优先保留下栏切换前、中、后及出场，多个入场不能挤掉这些证据；至多六帧且标签不宣称视觉通过。"""
+    """回看优先保留下栏切换前、中、后、出场与末帧，其次每个入场一帧，最后才是泛用的中间帧（切换帧已说明停留状态）；
+    至多六帧且标签不宣称视觉通过。"""
     from server.remotion_templates.tools.session import review_frames
 
     effects = [SimpleNamespace(slot=slot, title=title) for slot, title in (("enter", "淡入"), ("cue", "劈开"), ("exit", "淡出"), ("enter", "上浮"))]
@@ -774,7 +775,8 @@ def test_review_frames_follow_the_sprites_own_timing():
     defaults = {"effect1": True, "effect1Seconds": 0.5, "effect2": True, "effect2Seconds": 1 / 3, "effect3": True, "effect3Seconds": 0.5,
                 "effect4": False, "effect4Seconds": 3, "lineStartFrames": [0, 60]}
     sprite = SimpleNamespace(composition=SimpleNamespace(duration_frames=90, fps=30), text=text, default_parameters=defaults)
-    assert review_frames(sprite) == [(44, "middle of the preview"), (59, "just before the lower tier appears"),
+    # 切换与出场占满六帧时，让位的是中间帧而不是入场：作品的入场曾整帧不见。
+    assert review_frames(sprite) == [(7, "half way into the entrance 淡入"), (59, "just before the lower tier appears"),
                                      (65, "half way into the effects played when the lower tier appears"),
                                      (70, "end of the effects played when the lower tier appears"),
                                      (82, "half way out of the exit"), (89, "last frame of the preview")]
@@ -789,19 +791,24 @@ def test_review_frames_follow_the_sprites_own_timing():
 
 
 def test_review_frames_preserve_the_failed_examples_exit_and_use_tier_clocks():
-    """作品 ba6d769e 的两个入场曾占满四帧、遗漏退场；另核对下栏实际起点、剩余长度和 JS 半帧取整。"""
+    """作品 ba6d769e 的两个入场曾占满四帧、遗漏退场；另核对下栏实际起点、剩余长度和 JS 半帧取整，以及跨栏入场在标签上写明是哪一栏。"""
     from server.remotion_templates.tools.session import review_frames
 
     sprite = SimpleNamespace(composition=SimpleNamespace(duration_frames=150, fps=30), text=SimpleNamespace(effects=[
         SimpleNamespace(slot="enter", title="淡入"), SimpleNamespace(slot="enter", title="横向裁切"), SimpleNamespace(slot="exit", title="淡出")]),
         default_parameters={"effect1Seconds": 0.3, "effect1Target": "block", "effect2Seconds": 1.1, "effect2Target": "tiers",
                             "effect3Seconds": 0.5, "effect3Target": "block", "lineStartFrames": [0, 8]})
-    assert [frame for frame, _ in review_frames(sprite)] == [4, 7, 16, 74, 142, 149]
+    assert review_frames(sprite) == [(4, "half way into the entrance 淡入"), (7, "just before the lower tier appears"),
+                                     (16, "half way into the entrance 横向裁切 (upper tier)"), (74, "middle of the preview"),
+                                     (142, "half way out of the exit"), (149, "last frame of the preview")]
     sprite.composition.duration_frames = 90
     sprite.text.effects = [SimpleNamespace(slot="enter", title="下栏入场"), SimpleNamespace(slot="cue", title="切换")]
     sprite.default_parameters = {"effect1Seconds": 3, "effect1Target": "line2", "effect2Seconds": 0.15,
                                  "effect2Target": "line2", "lineStartFrames": [0, 60]}
-    assert [frame for frame, _ in review_frames(sprite)] == [44, 59, 62, 65, 67, 89]
+    assert review_frames(sprite) == [(44, "middle of the preview"), (59, "just before the lower tier appears"),
+                                     (62, "half way into the effects played when the lower tier appears"),
+                                     (65, "end of the effects played when the lower tier appears"),
+                                     (67, "half way into the entrance 下栏入场 (lower tier)"), (89, "last frame of the preview")]
 
 
 @needs_bundler
@@ -837,8 +844,9 @@ def test_a_saved_sprite_comes_back_as_frames_for_two_reviews(tmp_path, monkeypat
         # The defaults have no keywords, so the frames show the workspace preview's sample one.
         assert first["keywords"] == ["判断"]
         assert [(item["frame"], item["label"]) for item in first["frames"]] == [
-            (7, "half way into the entrance 淡入"), (11, "just before the lower tier appears"), (14, "middle of the preview"),
-            (16, "half way into the entrance 淡入"), (22, "half way out of the exit"), (29, "last frame of the preview")]
+            (7, "half way into the entrance 淡入 (upper tier)"), (11, "just before the lower tier appears"),
+            (14, "middle of the preview"), (16, "half way into the entrance 淡入 (lower tier)"),
+            (22, "half way out of the exit"), (29, "last frame of the preview")]
         assert receipts[1]["review"]["rounds_left"] == 0 and "review" not in receipts[2]
         assert current.review_frames == []
         # Frames show the saved Sprite only: composing anew takes them away until the next save.

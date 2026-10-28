@@ -81,10 +81,13 @@ _REVIEW_SIDE = 720
 
 
 def review_frames(sprite: SpriteDraft) -> list[tuple[int, str]]:
-    """Return at most six observations, protecting a transition's before/after and the exit from entrance crowding.
+    """Return at most six observations in priority order: the transition's before, middle and end, the exit and the
+    last frame come first, then one frame per entrance effect, the settled middle frame, and last the same entrance on
+    a further tier. A transition therefore only crowds out frames that add no new evidence.
 
-    Labels describe sampling times, not a verdict that text is complete. Effect windows use the target tier's clock
-    and the same positive half-up rounding and length clamp as compose.mjs. Other Sprites keep their three samples.
+    Labels describe sampling times, not a verdict that text is complete. An effect window is measured in the frames its
+    target tier plays (the span and half-up rounding compose.mjs uses), so a frame labelled half way is half way there.
+    Other Sprites keep their three samples.
     """
     last, fps = sprite.composition.duration_frames - 1, sprite.composition.fps
     if sprite.text is None:
@@ -94,30 +97,35 @@ def review_frames(sprite: SpriteDraft) -> list[tuple[int, str]]:
         exit_length = 0
         cues: list[tuple[int, int]] = []
         entrances: dict[int, str] = {}
-        starts = config.get("lineStartFrames") or [0]
+        again: dict[int, str] = {}
+        lines = str(config["text"]).split("\n") if "text" in config else None
+        starts = list(config.get("lineStartFrames") or [0])
+        if lines is not None:
+            # Only the tiers that draw text play frames of their own.
+            starts = starts[:len(lines)]
+            if len(starts) > 1 and not lines[1].strip():
+                starts = starts[:1]
         cue = starts[1] if len(starts) > 1 else None
-        if "text" in config:
-            lines = str(config["text"]).split("\n")
-            if len(lines) < 2 or not lines[1]:
-                cue = None
         for index, effect in enumerate(sprite.text.effects, start=1):
             if effect.slot == "loop" or config.get(f"effect{index}") is False:
                 continue
             target = config.get(f"effect{index}Target", "block")
             origins = [0] if target == "block" else starts[:1] if target == "line1" else starts[1:2] if target == "line2" else starts
-            for origin in origins:
+            for tier, origin in enumerate(origins):
                 if origin > last:
                     continue
-                half = (last - origin) // 2
-                length = max(1, min(int((config.get(f"effect{index}Seconds") or 0.5) * fps + 0.5), half))
-                delay = min(int((config.get(f"effect{index}Delay") or 0) * fps + 0.5), max(0, half - length))
+                # The frames the position plays less one, measured as compose.mjs measures them.
+                span = last - origin
+                length = max(1, min(int((config.get(f"effect{index}Seconds") or 0.5) * fps + 0.5), span // 2))
+                delay = min(int((config.get(f"effect{index}Delay") or 0) * fps + 0.5), max(0, span // 2 - length))
                 if effect.slot == "enter":
-                    entrances.setdefault(origin + delay + length // 2, f"half way into the entrance {effect.title}")
+                    where = "" if target == "block" or len(starts) < 2 else " (upper tier)" if origin == starts[0] else " (lower tier)"
+                    (entrances if tier == 0 else again).setdefault(origin + delay + length // 2, f"half way into the entrance {effect.title}{where}")
                 elif effect.slot == "cue" and cue is not None:
                     cues.append((cue + delay + length // 2, cue + delay + length))
                 elif effect.slot == "exit":
                     exit_length = max(exit_length, length)
-        picks = [(last // 2, "middle of the preview"), (last, "last frame of the preview")]
+        picks = [(last, "last frame of the preview")]
         if exit_length:
             picks.append((last - exit_length // 2, "half way out of the exit"))
         if cue:
@@ -126,7 +134,16 @@ def review_frames(sprite: SpriteDraft) -> list[tuple[int, str]]:
             middle, end = max(cues, key=lambda window: window[1])
             picks.extend([(middle, "half way into the effects played when the lower tier appears"),
                           (end, "end of the effects played when the lower tier appears")])
+        # A transition's own before/after frames already show the settled state, so with one the middle frame yields
+        # its place to the entrances; without one it is the only hold evidence and keeps its rank. An entrance repeated
+        # on a further tier is sampled only when nothing more telling is left out.
+        hold = (last // 2, "middle of the preview")
+        if cue is None:
+            picks.append(hold)
         picks.extend(sorted(entrances.items()))
+        if cue is not None:
+            picks.append(hold)
+        picks.extend(sorted(again.items()))
     chosen: dict[int, str] = {}
     for frame, label in picks:
         if len(chosen) < 6 and 0 <= frame <= last:
@@ -622,7 +639,7 @@ class ToolSession:
             options = {
                 **({"transparency": True} if transparency else {}), **({"lengths": lengths} if lengths else {}),
                 **({"text_fit": True} if text_fit else {}), **({"capture": capture} if capture else {}),
-                **({"text_fit_parameters": text_fit_parameters} if text_fit_parameters is not None else {}),
+                **({"text_fit_parameters": text_fit_parameters} if text_fit and text_fit_parameters is not None else {}),
             }
             report = await self.validator.validate_render(request, **options)
         except ValidationUnavailable as exc:

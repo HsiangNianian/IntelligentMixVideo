@@ -148,9 +148,11 @@ only checks the contract and never starts the validator.
 The Agent writes code without a visual judge, so it gets to see what it saved: for the first two Sprites a task saves
 (`tools/session.VISUAL_REVIEW_ROUNDS`), the browser mount `sprite.create` runs anyway also captures up to six still
 frames once every check has passed (`FrameCapture`, `captureFrames` in the validation worker). They are chosen from
-the Sprite's own timing (`review_frames`: the middle and final frames, half way out of the exit, before the lower tier
-appears, during and at the end of its cue effects, then entrance samples where space remains). Target tiers use their
-own start and remaining length; transition endpoints cannot be crowded out by entrances. Frames are cut to the text
+the Sprite's own timing (`review_frames`: the final frame, half way out of the exit, before the lower tier appears and
+during and at the end of its cue effects, then one frame per entrance effect, labelled with the tier whose clock it
+samples, and the generic middle frame last; without a cue frame that middle one is the only hold evidence and comes
+before the entrances instead). An effect window is measured in the frames its target tier plays, as the host renderer
+measures it, so a transition crowds out only the middle frame, never an entrance. Frames are cut to the text
 block with room around it, at most 720 pixels on the long side, composited onto the neutral #808080 gray the model is
 told is not content; a text effect whose defaults have no keywords is captured with the workspace preview's sample
 keyword (`sample_keywords`), listed in `review.keywords`, so keyword effects show. The receipt lists the frames in
@@ -167,9 +169,11 @@ primitive, alongside discrete glyph timing; these are executable examples, not i
 For host-composed still text, generation measures layout with only cue wrappers switched off through the host-only
 `text_fit_parameters` patch. A tier may intentionally disappear as another arrives, and the host's tiers can have
 independent timing. Enter, exit and loop effects remain active for the full-text measurement: an inverted transition
-that hides a tier throughout the hold is still refused. Full-length text, defaults, keywords, clipping and tier spacing
-remain checked; legacy self-animated text also retains its shared-timing check. Runtime mounts, transparency, alternate lengths and review frames
-always use the original enabled effects. The patch is never saved into the Sprite or applied to render requests.
+that hides a tier throughout the hold is still refused, and a second mount (`cueHoldProblem`) starts the lower tier on
+the last frame so every cue stays at its start state, refusing a cue that already hides its tier at progress 0.
+Full-length text, defaults, keywords, clipping and tier spacing remain checked; legacy self-animated text also retains
+its shared-timing check. Runtime mounts, transparency, alternate lengths and review frames always use the original
+enabled effects. The patch is never saved into the Sprite or applied to render requests.
 
 ## Preview
 

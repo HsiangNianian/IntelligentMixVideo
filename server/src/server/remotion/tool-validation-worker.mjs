@@ -694,6 +694,8 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
  * its full size has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered.
  * A multi-line text (a `lineStartFrames` parameter of N items) is filled with N lines that share maxLength, and both
  * samples show every line from the first frame; its default lines must also pass `lineSyncProblem` and `lineJumpProblem`.
+ * The host's composed still text instead patches `text_fit_parameters` (its cue wrappers off, so a tier can leave as
+ * another arrives), and then must pass `cueHoldProblem`: a cue at its start state may never hide the tier it waits with.
  * An effect with a `keywords` parameter is also mounted with a hit in its default text: the hit, and any keyword effect
  * drawn on it, must not throw or keep the default text from showing in full, and in a text block the hit must keep
  * its tier's look (`keywordLookProblem`). The default text must also keep the fill it is painted with
@@ -767,6 +769,12 @@ async function textFitCheck(page) {
       ? (request.text_fit_parameters === undefined ? await lineSyncProblem(page, defaultLines) : null)
         ?? (await lineJumpProblem(page, defaultLines, layout)) : null;
     if (sync) return { name: "text_fit", status: "failed", message: sync };
+    // The patch switches the cue wrappers off for the layout measurement, so the hold they run over is measured with
+    // every effect on: a cue that is already transformed at progress 0 would hide its tier for the whole hold. Only the
+    // first line waits the whole hold, so a text that opens with an empty line has no tier to measure here.
+    const hold = multi && defaultLines.length === lines && request.text_fit_parameters !== undefined && defaultLines[0].trim()
+      ? await cueHoldProblem(page, defaultLines[0]) : null;
+    if (hold) return { name: "text_fit", status: "failed", message: hold };
     // Templates pass keywords at render time, so the keyword hit (and any keyword effect drawn on it) must keep the text
     // whole: up to two characters opening the first non-empty default line are a hit every text effect can show
     // (the workspace preview shows the same sample keyword).
@@ -959,6 +967,38 @@ async function lineSyncProblem(page, lines) {
 
 /** How far (canvas pixels, at least) an earlier line may move in the frame a later line appears beyond its own motion just before. */
 const LINE_JUMP_TOLERANCE = 6;
+
+/**
+ * A cue effect runs from its own start state at progress 0 to its final state at 1, which may remove the text, so an
+ * inverted cue (transformed at 0, intact at 1) hides its tier for the whole hold: the same mistake an exit cannot make.
+ * The host's layout measurement switches cue wrappers off (`text_fit_parameters`), so this mounts the default lines
+ * with the lower tier starting on the last frame, which keeps every cue at its start, and requires the first line to
+ * still show in full around the middle of the preview, where entrances have finished and the exit has not started
+ * (a looping effect may blink on that exact frame, so its two neighbours are accepted as well). Returns the failure
+ * message, or null.
+ */
+async function cueHoldProblem(page, line) {
+  const last = request.composition.duration_frames - 1;
+  const middle = Math.floor(last / 2);
+  await page.evaluate((values) => window.__imvTool.setParameters(values), { lineStartFrames: [0, last] });
+  try {
+    for (const frame of [middle, middle - 2, middle + 2]) {
+      if (frame < 0 || frame > last) continue;
+      await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+      if (await page.evaluate(() => window.__imvRuntimeError ?? null)) return null; // the fit measurement reports it
+      const verdict = await textFitProblems(page, line, UNPLACED);
+      if (verdict && !verdict.problems.length) return null;
+    }
+    return `With the lower tier starting on the last frame, so a cue effect stays at its start for the whole hold, the first line `
+      + `"${line}" of the default text is not shown in full around frame ${middle}. `
+      + "A cue runs from its start state at progress 0 to its final state at 1 and may remove text only as it rises: it must not hide "
+      + "its tier while that tier waits. Draw the removal in the cue's final state; an effect that is already transformed at progress 0 "
+      + "belongs to an exit.";
+  } finally {
+    await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
+    await page.evaluate(() => window.__imvTool.setFrame(0));
+  }
+}
 
 /**
  * The lines of a multi-line text appear one by one, and an appearing line must not push the lines already shown:
