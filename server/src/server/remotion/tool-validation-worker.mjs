@@ -1,8 +1,9 @@
 /**
  * Networkless browser behavior validator for PR76 components.  It performs
  * source-policy/type checks and drives a fixed Remotion Player through a small
- * page bridge; it never captures frames, encodes media, or invokes a visual
- * reviewer.
+ * page bridge; it never encodes media or invokes a visual reviewer. On request,
+ * once every check has passed, it captures a few still frames for the Agent to
+ * look at (`captureFrames`).
  */
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -322,6 +323,31 @@ async function transparencyCheck(page) {
   return { name: "transparency", status: "passed", message: `The video stays visible: the canvas is covered in ${covered} of the ${samples.length} measured frames (${summary}).` };
 }
 
+/**
+ * Capture `request.capture.frames` of the component as it is configured (with `request.capture.parameters` over it,
+ * such as sample keywords), composited onto neutral #808080 gray (the gray the model is told is not content) and cut
+ * to `request.capture.box` at `request.capture.scale`, as `frames/frame-<n>.png` for the Agent to compare with what was
+ * asked. The checks before may leave other values or another render length mounted, so these are put back first.
+ */
+async function captureFrames(page) {
+  const { frames, box, scale } = request.capture;
+  await fs.mkdir(`${root}/frames`, { recursive: true });
+  await page.evaluate((frames) => window.__imvTool.setDuration(frames), request.composition.duration_frames);
+  await page.evaluate((values) => window.__imvTool.setParameters(values), { ...(request.parameters ?? {}), ...(request.capture.parameters ?? {}) });
+  const client = page._client();
+  await client.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 128, g: 128, b: 128, a: 1 } });
+  try {
+    for (const frame of frames) {
+      await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+      const shot = await client.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: true, clip: { ...box, scale } });
+      // The renderer's protocol client wraps the CDP result as `{ value: { data } }`.
+      await fs.writeFile(`${root}/frames/frame-${frame}.png`, Buffer.from((shot.value ?? shot).data, "base64"));
+    }
+  } finally {
+    await client.send("Emulation.setDefaultBackgroundColorOverride", {});
+  }
+}
+
 /** First, middle and last frame of one render length. */
 function edgeFrames(length) {
   return [...new Set([0, Math.floor((length - 1) / 2), length - 1])];
@@ -358,14 +384,17 @@ async function lengthsCheck(page) {
 }
 
 /**
- * Sample values of the props the host passes a text-block Preset (`ROLE_PROPS` in contracts.py), as JSX attributes of
- * the type check's call site: a text Preset draws one tier from its text, keyword segments and fonts, a keyword Preset one hit,
- * an effect Preset wraps children in the host's Box at a progress.
+ * Sample values of the props the host passes a text-block Preset (`ROLE_PROPS` in contracts.py), for the type check's
+ * call site: a text Preset draws one tier from the host's line (`children`) or from its text, keyword segments and
+ * `Keyword` itself, in its fonts; a keyword Preset draws one hit from the host's glyphs (`children`) or its `text`; an
+ * effect Preset wraps children in the host's Box at a progress, as unit `index` of `count`. Props a Preset may leave undeclared are spread: TypeScript checks the type of
+ * a spread prop the component declares (and its absence when required) but not an extra one, as at runtime, where the
+ * host passes them all.
  */
 const ROLE_HOST_PROPS = {
-  text: 'text={"示例文字"} segments={[{text: "示例", keyword: true}, {text: "文字", keyword: false}]} Keyword={(keyword: {text: string}) => <span>{keyword.text}</span>} fontFamily={"Noto Sans CJK SC"} fontWeight={700} fontSize={96}',
-  keyword: 'text={"示例"}',
-  effect: 'progress={1} Box={(box: {style?: React.CSSProperties; children?: React.ReactNode}) => <div style={box.style}>{box.children}</div>} children={<span>示例文字</span>}',
+  text: 'fontFamily={"Noto Sans CJK SC"} fontWeight={700} fontSize={96} {...{text: "示例文字", segments: [{text: "示例", keyword: true}, {text: "文字", keyword: false}], Keyword: (keyword: {text: string}) => <span>{keyword.text}</span>, children: <span>示例文字</span>}}',
+  keyword: '{...{text: "示例", children: <span>示例</span>}}',
+  effect: 'progress={1} Box={(box: {style?: React.CSSProperties; children?: React.ReactNode}) => <div style={box.style}>{box.children}</div>} children={<span>示例文字</span>} {...{index: 0, count: 1, completedCount: 1}}',
 };
 
 /**
@@ -667,8 +696,9 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
  * samples show every line from the first frame; its default lines must also pass `lineSyncProblem` and `lineJumpProblem`.
  * An effect with a `keywords` parameter is also mounted with a hit in its default text: the hit, and any keyword effect
  * drawn on it, must not throw or keep the default text from showing in full, and in a text block the hit must keep
- * its tier's look (`keywordLookProblem`).
- * Apart from that look comparison this is a geometric measurement of the text boxes, not a visual review of how the result looks.
+ * its tier's look (`keywordLookProblem`). The default text must also keep the fill it is painted with
+ * (`coveredFillProblem`).
+ * Apart from those paint comparisons this is a geometric measurement of the text boxes, not a visual review of how the result looks.
  */
 async function textFitCheck(page) {
   const composition = request.composition;
@@ -725,6 +755,8 @@ async function textFitCheck(page) {
           + "A user sees the default text first, so it must fit the canvas at the default fontSize without relying on the host shrinking it: adjust the default fontSize or the layout.",
       };
     shortNote = " The default text is shown in full at the default fontSize too.";
+    const covered = await coveredFillProblem(page, allLines);
+    if (covered) return { name: "text_fit", status: "failed", message: covered };
     const defaultLines = shortText.split("\n");
     const sync = multi && defaultLines.length === lines ? (await lineSyncProblem(page, defaultLines)) ?? (await lineJumpProblem(page, defaultLines)) : null;
     if (sync) return { name: "text_fit", status: "failed", message: sync };
@@ -748,6 +780,44 @@ async function textFitCheck(page) {
     }
   }
   return { name: "text_fit", status: "passed", message: `The ${length}-character text${multi ? ` over ${lines} lines` : ""} is shown in full${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""} (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).${shortNote}` };
+}
+
+/**
+ * Text whose fill is a background clipped to it (`background-clip: text` on its element or an ancestor, with a
+ * transparent text fill) loses that fill under any text-shadow of its own: text shadows are painted above the
+ * element's background, so the text shows only the shadow colour (audit: a gold gradient tier outlined with eight
+ * text shadows rendered as a dark blob, work eb692e7e). Mounts `values` on the middle frame and returns the failure
+ * message for the first such text, or null.
+ */
+async function coveredFillProblem(page, values) {
+  await page.evaluate((patch) => window.__imvTool.setParameters(patch), values);
+  try {
+    await page.evaluate((frame) => window.__imvTool.setFrame(frame), Math.floor((request.composition.duration_frames - 1) / 2));
+    return await page.evaluate(() => {
+      const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
+      if (!layer) return null;
+      const clear = (color) => color === "transparent" || /^rgba\([^)]*,\s*0\)$/.test(color);
+      const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const element = node.parentElement;
+        if (!element || !node.nodeValue.trim()) continue;
+        const style = getComputedStyle(element);
+        if (style.textShadow === "none" || !clear(style.webkitTextFillColor)) continue;
+        for (let item = element; item && layer.contains(item); item = item.parentElement) {
+          const own = getComputedStyle(item);
+          if (own.backgroundClip !== "text" && own.webkitBackgroundClip !== "text") continue;
+          return `The text "${node.nodeValue.trim().slice(0, 20)}" takes its fill from a background-clip: text background (on a <${item.tagName.toLowerCase()}>) `
+            + `with a transparent text fill, and also has text-shadow ${style.textShadow.slice(0, 160)}: text shadows are painted over that background, `
+            + "so the text shows only its shadow colour. Keep text-shadow off text drawn with background-clip: text: outline it with -webkit-text-stroke "
+            + "(paint-order: stroke fill), or draw the outline and shadow on a separate copy of the text behind it.";
+        }
+      }
+      return null;
+    });
+  } finally {
+    await page.evaluate((patch) => window.__imvTool.setParameters(patch), request.parameters ?? {});
+    await page.evaluate(() => window.__imvTool.setFrame(0));
+  }
 }
 
 /** Inherited text paint a keyword hit takes from its tier; with the keyword options off it equals that of the tier's other text. */
@@ -1229,6 +1299,7 @@ async function main() {
     if (baseReady && request.transparency === true) checks.push(await transparencyCheck(page));
     if (baseReady && Array.isArray(request.lengths)) checks.push(await lengthsCheck(page));
     if (baseReady && request.text_fit === true) checks.push(await textFitCheck(page));
+    if (baseReady && request.capture && checks.every((item) => item.status === "passed" || item.status === "pass")) await captureFrames(page);
     if (!baseReady) {
       result.tests = (request.tests ?? []).map((test) => ({ name: test.name, status: "not_run", message: "Base render failed.", assertions: [] }));
       result.custom_tests_executed = 0;

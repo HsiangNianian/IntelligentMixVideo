@@ -6,9 +6,16 @@ host's standard two-step plan directly: `preset` readies the Presets and
 `sprite` composes and saves the Sprite (a `plan` sent with `delegate` is refused;
 only `update_plan` takes one). The Executor loop calls the tools of one step and
 ends it with `tools_report_step`; the host checks the step's recorded outputs,
-starts the next step and publishes the saved Sprite after the last one. A step
-reported `needs_input` goes straight to Outer with its questions, since only
-Outer can ask the user. The Plan loop only runs to recover a step that is
+starts the next step and publishes the saved Sprite after the last one. A task never
+asks the user: the host refuses Outer's `ask`, the Executor's `needs_input` and a
+Plan result asking for input, and steers them to build with sensible choices
+the user changes afterwards; a task that delegated cannot end with an ordinary
+answer. The Executor's handoff carries the request (`user_intent` without the
+base spec), and the snapshot puts it first. A text effect's words and keywords are never asked for:
+templates pass them each time they render, so a work only needs sample text for
+its preview, taken from the request or a reference image or written by the
+Executor, which reads the request from the snapshot's `user_intent`
+(`step_inputs` only lists earlier steps' outputs). The Plan loop only runs to recover a step that is
 blocked or used a batch without new evidence. The final delivery is a saved
 Sprite published as an isolated Player preview.
 
@@ -27,7 +34,7 @@ Six business tools have implementations in this build:
 | `sprite.create` | implemented — takes that `draft_id`; code validation (each distinct Preset source once, then the Sprite), one browser mount that must leave the video visible, and save |
 | `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name; it reads a contract, it does not search or list tools |
 | `image.info` / `image.resize` / `image.crop` | contract only |
-| `preset.search` | implemented: plain listing with optional keyword; the agent picks what to recall |
+| `preset.search` | implemented: ranked listing by the words of an optional query and by proven uses; the agent picks what to recall |
 | `preset.modify` | implemented: copies a stored Preset or a task draft (`base_*`, earlier `draft_id`), keeps the copy host-side and returns its `draft_id`; compose it with source `{kind: "draft", draft_id}`. Code changes go in as exact `edits` `[{old_str, new_str}]` (each `old_str` occurs once) or as a whole `code`; the receipt counts the changed code lines and notes an edit that copied a stored Preset instead of its `base_*` draft (a stored Preset with the same code, schema and defaults as a `base_*` draft is the one the base draws with and is not noted) |
 | `validate.code` / `validate.render` | contract only |
 
@@ -109,12 +116,24 @@ device. A database failure surfaces as `PRESET_STORE_FAILED`; nothing is written
 immutable; there is no update or delete. Catalog reads and writes run in worker threads, so database waits do not
 block the event loop or delay cancellation.
 
-`preset.search` reads the database records, sorts by creation time newest
-first, and then applies `limit`. UUID ordering does not affect
-which recent Presets are returned.
-Legacy timestamps without a timezone are interpreted as UTC; invalid timestamps
-sort last without hiding the record. `tools.inspect` identifies this search
-contract as version 2, replacing the previously unimplemented `matches` shape.
+The library is the collection of what earlier works built, so search is how the Agent reuses an effect instead of
+writing it again. `preset.search` cuts the query into words with jieba's search segmentation (Chinese needs no
+spaces; single characters only count when the query has no longer word) and ranks the Presets by how many of those
+words their description or effect usage title contains, leaving out those that contain none. Among equal matches
+the Presets that versions saved to the asset library used come first, then those accepted versions used, then the
+newest; an empty query lists every Preset in that order. Uses live in a second table, `remotion_preset_uses` (one
+row per Preset and accepted version, marked `published` when that version is saved to the asset library): a
+successful Agent job records the stored Presets its version draws with (each instance snapshot names its direct source
+as `source_preset_id`; `CatalogStore.solidify`). A copy the task changed (a fix made with `preset.modify`) is stored as
+a Preset of its own (or found again when an identical one is stored) and credited instead of its original, so a fix
+becomes reusable and a broken original is not ranked up for it. `POST /api/sprites/publish` marks the version's rows
+published. Recording is best effort: a
+database failure is logged and only loses the ranking signal. Optional `role` and `slot` (an effect's usage slot)
+filter the list, and summaries carry an effect's usage and both counts. An effect Preset records its `usage`
+(`title`, `slot`, `target`, `seconds`) when it is created, so a text block's effect entry may name only its source
+and take the rest from it. Legacy timestamps without a timezone are interpreted as UTC; invalid timestamps sort last
+without hiding the record. `tools.inspect` identifies this search contract as version 3 (version 2 required every
+whitespace-separated word and listed newest first).
 `limit` accepts 1–100, and serialized search content is capped at 40,000 UTF-8
 bytes including JSON string escaping. `has_more` marks omitted summaries;
 oversized individual summaries or full records return `RESOURCE_LIMIT_EXCEEDED`
@@ -123,6 +142,23 @@ storage errors only. `preset.create` and `sprite.create` run the isolated valida
 before storing: when it cannot start (for example `bwrap` is missing) they return
 `VALIDATION_UNAVAILABLE` with the original error and store nothing. `preset.modify`
 only checks the contract and never starts the validator.
+
+## Looking at the result
+
+The Agent writes code without a visual judge, so it gets to see what it saved: for the first two Sprites a task saves
+(`tools/session.VISUAL_REVIEW_ROUNDS`), the browser mount `sprite.create` runs anyway also captures up to four still
+frames once every check has passed (`FrameCapture`, `captureFrames` in the validation worker). They are chosen from
+the Sprite's own timing (`review_frames`: for a text block the middle frame, half way into its longest entrance, just
+before the lower tier appears, half way into its cue effects and half way out of its longest exit), cut to the text
+block with room around it, at most 720 pixels on the long side, composited onto the neutral #808080 gray the model is
+told is not content; a text effect whose defaults have no keywords is captured with the workspace preview's sample
+keyword (`sample_keywords`), listed in `review.keywords`, so keyword effects show. The receipt lists the frames in
+`review.frames` with what each should show (each entrance gets its own, so their order shows), and they follow the
+reference images in every Executor turn of the step (`candidate_frames` in the snapshot maps them) until the step
+ends, a `sprite.compose` takes them away (they only describe the saved Sprite; seen in work eb692e7e, where frames of
+an earlier save stayed attached through 20 recompositions and the Executor kept "fixing" them) and a later save
+replaces them. The rules have the Executor compare them with the request and the reference images
+and change only what is clearly missing or wrong. The host draws no verdict from them.
 
 ## Preview
 
@@ -140,9 +176,12 @@ Edits start from the accepted version and keep deriving the length from the inst
 
 A new text effect (kind `text`) is composed from a text block (`sprite.compose` contract v3, `text`), not from boxes;
 boxes stay for edits of older text effects. A Preset may carry a role. A `text` Preset draws one tier: the host passes
-it `text`, the `segments` of that text cut at the keyword hits, a `Keyword` component for the hit segments and
-`fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`), and the Executor rules have it draw the
-tier's look (colour, stroke, shadow, gradient, underline) on its own block so the `Keyword` segments inherit it; its `parameter_schema` declares only its
+it `children`, the tier's line the host renders itself (its text with every keyword hit already drawn by the host's
+`Keyword`), and `fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`), and the Executor rules have
+it render `{props.children}` in one block of its own that carries the tier's look (colour, stroke, shadow, gradient,
+underline), so the whole line inherits it. Older text Presets draw the line themselves from `text`, the `segments` of
+that text cut at the keyword hits and the `Keyword` component, which the host still passes; `compose.mjs`
+(`takesChildren`) hands the line only to a Preset whose code names `children`. Its `parameter_schema` declares only its
 own style props, declaring a host prop is refused, and the code check type-checks it with sample host props (`sprite.create`
 re-checks every source Preset with its role). The check's call site passes each default and host prop as its own JSX
 attribute, so a literal default such as `"center"` satisfies a prop typed `"left" | "center" | "right"` (an object
@@ -166,12 +205,35 @@ Motion is split out of the tiers (contract v4): `text.effects` lists `effect` Pr
 slot (`enter`, `exit` or `loop`), a default position and, entering or exiting, a length in seconds (0.1–3, default
 0.5). An effect Preset receives `children`, the host's `Box` and `progress` (0 not shown, 1 fully shown) and only
 restyles what it wraps. The host leaves a wrap point at every position — `block` (the whole column), each tier
-(`tiers` for both, `line1`/`line2` for one; two tiers only) and each keyword hit (`keyword`, an inline box) — so
+(`tiers` for both, `line1`/`line2` for one; two tiers only), each glyph (`chars`, or only the glyphs of the keyword
+hits `keywordChars` or only the others `plainChars`, each an inline box) and each keyword hit as a whole (`keyword`,
+an inline box) — so
 effect k's configuration parameters `effect{k}` (switch), `effect{k}Target` (position) and `effect{k}Seconds` move it
-or retime it without regenerating (`categories.EFFECT_PARAMETER`; titles from the effect's title). An entrance rises
+or retime it without regenerating (`categories.EFFECT_PARAMETER`; titles from the effect's title); an entrance or cue
+effect also gets `effect{k}Delay`, the seconds it waits before it starts, so effects at different positions can follow
+one another (the keyword's glyphs typing in first, the rest of the line after them), and one placed at a glyph position
+(entering, exiting or at the cue) gets `effect{k}Stagger`, how far its glyphs are spread: 1 one after another, 0 all
+together, in between overlapping. The text block may name `preview_keywords`, the words of its default text that are
+its keywords; while templates pass none, the review frames and the workspace preview show them as keywords instead of
+the opening characters (an Executor once "fixed" a right keyword-first order after frames keyed on the first two
+characters, work 06eb0788). An entrance rises
 from the position's first frame (a tier and its keyword hits count from the tier's start), an exit falls to 0 on the
 last frame, a loop stays at 1, and every length is at most half of the frames its position plays less one, so a text
-frozen on its middle frame still shows in full. The text block of a new work records `still`: the host then holds
+frozen on its middle frame still shows in full (a delay counts towards that half). A keyword Preset may take the hit's
+glyphs as `children` too, like a text Preset takes its line; then the glyphs inside a hit are units of their own (with
+an older keyword Preset that draws `text` the hit is one unit and `keywordChars` is not offered). Each glyph position
+numbers its own units. A cue effect (two tiers only) stays at 0 until the lower tier appears
+and then rises to 1 over its length, whatever position it wraps, so the upper tier can make way for the lower one; it
+stays at 0 while a placement has no lower text. An effect may draw `children` more than once inside its Box (clipped
+slices, echoes), and the element around each tier carries the tier's font size, so motion can be measured in em. Two
+tiers are stacked `lineGap` apart or, with the configuration parameter `tierLayout` "overlap" (`arrangement` in the
+block), share one grid cell, centred on each other with the lower tier on top. At `chars` the glyphs share their tier's entrance or exit in turn: while
+such an effect is on, the host cuts each line into units (a grapheme, a keyword hit as one, spaces none) and unit i of
+n shows `clamp(P * n - i)` of the position's progress P at stagger 1, so glyphs transition in reading order, leave from the last
+glyph and a longer line goes faster. A line stays one run of text otherwise. Only tiers whose text Preset takes
+`children` have glyph units, so with an older tier the `effect{k}Target` enum leaves `chars` out and composing an
+effect there is refused with the fix. Every effect Preset also receives `index` and `count`: the unit within its tier
+at `chars`, the tier at `tiers`/`line1`/`line2`, 0 of 1 elsewhere, so a loop can offset its motion per glyph. The text block of a new work records `still`: the host then holds
 each tier Preset on the middle frame of the frames the tier plays (`compose.mjs` `__Hold`), so motion of its own
 never plays and a stored animated text Preset is reused as it is, look kept; compose requires at least one enter and
 one exit effect (kept with `enabled: false` for still text), so a block never ends up without motion. Transparency of
@@ -184,6 +246,23 @@ their tier Presets' own motion and need no effects. The workspace parameter pane
 「文字」 (the text itself) and 「特效」 (one card per effect and the keyword effect, each with its switch, position, length
 and own look).
 
+Glyph targets select the affected text, not the order in which it appears. Contract v10 requires an explicit
+`stagger` on a non-loop glyph effect, either in the composition entry or in the Preset's `usage`; omission is refused
+with an actionable field error. Use 0 to show the selected text together, 1 sequentially, or a fraction for overlap.
+New glyph Presets must record that choice so reuse preserves it. An entry overrides its usage, and changing the entry
+to a non-glyph target or a loop does not inherit an inapplicable `stagger`. Old immutable records remain readable;
+composing one whose usage lacks the choice requires it in the entry. Saved versions are not rewritten.
+
+`progress` remains continuous: setting opacity to it fades a glyph rather than typing it. Every effect also receives
+the host prop `completedCount`, the number of its target's units in this tier whose local progress has reached 1.
+All units of that target see the same count, including exact boundary frames and simultaneous or overlapping timing.
+Outside glyph positions it is `count` at progress 1 and 0 before; loops have all units completed. Discrete visibility
+can use `index < completedCount`; a cursor follows `completedCount - 1`, starts before the first glyph and disappears
+when all are complete. The Executor receives a working example from `agent_examples.py`; real browser tests render
+that same source and check glyph colours, discrete visibility, cursor position and keyword scope frame by frame.
+The reuse instructions require reading the source as well as its description: a saved Preset's name does not prove
+that it implements the requested motion. Existing generated source needs a new version to adopt the correction.
+
 The Agent decides from the request and the reference images whether the block has two tiers and a keyword Preset. The
 new-chat switches are a temporary explicit choice: `POST /works` takes `keyword_effect` and `two_tier` (strict booleans,
 default false) that reach every job as `user_intent.original_request`; for a new work (`ToolSession.requested`)
@@ -195,9 +274,12 @@ with the six keyword options and the `keywordEffect` switch off, must also look 
 inherited text paint (colour, fill, stroke, paint order, shadow, font, letter spacing) and no filter, decoration or
 text-clipped background that the line's other text gets from its own elements. A text Preset that strokes only the
 spans of the other segments is refused with the differences (`text_fit: … is drawn without its tier's look …`), so
-the template preview's sample keyword and the composed title keyword keep the tier's look. Templates only switch the seven keyword parameters (any
+the template preview's sample keyword and the composed title keyword keep the tier's look. Text drawn with
+`background-clip: text` (a transparent text fill showing a gradient behind it) must not carry a text-shadow: the shadow
+is painted over that background and the text turns into its shadow colour, so `text_fit` refuses it with the element
+and the fix (outline with `-webkit-text-stroke`, or a separate copy behind). Templates only switch the seven keyword parameters (any
 other `keyword…` parameter is internal there), so the keyword effect is changed in the workspace and saved to the
-library again. `preset.search` matches every whitespace-separated word of the query and filters by role.
+library again. `preset.search` ranks by the words of the query and by proven uses and filters by role (see Preset storage).
 
 For Linux renderer validation, install the locked Bun dependencies in
 `server/src/server/remotion`, then run:
@@ -277,8 +359,8 @@ style's own file.
   `fontFamily` (an enum of library families, defaulting to the font chosen from the reference image or description);
   `sprite.create` checks the enum against the library. The stored Sprite keeps a plain string (`maxLength` 100), since
   the library grows, and a choice is checked against the live library: `placement.resolve` when a template saves or an
-  overlay is accepted, `patch_parameters` for a manual revision. The Agent only receives the user's reference images,
-  never its own renders. Older text effects without `fontFamily` keep working and show no font picker.
+  overlay is accepted, `patch_parameters` for a manual revision. Besides the user's reference images the Agent only sees
+  the review frames of the Sprites it saves (see Looking at the result), not a render with every font. Older text effects without `fontFamily` keep working and show no font picker.
 - **Editor**: the choice is a normal parameter override, so it is stored in the template track's
   `editor.remotion.parameters`. The client's `FontPicker` (`features/fonts/`) is used for every `fontFamily` parameter.
 - **Preview**: the player page lists the fonts that have a file (`#imv-preview-fonts`) and registers each as a lazy

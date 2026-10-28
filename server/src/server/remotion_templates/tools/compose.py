@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from ..categories import (
-    DEFAULT_EFFECT_SECONDS, EFFECT_PARAMETER, EFFECT_SECONDS, EFFECT_SLOTS, EFFECT_TARGETS, FIXED_TITLES, KEYWORD_EFFECT_PROP, LINE_GAP,
-    LINE_STARTS, REQUIRED, TEXT_KEYWORDS, TIER_SIZE_RATIO,
+    DEFAULT_EFFECT_SECONDS, EFFECT_DELAY, EFFECT_PARAMETER, EFFECT_SECONDS, EFFECT_SLOTS, EFFECT_TARGETS, FIXED_TITLES, GLYPH_TARGETS,
+    KEYWORD_EFFECT_PROP, KEYWORD_GLYPH_TARGET,
+    LINE_GAP, LINE_STARTS, REQUIRED, TEXT_KEYWORDS, TIER_LAYOUT, TIER_LAYOUTS, TIER_SIZE_RATIO,
 )
 from .registry import ToolFault
 
@@ -106,10 +107,12 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
     defaults the Agent chose in ``block`` (a `TextComposition`) and the font library ``fonts`` as the font enum.
 
     One tier exposes `fontFamily`/`fontWeight`; two tiers expose each tier's font, weight and size ratio plus
-    `lineGap` and `lineStartFrames`. Both expose `text`, `fontSize` and the seven keyword parameters (off by
+    `tierLayout` (stacked, or overlapping, which needs no gap and defaults it to 0), `lineGap` and `lineStartFrames`. Both expose `text`, `fontSize` and the seven keyword parameters (off by
     default), a block with a keyword Preset also its `keywordEffect` switch (on by default), and effect k (from 1, in
-    the block's order) its switch `effect{k}`, its position `effect{k}Target` and, entering or exiting, its length
-    `effect{k}Seconds`, titled with the effect's own Chinese name.
+    the block's order) its switch `effect{k}`, its position `effect{k}Target`, unless it loops its length
+    `effect{k}Seconds`, entering or at the lower tier's cue its start delay `effect{k}Delay`, and placed at a glyph
+    position (entering, exiting or at the cue) how far its glyphs are staggered `effect{k}Stagger`, titled with the
+    effect's own Chinese name.
     """
     rules = {rule.name: rule for rule in REQUIRED["text"]}
     font = {"type": "string", "enum": fonts}
@@ -129,7 +132,8 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
                 (f"line{index}FontWeight", weight, tier["font_weight"]),
                 (f"line{index}SizeRatio", {"type": "number", "minimum": low, "maximum": high}, tier["size_ratio"]),
             ]
-        entries += [(LINE_GAP.name, LINE_GAP.example, block["line_gap"]), (LINE_STARTS.name, LINE_STARTS.example, block["line_starts"])]
+        entries += [(TIER_LAYOUT, {"type": "string", "enum": list(TIER_LAYOUTS)}, block.get("arrangement", "stack")), (LINE_GAP.name, LINE_GAP.example, block.get("line_gap", 0)),
+                    (LINE_STARTS.name, LINE_STARTS.example, block["line_starts"])]
     entries += [(rule.name, rule.example, rule.off) for rule in TEXT_KEYWORDS]
     if block.get("keyword") is not None:
         entries.append((KEYWORD_EFFECT_PROP, {"type": "boolean"}, True))
@@ -143,12 +147,19 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
         if effect["slot"] != "loop":
             entries.append((f"{name}Seconds", {"type": "number", "minimum": low, "maximum": high}, effect.get("seconds", DEFAULT_EFFECT_SECONDS)))
             titles[f"{name}Seconds"] = f"{title}时长（秒）"
+        if effect["slot"] in {"enter", "cue"}:
+            entries.append((f"{name}Delay", {"type": "number", "minimum": EFFECT_DELAY[0], "maximum": EFFECT_DELAY[1]}, effect.get("delay", 0)))
+            titles[f"{name}Delay"] = f"{title}延迟（秒）"
+        if effect["slot"] != "loop" and effect["target"] in GLYPH_TARGETS:
+            entries.append((f"{name}Stagger", {"type": "number", "minimum": 0, "maximum": 1}, effect.get("stagger", 1)))
+            titles[f"{name}Stagger"] = f"{title}逐字错开"
     schemas = {name: {**deepcopy(definition), "title": titles[name]} for name, definition, _ in entries}
     return schemas, {name: deepcopy(value) for name, _, value in entries}
 
 
-def _bundle(payload: dict[str, Any]) -> str:
-    """Run `compose.mjs` on ``payload`` and return the bundled Sprite source."""
+def _bundle(payload: dict[str, Any]) -> dict[str, Any]:
+    """Run `compose.mjs` on ``payload`` and return its answer: the bundled Sprite source as ``code`` and, for a text
+    block, ``children``, whether each tier's text Preset draws the line the host renders."""
     script = Path(__file__).resolve().parents[2] / "remotion" / "compose.mjs"
     try:
         process = subprocess.run(
@@ -165,12 +176,12 @@ def _bundle(payload: dict[str, Any]) -> str:
     if process.returncode != 0:
         raise ToolFault("COMPOSITION_FAILED", process.stderr[-2000:] or "Sprite bundling failed")
     try:
-        code = json.loads(process.stdout).get("code", "")
+        answer = json.loads(process.stdout)
     except json.JSONDecodeError as exc:
         raise ToolFault("COMPOSITION_FAILED", "Sprite bundler returned invalid JSON") from exc
-    if not code:
+    if not answer.get("code"):
         raise ToolFault("COMPOSITION_FAILED", "Sprite bundler returned empty code")
-    return code
+    return answer
 
 
 def _nested(instances: list[dict[str, Any]], targets: dict[str, list[dict[str, str]]], defs: dict[str, Any], properties: dict[str, Any], defaults: dict[str, Any]) -> None:
@@ -196,6 +207,9 @@ def compose_text_source(
     order); ``bindings`` are the Agent's style parameters over them. The configuration parameters come first in the
     schema, bound to the block itself (`TEXT_BLOCK_ID`); a style parameter may not take a configuration name, nor the
     name of a later effect's configuration. ``still`` holds each tier on its middle frame, so only the effects move it.
+    The glyph positions need every tier's text Preset to draw the host's line (`children`), and `keywordChars` also a
+    keyword Preset that draws the hit's glyphs (`children`): otherwise no effect may sit there and the position is left
+    out of every effect's choice, so users cannot move one there either.
     """
     host_schemas, host_defaults = text_configuration(block, fonts)
     instances = [*tiers, *([keyword] if keyword else []), *effects]
@@ -209,12 +223,25 @@ def compose_text_source(
     _nested(instances, targets, defs, properties, defaults)
     schema = {"type": "object", "properties": properties, "$defs": defs, "additionalProperties": False, "required": [*host_schemas, *lifted]}
     source = lambda item: {"instance_id": item["instance_id"], "code": item["preset"]["code"], "bindings": targets.get(item["instance_id"], [])}
-    code = _bundle({"text": {
+    answer = _bundle({"text": {
         "layout": block["layout"], "tiers": [source(item) for item in tiers], "keyword": source(keyword) if keyword else None,
         "effects": [{**source(item), "slot": effect["slot"]} for item, effect in zip(effects, block.get("effects", []))], "still": still,
     }, "defaults": defaults})
+    drawn = [item["instance_id"] for item, line in zip(tiers, answer["children"]) if not line]
+    unavailable = {target: (f"tiers whose text Preset draws the line the host passes as children, but {', '.join(drawn)} draws the segments "
+                            "itself. Copy that Preset with preset_modify: declare children: React.ReactNode in its props and render "
+                            "{props.children} where it maps the segments, keeping its look on the same block.") for target in GLYPH_TARGETS} if drawn else {}
+    if keyword and not answer["keyword_children"] and KEYWORD_GLYPH_TARGET not in unavailable:
+        unavailable[KEYWORD_GLYPH_TARGET] = (f"a keyword Preset that draws the hit's glyphs the host passes as children, but {keyword['instance_id']} "
+                                             "draws its text itself. Copy it with preset_modify: declare children: React.ReactNode in its props and "
+                                             "render {props.children} where it renders props.text, keeping its look around them.")
+    for index, effect in enumerate(block.get("effects", []), start=1):
+        if effect["target"] in unavailable:
+            raise ToolFault("INVALID_ARGUMENT", f"The effect at {effect['target']} needs {unavailable[effect['target']]}", field=f"/text/effects/{index - 1}/target")
+        enum = schema["properties"][f"effect{index}Target"]["enum"]
+        enum[:] = [target for target in enum if target not in unavailable]
     host_bindings = [{"name": name, "title": schema["title"], "targets": [{"instance_id": TEXT_BLOCK_ID, "parameter": name}]} for name, schema in host_schemas.items()]
-    return code, schema, defaults, host_bindings
+    return answer["code"], schema, defaults, host_bindings
 
 
 def compose_source(instances: list[dict[str, Any]], bindings: list[dict[str, Any]] | None = None) -> tuple[str, dict[str, Any], dict[str, Any]]:
@@ -236,4 +263,4 @@ def compose_source(instances: list[dict[str, Any]], bindings: list[dict[str, Any
     schema = {"type": "object", "properties": properties, "$defs": defs, "additionalProperties": False}
     if lifted:
         schema["required"] = list(lifted)
-    return _bundle({"instances": source_instances, "defaults": defaults}), schema, defaults
+    return _bundle({"instances": source_instances, "defaults": defaults})["code"], schema, defaults

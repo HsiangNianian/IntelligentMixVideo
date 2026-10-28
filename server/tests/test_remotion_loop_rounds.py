@@ -151,6 +151,7 @@ class FakeSession:
         self.intent = intent or {"original_request": {"description": "demo"}}
         self.latest_sprite_id = "sprite-1"
         self.saved_sprites = {"sprite-1": {"sprite_id": "sprite-1"}}
+        self.review_frames = []
 
     def snapshot(self, **_options):
         """返回确定性的宿主快照。"""
