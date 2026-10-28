@@ -37,6 +37,7 @@ from .contracts import (
     SpriteRecord,
     SpriteCreateOutput,
     SpriteReview,
+    TextEffect,
 )
 from ..categories import EFFECT_PARAMETER, EFFECT_TARGETS, FIXED_TITLES, GLYPH_TARGETS, agent_message, category_problems, parameter_problems
 from ..builtin_effects import BUILTINS
@@ -986,6 +987,9 @@ class ToolSession:
         if request.kind != "text":
             raise ToolFault("INVALID_ARGUMENT", "Only a text effect (kind text) has a text block.", field="/kind")
         block = block.model_copy(update={"effects": [await self._with_usage(effect, index) for index, effect in enumerate(block.effects)]})
+        if self.still_text:
+            # A held block's tiers only move through effects, so the host adds a built-in fade in/out when the model names none.
+            block = block.model_copy(update={"effects": self._with_default_effects(block.effects)})
         if request.instances:
             raise ToolFault("INVALID_ARGUMENT", "A text effect is its text block alone: draw decorations inside the tier Presets or as effects of the block and leave instances empty.", field="/instances")
         lines = block.text.split("\n")
@@ -1040,12 +1044,6 @@ class ToolSession:
             if effect.slot == "loop" and effect.seconds is not None:
                 raise ToolFault("INVALID_ARGUMENT", "A looping effect lasts as long as its position shows: leave seconds out (only enter and exit "
                                 "effects have a length).", field=f"/text/effects/{index}/seconds")
-        # Held tiers only move through effects, so every such text has an entrance and an exit users can switch off.
-        missing = [slot for slot in ("enter", "exit") if self.still_text and not any(effect.slot == slot for effect in block.effects)]
-        if missing:
-            raise ToolFault("INVALID_ARGUMENT", f"The text block has no {' and no '.join(missing)} effect: the host holds its tiers still, so give it at least one enter "
-                            "and one exit effect Preset (role effect), such as a fade with opacity = progress listed as both, or the motion the request or "
-                            "reference shows. For text the user wants still, keep them with enabled false so users can switch them on.", field="/text/effects")
         self._check_length(block.duration_frames, "/text/duration_frames")
         store = FontStore.active
         fonts = store.families() if store is not None else sorted({tier.font_family for tier in block.tiers})
@@ -1142,6 +1140,23 @@ class ToolSession:
         if effect.stagger is None and (effect.slot or usage.slot) != "loop" and (effect.target or usage.target) in GLYPH_TARGETS and usage.stagger is not None:
             filled["stagger"] = usage.stagger
         return effect.model_copy(update=filled)
+
+    def _with_default_effects(self, effects):
+        """Add a built-in fade in and/or fade out for any missing slot, so a held text block's tiers always move and users can
+        switch the fades off; a slot the model already draws is kept as it is."""
+        present = {effect.slot for effect in effects}
+        adopted = list(effects)
+        used = {effect.instance_id for effect in adopted}
+        for base_id, title, slot in (("fadeIn", "淡入", "enter"), ("fadeOut", "淡出", "exit")):
+            if slot in present:
+                continue
+            name, suffix = base_id, 1
+            while name in used:
+                suffix += 1
+                name = f"{base_id}{suffix}"
+            used.add(name)
+            adopted.append(TextEffect(instance_id=name, builtin="fade", title=title, slot=slot, target="block"))
+        return adopted
 
     def _check_bindings(self, parameters, schema: dict) -> None:
         """Every bound style parameter needs the bounded schema the publish check can sample."""

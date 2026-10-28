@@ -577,20 +577,25 @@ def test_two_tiers_stack_or_overlap(tmp_path, monkeypatch):
 
 
 @needs_bundler
-def test_a_new_works_text_block_needs_an_entrance_and_an_exit(tmp_path, monkeypatch):
-    """审计复现（作品 afb7aeb1）：新作品复用了自带动画的旧 text Preset，被静止检查拒绝后 Agent 删掉动画、也没加特效，保存出一个完全不动的字效。
-    现在新作品的文字块至少要有一个入场与一个出场特效；要静止文字时保留它们并关掉开关。编辑更早的字效（没有 still 标记）不要求特效，
-    它的各栏也不被定格。"""
+def test_a_new_works_text_block_gets_a_built_in_fade_in_and_out(tmp_path, monkeypatch):
+    """审计复现（作品 afb7aeb1）：新作品曾保存出完全不动、还复用自带动画旧 Preset 的字效。收缩创作面后，模型不必再写入场/出场：
+    新作品文字块没写时宿主补一个内置 fade 入场与出场（effect1/effect2，默认开启，可在编辑器关掉）；已有一个时只补缺的那个；
+    编辑更早的字效（没有 still 标记）不补、也不定格各栏。"""
     monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
 
     async def run():
-        """Compose without effects, with only an entrance, with switched-off fades, and in an edit of an older text effect."""
+        """Compose without effects, with only an entrance, with explicit switched-off fades, and in an edit of an older text effect."""
         current = session(tmp_path / "new")
         tier, glow, fade = await stored(current)
-        for effects, missing in (([], "no enter and no exit effect"), (fades(fade)[:1], "no exit effect")):
-            with pytest.raises(ToolFault) as refused:
-                await current.execute("sprite.compose", two_tiers(tier, glow, effects=effects), available())
-            assert refused.value.error.field == "/text/effects" and missing in refused.value.error.message and "enabled false" in refused.value.error.message
+        bare = await current.execute("sprite.compose", two_tiers(tier, glow), available())
+        block = current.sprite_drafts[bare["draft_id"]]
+        assert [(item.instance_id, item.builtin, item.slot) for item in block.text.effects] == [("fadeIn", "fade", "enter"), ("fadeOut", "fade", "exit")]
+        assert block.default_parameters["effect1"] is True and block.default_parameters["effect2"] is True
+        assert 'Preset: __BUILTINS["fade"]' in block.code
+        # Only the entrance is given, so only the missing exit is added.
+        half = await current.execute("sprite.compose", two_tiers(tier, glow, effects=fades(fade)[:1]), available())
+        assert [item.slot for item in current.sprite_drafts[half["draft_id"]].text.effects] == ["enter", "exit"]
+        # Explicit fades keep their switches off rather than being replaced by the defaults.
         still = await current.execute("sprite.compose", two_tiers(tier, glow, effects=fades(fade, enabled=False)), available())
         assert {name: current.sprite_drafts[still["draft_id"]].default_parameters[name] for name in ("effect1", "effect2")} == {"effect1": False, "effect2": False}
         legacy = SimpleNamespace(text=SimpleNamespace(still=None), instances=[])
