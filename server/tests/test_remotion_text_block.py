@@ -201,6 +201,35 @@ def two_tiers(tier: str, glow: str | None, fade: str | None = None, **text) -> S
     return SpriteComposeInput.model_validate({"description": "双栏标题", "kind": "text", "text": block, "parameters": bindings})
 
 
+@needs_bundler
+def test_a_text_block_can_name_host_built_in_effects(tmp_path):
+    """收缩创作面：模型只写特效名字（builtin fade/glow），宿主出组件，不必存 effect Preset；组合源码引用 __BUILTINS，
+    效果配置参数仍由宿主生成，文字块记下 builtin 以便编辑还原。"""
+    current = session(tmp_path)
+    tier = asyncio.run(current.execute("preset.create", preset("text", TIER_CODE, "color"), available()))["preset"]["preset_id"]
+    block = {
+        "layout": {"x": 90, "y": 700, "width": 900, "height": 400}, "text": "今日灵感", "font_size": 96,
+        "tiers": [{"instance_id": "tier", "source": {"kind": "stored", "preset_id": tier}, "parameters": {"color": "#FFFFFF"},
+                   "font_family": "Noto Sans CJK SC", "font_weight": 700}],
+        "effects": [
+            {"instance_id": "fadeIn", "builtin": "fade", "title": "淡入", "slot": "enter", "target": "block"},
+            {"instance_id": "fadeOut", "builtin": "fade", "title": "淡出", "slot": "exit", "target": "block"},
+            {"instance_id": "glow", "builtin": "glow", "title": "发光", "slot": "loop", "target": "block"},
+        ],
+        "duration_frames": 90,
+    }
+    bindings = [{"name": "color", "title": "颜色", "targets": [{"instance_id": "tier", "parameter": "color"}]}]
+    request = SpriteComposeInput.model_validate({"description": "内置淡入淡出", "kind": "text", "text": block, "parameters": bindings})
+    composed = asyncio.run(current.execute("sprite.compose", request, available()))
+    draft = current.sprite_draft(composed["draft_id"])
+    assert 'Preset: __BUILTINS["fade"]' in draft.code and 'Preset: __BUILTINS["glow"]' in draft.code
+    effects = {item["instance_id"]: item for item in draft.model_dump(mode="json")["text"]["effects"]}
+    assert effects["fadeIn"]["builtin"] == "fade" and effects["glow"]["slot"] == "loop"
+    # The effect{k} configuration parameters still come from the host; a loop has no length.
+    assert {"effect1", "effect1Target", "effect1Seconds", "effect3", "effect3Target"} <= set(draft.default_parameters)
+    assert "effect3Seconds" not in draft.default_parameters
+
+
 def test_the_host_owns_a_text_blocks_configuration():
     """单栏暴露 fontFamily/fontWeight，双栏暴露每栏的字体、字重与字号比例以及栏间距、行起点；都带文字、字号与七个关闭的关键词参数，
     有关键词 Preset 时另有默认开启的 keywordEffect；名称、Schema 与中文标题由宿主固定，字体枚举是字体库。"""
@@ -364,7 +393,7 @@ def test_a_text_block_wraps_its_positions_in_effect_presets(tmp_path, monkeypatc
         host = {item.name for item in sprite.bindings if item.targets[0].instance_id == TEXT_BLOCK_ID}
         assert {"effect1", "effect1Target", "effect1Seconds", "effect2Seconds", "effect3Target", "effect4", "effect4Target"} <= host and "effect4Seconds" not in host
         assert (sprite.default_parameters["effect2Seconds"], sprite.default_parameters["effect3Target"], sprite.default_parameters["shineColor"]) == (0.4, "keyword", "#FFD54A")
-        assert [item.model_dump() for item in sprite.text.effects] == [{"instance_id": item["instance_id"], "title": item["title"], "slot": item["slot"]} for item in EFFECTS]
+        assert [{k: item.model_dump()[k] for k in ("instance_id", "title", "slot")} for item in sprite.text.effects] == [{"instance_id": item["instance_id"], "title": item["title"], "slot": item["slot"]} for item in EFFECTS]
         assert sprite.text.still is True and 'at: ["keyword"], inline: true' in sprite.code and 'at: ["tiers", "line2"]' in sprite.code and "__Hold" in sprite.code
         assert category_problems("text", sprite.parameter_schema, {item.name for item in sprite.bindings}, sprite.default_parameters) == []
         checked = recording(current)

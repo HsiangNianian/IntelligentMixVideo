@@ -718,14 +718,17 @@ EffectSlot = Literal["enter", "exit", "loop", "cue"]
 EffectTarget = Literal["block", "tiers", "line1", "line2", "chars", "keywordChars", "plainChars", "keyword"]
 # 特效的中文名称，如「淡入」「发光」：宿主据此写它的开关、位置与时长参数的标题。
 EffectTitle = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=8)]
+# 宿主内置特效的名字：模型只写名字，宿主自己画，不必写 effect Preset。
+EffectBuiltin = Literal["fade", "rise", "pop", "slideLeft", "slideRight", "slideUp", "slideDown", "blur", "glow", "breathing"]
 
 
 class TextEffect(ContractModel):
-    """文字块的一个特效：画它的 effect 角色 Preset 及其样式参数、中文名称、类型，以及作用位置、时长与开关（配置的默认值）；
-    名称、类型、位置与时长省略时取 Preset 记下的默认用法。"""
+    """文字块的一个特效：一个 effect 角色 Preset（source）或宿主内置特效（builtin）其一，加样式参数、中文名称、类型，
+    以及作用位置、时长与开关（配置的默认值）；名称、类型、位置与时长省略时取 Preset 的 usage 或内置特效的默认值。"""
 
     instance_id: NonEmptyString
-    source: PresetSource
+    source: Omittable[PresetSource]
+    builtin: Omittable[EffectBuiltin]
     parameters: Omittable[JsonObject]
     title: Omittable[EffectTitle]
     slot: Omittable[EffectSlot]
@@ -764,11 +767,12 @@ class TextComposition(ContractModel):
 
 
 class TextBlockEffect(ContractModel):
-    """组合后记录的一个特效：实例、中文名称与类型；位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
+    """组合后记录的一个特效：实例、中文名称与类型；内置特效另记 builtin。位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
 
     instance_id: NonEmptyString
     title: EffectTitle
     slot: EffectSlot
+    builtin: Omittable[EffectBuiltin]
 
 
 class TextBlock(ContractModel):

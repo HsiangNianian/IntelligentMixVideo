@@ -39,6 +39,7 @@ from .contracts import (
     SpriteReview,
 )
 from ..categories import EFFECT_PARAMETER, EFFECT_TARGETS, FIXED_TITLES, GLYPH_TARGETS, agent_message, category_problems, parameter_problems
+from ..builtin_effects import BUILTINS
 from ..fonts import FontStore, open_font_schema
 from .catalog_store import CatalogStore
 from .registry import ToolFault
@@ -328,16 +329,19 @@ def _text_block(sprite: SpriteDraft, config: dict) -> dict:
         block["keyword"] = {"instance_id": keyword, "source": {"kind": "draft", "draft_id": f"base_{keyword}"}, "parameters": parameters[keyword]}
     if sprite.text.effects:
         # Effect k's position, length and switch are its configuration parameters, as the user last saved them.
-        block["effects"] = [
-            {
-                "instance_id": item.instance_id, "source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"}, "parameters": parameters[item.instance_id],
-                "title": item.title, "slot": item.slot, "target": config.get(f"effect{index}Target"),
+        def effect(item, index: int) -> dict:
+            """One effect entry: a built-in re-emits its name, a Preset references its base_* draft."""
+            shared = {
+                "instance_id": item.instance_id, "title": item.title, "slot": item.slot, "target": config.get(f"effect{index}Target"),
                 **({"seconds": config.get(f"effect{index}Seconds")} if item.slot != "loop" else {}),
                 **({"delay": config[f"effect{index}Delay"]} if f"effect{index}Delay" in config else {}),
                 **({"stagger": config[f"effect{index}Stagger"]} if f"effect{index}Stagger" in config else {}), "enabled": config.get(f"effect{index}") is not False,
             }
-            for index, item in enumerate(sprite.text.effects, start=1)
-        ]
+            if item.builtin:
+                return {"builtin": item.builtin, **shared}
+            return {"source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"}, "parameters": parameters[item.instance_id], **shared}
+
+        block["effects"] = [effect(item, index) for index, item in enumerate(sprite.text.effects, start=1)]
     return block
 
 
@@ -511,6 +515,9 @@ class ToolSession:
             sources: dict[str, str] = {}
             presets = {}
             for item in sprite.instances:
+                if item.builtin:
+                    # A host built-in effect has no Preset source to draft; the edit re-emits its name instead.
+                    continue
                 draft_id = f"base_{item.instance_id}"
                 same = sources.get(item.preset.code)
                 presets[draft_id] = {"same_code_as": same} if same else item.preset.model_dump(mode="json", exclude_unset=True)
@@ -785,6 +792,9 @@ class ToolSession:
         # A text-block Preset is checked with its role, so the call site passes the props the host gives it.
         checked: set[str] = set()
         for instance in sprite.instances:
+            if instance.builtin:
+                # A host built-in effect has no Preset source to typecheck; its component is in the generated code.
+                continue
             component = instance.preset
             key = component.model_dump_json(include={"code", "parameter_schema", "default_parameters", "role"})
             if key in checked:
@@ -1059,6 +1069,13 @@ class ToolSession:
             seen.add(slot.instance_id)
             if role == "text" and slot.font_family not in fonts:
                 raise ToolFault("INVALID_ARGUMENT", f"font_family {slot.font_family!r} is not in the font library: {fonts}", field=f"{field}/font_family")
+            if role == "effect" and getattr(slot, "builtin", None) is not None:
+                # A host built-in effect carries no Preset source; compose.mjs draws it from its name.
+                stub = {"description": f"内置特效 {slot.builtin}", "code": "", "role": "effect",
+                        "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}
+                resolved.append({"instance_id": slot.instance_id, "preset": stub, "builtin": slot.builtin, "parameters": {}, "layout": layout, "timing": timing})
+                summaries.append(InstanceSummary(instance_id=slot.instance_id, parameter_names=[], layout=layout, timing=timing))
+                continue
             preset, origin, parameters = await self._resolve(slot.instance_id, slot.source, slot.parameters, field)
             if preset.get("role") != role:
                 raise ToolFault("INVALID_ARGUMENT", f"{slot.instance_id} needs a Preset with role {role!r} (written for the text block), "
@@ -1084,13 +1101,27 @@ class ToolSession:
             bindings=[*host, *bindings],
             text={"layout": block.layout.model_dump(mode="json"), "tiers": [tier.instance_id for tier in block.tiers],
                   **({"keyword": block.keyword.instance_id} if block.keyword else {}),
-                  "effects": [{"instance_id": item.instance_id, "title": item.title, "slot": item.slot} for item in block.effects],
+                  "effects": [{"instance_id": item.instance_id, "title": item.title, "slot": item.slot, **({"builtin": item.builtin} if item.builtin else {})} for item in block.effects],
                   **({"preview_keywords": block.preview_keywords} if block.preview_keywords else {}),
                   **({"still": True} if self.still_text else {})},
         ), summaries)
 
     async def _with_usage(self, effect, index: int):
-        """Fill omitted usage fields, including glyph timing only where the effective slot and target support it."""
+        """Fill omitted usage fields, including glyph timing only where the effective slot and target support it.
+
+        A host built-in effect fills them from its own defaults instead of a Preset's usage.
+        """
+        if effect.builtin is not None:
+            defaults = BUILTINS[effect.builtin]
+            filled = {name: defaults[name] for name in ("title", "slot", "target") if getattr(effect, name) is None}
+            slot = effect.slot or defaults["slot"]
+            target = effect.target or defaults["target"]
+            if effect.seconds is None and slot != "loop" and "seconds" in defaults:
+                filled["seconds"] = defaults["seconds"]
+            if effect.stagger is None and slot != "loop" and target in GLYPH_TARGETS:
+                raise ToolFault("INVALID_ARGUMENT", f"{effect.instance_id} is a built-in effect at the {target} glyph position: choose stagger explicitly "
+                                "(0 all glyphs together, 1 one after another).", field=f"/text/effects/{index}/stagger")
+            return effect.model_copy(update=filled) if filled else effect
         missing = [name for name in ("title", "slot", "target") if getattr(effect, name) is None]
         needs_stagger = effect.slot != "loop" and effect.target in GLYPH_TARGETS and effect.stagger is None
         if not missing and not needs_stagger and (effect.seconds is not None or effect.slot == "loop"):

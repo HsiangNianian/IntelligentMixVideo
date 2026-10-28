@@ -17,7 +17,8 @@ const input = JSON.parse(fs.readFileSync(0, "utf8"));
 const block = input.text ?? null;
 const instances = block ? [...block.tiers, ...(block.keyword ? [block.keyword] : []), ...(block.effects ?? [])] : Array.isArray(input.instances) ? input.instances : [];
 // Instances of the same Preset share one bundled module, so repeated instances do not repeat its source.
-const modules = [...new Set(instances.map((item) => item.code))];
+// A host built-in effect (`builtin`) has no `code`; it is drawn from the `__BUILTINS` map instead.
+const modules = [...new Set(instances.map((item) => item.code).filter(Boolean))];
 /**
  * Whether a text or keyword Preset draws what the host renders and passes as `children` (a tier's line, a keyword hit's
  * glyphs) rather than drawing its `segments` or `text` itself: such a Preset names `children` somewhere in its code (its
@@ -98,8 +99,12 @@ function textEntry() {
   const tiers = block.tiers.length;
   const keyword = block.keyword ? modules.indexOf(block.keyword.code) : -1;
   const effect = block.keyword ? `{...props[${JSON.stringify(block.keyword.instance_id)}], ...${boundProps(block.keyword)}}` : "{}";
-  const effects = (block.effects ?? []).map((item, index) => `{k: ${index + 1}, slot: ${JSON.stringify(item.slot)}, Preset: Preset${modules.indexOf(item.code)}, `
-    + `props: (props) => ({...props[${JSON.stringify(item.instance_id)}], ...${boundProps(item)}})}`);
+  const effects = (block.effects ?? []).map((item, index) => {
+    // A built-in effect is a host component named in `__BUILTINS`; a Preset is bundled as a module.
+    const preset = item.builtin ? `__BUILTINS[${JSON.stringify(item.builtin)}]` : `Preset${modules.indexOf(item.code)}`;
+    const props = item.builtin ? "() => ({})" : `(props) => ({...props[${JSON.stringify(item.instance_id)}], ...${boundProps(item)}})`;
+    return `{k: ${index + 1}, slot: ${JSON.stringify(item.slot)}, Preset: ${preset}, props: ${props}}`;
+  });
   // Positions the tier's own wrapper takes: all tiers, and the upper or lower one of two.
   const at = (index) => JSON.stringify(tiers === 1 ? [] : ["tiers", `line${index + 1}`]);
   const hold = (element) => (block.still ? `<__Hold>${element}</__Hold>` : element);
@@ -123,6 +128,19 @@ function textEntry() {
     'import React from "react";',
     'import {AbsoluteFill, Freeze, Sequence, useCurrentFrame, useVideoConfig} from "remotion";',
     ...prelude,
+    // Host-drawn effect components a text block names by `builtin`: the model supplies only the name.
+    'const __BUILTINS = {',
+    'fade: ({children, progress, Box}) => <Box style={{opacity: progress}}>{children}</Box>,',
+    'rise: ({children, progress, Box}) => <Box style={{opacity: progress, transform: "translateY(" + ((1 - progress) * 40) + "px)"}}>{children}</Box>,',
+    'pop: ({children, progress, Box}) => <Box style={{opacity: Math.min(1, progress * 2), transform: "scale(" + (0.6 + 0.4 * progress) + ")"}}>{children}</Box>,',
+    'slideLeft: ({children, progress, Box}) => <Box style={{opacity: progress, transform: "translateX(" + ((1 - progress) * 60) + "px)"}}>{children}</Box>,',
+    'slideRight: ({children, progress, Box}) => <Box style={{opacity: progress, transform: "translateX(" + (-(1 - progress) * 60) + "px)"}}>{children}</Box>,',
+    'slideUp: ({children, progress, Box}) => <Box style={{opacity: progress, transform: "translateY(" + (-(1 - progress) * 60) + "px)"}}>{children}</Box>,',
+    'slideDown: ({children, progress, Box}) => <Box style={{opacity: progress, transform: "translateY(" + ((1 - progress) * 60) + "px)"}}>{children}</Box>,',
+    'blur: ({children, progress, Box}) => <Box style={{opacity: progress, filter: "blur(" + ((1 - progress) * 8) + "px)"}}>{children}</Box>,',
+    'glow: ({children, Box}) => { const __f = useCurrentFrame(); const __a = (Math.sin(__f / 6) + 1) / 2; return <Box style={{filter: "drop-shadow(0 0 " + (6 + __a * 10) + "px rgba(255,255,255,0.85))"}}>{children}</Box>; },',
+    'breathing: ({children, Box}) => { const __f = useCurrentFrame(); const __s = 1 + 0.04 * Math.sin(__f / 8); return <Box style={{display: "inline-block", transform: "scale(" + __s + ")"}}>{children}</Box>; },',
+    '};',
     `const __hits = (text, keywords) => { const hits = []; for (const word of Array.isArray(keywords) ? keywords : []) { if (typeof word !== "string" || !word) continue; for (let at = text.indexOf(word); at >= 0; at = text.indexOf(word, at + 1)) { if (!hits.some(([start, end]) => at < end && at + word.length > start)) { hits.push([at, at + word.length]); break; } } } return hits.sort((left, right) => left[0] - right[0]); };`,
     `const __segments = (line, offset, hits) => { const out = []; let at = 0; for (const [start, end] of hits) { const from = Math.max(start - offset, at), to = Math.min(end - offset, line.length); if (to <= from) continue; if (from > at) out.push({text: line.slice(at, from), keyword: false}); out.push({text: line.slice(from, to), keyword: true}); at = to; } if (at < line.length) out.push({text: line.slice(at), keyword: false}); return out; };`,
     `const __Context = React.createContext({props: {}, effect: {}, cue: null});`,
