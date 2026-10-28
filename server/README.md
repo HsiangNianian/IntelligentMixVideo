@@ -199,7 +199,7 @@ uv build --out-dir dist
 
 测试统一放在 `tests/`，使用 pytest；`conftest.py` 管理客户端夹具，
 `test_api.py` 覆盖路由契约、边界和错误请求，`test_entrypoint.py` 覆盖两种启动入口。
-每个新 feature 都必须补齐正常、异常及适用边界的测试脚本，详细规则见根目录 AGENTS.md。
+每个新 feature 都必须补齐正常、异常及适用边界的测试脚本，详细规则见根目录 AGENTS.md 与 server/AGENTS.md。
 
 项目在 `pyproject.toml` 中将官方 PyPI 设为默认索引，与锁文件来源保持一致。
 第三方镜像可能尚未同步所需版本，导致 `uv sync` 和 `uv sync --locked` 报
