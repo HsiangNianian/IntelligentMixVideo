@@ -555,7 +555,9 @@ function textFitProblems(page, needle, placement, collectLines = false) {
     const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
     const problems = new Set();
     let joined = "";
+    let withoutDecorations = "";
     let area = 0;
+    let readable = true;
     let extent = null; // canvas rectangle of all shown text after the transform
     // The visual text lines: rectangles whose vertical ranges overlap belong to the same line, so the pieces of a line
     // split into keyword spans still count once. A text block laid out for one line that wraps is then two lines.
@@ -574,6 +576,10 @@ function textFitProblems(page, needle, placement, collectLines = false) {
       // Opacity can deliberately hide a tier without removing any text from its layout. Count it for render
       // preflight, but do not let its invisible boxes affect the full-size frames, clipping, or placement shift.
       joined += shown;
+      // Glow/outline Presets may paint an aria-hidden copy beside the real keyword. Joining both would turn
+      // complete text into "prefix keyword keyword suffix". Also try the logical text without those copies;
+      // keep the full join for effects whose whole visible text is aria-hidden, and measure every painted box.
+      if (!node.parentElement.closest('[aria-hidden="true"]')) withoutDecorations += shown;
       if (!isPainted) continue;
       const bounds = {
         left: Math.min(...lines.map((rect) => rect.left)), right: Math.max(...lines.map((rect) => rect.right)),
@@ -598,7 +604,10 @@ function textFitProblems(page, needle, placement, collectLines = false) {
         });
       }
       const smallest = Math.min(...lines.map((rect) => rect.height));
-      if (smallest < minLine) problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
+      if (smallest < minLine) {
+        readable = false;
+        problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
+      }
       const corners = lines.flatMap((rect) => [place(rect.left, rect.top), place(rect.right, rect.top), place(rect.left, rect.bottom), place(rect.right, rect.bottom)]);
       const [left, right] = [Math.min(...corners.map(([x]) => x)), Math.max(...corners.map(([x]) => x))];
       const [top, bottom] = [Math.min(...corners.map(([, y]) => y)), Math.max(...corners.map(([, y]) => y))];
@@ -622,7 +631,7 @@ function textFitProblems(page, needle, placement, collectLines = false) {
       }
     }
     if (!extent) return null;
-    if (!joined.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
+    if (!joined.includes(wanted) && !withoutDecorations.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
     const ordered = [...rows].sort((first, second) => first.top - second.top);
     /** The canvas centre and rendered text of one visual line, for measuring its single-line position. */
     const describe = (row) => row && {
@@ -630,7 +639,7 @@ function textFitProblems(page, needle, placement, collectLines = false) {
       text: row.segments.sort((first, second) => first.left - second.left).map((segment) => segment.text).join(""),
     };
     return {
-      problems: [...problems], area, extent, view, lines: rows.length,
+      problems: [...problems], readable, area, extent, view, lines: rows.length,
       ...(collectLines ? { first: describe(ordered[0]), last: describe(ordered.at(-1)) } : {}),
     };
   }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, request.mode === "fit", collectLines);
@@ -646,6 +655,7 @@ const UNPLACED = Object.freeze({ cx: 0, cy: 0, x: 0, y: 0, scale: 1, rotation: 0
  * lines): entrance and exit animations show it smaller, scaled down or typed in, and would hide a layout that clips
  * it while it holds. It `fits` when one of those frames has no problem, so a reveal mask or slide-in that moves the
  * full-size text out of view for a few frames is fine; `problems` are those of the full-size frames otherwise.
+ * `readable` distinguishes lines that are too small from overflow, so fitting need not assume the floor fits.
  * With `placement.nudge` the text leaving the window is no problem and `shift` is the smallest move of the placement
  * (`{x, y}` in canvas pixels, zero when none is needed) that brings the text of the middle one of the problem-free
  * full-size frames back inside it; when that text is larger than the window no move helps and it does not fit.
@@ -679,7 +689,7 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
   // The anchor line and its text come from a frame without problems, so an entrance or exit offset cannot move it.
   const middle = (clean.length ? clean : full)[Math.floor(((clean.length ? clean : full).length - 1) / 2)] ?? null;
   return {
-    error: null, shown: verdicts.length, full: full.length, fits,
+    error: null, shown: verdicts.length, full: full.length, fits, readable: full.some((verdict) => verdict.readable),
     lines: Math.max(0, ...full.map((verdict) => verdict.lines)), extent: middle?.extent ?? null,
     first: middle?.first ?? null, last: middle?.last ?? null, frame: middle?.frame ?? null, shift,
     problems: fits ? [] : [...new Set(full.flatMap((verdict) => verdict.problems))],
@@ -1066,7 +1076,8 @@ function valuesAtSize(item, size) {
  * `length` its Sprite plays in the render (which it reads as `durationInFrames`) and measured where its host
  * `transform` puts it on the canvas. The requested size is tried first, so text that already fits is untouched;
  * a component that throws, or never renders the text, is left alone (the render reports its own failure). Sizes are
- * assumed to fit monotonically, so a binary search. When even the floor leaves the text outside the window the video
+ * searched above the smallest actually readable size, so a small keyword cannot make the floor look too large.
+ * When even that floor leaves the text outside the window the video
  * shows (a long title placed at the top edge), the placement is moved the shortest way back inside at `min`:
  * the answer's `shift` is that move in canvas pixels. `fits: false` means the text is too long even for that. When the
  * size is lowered the answer also carries the matching `keyword_size` (see `valuesAtSize`).
@@ -1123,7 +1134,7 @@ async function fitTexts(page, loadError, sprite) {
     };
     const requested = item.values[item.size_key];
     // Never below what is readable, and never above what was asked for.
-    const floor = Math.min(requested, Math.max(item.min, readableFontSize(item.values)));
+    let floor = Math.min(requested, Math.max(item.min, readableFontSize(item.values)));
     // Turning this off when the text cannot be one line makes `accepts` check the wrapped fit instead.
     let oneLine = item.one_line === true;
     const accepts = (measured) => usable(measured) && (!oneLine || measured.lines <= 1);
@@ -1131,7 +1142,20 @@ async function fitTexts(page, loadError, sprite) {
     const atRequested = await measureSize(requested);
     let ok = accepts(atRequested);
     if (!ok) {
-      const atFloor = floor < requested ? await measureSize(floor) : atRequested;
+      let atFloor = floor < requested ? await measureSize(floor) : atRequested;
+      // The declared floor may make a smaller keyword or a Preset's own scaled text unreadable. Fit is then not
+      // monotonic: the floor fails for being too small while the request fails for being too large. First find
+      // the lowest actually readable size; only above it does the usual "smaller fits better" search apply.
+      if (!usable(atFloor) && !atFloor.readable && atRequested.readable) {
+        let low = floor;
+        let high = Math.floor(requested);
+        while (low < high) {
+          const middle = Math.floor((low + high) / 2);
+          if ((await measureSize(middle)).readable) high = middle; else low = middle + 1;
+        }
+        floor = low;
+        atFloor = await measureSize(floor);
+      }
       const floorOK = accepts(atFloor);
       if (oneLine && !floorOK && atRequested.fits) {
         // It cannot be one line at any readable size: keep the text whole, wrapped, at the size asked for.
@@ -1218,6 +1242,7 @@ async function fitTexts(page, loadError, sprite) {
     answers.push({
       index: item.index, fits: ok, size, lines: final.lines, ...(keywordSize !== item.values.keywordSize ? { keyword_size: keywordSize } : {}),
       ...(shift && (shift.x || shift.y) ? { shift } : {}), ...(growShift ? { grow_shift: growShift } : {}),
+      ...(!ok ? { problems: final.problems } : {}),
     });
   }
   return answers;

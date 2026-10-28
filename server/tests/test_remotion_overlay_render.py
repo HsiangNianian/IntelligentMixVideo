@@ -1924,7 +1924,8 @@ class FitRenderer:
             for item in sprite["fit"]:
                 wanted = item["values"][item["size_key"]]
                 if self.capacity is None:
-                    answers.append({"index": item["index"], "fits": False, "size": item["min"]})
+                    answers.append({"index": item["index"], "fits": False, "size": item["min"],
+                                    "problems": ["it is cut off by a 10x10 box with overflow hidden"]})
                 else:
                     moved = self.shift and self.shift_text in (None, item["text"])
                     dropped = self.grow_shift if self.grow_shift and item.get("grow") else None
@@ -1992,11 +1993,16 @@ def test_text_that_fits_keeps_its_requested_size(tmp_path) -> None:
 
 # 场景：缩到最小字号也放不下时不渲染被裁切的标题，任务以稳定错误码失败，总线据此提示。
 def test_text_that_cannot_fit_at_the_smallest_size_fails_with_a_stable_code(tmp_path) -> None:
-    """text_too_long 与固定说明，不含本地路径。"""
+    """text_too_long 与固定说明；实际裁切原因、字号、帧号及资产 ID 仅留在私有异常链。"""
     overlay = title_overlay("测" * 40)
     with pytest.raises(OverlayError) as failure:
         asyncio.run(overlay_render.fit_texts(FitRenderer(capacity=None), overlay, PUBLICATIONS, tmp_path / "fit"))
     assert failure.value.code == "text_too_long" and "缩短文字" in failure.value.message
+    detail = json.loads(str(failure.value.__cause__))
+    assert detail["sprite_id"] == "c" and detail["font_size"] == 24 and detail["text_length"] == 40
+    assert detail["frames"] == [0, 22, 44, 66, 89]
+    assert detail["problems"] == ["it is cut off by a 10x10 box with overflow hidden"]
+    assert "overflow" not in failure.value.message and "测" not in str(failure.value.__cause__)
 
 
 # 场景：不是字效、或没有文字与字号参数的 Sprite 不参与预检，也不启动浏览器。
@@ -2146,6 +2152,46 @@ def test_real_browser_transparency_does_not_hide_missing_or_clipped_text(tmp_pat
     with pytest.raises(OverlayError) as failure:
         fit_for_real(tmp_path, code, [titled("上栏下栏")], 1.0)
     assert failure.value.code == "text_too_long"
+
+
+# 关键词用两份 DOM 叠出光晕，aria-hidden 的绝对定位副本与正文占同一位置，不能被串成重复的业务文字。
+DECORATIVE_KEYWORD_COPY = """import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  const keyword = props.text.slice(2, 4);
+  return <AbsoluteFill style={{justifyContent: "center", alignItems: "center"}}>
+    <div style={{fontSize: props.fontSize, lineHeight: 1.2, color: "#fff"}}>
+      {props.text.slice(0, 2)}
+      <span style={{display: "inline-block", position: "relative"}}>
+        <span aria-hidden="true" style={{position: "absolute", left: 0, top: 0, whiteSpace: "nowrap"}}><span>{keyword}</span></span>
+        <span>{keyword}</span>
+      </span>
+      {props.text.slice(4)}
+    </div>
+  </AbsoluteFill>;
+}
+"""
+
+
+# 场景：线上双栏字幕的关键词光晕副本曾让完整文字被误判缺字；仅忽略逻辑正文中的装饰副本，仍检查真实裁切。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+@pytest.mark.parametrize("variant", ["copy", "all-aria-hidden", "missing-text", "clipped-copy"])
+def test_real_browser_handles_decorative_keyword_copies(tmp_path: Path, variant: str) -> None:
+    """完整的六字字幕保持 128；整段 aria-hidden 仍按可见文字检查；缺字或被裁切的副本仍失败。"""
+    code = DECORATIVE_KEYWORD_COPY
+    if variant == "all-aria-hidden":
+        code = code.replace('<span>{keyword}</span></span>', '</span>')
+        code = code.replace('<div style=', '<div aria-hidden="true" style=')
+    elif variant == "missing-text":
+        code = code.replace("props.text.slice(4)", "props.text.slice(4, -1)")
+    elif variant == "clipped-copy":
+        code = code.replace('whiteSpace: "nowrap"', 'whiteSpace: "nowrap", width: 5, overflow: "hidden"')
+    if variant in {"missing-text", "clipped-copy"}:
+        with pytest.raises(OverlayError) as failure:
+            fit_for_real(tmp_path, code, [titled("发现全新世界")], 1.0)
+        assert failure.value.code == "text_too_long"
+    else:
+        instance = fit_for_real(tmp_path, code, [titled("发现全新世界")], 1.0).instances[0]
+        assert instance["config"]["fontSize"] == 128
 
 
 # 场景（issue #119）：真实浏览器里，100 字标题放进 972x360 的固定框时，宿主把 128 的字号缩到放得下的最大值；短标题不动；
@@ -2482,6 +2528,30 @@ def test_real_browser_shrinks_the_keyword_size_with_the_text(tmp_path: Path) -> 
     assert abs(long["keywordSize"] - 1.5 * long["fontSize"]) <= 1
     short = fit_for_real(tmp_path / "short", KEYWORD_TITLE, [keyworded("标题", 100, 150)], 1.0).instances[0]["config"]
     assert (short["fontSize"], short["keywordSize"]) == (100, 150)
+
+
+# 场景：关键词小于正文时，最小字号的关键词可能过小，但中间字号仍能完整显示，不能直接报文字过长。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute-keyword-size", "preset-relative-size"])
+def test_real_browser_fits_text_with_a_smaller_keyword(tmp_path: Path, relative: bool) -> None:
+    """100 字长标题：正文 160、关键词 80（或代码内固定半字号），应缩到可读且放得下的中间字号。"""
+    code = KEYWORD_TITLE.replace("props.keywordSize || props.fontSize", "props.fontSize * 0.5") if relative else KEYWORD_TITLE
+    instance = fit_for_real(tmp_path, code, [keyworded("测" * 100, 160, 80)], 1.0).instances[0]["config"]
+    assert 24 < instance["fontSize"] < 160
+    assert abs(instance["keywordSize"] - 0.5 * instance["fontSize"]) <= 1
+
+
+# 场景：抬高可读字号下限也不能放行仍超出画布的长串，失败须保留真实测量原因。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_rejects_text_without_a_readable_fitting_size(tmp_path: Path) -> None:
+    """100 字禁止换行：关键词可读时整行必然溢出，仍以 text_too_long 失败并留下私有诊断。"""
+    code = KEYWORD_TITLE.replace('whiteSpace: "normal"', 'whiteSpace: "nowrap"')
+    with pytest.raises(OverlayError) as failure:
+        fit_for_real(tmp_path, code, [keyworded("测" * 100, 160, 80)], 1.0)
+    assert failure.value.code == "text_too_long"
+    detail = json.loads(str(failure.value.__cause__))
+    assert detail["font_size"] > 24
+    assert any("extends beyond" in problem for problem in detail["problems"])
 
 
 # 场景：资产声明的 fontSize 最小值是 8，100 个字在字号 200 下放不下。宿主的下限取 24（再小的行高算不可读，“越小越放得下”的二分假设不成立），
