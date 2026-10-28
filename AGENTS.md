@@ -67,10 +67,20 @@ uv run --locked --project server pytest server/tests -v
 git diff --check
 ```
 
-根目录 `.pre-commit-config.yaml` 供 pre-commit.ci 和本地检查共用。
-修改其配置时执行 `uvx pre-commit validate-config` 和 `uvx pre-commit run --all-files`。
-保持机器人提交信息符合 Conventional Commits。基础 hooks 不依赖本机 Bun / Rust；
-构建及发布脚本验证由 GitHub Actions 承担。带注释的 tsconfig JSON 由 TypeScript 验证。
+- `.pre-commit-config.yaml` 由 pre-commit.ci 与本地检查共用；修改它之后运行 `uvx pre-commit validate-config` 和 `uvx pre-commit run --all-files`。基础 hooks 不依赖本机 Bun / Rust，构建与发布脚本的验证交给 GitHub Actions；带注释的 tsconfig JSON 由 TypeScript 验证。
+- 机器人提交信息同样遵循 Conventional Commits。
+
+## 生成文件
+
+不要手工修改下列文件：改它们的来源，重新生成后一起提交。
+
+| 文件 | 来源与生成方式 |
+| --- | --- |
+| `client/src/generated/`、`server/src/generated/` | `proto/`：先 `buf lint` 再 `buf generate`，TypeScript 与 Python 的生成代码一起提交；已发布的协议用 `buf breaking` 检查兼容性 |
+| `client/src/features/templates/font-previews/` | `client/scripts/generate-font-previews.mjs`，用法见 `client/README.md` |
+| `CHANGELOG.md` | 发版流程自动生成，不手工维护正式版本条目（见 `.github/AGENTS.md`） |
+| `client/bun.lock`、`client/src-tauri/Cargo.lock`、`server/uv.lock`、`server/src/server/remotion/bun.lock` | 只用对应的包管理器更新，不借机升级无关依赖 |
+| 两端的项目版本号 | 只用 `.github/scripts/validate-release.mjs --write` 同步，不逐个文件手改（见 `.github/AGENTS.md`） |
 
 ## CI 与发版
 
@@ -78,12 +88,11 @@ CI 调度、Debug 客户端与随包后端、版本同步与 tag 发版、Releas
 
 ## Git 与交付约定
 
-- Follow [CONTRIBUTE.md](CONTRIBUTE.md) for contributor requirements. Write commit messages, PR titles, and PR descriptions in English using Conventional Commits, and fill in `.github/pull_request_template.md`.
+- Follow [CONTRIBUTE.md](CONTRIBUTE.md) for contributor requirements. Write commit messages, PR titles, and PR descriptions in English using Conventional Commits (for example `feat(client): add current time component`, `ci: add tag-based releases`), and fill in `.github/pull_request_template.md`.
 - The project uses GNU AGPL version 3 only (`AGPL-3.0-only`), documented in `LICENSE.md`. Preserve the license text and applicable third-party notices.
-
-- 提交信息遵循 Conventional Commits，例如 `feat(client): add current time component`、`ci: add tag-based releases`、`docs: document development workflow`。
-- 修改前检查当前分支和工作区，保留用户已有改动，不把临时构建结果、`node_modules/`、`dist/` 或 `target/` 纳入提交。
-- 用户要求 commit / push 时执行实际提交与推送；普通代码或文档修改请求不自动扩大为打 tag 或正式发版。
+- 修改前检查当前分支和工作区，保留用户已有改动；不把临时构建结果、`node_modules/`、`dist/` 或 `target/` 纳入提交。
 - 每次提交、推送前检查实际分支及远端。
+- 用户要求 commit / push 时执行实际的提交与推送；普通代码或文档修改请求不扩大为打 tag 或正式发版。
+- 说某个函数、文件、行为或约定存在时，给出文件与行号、源码片段或可复现的命令；拿不到证据就直接说明，不当作事实陈述。
 - 交付时说明完成内容、实际执行的验证及未验证部分，区分“工作流已编写”“本机验证通过”和“GitHub 上已成功构建 / 发布”。
-- 修改开发命令、版本来源或发布行为时，同步更新 README 与对应的 `AGENTS.md`，尤其不要恢复成手动修改多个版本文件的旧方案。
+- 修改开发命令、版本来源或发布行为时，同步更新 README 与对应的 `AGENTS.md`。
