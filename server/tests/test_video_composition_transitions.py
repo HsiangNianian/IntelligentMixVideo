@@ -1,5 +1,7 @@
-"""关键词前后切镜、候选复用及任务恢复回归；执行 uv run --locked pytest tests/test_video_composition_transitions.py。"""
+"""关键词切镜、候选复用、前后端共享时长及恢复回归；执行 uv run --locked pytest tests/test_video_composition_transitions.py。"""
+import json
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 from generated.imv.sprite.v1 import sprite_pb2 as pb
@@ -7,7 +9,7 @@ from google.protobuf.json_format import MessageToDict
 from sqlalchemy import update
 
 from server.template.schema import effect_catalog
-from server.video_composition import remotion, service, store
+from server.video_composition import remotion, service, store, timeline
 from server.video_composition.timeline import build_timeline
 from .conftest import published_sprite, remotion_track, template_track
 
@@ -188,6 +190,39 @@ def test_mixed_renderers_share_selection_and_duration(transition_case, mode, dur
             assert instances == []
             if mode == "sequence":
                 assert ims_times == [2]
+
+
+@pytest.mark.parametrize("duration_case", json.loads(Path(__file__).with_name("transition_duration_cases.json").read_text()),
+                         ids=lambda case: case["name"])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_duration_defaults_match_client_preview(transition_case, mocker, duration_case, legacy):
+    """共享预期约束新旧合成：空时长取发布预览长度，显式时长可长可短；IMS 规划与 Remotion 实例一致。"""
+    case = transition_case
+    case.update(duration_ms=40000, material_durations=[10] * 4, use_keyword_transitions=not legacy)
+    case["segments"][0].update(start_time=15, end_time=17)
+    sprite = published_sprite(kind=pb.SPRITE_KIND_TRANSITION_OVERLAY,
+                              canvas=(1080, 1920, duration_case["fps"]))
+    sprite.canvas.preview_frames = duration_case["preview_frames"]
+    clip = remotion_track("remotion-transition", transition_boundary=2, duration=duration_case["duration"])
+    ims = next(track for track in case["template"]["tracks"] if track.get("transition_boundary") == 1)
+    ims["duration"] = 0.4
+    case["template"]["transition_duration_seconds"] = 0.4
+    case["template"]["tracks"] = [track for track in case["template"]["tracks"]
+                                   if track.get("transition_boundary") is None] + [ims, clip]
+    case["remotion_assets"] = {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}
+    selection = mocker.spy(timeline, "keyword_transitions")
+    built, _ = build_timeline(**case)
+    data = {"request": case["request"], "template": case["template"], "duration_ms": case["duration_ms"],
+            "keyword_transitions": not legacy, "output": {key: case[key] for key in ("width", "height", "fps")},
+            "segmentation": {"segments": case["segments"]},
+            "remotion": {"placements": [{**clip, "editor": {}}], "assets": case["remotion_assets"]}}
+    overlay = remotion.plan(data, 120, timeline=built)
+    actual = [item["duration_frames"] / case["fps"] for item in overlay.instances]
+    assert actual == [duration_case["expected_seconds"]]
+    assert [seconds for _, _, seconds in applied_transitions(built)] == ([0.4, 0.4] if legacy else [0.4])
+    if not legacy:
+        assert [track["duration"] for track, _ in selection.spy_return if track["id"] == clip["id"]] == actual
+    assert clip["duration"] == duration_case["duration"]
 
 
 @pytest.mark.anyio
