@@ -80,13 +80,20 @@ def test_bilingual_shared_sprite_has_independent_content_and_timing(composition_
     overlay = remotion.plan(data, 120)
     texts = [item["config"]["layer"]["text"] for item in overlay.instances]
     assert texts == ([data["request"]["title"], "Business, title!"] if role == "title" else ["甲乙丙丁", "戊己庚辛", "Don't stop", "Keep going"])
+    # 英文标题、字幕的字效按单行设计（排版预检据此缩到一行），中文只要求放得下；字幕轨换行时朝远离另一语言的方向展开，
+    # 英文向下、中文向上，标题不要求方向。
+    assert [item.get("one_line", False) for item in overlay.instances] == ([False, True] if role == "title" else [False, False, True, True])
+    assert [item.get("grow") for item in overlay.instances] == ([None, None] if role == "title" else ["up", "up", "down", "down"])
     half = len(overlay.instances) // 2
     assert [(item["start_frame"], item["duration_frames"]) for item in overlay.instances[:half]] == [(item["start_frame"], item["duration_frames"]) for item in overlay.instances[half:]]
     timeline, _ = build_timeline(**{**composition_case, "template": data["template"], "segments": data["segmentation"]["segments"]}, title_en="Business, title!")
     ims_texts = [clip["Content"] for row in timeline["SubtitleTracks"] for clip in row["SubtitleTrackClips"]]
     assert not set(texts) & set(ims_texts)
     english["enabled"] = False
-    assert len(remotion.plan(data, 120).instances) == half
+    disabled = remotion.plan(data, 120)
+    assert len(disabled.instances) == half
+    # 没有启用英文字幕时中文字幕不再朝上展开，保持原本的居中展开。
+    assert all("grow" not in item for item in disabled.instances)
 
 
 @pytest.mark.parametrize("renderer", ["ims", "remotion"])
