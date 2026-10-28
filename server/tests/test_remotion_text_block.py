@@ -997,6 +997,12 @@ def test_text_and_keywords_are_preview_samples_never_questions():
     assert "A text effect's words and keywords are never missing" in OUTER_RULES and "ask is refused" in OUTER_RULES
     assert "its default text and keywords are only the preview sample" in EXECUTOR_RULES and "Never ask the user" in EXECUTOR_RULES
     assert "The request is user_intent, in the host handoff and at the top of the snapshot" in EXECUTOR_RULES
+    # 明确点名的词只用于预览示例，不能误取开头字或固化成片的关键词。
+    assert "use that exact substring of the sample text in text.preview_keywords" in EXECUTOR_RULES
+    assert "arbitrary user-selected words, not a fixed vocabulary or the opening characters" in EXECUTOR_RULES
+    assert "keep multiple explicitly selected words separate" in EXECUTOR_RULES
+    assert "The real text and keywords come from the bus on every render" in EXECUTOR_RULES
+    assert "never hard-code the sample word, its character indices or its position" in EXECUTOR_RULES
 
 
 def test_the_executor_knows_what_hides_a_gradient_fill_and_how_to_order_parts():
