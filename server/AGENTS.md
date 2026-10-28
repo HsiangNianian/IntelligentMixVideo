@@ -5,6 +5,7 @@
 ## 结构
 
 - 技术栈是 Python + FastAPI + MySQL。包内导入用相对路径，各模块向应用注册 `APIRouter` 实例；首页与用户路由仍是示例，尚未接入用户存储。
+- CORS 允许精确 localhost 主机的动态 HTTP 端口。未处理的异常由 `app.py` 的 `InternalErrors`（位于 CORS 之内）回答带来源头的 500 JSON 后照常抛出并记录，跨域客户端才不会把服务端错误误报成「无法连接服务端」。
 - 客户端设置目录（`GET /api/settings/plugins`）由一级业务模块的 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，公共层按目录自动发现，不维护业务名单。入口及其父包不得初始化配置或启动外部任务；删除设置入口不等于删除业务模块，路由与业务依赖仍显式维护。
 - ASR（`asr/`）只有 `transcribe` 函数和 `python -m server.asr` 命令行入口，没有 HTTP 路由，也没有客户端转写页面。`DASHSCOPE_API_KEY` 在 `asr/asr.py` 加载时读取一次；设置发现不加载 ASR 业务模块。
 
