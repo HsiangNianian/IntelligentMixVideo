@@ -885,6 +885,19 @@ export default function Title(props: { text: string; fontSize: number }) {
   );
 }
 """
+# 渐变字：background-clip: text 加透明文字填充画渐变；SHADOW 为真时同一元素再用 text-shadow 叠出描边，阴影画在渐变上面，字成了阴影色。
+GRADIENT_TEXT = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, whiteSpace: "normal", wordBreak: "break-all",
+        backgroundImage: "linear-gradient(180deg, #FFE58A, #F2B23A)", WebkitBackgroundClip: "text", backgroundClip: "text", WebkitTextFillColor: "transparent",
+        ...(SHADOW ? { textShadow: "-4px 0 0 #241C12, 4px 0 0 #241C12, 0 -4px 0 #241C12, 0 4px 0 #241C12" } : { WebkitTextStroke: "4px #241C12", paintOrder: "stroke fill" }) }}>{props.text}</div>
+    </AbsoluteFill>
+  );
+}
+"""
 FITTING_TEXT = """import React from "react";
 import { AbsoluteFill } from "remotion";
 export default function Title(props: { text: string; fontSize: number }) {
@@ -1015,14 +1028,19 @@ def browser_text_validate(tmp_path: Path, code: str, max_length: int, *, minimum
     (PAINT_CONTAINED_TEXT, 100, False, "contain: paint"),
     (SEALED_INSTANCE_BOX_TEXT, 15, True, ""),
     (PLAIN_WRAP_TEXT, 100, True, "smallest fontSize 24"),
+    (GRADIENT_TEXT.replace("SHADOW", "true"), 100, False, "text shadows are painted over that background"),
+    (GRADIENT_TEXT.replace("SHADOW", "false"), 100, True, ""),
 ], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text", "sliced-text", "display-none", "transparent", "partly-transparent", "one-span-per-glyph",
-        "line-height-1-mask", "clipped-until-scaled-out", "typewriter", "overflow-auto-box", "paint-contained-box", "sealed-instance-box", "plain-wrap-fits-at-smallest-size"])
+        "line-height-1-mask", "clipped-until-scaled-out", "typewriter", "overflow-auto-box", "paint-contained-box", "sealed-instance-box", "plain-wrap-fits-at-smallest-size",
+        "shadow-covers-gradient-fill", "stroked-gradient-fill"])
 def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, code, max_length, passed, reason):
     """issue #119：972x360 的 overflow hidden 固定框在 100 字标题下被裁切而被拒；按字数缩小字号并换行的写法、只在开头几帧被遮罩挡住的文字通过；
     不显示 text 的组件被拒。只渲染一段截断的文字、或文字在 display: none 里没有排版框，都不算完整显示；逐字拆成 span 的完整文字仍算。
     lineHeight 1 的一行文字放在恰好一行高的遮罩里不算裁切：按行框而不是字体的上下伸部度量。
     文字只在退场缩小时才放得下仍被拒：按文字显示最大的帧判断；逐字打出的文字按完整显示的帧判断，通过。
     overflow auto 与 contain: paint 的固定框同样算裁切。
+    用 background-clip: text 画渐变的文字又带 text-shadow 时被拒（审计复现：作品 eb692e7e 的金色渐变上栏用八个阴影叠描边，整行成了
+    深棕色块），改用 -webkit-text-stroke 描边的渐变字通过。
 
     文字按声明的最小字号（24）填满 maxLength 后再度量：宿主渲染时会把长文字缩到这个下限，所以只在大字号下放不下的写法通过，
     裁切用例都用 100 字，在最小字号下仍被固定框裁掉。"""

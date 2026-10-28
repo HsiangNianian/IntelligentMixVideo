@@ -245,7 +245,10 @@ with the six keyword options and the `keywordEffect` switch off, must also look 
 inherited text paint (colour, fill, stroke, paint order, shadow, font, letter spacing) and no filter, decoration or
 text-clipped background that the line's other text gets from its own elements. A text Preset that strokes only the
 spans of the other segments is refused with the differences (`text_fit: … is drawn without its tier's look …`), so
-the template preview's sample keyword and the composed title keyword keep the tier's look. Templates only switch the seven keyword parameters (any
+the template preview's sample keyword and the composed title keyword keep the tier's look. Text drawn with
+`background-clip: text` (a transparent text fill showing a gradient behind it) must not carry a text-shadow: the shadow
+is painted over that background and the text turns into its shadow colour, so `text_fit` refuses it with the element
+and the fix (outline with `-webkit-text-stroke`, or a separate copy behind). Templates only switch the seven keyword parameters (any
 other `keyword…` parameter is internal there), so the keyword effect is changed in the workspace and saved to the
 library again. `preset.search` ranks by the words of the query and by proven uses and filters by role (see Preset storage).
 
