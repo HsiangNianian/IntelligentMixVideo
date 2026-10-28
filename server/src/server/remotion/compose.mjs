@@ -79,8 +79,10 @@ const prelude = [
  * length (it never rises while the lower tier has no text). An entrance or cue effect starts `effect{k}Delay` seconds
  * later, so effects can follow one another. Each length (with its delay) is at most half of the frames the position plays less one, so short renders
  * and a text frozen on its middle frame (`D // 2` or `(D - 1) // 2` of D frames) still show it in full there. At a glyph
- * position the units share that length in turn: unit i of n shows `clamp(P * n - i)` of the position's progress P, so an
- * entrance reveals them in reading order, an exit removes the last one first, and a longer text goes faster. Every
+ * position the units share that length in turn: with `effect{k}Stagger` s (1 when absent) unit i of n shows
+ * `clamp((P - s * i / n) / (1 - s + s / n))` of the position's progress P, so at 1 an entrance reveals them one after
+ * another in reading order (an exit removes the last one first, and a longer text goes faster), at 0 they all show
+ * together, and in between their windows overlap. Every
  * effect Preset also receives `index` and `count`: the unit's place among that glyph position's units in its tier, the
  * tier's place at `tiers` and `line1`/`line2`, and 0 of 1 elsewhere.
  *
@@ -137,8 +139,9 @@ function textEntry() {
       + `const half = Math.floor((durationInFrames - 1) / 2); const length = Math.max(1, Math.min(Math.round((Number(props["effect" + item.k + "Seconds"]) || 0.5) * fps), half)); `
       + `const delay = item.slot === "enter" || item.slot === "cue" ? Math.min(Math.round((Number(props["effect" + item.k + "Delay"]) || 0) * fps), Math.max(0, half - length)) : 0; `
       + `const shown = item.slot === "enter" ? __clamp((frame - delay) / length) : item.slot === "exit" ? __clamp((durationInFrames - 1 - frame) / length) : item.slot === "cue" ? (cue === null ? 0 : __clamp((frame - (cue - origin) - delay) / length)) : 1; `
-      // The units of a glyph position take its progress in turn.
-      + `const [i, n] = units?.[target] ?? [index, count]; const progress = item.slot !== "loop" && units?.[target] ? __clamp(shown * n - i) : shown; `
+      // The units of a glyph position take its progress in turn, as far apart as the effect's stagger says.
+      + `const [i, n] = units?.[target] ?? [index, count]; const stagger = Number.isFinite(props["effect" + item.k + "Stagger"]) ? __clamp(props["effect" + item.k + "Stagger"]) : 1; `
+      + `const progress = item.slot !== "loop" && units?.[target] ? __clamp((shown - stagger * i / n) / (1 - stagger + stagger / n)) : shown; `
       + `node = <item.Preset {...item.props(props)} progress={progress} index={i} count={n} Box={inline ? __InlineBox : __BlockBox}>{node}</item.Preset>; } return node; }`,
     // Whether an effect at a glyph position is on: only then is a line cut into units, so its text otherwise shapes as one run.
     `const __glyphsOn = (props) => __effects.some((item) => props["effect" + item.k] !== false && ["chars", "keywordChars", "plainChars"].includes(props["effect" + item.k + "Target"]));`,

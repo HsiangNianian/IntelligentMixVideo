@@ -38,7 +38,7 @@ from .contracts import (
     SpriteCreateOutput,
     SpriteReview,
 )
-from ..categories import EFFECT_PARAMETER, EFFECT_TARGETS, FIXED_TITLES, agent_message, category_problems, parameter_problems
+from ..categories import EFFECT_PARAMETER, EFFECT_TARGETS, FIXED_TITLES, GLYPH_TARGETS, agent_message, category_problems, parameter_problems
 from ..fonts import FontStore, open_font_schema
 from .catalog_store import CatalogStore
 from .registry import ToolFault
@@ -130,12 +130,16 @@ def _review_box(sprite: SpriteDraft) -> dict[str, float]:
 
 
 def sample_keywords(sprite: SpriteDraft) -> list[str]:
-    """The keywords a text effect's review frames show when its defaults have none: up to two characters opening the
-    first non-empty line of its default text, the sample the workspace preview and the `text_fit` keyword mount use, so
-    keyword effects show in the frames as the user sees them; none for other Sprites or when keywords are set."""
+    """The keywords a text effect's review frames show when its defaults have none, as the workspace preview shows them:
+    the text block's `preview_keywords` (the words the Agent marks as keywords of its sample text), else up to two
+    characters opening the first non-empty line of the default text (the `text_fit` keyword mount's sample); none for
+    other Sprites or when keywords are set. Audit (work 06eb0788): frames keyed on the first two characters showed them
+    typing first, so the Executor "fixed" a right keyword-first order into the wrong one."""
     values = sprite.default_parameters
     if sprite.kind != "text" or "keywords" not in sprite.parameter_schema.get("properties", {}) or values.get("keywords"):
         return []
+    if sprite.text is not None and sprite.text.preview_keywords:
+        return list(sprite.text.preview_keywords)
     line = next((line for line in str(values.get("text", "")).split("\n") if line.strip()), "")
     word = re.search(r"\S{1,2}", line)
     return [word.group(0)] if word else []
@@ -282,6 +286,8 @@ def _text_block(sprite: SpriteDraft, config: dict) -> dict:
         **({"arrangement": config["tierLayout"]} if two and "tierLayout" in config else {}),
         "duration_frames": sprite.composition.duration_frames,
     }
+    if sprite.text.preview_keywords:
+        block["preview_keywords"] = list(sprite.text.preview_keywords)
     if sprite.text.keyword is not None:
         keyword = sprite.text.keyword
         block["keyword"] = {"instance_id": keyword, "source": {"kind": "draft", "draft_id": f"base_{keyword}"}, "parameters": parameters[keyword]}
@@ -292,7 +298,8 @@ def _text_block(sprite: SpriteDraft, config: dict) -> dict:
                 "instance_id": item.instance_id, "source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"}, "parameters": parameters[item.instance_id],
                 "title": item.title, "slot": item.slot, "target": config.get(f"effect{index}Target"),
                 **({"seconds": config.get(f"effect{index}Seconds")} if item.slot != "loop" else {}),
-                **({"delay": config[f"effect{index}Delay"]} if f"effect{index}Delay" in config else {}), "enabled": config.get(f"effect{index}") is not False,
+                **({"delay": config[f"effect{index}Delay"]} if f"effect{index}Delay" in config else {}),
+                **({"stagger": config[f"effect{index}Stagger"]} if f"effect{index}Stagger" in config else {}), "enabled": config.get(f"effect{index}") is not False,
             }
             for index, item in enumerate(sprite.text.effects, start=1)
         ]
@@ -935,6 +942,9 @@ class ToolSession:
         if len(lines) != tiers or not all(line.strip() for line in lines):
             raise ToolFault("INVALID_ARGUMENT", f"text has {len(lines)} lines for {tiers} tiers: a one-tier text is one non-empty line and a two-tier "
                             "text (双栏) is exactly \"<upper>\\n<lower>\", both non-empty.", field="/text/text")
+        for index, word in enumerate(block.preview_keywords or []):
+            if word not in block.text:
+                raise ToolFault("INVALID_ARGUMENT", f"preview_keywords names words of the default text; {word!r} is not in it.", field=f"/text/preview_keywords/{index}")
         if "two_tier" in self.requested and tiers != 2:
             raise ToolFault("INVALID_ARGUMENT", "The user switched on 双栏 (original_request.two_tier): give the text block two tiers, upper and lower.", field="/text/tiers")
         if "keyword_effect" in self.requested and block.keyword is None:
@@ -966,6 +976,9 @@ class ToolSession:
                                 "(tiers, line1 and line2 are positions of a two-tier text).", field=f"/text/effects/{index}/target")
             if effect.slot == "cue" and tiers != 2:
                 raise ToolFault("INVALID_ARGUMENT", "A cue effect plays when the lower tier appears, so only a two-tier text has one.", field=f"/text/effects/{index}/slot")
+            if effect.stagger is not None and (effect.slot == "loop" or effect.target not in GLYPH_TARGETS):
+                raise ToolFault("INVALID_ARGUMENT", "stagger spreads an entrance, exit or cue over the glyphs, so only such an effect at chars, keywordChars "
+                                "or plainChars takes it.", field=f"/text/effects/{index}/stagger")
             if effect.delay is not None and effect.slot not in {"enter", "cue"}:
                 raise ToolFault("INVALID_ARGUMENT", "Only an entrance or a cue effect waits: leave delay out of an exit or a looping effect.",
                                 field=f"/text/effects/{index}/delay")
@@ -1027,6 +1040,7 @@ class ToolSession:
             text={"layout": block.layout.model_dump(mode="json"), "tiers": [tier.instance_id for tier in block.tiers],
                   **({"keyword": block.keyword.instance_id} if block.keyword else {}),
                   "effects": [{"instance_id": item.instance_id, "title": item.title, "slot": item.slot} for item in block.effects],
+                  **({"preview_keywords": block.preview_keywords} if block.preview_keywords else {}),
                   **({"still": True} if self.still_text else {})},
         ), summaries)
 

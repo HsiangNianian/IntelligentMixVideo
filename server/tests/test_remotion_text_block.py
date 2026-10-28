@@ -414,6 +414,50 @@ def test_only_a_keyword_preset_that_draws_the_hosts_glyphs_offers_keyword_chars(
 
 
 @needs_bundler
+def test_glyph_effects_stagger_and_the_block_names_its_preview_keywords(tmp_path, monkeypatch):
+    """逐字位置的入场、出场有「逐字错开」配置参数 effect{k}Stagger（0～1，省略为 1），其他位置与持续特效给 stagger 被拒；文字块的
+    preview_keywords 须是默认文字里的词，记在组合结果里，编辑快照原样交回，回看帧以它们为示例关键词（审计复现：作品 06eb0788
+    的回看帧以开头两个字为关键词，Executor 据此把正确的「关键词先出」改反）。"""
+    from server.remotion_templates.tools.session import sample_keywords
+
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+
+    async def run():
+        """Compose a block with a staggered glyph entrance and preview keywords, then wrong variants."""
+        current = session(tmp_path)
+        tier = await current.execute("preset.create", preset("text", CHILD_TIER, "color"), available())
+        fade = await current.execute("preset.create", effect_preset(FADE_CODE), available())
+        source = {"kind": "stored", "preset_id": fade["preset"]["preset_id"]}
+        request = {"description": "关键词先打出", "kind": "text", "parameters": [{"name": "color", "title": "颜色", "targets": [{"instance_id": "body", "parameter": "color"}]}],
+                   "text": {"layout": {"x": 54, "y": 700, "width": 972, "height": 300}, "text": "想玩小众黑科技", "font_size": 96, "duration_frames": 30,
+                            "tiers": [{"instance_id": "body", "source": {"kind": "stored", "preset_id": tier["preset"]["preset_id"]}, "font_family": "Noto Sans CJK SC", "font_weight": 700}],
+                            "preview_keywords": ["小众黑科技"],
+                            "effects": [{"instance_id": "typeIn", "source": source, "title": "打字", "slot": "enter", "target": "keywordChars"},
+                                        {"instance_id": "showIn", "source": source, "title": "显现", "slot": "enter", "target": "plainChars", "delay": 1, "stagger": 0},
+                                        {"instance_id": "fadeOut", "source": source, "title": "淡出", "slot": "exit", "target": "block"}]}}
+        composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
+        sprite = current.sprite_drafts[composed["draft_id"]]
+        schema, defaults = sprite.parameter_schema["properties"], sprite.default_parameters
+        assert schema["effect2Stagger"] == {"type": "number", "minimum": 0, "maximum": 1, "title": "显现逐字错开"}
+        assert (defaults["effect1Stagger"], defaults["effect2Stagger"], "effect3Stagger" in defaults) == (1, 0, False)
+        assert sprite.text.preview_keywords == ["小众黑科技"] and sample_keywords(sprite) == ["小众黑科技"]
+        base = TemplateCandidate(tsx_code=sprite.code, config_schema=sprite.parameter_schema, default_config=defaults)
+        block = session(tmp_path / "edit", spec=SimpleNamespace(sprite=sprite, sprite_kind="text"), base=base).snapshot()["base"]["text"]
+        assert block["preview_keywords"] == ["小众黑科技"] and block["effects"][1]["stagger"] == 0
+        for change, field in (({"stagger": 0.5}, "/text/effects/2/stagger"), ({"preview_keywords": ["别的"]}, "/text/preview_keywords/0")):
+            wrong = json.loads(json.dumps(request))
+            if "stagger" in change:
+                wrong["text"]["effects"][2].update(change)
+            else:
+                wrong["text"].update(change)
+            with pytest.raises(ToolFault) as refused:
+                await current.execute("sprite.compose", SpriteComposeInput.model_validate(wrong), available())
+            assert refused.value.error.field == field
+
+    asyncio.run(run())
+
+
+@needs_bundler
 def test_chars_on_a_tier_that_draws_its_segments_is_refused_with_the_fix():
     """旧写法的栏把特效放在 chars 时按字段拒绝，并说明修法：复制那个 Preset，声明 children 并渲染 {props.children}。"""
     tier = {"instance_id": "body", "preset": {"code": TIER_CODE, "parameter_schema": {"type": "object", "properties": {"color": COLOR}, "required": ["color"], "additionalProperties": False},
@@ -913,6 +957,17 @@ def test_the_executor_draws_a_tiers_look_on_its_block():
     assert "so the whole line inherits it" in EXECUTOR_RULES
 
 
+def test_text_and_keywords_are_preview_samples_never_questions():
+    """审计复现（作品 58be1abc、e208020e）：请求「关键词以打字机的样式出现，然后再显示整体的非关键字」时，Outer 直接追问用户文案、
+    关键词与语言；另一次 Executor 把快照里为空的 step_inputs 当成没收到用户需求，报 needs_input 去问。字效的文字与关键词由模板每次
+    渲染时传入，生成只需要预览用的示例文字，规则写明这一点，并说明需求在 user_intent 里。"""
+    from server.remotion_templates.agent import EXECUTOR_RULES, OUTER_RULES
+
+    assert "A text effect's words and keywords are never missing" in OUTER_RULES and "ask is refused" in OUTER_RULES
+    assert "its default text and keywords are only the preview sample" in EXECUTOR_RULES and "Never ask the user" in EXECUTOR_RULES
+    assert "The request is user_intent, in the host handoff and at the top of the snapshot" in EXECUTOR_RULES
+
+
 def test_the_executor_knows_what_hides_a_gradient_fill_and_how_to_order_parts():
     """审计复现（作品 c0993bf2、eb692e7e）：上栏用 background-clip: text 画渐变、同一元素又用 text-shadow 叠出描边，阴影画在渐变上面，
     整行成了深棕色块；要「关键词先出、其余随后」时模型只放了一个逐字入场。规则说明这条渲染事实，以及分开的入场用延迟排先后。"""
@@ -1162,32 +1217,32 @@ def test_real_render_splits_the_upper_tier_when_the_lower_one_appears(tmp_path):
 
 @needs_browser
 def test_real_render_types_the_keyword_in_before_the_rest_appears(tmp_path):
-    """真实沙箱渲染（审计复现：作品 c0993bf2 要「关键词以打字机出现，然后再显示整体的非关键词」，宿主以前只能整块淡入关键词，
-    也没法让其余文字等关键词打完）：关键词「上下」的两个字在 keywordChars 依次分享 20 帧的入场，其余的「左」在 plainChars
-    推迟 20 帧后用 3 帧显现。"""
+    """真实沙箱渲染（审计复现：作品 c0993bf2、06eb0788 要「关键词以打字机出现，然后再显示整体的非关键词」）：关键词「上下」的两个字在
+    keywordChars 依次分享 20 帧的入场；其余的「左右」在 plainChars 推迟 20 帧后，以 stagger 0 在 6 帧里一起显现，而不是又逐个打出。"""
     color = {"type": "object", "properties": {"color": COLOR}, "required": ["color"], "additionalProperties": False}
     tier = {"instance_id": "body", "preset": {"code": CHILD_TIER, "parameter_schema": color, "default_parameters": {"color": "#FFFFFF"}}, "parameters": {"color": "#FFFFFF"}}
     glow = {"instance_id": "glow", "preset": {"code": KEYWORD_CHILD_CODE, "parameter_schema": {"type": "object", "properties": {"glowColor": COLOR}, "required": ["glowColor"], "additionalProperties": False},
                                               "default_parameters": {"glowColor": "#FFD54A"}}, "parameters": {"glowColor": "#FFD54A"}}
     boxed = {"preset": {"code": BOXED_FADE, "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}, "parameters": {}}
-    block = {"layout": {"x": 0, "y": 0, "width": 180, "height": 80}, "text": "上下左", "font_size": 60, "tiers": [{"font_family": "Noto Sans CJK SC", "font_weight": 700}], "keyword": {},
+    block = {"layout": {"x": 0, "y": 0, "width": 180, "height": 80}, "text": "上下左右", "font_size": 40, "tiers": [{"font_family": "Noto Sans CJK SC", "font_weight": 700}], "keyword": {},
              "effects": [{"title": "打字", "slot": "enter", "target": "keywordChars", "seconds": 2 / 3},
-                         {"title": "显现", "slot": "enter", "target": "plainChars", "seconds": 0.1, "delay": 2 / 3}]}
+                         {"title": "显现", "slot": "enter", "target": "plainChars", "seconds": 0.2, "delay": 2 / 3, "stagger": 0}]}
     code, schema, defaults, _ = compose_text_source(block, [tier], glow, [{**boxed, "instance_id": "typeIn"}, {**boxed, "instance_id": "showIn"}], [], ["Noto Sans CJK SC"], still=True)
+    assert (defaults["effect2Stagger"], "effect1Stagger" in defaults) == (0, True)
     sprite = pb.PublishedSprite(
         sprite_id="keyword-first", name="keyword-first", kind=pb.SPRITE_KIND_TEXT, tsx_code=code, text_prop="text", keywords_prop="keywords",
         canvas=pb.SpriteCanvas(width=180, height=80, fps=30, preview_frames=60), content_box=pb.SpriteBox(x=0, y=0, width=180, height=80),
         config_schema_json=json.dumps(schema), default_config_json=json.dumps(defaults),
-        parameters=[pb.SpriteParameter(key="text", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_value="上下左")),
+        parameters=[pb.SpriteParameter(key="text", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_value="上下左右")),
                     pb.SpriteParameter(key="keywords", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_list_value=pb.StringList()))],
     )
-    message = pb.SpriteRenderInput(sprite_id="keyword-first", effect_total_frames=60, text="上下左", keywords=["上下"])
+    message = pb.SpriteRenderInput(sprite_id="keyword-first", effect_total_frames=60, text="上下左右", keywords=["上下"])
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", **BROWSER)
     video = asyncio.run(sprite_render.render_sprite(Renderer(settings), sprite_render.plan_sprite_render(message, sprite), tmp_path / "job"))
-    # Three 60-pixel glyphs fill the 180 pixels: the keyword's two at columns 0-60 and 60-120, the rest at 120-180.
-    first, second, rest = (40 * 180 + column for column in (30, 90, 150))
-    for frame, alphas in ((5, (0.5, 0.0, 0.0)), (15, (1.0, 0.5, 0.0)), (19, (1.0, 0.9, 0.0)), (40, (1.0, 1.0, 1.0))):
-        for pixel, alpha in zip((first, second, rest), alphas):
+    # Four 40-pixel glyphs centred in 180 pixels: the keyword's two at columns 10-50 and 50-90, the rest at 90-130 and 130-170.
+    pixels = [40 * 180 + column for column in (30, 70, 110, 150)]
+    for frame, alphas in ((5, (0.5, 0.0, 0.0, 0.0)), (15, (1.0, 0.5, 0.0, 0.0)), (19, (1.0, 0.9, 0.0, 0.0)), (23, (1.0, 1.0, 0.5, 0.5)), (40, (1.0, 1.0, 1.0, 1.0))):
+        for pixel, alpha in zip(pixels, alphas):
             assert decoded_alpha(video, frame, pixel) == pytest.approx(alpha, abs=0.06), (frame, pixel % 180)
 
 

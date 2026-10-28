@@ -250,9 +250,9 @@ FIXED_TITLES = {
 }
 
 # 文字块第 k 个特效（从 1 起）的配置参数：开关 effect{k}、作用位置 effect{k}Target，入场、出场与下栏出现另有时长 effect{k}Seconds
-# （秒），入场与下栏出现还有推迟开始的 effect{k}Delay（秒）。名称由宿主按特效顺序生成，标题取特效的中文名称
-# （`compose.text_configuration`）；样式参数与实例都不能用这种名字。
-EFFECT_PARAMETER = re.compile(r"^effect[1-9][0-9]*(?:Target|Seconds|Delay)?$")
+# （秒），入场与下栏出现还有推迟开始的 effect{k}Delay（秒），默认放在逐字位置的另有各字错开程度 effect{k}Stagger（0～1）。名称由宿主
+# 按特效顺序生成，标题取特效的中文名称（`compose.text_configuration`）；样式参数与实例都不能用这种名字。
+EFFECT_PARAMETER = re.compile(r"^effect[1-9][0-9]*(?:Target|Seconds|Delay|Stagger)?$")
 # 特效可选的位置：单栏没有各栏与上下栏；逐字位置只在各栏的 text Preset 都画宿主的 children 时可选，关键词逐字另要求关键词 Preset
 # 也画 children（`compose.compose_text_source`）。
 EFFECT_TARGETS = {

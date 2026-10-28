@@ -732,6 +732,8 @@ class TextEffect(ContractModel):
     seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
     # 入场、下栏出现特效推迟开始的秒数，省略为 0，让特效可以一个接一个；出场与持续特效没有延迟。
     delay: Omittable[Annotated[FiniteNumber, Field(ge=0, le=3)]]
+    # 逐字位置的特效里各个字错开的程度（0～1，省略为 1）：1 一个接一个，0 所有字一起，介于其间则前后交叠。
+    stagger: Omittable[Annotated[FiniteNumber, Field(ge=0, le=1)]]
     # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
     enabled: Omittable[StrictBool]
 
@@ -751,6 +753,8 @@ class TextComposition(ContractModel):
     line_gap: Omittable[Annotated[FiniteNumber, Field(ge=-600, le=300)]]
     line_starts: Omittable[list[Annotated[Integer, Field(ge=0, le=3600)]]]
     keyword: Omittable[TextKeyword]
+    # 默认文字里哪些词是关键词（需求或参考图强调的词）：只用于预览，模板没传关键词时，字效工作区预览与回看帧以它们为关键词显示。
+    preview_keywords: Omittable[Annotated[list[Annotated[StrictStr, StringConstraints(min_length=1, max_length=12)]], Field(min_length=1, max_length=5)]]
     # 按顺序包住各自位置的特效，先列的在里层；宿主按顺序给它们第 1、2…个特效的配置参数。
     effects: list[TextEffect] = Field(default_factory=list, max_length=6)
     duration_frames: PositiveInteger
@@ -774,6 +778,8 @@ class TextBlock(ContractModel):
     # 宿主把各栏定格在中间帧显示、文字块的动画都由特效 Preset 画（有可配置特效之后的作品；关键词命中照常播放）；
     # 更早的字效没有这一项，它们的 text Preset 自己画的动画照常播放。
     still: Omittable[Literal[True]]
+    # 默认文字里的示例关键词，见 TextComposition.preview_keywords。
+    preview_keywords: Omittable[list[NonEmptyString]]
 
 
 class SpriteDraft(ComponentDefinition):
@@ -858,6 +864,8 @@ async def sprite_compose(request: SpriteComposeInput) -> ToolResult[SpriteCompos
 ```
 
 description 非空；字效给出 text 文字块且 instances 为空，其他分类 instances 非空。主画布配置不作为输入；起点之前和实例之间未被内容覆盖的区间保持空画布。
+
+契约版本 9 让逐字位置的特效可以不逐个出现、并让预览知道示例文字里的关键词：放在逐字位置的入场、出场与下栏出现特效可给 `stagger`（0～1，省略为 1），宿主生成配置参数 `effect{k}Stagger`（标题「名称逐字错开」），第 i 个单元（共 n 个）取进度 P 的 `clamp((P − s·i/n)/(1 − s + s/n))`：1 一个接一个，0 所有字一起，介于其间前后交叠；不在逐字位置或是持续特效时给 `stagger` 按字段返回 INVALID_ARGUMENT。文字块可给 `preview_keywords`（1～5 个默认文字里的词，每个 1～12 字），记在组合后的文字块里：模板没有传关键词时，`sprite.create` 的回看帧与字效工作区预览以它们为示例关键词（没有时退回默认文字开头至多两个字）；不在默认文字里的词按字段返回 INVALID_ARGUMENT。审计复现：作品 06eb0788 的回看帧以开头两个字为关键词，Executor 看到它们先打出来，把本来正确的「关键词先出」改成了反的。
 
 契约版本 8 让关键词也能逐字、特效能先后出场：keyword Preset 除 `text` 外另收 `children`（宿主排好的这个命中的各个字），代码里提到 `children` 的 keyword Preset 渲染它，逐字特效开启时命中里的每个字也是一个单元；只画 `text` 的旧写法照常可用，命中整体算一个单元。逐字位置分为 `chars`（所有字）、`keywordChars`（关键词命中里的字，只在关键词 Preset 画 `children` 或没有关键词 Preset 时可选）与 `plainChars`（关键词以外的字），各自按阅读顺序给单元编号（`index`/`count`）并依次分享进度。入场与下栏出现特效可给 `delay`（0～3 秒，省略为 0），宿主生成配置参数 `effect{k}Delay`（标题「名称延迟（秒）」），特效推迟这么久才开始，连同时长最多占该位置播放帧数减一后的一半；出场与持续特效给 `delay` 按字段返回 INVALID_ARGUMENT。回看帧为每个开启的入场各取一半处的一帧，先后顺序因此可见。
 
@@ -1386,7 +1394,7 @@ async def tools_inspect(request: ToolInspectInput) -> ToolResult[ToolDescriptor]
 
 根据精确工具名返回真实契约，不做语义搜索、不执行被查询工具。未知名称返回 `TOOL_NOT_FOUND`，消息可附最多两个拼写相近的名称（`Closest:`）以便纠正拼写，但不会据此返回任何契约。输入格式错误返回 `INVALID_ARGUMENT`。
 
-描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2、按分词与使用记录排序为版本 3，`sprite.compose` 的文字块为版本 3、文字块特效为版本 4、逐字位置为版本 5、双栏排布与下栏出现为版本 6、特效默认用法为版本 7、关键词逐字与特效延迟为版本 8，`sprite.create` 带回看帧为版本 2。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
+描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2、按分词与使用记录排序为版本 3，`sprite.compose` 的文字块为版本 3、文字块特效为版本 4、逐字位置为版本 5、双栏排布与下栏出现为版本 6、特效默认用法为版本 7、关键词逐字与特效延迟为版本 8、逐字错开与示例关键词为版本 9，`sprite.create` 带回看帧为版本 2。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
 
 input_schema 描述完整入参；output_schema 描述包含 ok/data/error 的完整 ToolResult，而非只描述成功 data。Schema 为自包含 JSON Schema，公共类型可以放入 `$defs`，不能依赖 Agent 自行查找未给出的模型。
 

@@ -506,19 +506,26 @@ def test_a_spent_task_budget_publishes_the_sprite_the_task_saved(monkeypatch, tm
     assert "outer" not in harness.roles[1:]
 
 
-def test_outer_answers_and_asks_through_the_control_tool(monkeypatch, tmp_path):
-    """Outer 用 answer/ask 动作回答或澄清，不需要在文本里手写 JSON。"""
+def test_outer_answers_through_the_control_tool_and_never_asks(monkeypatch, tmp_path):
+    """Outer 用 answer 动作回答问题，不需要在文本里手写 JSON；提问（ask）被拒绝并引导先做出 Sprite（用户要求：不要询问，尽可能先做出来再改），
+    文本里的 questions 同样被拒。"""
     run, _ = new_run(monkeypatch, tmp_path, [call("outer-1", "tools_plan_execute", {"action": "answer", "answer": "可以制作暖色调滤镜。"})])
     run.session.latest_sprite_id = None  # a new task has saved nothing yet
     assert asyncio.run(run.plan_execute()).answer == "可以制作暖色调滤镜。"
-    run, _ = new_run(monkeypatch, tmp_path, [call("outer-1", "tools_plan_execute", {"action": "ask", "questions": ["要多暖？"]})])
-    assert asyncio.run(run.plan_execute()).questions == ["要多暖？"]
+    for asked in (call("outer-1", "tools_plan_execute", {"action": "ask", "questions": ["要多暖？"]}), AssistantMessage(content='{"questions":["要多暖？"]}')):
+        run, harness = new_run(monkeypatch, tmp_path, [asked])
+        feedback = watch_feedback(run, harness)
+        with pytest.raises(ScriptEnd):
+            asyncio.run(run.plan_execute())
+        # The refusal steers the next turn of the same layer.
+        assert "Do not ask the user" in feedback[1][0] and run.layer is Layer.OUTER
 
 
 def test_curly_quoted_protocol_json_is_still_understood(monkeypatch, tmp_path):
     """回放 2db032a4：Outer 用中文弯引号写协议 JSON，宿主归一后照常解析。"""
-    run, _ = new_run(monkeypatch, tmp_path, [AssistantMessage(content="{“questions”:[“要多暖？”]}")])
-    assert asyncio.run(run.plan_execute()).questions == ["要多暖？"]
+    run, _ = new_run(monkeypatch, tmp_path, [AssistantMessage(content="{“answer”:“可以制作暖色调滤镜。”}")])
+    run.session.latest_sprite_id = None
+    assert asyncio.run(run.plan_execute()).answer == "可以制作暖色调滤镜。"
 
 
 def test_executor_cannot_call_plan_control(monkeypatch, tmp_path):
@@ -533,24 +540,24 @@ def test_executor_cannot_call_plan_control(monkeypatch, tmp_path):
     assert "TOOL_NOT_FOUND" in json.dumps(run.executor_context.messages()[-1])
 
 
-def test_a_step_that_needs_input_goes_straight_to_outer_with_its_questions(monkeypatch, tmp_path):
-    """审计复现：needs_input 原来先交给 Plan，Plan 不能提问只能 stop，被记成 blocked，Outer 按规则停止，问题到不了用户；现在直接交给 Outer 提问。"""
-    asked = call("exec-2", "tools_report_step", {"status": "needs_input", "summary": "缺少颜色", "questions": ["要多暖？"]})
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        report("exec-1", "needs_input", "缺少颜色"),
-        asked,
-        call("outer-2", "tools_plan_execute", {"action": "ask", "questions": ["要多暖？"]}),
-    ])
+def test_a_step_never_asks_and_the_executor_gets_the_request(monkeypatch, tmp_path):
+    """审计复现（作品 72a195d7）：Executor 三次说「数据里没有 user_intent」并报 needs_input 去问用户，需求其实在快照深处；Plan 随之停止，
+    Outer 最后用 answer 把需求原文回给用户，任务以「已回答」结束。现在交给 Executor 的交接消息带着需求、快照把 user_intent 放在最前；
+    needs_input 被拒并引导先按合理的选择做出 Sprite；已经委派的任务不能再以普通回答结束。"""
+    asked = call("exec-1", "tools_report_step", {"status": "needs_input", "summary": "缺少文案", "questions": ["文字是什么？"]})
+    run, harness = new_run(monkeypatch, tmp_path, [delegate(), asked], intent={"original_request": {"description": "今日灵感 打字机"}, "accepted_base": {"big": True}})
     feedback = watch_feedback(run, harness)
-    result = asyncio.run(run.plan_execute())
-    assert result.questions == ["要多暖？"]
-    assert harness.roles == ["outer", "executor", "executor", "outer"]
-    # A needs_input report without questions is refused: Outer would have nothing to ask.
-    assert "needs_input requires the questions" in feedback[2][0]
-    assert run.plan_result == {"status": "needs_input", "summary": "缺少颜色", "sprite_id": None, "questions": ["要多暖？"]}
-    handoffs = [item["content"] for item in run.outer.messages() if str(item.get("content", "")).startswith("Host handoff")]
-    assert "要多暖？" in handoffs[-1] and '"needs_input"' in handoffs[-1]
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert harness.roles == ["outer", "executor", "executor"] and run.layer is Layer.EXECUTOR
+    assert feedback[1] == [] and "Do not ask the user" in feedback[2][0]
+    handoff = next(item["content"] for item in run.executor_context.messages() if str(item.get("content", "")).startswith("Host handoff"))
+    assert "今日灵感 打字机" in handoff and "\"big\"" not in handoff
+    data, _ = run.snapshot()
+    assert next(iter(data)) == "user_intent"
+    run.layer = Layer.OUTER
+    with pytest.raises(ValueError, match="an ordinary answer cannot replace it"):
+        run._outer_control(SimpleNamespace(action="answer", answer="需求原文：今日灵感"))
 
 
 def test_repeated_invalid_executor_replies_stop_the_run(monkeypatch, tmp_path):
@@ -671,7 +678,7 @@ def test_failed_generation_tool_preserves_previous_generation_state(monkeypatch,
     result = asyncio.run(run._handle_layer_tools(call("answer", "tools_plan_execute", {"action": "answer", "answer": "代码校验失败，请调整需求。"})))
     if earlier_success:
         assert result is None
-        assert "Generation has started" in run.session.feedback[0]
+        assert "an ordinary answer cannot replace it" in run.session.feedback[0]
     else:
         assert result.answer == "代码校验失败，请调整需求。"
 

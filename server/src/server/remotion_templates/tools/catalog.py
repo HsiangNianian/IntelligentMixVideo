@@ -86,7 +86,7 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
 
 @tool(
     "sprite.compose",
-    contract_version=8,
+    contract_version=9,
     constraints=[
         "The host canvas is fixed at 1080x1920, 30 FPS. When the snapshot has target_duration_frames (a new work), the Sprite must last exactly that long (the last instance's end, or the text block's duration_frames), otherwise the call is refused.",
         "Contract v4: kind is required (text, filter_overlay, video_overlay or transition_overlay). A text effect is composed from text {layout, text, font_size, tiers, line_gap, line_starts, keyword, effects, duration_frames} with role text Presets for the tiers, an optional role keyword Preset and role effect Presets, and no instances; the host lays the block out and provides its configuration parameters. Other kinds place instances by layout and timing.",
@@ -95,6 +95,7 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
         "v6: a two-tier text takes arrangement stack (default; line_gap apart) or overlap (both tiers in one place, centred on each other, the lower one on top; line_gap may be left out), which becomes the configuration parameter tierLayout. The slot cue (two tiers only) keeps progress 0 until the lower tier appears and then rises to 1 over seconds; it stays 0 while the lower tier has no text. The element around each tier carries the tier's font size.",
         "v7: a text.effects entry may leave out title, slot, target and seconds; the host takes them from its effect Preset's usage, and an entry without them whose Preset records no usage is refused.",
         "v8: a keyword Preset may draw the hit's glyphs the host passes as children, so a hit's glyphs are units too; the glyph positions are chars (all glyphs), keywordChars (the keyword hits' glyphs, only with such a keyword Preset or none) and plainChars (the other glyphs), each counting its own units. An entrance or cue effect takes delay (0-3 seconds, configuration parameter effect{k}Delay) and starts that much later, so effects can follow one another.",
+        "v9: an entrance, exit or cue effect at a glyph position takes stagger (0-1, configuration parameter effect{k}Stagger): 1 one glyph after another, 0 all together, in between overlapping. The text block may name preview_keywords, words of its default text that the review frames and the workspace preview show as keywords while templates pass none.",
         "parameters lifts Preset props to required top-level Sprite style parameters that templates may change per placement; each binding targets declared top-level Preset props that share one object schema and one value; a bound number needs minimum and maximum (integers for an integer), a bound string a colour pattern, enum or maxLength of at most 2000; only type, title, description, default, minimum, maximum, enum, minLength, maxLength, the colour pattern (or the keywordColor pattern), maxItems and items.maxLength may be used. A text block's configuration names (text, fontSize, fonts, weights, size ratios, lineGap, lineStartFrames, keyword options, keywordEffect, effect{k}...) are taken, for parameter names and for the tiers', keyword's and effects' instance_id alike.",
         "The host owns position, scale, rotation and opacity of the whole Sprite; do not bind or implement them.",
     ],
@@ -312,13 +313,13 @@ PLAN_TOOL = HostTool(
     name="tools.plan_execute",
     input=PlanAction,
     description=(
-        "Host control; never runs a business tool. Outer: answer, ask (clarification), delegate (the host then runs "
-        "its standard Preset -> Sprite plan) or stop. Plan: update_plan (send only the unfinished steps), continue, "
+        "Host control; never runs a business tool. Outer: answer (a question that asks for no Sprite), delegate (the host "
+        "then runs its standard Preset -> Sprite plan) or stop; ask is refused, since a Sprite is built first and changed afterwards. Plan: update_plan (send only the unfinished steps), continue, "
         "advance, complete (the host publishes the latest Sprite this task saved) or stop."
     ),
     constraints=(
         "Only Outer and Plan may invoke this tool; Executor may only inspect it.",
-        "Outer answers, asks, delegates or stops; Plan owns ordered step changes.",
+        "Outer answers, delegates or stops; Plan owns ordered step changes.",
         "Completion still requires host verification of a saved Sprite; the host, not Outer, publishes it.",
     ),
     error_codes=("INVALID_ARGUMENT", "tool_limit_reached", "tool_budget_exhausted", "agent_stopped"),
@@ -332,10 +333,10 @@ REPORT_TOOL = HostTool(
     name="tools.report_step",
     input=StepResult,
     description=(
-        "Executor: report the current step as step_done, blocked or needs_input; call it alone. The host checks "
+        "Executor: report the current step as step_done or blocked; call it alone. The host checks "
         "the step really produced its output (a sprite_create success in a step with the sprite module, a ready "
-        "Preset in a preset step) and then starts the next step or publishes the Sprite. needs_input takes the questions "
-        "for the user, which Outer asks."
+        "Preset in a preset step) and then starts the next step or publishes the Sprite. needs_input is refused: what "
+        "the request leaves open is chosen sensibly, and the user changes the saved Sprite afterwards."
     ),
     constraints=(
         "Only the Executor may invoke this tool; the host records the step's Presets and Sprite from tool receipts.",

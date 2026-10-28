@@ -415,6 +415,8 @@ class TextEffect(ContractModel):
     seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
     # 入场、下栏出现特效推迟开始的秒数，省略为 0，让特效可以一个接一个；出场与持续特效没有延迟。
     delay: Omittable[Annotated[FiniteNumber, Field(ge=0, le=3)]]
+    # 逐字位置的特效里各个字错开的程度（0～1，省略为 1）：1 一个接一个，0 所有字一起，介于其间则前后交叠。
+    stagger: Omittable[Annotated[FiniteNumber, Field(ge=0, le=1)]]
     # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
     enabled: Omittable[StrictBool]
 
@@ -434,6 +436,8 @@ class TextComposition(ContractModel):
     line_gap: Omittable[Annotated[FiniteNumber, Field(ge=-600, le=300)]]
     line_starts: Omittable[list[Annotated[Integer, Field(ge=0, le=3600)]]]
     keyword: Omittable[TextKeyword]
+    # 默认文字里哪些词是关键词（需求或参考图强调的词）：只用于预览，模板没传关键词时，字效工作区预览与回看帧以它们为关键词显示。
+    preview_keywords: Omittable[Annotated[list[Annotated[StrictStr, StringConstraints(min_length=1, max_length=12)]], Field(min_length=1, max_length=5)]]
     # 按顺序包住各自位置的特效，先列的在里层；宿主按顺序给它们第 1、2…个特效的配置参数。
     effects: list[TextEffect] = Field(default_factory=list, max_length=6)
     duration_frames: PositiveInteger
@@ -457,6 +461,8 @@ class TextBlock(ContractModel):
     # 宿主把各栏定格在中间帧显示、文字块的动画都由特效 Preset 画（有可配置特效之后的作品；关键词命中照常播放）；
     # 更早的字效没有这一项，它们的 text Preset 自己画的动画照常播放。
     still: Omittable[Literal[True]]
+    # 默认文字里的示例关键词，见 TextComposition.preview_keywords。
+    preview_keywords: Omittable[list[NonEmptyString]]
 
 
 class SpriteDraft(ComponentDefinition):

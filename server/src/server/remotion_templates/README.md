@@ -6,9 +6,16 @@ host's standard two-step plan directly: `preset` readies the Presets and
 `sprite` composes and saves the Sprite (a `plan` sent with `delegate` is refused;
 only `update_plan` takes one). The Executor loop calls the tools of one step and
 ends it with `tools_report_step`; the host checks the step's recorded outputs,
-starts the next step and publishes the saved Sprite after the last one. A step
-reported `needs_input` goes straight to Outer with its questions, since only
-Outer can ask the user. The Plan loop only runs to recover a step that is
+starts the next step and publishes the saved Sprite after the last one. A task never
+asks the user: the host refuses Outer's `ask`, the Executor's `needs_input` and a
+Plan result asking for input, and steers them to build with sensible choices
+the user changes afterwards; a task that delegated cannot end with an ordinary
+answer. The Executor's handoff carries the request (`user_intent` without the
+base spec), and the snapshot puts it first. A text effect's words and keywords are never asked for:
+templates pass them each time they render, so a work only needs sample text for
+its preview, taken from the request or a reference image or written by the
+Executor, which reads the request from the snapshot's `user_intent`
+(`step_inputs` only lists earlier steps' outputs). The Plan loop only runs to recover a step that is
 blocked or used a batch without new evidence. The final delivery is a saved
 Sprite published as an isolated Player preview.
 
@@ -204,7 +211,12 @@ an inline box) — so
 effect k's configuration parameters `effect{k}` (switch), `effect{k}Target` (position) and `effect{k}Seconds` move it
 or retime it without regenerating (`categories.EFFECT_PARAMETER`; titles from the effect's title); an entrance or cue
 effect also gets `effect{k}Delay`, the seconds it waits before it starts, so effects at different positions can follow
-one another (the keyword's glyphs typing in first, the rest of the line after them). An entrance rises
+one another (the keyword's glyphs typing in first, the rest of the line after them), and one placed at a glyph position
+(entering, exiting or at the cue) gets `effect{k}Stagger`, how far its glyphs are spread: 1 one after another, 0 all
+together, in between overlapping. The text block may name `preview_keywords`, the words of its default text that are
+its keywords; while templates pass none, the review frames and the workspace preview show them as keywords instead of
+the opening characters (an Executor once "fixed" a right keyword-first order after frames keyed on the first two
+characters, work 06eb0788). An entrance rises
 from the position's first frame (a tier and its keyword hits count from the tier's start), an exit falls to 0 on the
 last frame, a loop stays at 1, and every length is at most half of the frames its position plays less one, so a text
 frozen on its middle frame still shows in full (a delay counts towards that half). A keyword Preset may take the hit's
