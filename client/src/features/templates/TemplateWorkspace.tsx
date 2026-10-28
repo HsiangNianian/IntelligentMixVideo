@@ -1,4 +1,8 @@
 /** 模板编辑工作区：接收主页选择，展示模板信息，协调效果编辑、保存和未保存切换保护。 */
+import { SplitScreenEditor } from "./SplitScreenEditor";
+import { defaultAvatarEffects } from "./avatarEffects";
+import { AvatarEffectsEditor } from "./AvatarEffectsEditor";
+import { validateSplitScreen } from "./splitScreen";
 import { useUpdateBlocker } from "@/lib/update-guard";
 import { recovery } from "@/features/updates/recovery";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -93,10 +97,17 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const [transitionRandom, setTransitionRandom] = useState<readonly [number, number]>(() => [Math.random(), Math.random()]);
   const visibleDraft = useMemo(() => draft ? activeDraft(draft) : null, [draft]);
   const previewSelection = useMemo(() => visibleDraft ? previewTransitions(visibleDraft, transitionRandom, spriteCatalog.assets ?? []) : null, [visibleDraft, transitionRandom, spriteCatalog.assets]);
-  const previewDraft = previewSelection?.draft;
+  const previewDraft = useMemo(() => {
+    const selected = previewSelection?.draft;
+    if (!selected?.avatar_effects?.removeBackground || !selected.split_screen?.enabled) return selected;
+    return { ...selected, split_screen: { ...selected.split_screen, avatar: { ...selected.split_screen.avatar, radius: 0, borderWidth: 0 } } };
+  }, [previewSelection?.draft]);
   const preview = useMemo(() => {
     if (!previewDraft || !media) return { timeline: undefined, error: "" };
-    try { return { timeline: resolveTemplate(previewDraft, previewContext(media)), error: "" }; }
+    try {
+      if (previewDraft.split_screen?.enabled) validateSplitScreen(previewDraft.split_screen);
+      return { timeline: resolveTemplate(previewDraft, previewContext(media)), error: "" };
+    }
     catch (reason) { return { timeline: undefined, error: reason instanceof Error ? reason.message : "时间规则无法应用到当前视频" }; }
   }, [previewDraft, media]);
   const previewLength = preview.timeline?.duration ?? 0;
@@ -111,6 +122,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     const asset = spriteCatalog.assets?.find((item) => item.id === clip.sprite_id);
     // 作用于文字的字效显示该文字对象的示例文字与关键词，合成时由总线换成实际标题或切片。
     const text = boundText(draftTracks ?? [], clip);
+    const point = previewDraft?.split_screen?.enabled && clip.text_target === "subtitle" ? previewDraft.split_screen[text?.language === "en" ? "subtitleEn" : "subtitle"] : undefined;
+    const transform = point && asset ? { ...clip.transform, x: point.x * asset.width / 100, y: point.y * asset.height / 100 + asset.box.height * (clip.transform?.scale ?? 1) / 2 } : clip.transform;
     return {
       id: clip.id,
       spriteId: clip.sprite_id,
@@ -124,10 +137,10 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
       textTrackId: text?.id,
       boundary: clip.transition_boundary,
       values: text && clip.text_target ? { ...clip.parameters, text: text.editor[clip.text_target], keywords: [exampleKeyword(text.editor, clip.text_target, text.language)].filter(Boolean) } : clip.parameters,
-      transform: clip.transform,
-      canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: transformFields(asset.kind).includes("x") } : undefined,
+      transform,
+      canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: !point && transformFields(asset.kind).includes("x") } : undefined,
     };
-  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength]);
+  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength, previewDraft?.split_screen]);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
   useUpdateBlocker("模板尚未保存或正在处理", dirty || busy || loading || !!openRequest);
   useEffect(() => { recovery.template = current ? { templateId: current.template_id } : null; }, [current]);
@@ -384,6 +397,10 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                 <SpriteClips clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
                 {target === "frame-mask" && draft.frame_mask && <FrameMaskPanel mask={draft.frame_mask}
                   onChange={(frame_mask) => editTrack(() => ({ ...draft, frame_mask }))} onClose={() => setTarget(null)} />}
+                <SplitScreenEditor value={draft.split_screen} removeBackground={draft.avatar_effects?.removeBackground} onChange={(split_screen) => editTrack(() => ({ ...draft, split_screen,
+                  ...(split_screen.layout !== (draft.split_screen?.layout ?? "split") ? { avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground: split_screen.layout === "overlay" } } : {}),
+                }))} />
+                <AvatarEffectsEditor value={draft.avatar_effects} sameScreen={!!draft.split_screen?.enabled} circle={!!draft.split_screen?.enabled && draft.split_screen.layout === "circle"} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} />
                 {bilingualTarget && <div className="space-y-2 border-b px-4 py-3">
                   <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!english && english.enabled !== false} onChange={(event) => {
                     const enabled = event.target.checked;

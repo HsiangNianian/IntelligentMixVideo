@@ -50,7 +50,7 @@ interface PlayerOptions {
     type: string,
     origin: string,
     url?: string,
-  ) => Promise<string>;
+  ) => Promise<string | { url: string; maskUrl: string }>;
   getTimelineMaterials: (
     materials: Record<string, unknown>[],
   ) => Promise<Record<string, unknown>[]>;

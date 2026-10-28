@@ -85,6 +85,8 @@ jobs:
         with:
           python-version: '3.12'
           enable-cache: false
+      - name: Install Python for offline lockfile checks
+        run: uv python install "$UV_PYTHON"
       - name: Check synchronized project versions
         run: bun .github/scripts/validate-release.mjs
       - name: Test release scripts and failure recovery

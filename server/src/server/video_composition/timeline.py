@@ -5,10 +5,12 @@ from math import floor
 from pydantic import TypeAdapter
 
 from .text_events import subtitle_events
+from .transitions import keyword_transitions
 from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template, active_tracks
 from ..template.timing import ClipContext, TimelineContext, resolve_template, resolve_track
 from ..template.transitions import select_transitions
 from .schema import CompositionRequest, MatchedSegment, PositiveSeconds, Segment
+from .split_screen import window_clip, border_clip
 
 
 def validate_segments(segments: list[Segment], duration_ms: int) -> None:
@@ -72,6 +74,8 @@ def build_timeline(
     material_durations: list[float] | None = None, title_keyword: str = "", transition_seed: str = "",
     title_en: str | None = None, title_keyword_en: str = "",
     frame_mask_url: str | None = None,
+    split_assets: dict | None = None, avatar_opening: dict | None = None,
+    use_keyword_transitions: bool = False, remotion_assets: dict | None = None,
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
     request = CompositionRequest.from_snapshot(request)
@@ -81,6 +85,13 @@ def build_timeline(
     has_subtitles = request.composition_mode != "materials_silent" and bool(request.text)
     source = TypeAdapter(list[Segment]).validate_python(segments) if has_subtitles else []
     matched = TypeAdapter(list[MatchedSegment]).validate_python(matches) if standard else []
+    layout = template.split_screen if standard and template.split_screen and template.split_screen.enabled else None
+    opening = avatar_opening if standard and template.avatar_effects and template.avatar_effects.opening_enabled else None
+    opening_end = opening["duration"] if opening else 0
+    circle = avatar_opening if layout and layout.layout == "circle" else None
+    circle_missing = bool(layout and layout.layout == "circle" and not circle)
+    cutout = bool(layout and layout.layout != "circle" and template.avatar_effects and template.avatar_effects.remove_background)
+    material_clips, material_borders, avatar_clips, avatar_borders = [], [], [], []
     if has_subtitles:
         validate_segments(source, duration_ms)
     if standard:
@@ -133,8 +144,33 @@ def build_timeline(
                 continue
             if cursor < item.start_time:
                 clips.append(video(request.video_url, "video", cursor, item.start_time, cursor))
-            clips.append(video(match.matched_candidate_url, match.matched_candidate_type,
-                               item.start_time, item.end_time, 0))
+            material = video(match.matched_candidate_url, match.matched_candidate_type, item.start_time, item.end_time, 0)
+            if layout and not circle_missing:
+                if split_assets is None:
+                    raise ValueError("同屏布局图片尚未准备")
+                if layout.layout == "split":
+                    material = window_clip(material, layout.material, split_assets["media"][match.matched_candidate_url], width, height)
+                    material_clips.append(material)
+                    if border := split_assets["material_borders"].get(match.matched_candidate_url):
+                        material_borders.append(border_clip(material, border))
+                avatar_start = max(item.start_time, opening_end)
+                if avatar_start < item.end_time and avatar_clips and avatar_clips[-1]["TimelineOut"] == avatar_start:
+                    avatar_clips[-1].update(TimelineOut=item.end_time, Out=item.end_time)
+                    if avatar_borders:
+                        avatar_borders[-1].update(TimelineOut=item.end_time, Duration=item.end_time - avatar_borders[-1]["TimelineIn"])
+                elif avatar_start < item.end_time:
+                    avatar = window_clip(video(request.video_url, "video", avatar_start, item.end_time, avatar_start),
+                                         layout.avatar if layout.layout == "split" else layout.avatar.model_copy(update={"radius": 0, "fit": "Contain"}),
+                                         split_assets["media"][request.video_url], width, height, remove_background=cutout,
+                                         circle=circle, feather=template.avatar_effects.feather if template.avatar_effects else 0.02)
+                    avatar_clips.append(avatar)
+                    if layout.layout == "split" and not cutout and (border := split_assets.get("avatar_border")):
+                        avatar_borders.append(border_clip(avatar, border))
+                # 分区用底色占位，叠加布局直接保留完整素材及模糊填充；业务时间不变。
+                if layout.layout == "split":
+                    material = {"Type": "Image", "MediaURL": split_assets["background"], "Duration": item.end_time - item.start_time,
+                                "TimelineIn": item.start_time, "TimelineOut": item.end_time, "Width": width, "Height": height, "AdaptMode": "Fill"}
+            clips.append(material)
             cursor = item.end_time
         if cursor < duration:
             clips.append(video(request.video_url, "video", cursor, duration, cursor))
@@ -193,10 +229,30 @@ def build_timeline(
         }]})
     timeline = {"VideoTracks": [{"VideoTrackClips": clips}], "AudioTracks": audio_tracks,
                 "SubtitleTracks": subtitle_tracks}
+    overlay_tracks = [{"VideoTrackClips": items} for items in (material_clips, material_borders, avatar_clips, avatar_borders) if items]
+    if opening:
+        # 覆盖原业务轨，不拆素材、不改变转场数量；原素材在遮挡期间仍按原进度播放。
+        w, h = min(width, height * opening["aspect"]), min(height, width / opening["aspect"])
+        diameter = opening["radius"] * 2
+        overlay_tracks.extend([
+            {"VideoTrackClips": [{"Type": "Image", "MediaURL": opening["background"], "Duration": opening_end,
+                "TimelineIn": 0, "TimelineOut": opening_end, "Width": width, "Height": height, "AdaptMode": "Fill"}]},
+            {"VideoTrackClips": [{**video(request.video_url, "video", 0, opening_end, 0),
+                "X": round((width - w) / 2), "Y": round((height - h) / 2), "Width": round(w), "Height": round(h), "AdaptMode": "Cover",
+                "Effects": [{"Type": "Volume", "Gain": 0}, {"Type": "VFX", "SubType": "mask_circle", "ExtParams":
+                    f'x={opening["x"]:.8f},y={opening["y"]:.8f},width={diameter:.8f},height={diameter * opening["aspect"]:.8f},antialias={template.avatar_effects.feather:.6f}'}]}]},
+        ])
+    # 仅修正同屏和开场创建的轨道；IMS 出点包含该时刻，减去接口最小精度表达 [start,end)。
+    # 只改显示终点，源 In/Out、业务边界与总时长不变，避免切换帧出现大小两个人像。
+    for row in overlay_tracks:
+        for clip in row["VideoTrackClips"]:
+            if clip["TimelineOut"] < duration:
+                clip["TimelineOut"] = round(clip["TimelineOut"] - 0.0001, 4)
+    timeline["VideoTracks"].extend(overlay_tracks)
     if template.frame_mask and any(bar.enabled and floor(height * bar.height / 100 + 0.5) > 0 for bar in (template.frame_mask.top, template.frame_mask.bottom)):
         if not frame_mask_url:
             raise ValueError("上下蒙版图片尚未准备完成")
-        # 蒙版在主体视频上、全局效果与文字下；后续 Remotion 透明视频仍追加在其上。
+        # 蒙版覆盖同屏、数字人开场等视频层；全局效果、Remotion 与文字仍在其上。
         timeline["VideoTracks"].append({"VideoTrackClips": [{
             "Type": "Image", "MediaURL": frame_mask_url, "TimelineIn": 0, "TimelineOut": duration,
             "Duration": duration, "X": 0, "Y": 0, "Width": width, "Height": height, "AdaptMode": "Fill",
@@ -206,15 +262,19 @@ def build_timeline(
     # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。
     remotion_texts = {(track.text_target, track.language) for track in template.tracks if track.text_target is not None}
     tracks = [track for track in template.tracks if track.target != "remotion" and (track.target, track.language) not in remotion_texts]
-    if not template.transition_enabled:
+    if not template.transition_enabled or layout:
         tracks = [track for track in tracks if track.target != "transition"]
-    elif template.transition_mode is not None:
-        selected = select_transitions([track.model_dump(mode="json") for track in template.tracks],
-                                      len(clips) - 1, template.transition_mode, transition_seed)
+    elif use_keyword_transitions or template.transition_mode is not None:
+        selected = keyword_transitions(template.model_dump(mode="json"), clips, source, matches,
+                                       standard=standard, fps=fps, seed=transition_seed, assets=remotion_assets or {}) \
+            if use_keyword_transitions else select_transitions(
+                [track.model_dump(mode="json") for track in template.tracks],
+                len(clips) - 1, template.transition_mode, transition_seed)
         by_track = {track.id: track for track in template.tracks}
         tracks = [track for track in tracks if track.target != "transition"] + [
             by_track[item["id"]].model_copy(update={"id": f"{item['id']}:{boundary}",
-                "transition_boundary": boundary, "duration": template.transition_duration_seconds})
+                "transition_boundary": boundary,
+                "duration": item["duration"] if use_keyword_transitions else template.transition_duration_seconds})
             for item, boundary in selected if item["target"] == "transition"
         ]
     if not standard:
@@ -276,9 +336,29 @@ def build_timeline(
                     # 持续到结束的标题覆盖请求终点，固定时长标题遵循用户设置。
                     end = duration if track.target == "title" and track.duration is None else segment.end
                     clip = text(track.target, content, segment.start, end, segment.editor, track_parameters)
+                    same_screen = layout and not circle_missing and track.target == "subtitle" and any(
+                        item.start_time <= segment.start < item.end_time and match.matched_candidate_url
+                        for item, match in zip(source, matched)
+                    )
                     if track.language == "en":
                         clip.update(AdaptMode="AutoScale", TextWidth=0.9)
-                    text_clips.append(clip)
+                    cuts = [segment.start, end]
+                    if same_screen and segment.start < opening_end < end:
+                        cuts.insert(1, opening_end)
+                    for left, right in zip(cuts, cuts[1:]):
+                        part = {**clip, "TimelineIn": left,
+                                "TimelineOut": round(right - 0.0001, 4) if same_screen and right < duration else right}
+                        if same_screen and left >= opening_end:
+                            point = layout.subtitle_en if track.language == "en" else layout.subtitle
+                            part.update(X=min(point.x / 100, 0.9999), Y=min(point.y / 100, 0.9999))
+                        # 布局切点不触发额外入出场；花字与循环样式保留。
+                        for motion, cropped in (("In", left > segment.start), ("Out", right < end)):
+                            if cropped:
+                                part.pop(f"AaiMotion{motion}Effect", None)
+                                part.pop(f"AaiMotion{motion}", None)
+                            elif f"AaiMotion{motion}" in part:
+                                part[f"AaiMotion{motion}"] = min(part[f"AaiMotion{motion}"], right - left)
+                        text_clips.append(part)
             if text_clips:
                 timeline["SubtitleTracks"].append({"SubtitleTrackClips": text_clips})
     if effects:
