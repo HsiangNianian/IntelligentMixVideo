@@ -91,7 +91,7 @@ VITE_PREVIEW_VIDEO_3_URL=https://your-domain.example/preview-3.mp4
 
 时间输入和开始、持续方式的选择立即更新内存草稿及预览；点击「保存模板」才写入存储。空值或非法时间会提示错误，修正后继续编辑。
 
-时间默认值按 IMS 接口配置：[转场默认 1 秒，文字入场与出场各 0.5 秒](https://help.aliyun.com/zh/ims/developer-reference/effect-configuration-description)；滤镜和 VFX 默认从视频开始持续到结束。切换固定时长时按当前视频剩余区间填写；用户已经设置的时长继续保留。
+时间默认值按 IMS 接口配置：[转场默认 1 秒，文字入场与出场各 0.5 秒](https://help.aliyun.com/zh/ims/developer-reference/effect-configuration-description)；滤镜和 VFX 默认从视频开始持续到结束。切换固定时长时按当前视频剩余区间填写，没有有效区间时等待用户输入；用户已经设置的时长继续保留。
 
 新模板自动创建中文标题和中文字幕各一个。创建和更新时，前端与云端保存都检查中文对象各一个；缺少任意一个便拒绝写入并保留已有记录。通过左侧「特效资产」选择样式，右侧编辑对象参数。
 修改后重启 `bun run dev`；生产构建需要重新执行 `bun run build`。
