@@ -242,9 +242,11 @@ async def test_prepare_reads_distinct_media_and_ignores_no_matches(composition_c
     assert len(calls) == 3
 
 
-def test_split_disables_both_transition_engines(composition_case):
-    """同屏关闭 IMS 与 Remotion 转场；纯素材模式仍保留原有转场摆放。"""
+@pytest.mark.parametrize("use_keywords", [False, True])
+def test_split_disables_both_transition_engines(composition_case, use_keywords):
+    """新旧转场规则下同屏均关闭 IMS 与 Remotion 转场；纯素材仍保留转场摆放。"""
     case = enable(composition_case)
+    case["use_keyword_transitions"] = use_keywords
     track = template_track("transition", transition="transition/normal/directional")
     track["duration"] = 1
     track["transition_boundary"] = 1
@@ -252,7 +254,8 @@ def test_split_disables_both_transition_engines(composition_case):
     case["template"]["tracks"].append(track)
     timeline, _ = build_timeline(**case)
     assert not any(effect["Type"] in {"Transition", "DLTransition"} for row in timeline["VideoTracks"] for clip in row["VideoTrackClips"] for effect in clip.get("Effects", []))
-    data = {"request": case["request"], "template": case["template"], "remotion": {"placements": [{"id": "transition", "transition_boundary": 1}, {"id": "text"}]}}
+    data = {"request": case["request"], "template": case["template"], "keyword_transitions": use_keywords,
+            "remotion": {"placements": [{"id": "transition", "transition_boundary": 1}, {"id": "text"}]}}
     assert [item["id"] for item in remotion.active_placements(data)] == ["text"]
     data["request"]["compositionMode"] = "materials_voice"
     assert len(remotion.active_placements(data)) == 2

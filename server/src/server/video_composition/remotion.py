@@ -34,6 +34,7 @@ from .errors import CompositionError
 from .schema import CompositionRequest, Segment
 from .settings import ZosSettings
 from .text_events import subtitle_blocks, subtitle_events
+from .transitions import keyword_transitions
 from .zos import object_prefix, upload_public
 
 logger = logging.getLogger(__name__)
@@ -173,17 +174,22 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                            for track in template.get("tracks", []))
     if template.get("transition_enabled") is False:
         placements = [item for item in placements if item.get("transition_boundary") is None]
-    if template.get("transition_mode") is not None and any(item.get("transition_boundary") is not None for item in placements):
+    use_keywords = data.get("keyword_transitions", False)
+    if (use_keywords or template.get("transition_mode") is not None) and any(item.get("transition_boundary") is not None for item in placements):
         if timeline is None:
             raise ContentError("Remotion 转场缺少最终素材时间线")
-        selected = select_transitions(template["tracks"], len(timeline["VideoTracks"][0]["VideoTrackClips"]) - 1,
-                                      template["transition_mode"], transition_seed)
+        clips = timeline["VideoTracks"][0]["VideoTrackClips"]
+        selected = keyword_transitions(template, clips, segments if spoken else [], data.get("matches", []),
+                                       standard=request.composition_mode == "standard", fps=fps,
+                                       seed=transition_seed, assets=saved["assets"]) \
+            if use_keywords else select_transitions(template["tracks"], len(clips) - 1, template["transition_mode"], transition_seed)
         expanded = []
         for placement in placements:
             if placement.get("transition_boundary") is None:
                 expanded.append(placement)
             else:
-                expanded.extend({**placement, "transition_boundary": boundary}
+                expanded.extend({**placement, "transition_boundary": boundary,
+                                 **({"duration": item["duration"]} if use_keywords else {})}
                                 for item, boundary in selected if item["id"] == placement["id"])
         placements = expanded
     for placement in placements:
@@ -221,7 +227,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             clips = timeline["VideoTracks"][0]["VideoTrackClips"]
             if boundary >= len(clips):
                 continue
-            if template.get("transition_mode") is not None:
+            if not use_keywords and template.get("transition_mode") is not None:
                 length_seconds = min(math.floor(length_seconds * fps + 0.5),
                     math.floor((clips[boundary - 1]["TimelineOut"] - clips[boundary - 1]["TimelineIn"]) * fps + 1e-8) // 2,
                     math.floor((clips[boundary]["TimelineOut"] - clips[boundary]["TimelineIn"]) * fps + 1e-8) // 2) / fps

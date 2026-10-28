@@ -577,6 +577,8 @@ class Job:
             await self.save("assembling", material_durations=durations)
             data = self.record["data"]
         inputs = dict(request=data["request"], template=data["template"], transition_seed=self.record["task_id"], segments=data.get("segmentation", {}).get("segments", []),
+                      use_keyword_transitions=data.get("keyword_transitions", False),
+                      remotion_assets=(data.get("remotion") or {}).get("assets", {}),
                       title_keyword=data.get("segmentation", {}).get("title_keyword", ""),
                       title_en=data.get("segmentation", {}).get("title_en"),
                       title_keyword_en=data.get("segmentation", {}).get("title_keyword_en", ""),

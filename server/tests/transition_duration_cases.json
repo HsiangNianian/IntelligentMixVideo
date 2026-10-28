@@ -1,0 +1,6 @@
+[
+  { "name": "缺省时长采用 0.6 秒预览长度", "preview_frames": 18, "fps": 30, "duration": null, "expected_seconds": 0.6 },
+  { "name": "缺省时长采用 1.2 秒预览长度", "preview_frames": 36, "fps": 30, "duration": null, "expected_seconds": 1.2 },
+  { "name": "显式时长短于预览长度", "preview_frames": 36, "fps": 30, "duration": 0.6, "expected_seconds": 0.6 },
+  { "name": "显式时长长于预览长度", "preview_frames": 18, "fps": 30, "duration": 1.2, "expected_seconds": 1.2 }
+]
