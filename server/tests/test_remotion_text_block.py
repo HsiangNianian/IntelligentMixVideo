@@ -766,8 +766,7 @@ def test_an_effect_entry_takes_what_it_leaves_out_from_its_presets_usage(tmp_pat
 
 
 def test_review_frames_follow_the_sprites_own_timing():
-    """回看帧按 Sprite 自己的时序取：字效为中间帧（完整显示）、最长入场的一半、下栏出现前、下栏出现时特效的一半、最长出场的一半，
-    关掉的特效不算，至多四帧、按时间排；其他分类取 1/4、1/2、3/4 处。"""
+    """回看优先保留下栏切换前、中、后及出场，多个入场不能挤掉这些证据；至多六帧且标签不宣称视觉通过。"""
     from server.remotion_templates.tools.session import review_frames
 
     effects = [SimpleNamespace(slot=slot, title=title) for slot, title in (("enter", "淡入"), ("cue", "劈开"), ("exit", "淡出"), ("enter", "上浮"))]
@@ -775,15 +774,34 @@ def test_review_frames_follow_the_sprites_own_timing():
     defaults = {"effect1": True, "effect1Seconds": 0.5, "effect2": True, "effect2Seconds": 1 / 3, "effect3": True, "effect3Seconds": 0.5,
                 "effect4": False, "effect4Seconds": 3, "lineStartFrames": [0, 60]}
     sprite = SimpleNamespace(composition=SimpleNamespace(duration_frames=90, fps=30), text=text, default_parameters=defaults)
-    assert review_frames(sprite) == [(7, "half way into the entrance 淡入"), (44, "shown in full (middle frame)"),
-                                     (59, "just before the lower tier appears"), (65, "half way into the effects played when the lower tier appears")]
+    assert review_frames(sprite) == [(44, "middle of the preview"), (59, "just before the lower tier appears"),
+                                     (65, "half way into the effects played when the lower tier appears"),
+                                     (70, "end of the effects played when the lower tier appears"),
+                                     (82, "half way out of the exit"), (89, "last frame of the preview")]
     # Entrances one after another each get a frame, so their order shows.
     staggered = SimpleNamespace(composition=SimpleNamespace(duration_frames=150, fps=30), default_parameters={
         "effect1": True, "effect1Seconds": 1, "effect2": True, "effect2Seconds": 0.2, "effect2Delay": 1},
         text=SimpleNamespace(effects=[SimpleNamespace(slot="enter", title="打字"), SimpleNamespace(slot="enter", title="显现")], layout=None))
-    assert review_frames(staggered) == [(15, "half way into the entrance 打字"), (33, "half way into the entrance 显现"), (74, "shown in full (middle frame)")]
+    assert review_frames(staggered) == [(15, "half way into the entrance 打字"), (33, "half way into the entrance 显现"),
+                                        (74, "middle of the preview"), (149, "last frame of the preview")]
     other = SimpleNamespace(composition=SimpleNamespace(duration_frames=90, fps=30), text=None, default_parameters={})
     assert [frame for frame, _ in review_frames(other)] == [22, 44, 66]
+
+
+def test_review_frames_preserve_the_failed_examples_exit_and_use_tier_clocks():
+    """作品 ba6d769e 的两个入场曾占满四帧、遗漏退场；另核对下栏实际起点、剩余长度和 JS 半帧取整。"""
+    from server.remotion_templates.tools.session import review_frames
+
+    sprite = SimpleNamespace(composition=SimpleNamespace(duration_frames=150, fps=30), text=SimpleNamespace(effects=[
+        SimpleNamespace(slot="enter", title="淡入"), SimpleNamespace(slot="enter", title="横向裁切"), SimpleNamespace(slot="exit", title="淡出")]),
+        default_parameters={"effect1Seconds": 0.3, "effect1Target": "block", "effect2Seconds": 1.1, "effect2Target": "tiers",
+                            "effect3Seconds": 0.5, "effect3Target": "block", "lineStartFrames": [0, 8]})
+    assert [frame for frame, _ in review_frames(sprite)] == [4, 7, 16, 74, 142, 149]
+    sprite.composition.duration_frames = 90
+    sprite.text.effects = [SimpleNamespace(slot="enter", title="下栏入场"), SimpleNamespace(slot="cue", title="切换")]
+    sprite.default_parameters = {"effect1Seconds": 3, "effect1Target": "line2", "effect2Seconds": 0.15,
+                                 "effect2Target": "line2", "lineStartFrames": [0, 60]}
+    assert [frame for frame, _ in review_frames(sprite)] == [44, 59, 62, 65, 67, 89]
 
 
 @needs_bundler
@@ -804,6 +822,7 @@ def test_a_saved_sprite_comes_back_as_frames_for_two_reviews(tmp_path, monkeypat
             capture = options.get("capture")
             if capture:
                 assert capture.parameters == {"keywords": ["判断"]}
+                assert options["text_fit_parameters"] == {}
                 capture.directory.mkdir(parents=True)
                 for frame in capture.frames:
                     (capture.directory / f"frame-{frame}.png").write_bytes(b"png")
@@ -814,11 +833,12 @@ def test_a_saved_sprite_comes_back_as_frames_for_two_reviews(tmp_path, monkeypat
         composed = await current.execute("sprite.compose", two_tiers(tier, glow, fade), available())
         receipts = [await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available()) for _ in range(3)]
         first = receipts[0]["review"]
-        assert [item["image"] for item in first["frames"]] == [2, 3, 4, 5] and first["rounds_left"] == 1
+        assert [item["image"] for item in first["frames"]] == [2, 3, 4, 5, 6, 7] and first["rounds_left"] == 1
         # The defaults have no keywords, so the frames show the workspace preview's sample one.
         assert first["keywords"] == ["判断"]
         assert [(item["frame"], item["label"]) for item in first["frames"]] == [
-            (7, "half way into the entrance 淡入"), (11, "just before the lower tier appears"), (14, "shown in full (middle frame)"), (22, "half way out of the exit")]
+            (7, "half way into the entrance 淡入"), (11, "just before the lower tier appears"), (14, "middle of the preview"),
+            (16, "half way into the entrance 淡入"), (22, "half way out of the exit"), (29, "last frame of the preview")]
         assert receipts[1]["review"]["rounds_left"] == 0 and "review" not in receipts[2]
         assert current.review_frames == []
         # Frames show the saved Sprite only: composing anew takes them away until the next save.

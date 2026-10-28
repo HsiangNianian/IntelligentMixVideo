@@ -120,7 +120,8 @@ def default_plan(edit: bool, base_drafts: bool | None = None) -> Plan:
                 ),
                 input_refs=["user_intent", "steps.preset.outputs.presets"],
                 tool_modules=["preset", "sprite"],
-                done_when="sprite_create succeeded in this step; then call tools_report_step.",
+                done_when=("sprite_create succeeded and its source and available review frames were compared with the original request. "
+                           "Fix a missing or contradictory motion before finishing; report the before/during/after observations with frame numbers."),
             ),
         ],
     )

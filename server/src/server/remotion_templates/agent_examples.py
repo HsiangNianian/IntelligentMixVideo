@@ -26,3 +26,22 @@ export default function Typewriter(props: {
   </Box>;
 }
 '''
+
+# Complementary copies keep the original layout while their visible fragments move independently.
+SPLIT_CODE = '''import React from "react";
+export default function Split(props: {
+  children: React.ReactNode;
+  progress: number;
+  Box: React.ComponentType<{style?: React.CSSProperties; children?: React.ReactNode}>;
+  distance: number;
+}) {
+  const {Box} = props;
+  const p = Math.max(0, Math.min(1, props.progress));
+  const move = p * p * (3 - 2 * p) * props.distance;
+  const opacity = 1 - Math.max(0, (p - 0.55) / 0.45);
+  return <Box style={{position: "relative", opacity}}>
+    <div style={{clipPath: "inset(0 0 50% 0)", transform: `translateY(${-move}em)`}}>{props.children}</div>
+    <div style={{position: "absolute", inset: 0, clipPath: "inset(50% 0 0 0)", transform: `translateY(${move}em)`}}>{props.children}</div>
+  </Box>;
+}
+'''

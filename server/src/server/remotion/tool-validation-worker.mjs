@@ -720,7 +720,10 @@ async function textFitCheck(page) {
   const lines = request.parameter_schema?.properties?.lineStartFrames?.maxItems;
   const multi = Number.isInteger(lines) && lines > 1;
   // Every line is shown from frame 0, so the measurement sees the complete text.
-  const allLines = multi ? { lineStartFrames: Array(lines).fill(0) } : {};
+  // Only the host supplies this patch for composed still text. A cue may intentionally remove a tier;
+  // enter/exit and loop effects stay on so an inverted or permanently hidden transition still fails.
+  const layout = request.text_fit_parameters ?? {};
+  const allLines = { ...layout, ...(multi ? { lineStartFrames: Array(lines).fill(0) } : {}) };
   // The N lines share maxLength with their N - 1 line breaks: the first lines take one more character each when it
   // does not divide evenly, so the joined sample is exactly maxLength long.
   const characters = multi ? Math.max(lines, length - (lines - 1)) : length;
@@ -758,7 +761,11 @@ async function textFitCheck(page) {
     const covered = await coveredFillProblem(page, allLines);
     if (covered) return { name: "text_fit", status: "failed", message: covered };
     const defaultLines = shortText.split("\n");
-    const sync = multi && defaultLines.length === lines ? (await lineSyncProblem(page, defaultLines)) ?? (await lineJumpProblem(page, defaultLines)) : null;
+    // The host's composed tiers can have independent effects. Legacy components must still prove shared timing;
+    // every component must keep the earlier tier in place when a later tier appears.
+    const sync = multi && defaultLines.length === lines
+      ? (request.text_fit_parameters === undefined ? await lineSyncProblem(page, defaultLines) : null)
+        ?? (await lineJumpProblem(page, defaultLines, layout)) : null;
     if (sync) return { name: "text_fit", status: "failed", message: sync };
     // Templates pass keywords at render time, so the keyword hit (and any keyword effect drawn on it) must keep the text
     // whole: up to two characters opening the first non-empty default line are a hit every text effect can show
@@ -961,11 +968,11 @@ const LINE_JUMP_TOLERANCE = 6;
  * more than it moved in the frame before plus `LINE_JUMP_TOLERANCE` (or a tenth of its height). Returns the failure
  * message, or null.
  */
-async function lineJumpProblem(page, lines) {
+async function lineJumpProblem(page, lines, layout = {}) {
   const step = Math.floor(request.composition.duration_frames / (lines.length + 1));
   if (step < 3) return null;
   const starts = lines.map((_, index) => index * step);
-  await page.evaluate((values) => window.__imvTool.setParameters(values), { lineStartFrames: starts });
+  await page.evaluate((values) => window.__imvTool.setParameters(values), { ...layout, lineStartFrames: starts });
   try {
     for (let index = 1; index < lines.length; index++) {
       const boxes = [];

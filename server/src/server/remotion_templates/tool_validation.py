@@ -237,7 +237,7 @@ class ToolValidator:
 
     async def validate_render(
         self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
-        capture: FrameCapture | None = None,
+        capture: FrameCapture | None = None, text_fit_parameters: dict[str, bool] | None = None,
     ) -> RenderValidationReport:
         """Run fixed-canvas default/configured mounts and each independent behavior script.
 
@@ -248,7 +248,8 @@ class ToolValidator:
         parameter to its ``maxLength`` and fails the ``text_fit`` check when that text is clipped, leaves the canvas or
         is too small to read. Only the generation path asks for these: a user's own parameter edits are never blocked
         by them. With ``capture`` the same mount also captures still frames into ``capture.directory`` when every
-        check passes; a failed report captures none.
+        check passes; a failed report captures none. ``text_fit_parameters`` marks host-composed still text and
+        disables its cue wrappers for layout measurements; it never changes runtime or review frames.
         """
         if request.duration_frames > 216000:
             raise ValueError("duration_frames exceeds the validation resource limit")
@@ -292,6 +293,8 @@ class ToolValidator:
         }
         if lengths:
             payload_request["lengths"] = lengths
+        if text_fit and text_fit_parameters is not None:
+            payload_request["text_fit_parameters"] = text_fit_parameters
         if capture:
             payload_request["capture"] = {"frames": capture.frames, "box": capture.box, "scale": capture.scale, "parameters": capture.parameters or {}}
         (directory / "request.json").write_text(json.dumps(payload_request), encoding="utf-8")

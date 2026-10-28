@@ -146,19 +146,30 @@ only checks the contract and never starts the validator.
 ## Looking at the result
 
 The Agent writes code without a visual judge, so it gets to see what it saved: for the first two Sprites a task saves
-(`tools/session.VISUAL_REVIEW_ROUNDS`), the browser mount `sprite.create` runs anyway also captures up to four still
+(`tools/session.VISUAL_REVIEW_ROUNDS`), the browser mount `sprite.create` runs anyway also captures up to six still
 frames once every check has passed (`FrameCapture`, `captureFrames` in the validation worker). They are chosen from
-the Sprite's own timing (`review_frames`: for a text block the middle frame, half way into its longest entrance, just
-before the lower tier appears, half way into its cue effects and half way out of its longest exit), cut to the text
+the Sprite's own timing (`review_frames`: the middle and final frames, half way out of the exit, before the lower tier
+appears, during and at the end of its cue effects, then entrance samples where space remains). Target tiers use their
+own start and remaining length; transition endpoints cannot be crowded out by entrances. Frames are cut to the text
 block with room around it, at most 720 pixels on the long side, composited onto the neutral #808080 gray the model is
 told is not content; a text effect whose defaults have no keywords is captured with the workspace preview's sample
 keyword (`sample_keywords`), listed in `review.keywords`, so keyword effects show. The receipt lists the frames in
-`review.frames` with what each should show (each entrance gets its own, so their order shows), and they follow the
+`review.frames` with sampling times, not claims that the result is complete or correct, and they follow the
 reference images in every Executor turn of the step (`candidate_frames` in the snapshot maps them) until the step
 ends, a `sprite.compose` takes them away (they only describe the saved Sprite; seen in work eb692e7e, where frames of
 an earlier save stayed attached through 20 recompositions and the Executor kept "fixing" them) and a later save
 replaces them. The rules have the Executor compare them with the request and the reference images
-and change only what is clearly missing or wrong. The host draws no verdict from them.
+and change only what is clearly missing or wrong. The completion summary should cite the before/during/after frames
+and the state of each requested subject. Code and runtime checks do not establish visual correctness; the host draws
+no semantic verdict from the images. `agent_examples.py` demonstrates independently clipped copies as a drawing
+primitive, alongside discrete glyph timing; these are executable examples, not installed Presets or a recipe library.
+
+For host-composed still text, generation measures layout with only cue wrappers switched off through the host-only
+`text_fit_parameters` patch. A tier may intentionally disappear as another arrives, and the host's tiers can have
+independent timing. Enter, exit and loop effects remain active for the full-text measurement: an inverted transition
+that hides a tier throughout the hold is still refused. Full-length text, defaults, keywords, clipping and tier spacing
+remain checked; legacy self-animated text also retains its shared-timing check. Runtime mounts, transparency, alternate lengths and review frames
+always use the original enabled effects. The patch is never saved into the Sprite or applied to render requests.
 
 ## Preview
 
@@ -203,8 +214,9 @@ drafts with the current configuration values. The Agent binds style parameters o
 
 Motion is split out of the tiers (contract v4): `text.effects` lists `effect` Presets, each with a Chinese title, a
 slot (`enter`, `exit` or `loop`), a default position and, entering or exiting, a length in seconds (0.1–3, default
-0.5). An effect Preset receives `children`, the host's `Box` and `progress` (0 not shown, 1 fully shown) and only
-restyles what it wraps. The host leaves a wrap point at every position — `block` (the whole column), each tier
+0.5). An effect Preset receives `children`, the host's `Box` and `progress` and only restyles what it wraps.
+For enter/exit, 0 means hidden and 1 fully shown; a cue goes from its initial state at 0 to its final state at 1,
+which may remove the wrapped text. The host leaves a wrap point at every position — `block` (the whole column), each tier
 (`tiers` for both, `line1`/`line2` for one; two tiers only), each glyph (`chars`, or only the glyphs of the keyword
 hits `keywordChars` or only the others `plainChars`, each an inline box) and each keyword hit as a whole (`keyword`,
 an inline box) — so

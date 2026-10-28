@@ -81,44 +81,55 @@ _REVIEW_SIDE = 720
 
 
 def review_frames(sprite: SpriteDraft) -> list[tuple[int, str]]:
-    """The frames the Agent looks at after saving ``sprite``, each with what it shows, in time order (at most four).
+    """Return at most six observations, protecting a transition's before/after and the exit from entrance crowding.
 
-    A text block is sampled from its own timing in its defaults: the middle frame (shown in full, where a held text is
-    frozen), half way into each enabled entrance (entrances that start later, after their delay, get frames of their
-    own, so their order shows), the frame before the lower tier appears and half way into its longest cue effect, and
-    half way out of its longest exit. Other Sprites are sampled at a quarter, the middle and three quarters of their
-    length. Lengths and delays are clamped as the host clamps them.
+    Labels describe sampling times, not a verdict that text is complete. Effect windows use the target tier's clock
+    and the same positive half-up rounding and length clamp as compose.mjs. Other Sprites keep their three samples.
     """
     last, fps = sprite.composition.duration_frames - 1, sprite.composition.fps
     if sprite.text is None:
         picks = [(last // 2, "half way"), (last // 4, "a quarter of the way"), (last * 3 // 4, "three quarters of the way")]
     else:
         config = sprite.default_parameters
-        exit_length, cue_offset = 0, None
+        exit_length = 0
+        cues: list[tuple[int, int]] = []
         entrances: dict[int, str] = {}
+        starts = config.get("lineStartFrames") or [0]
+        cue = starts[1] if len(starts) > 1 else None
+        if "text" in config:
+            lines = str(config["text"]).split("\n")
+            if len(lines) < 2 or not lines[1]:
+                cue = None
         for index, effect in enumerate(sprite.text.effects, start=1):
             if effect.slot == "loop" or config.get(f"effect{index}") is False:
                 continue
-            length = max(1, min(round((config.get(f"effect{index}Seconds") or 0.5) * fps), last // 2))
-            delay = min(round((config.get(f"effect{index}Delay") or 0) * fps), max(0, last // 2 - length))
-            if effect.slot == "enter":
-                entrances.setdefault(delay + length // 2, f"half way into the entrance {effect.title}")
-            elif effect.slot == "cue":
-                cue_offset = max(cue_offset or 0, delay + length // 2)
-            else:
-                exit_length = max(exit_length, length)
-        starts = config.get("lineStartFrames") or [0]
-        cue = starts[1] if len(starts) > 1 else None
-        picks = [(last // 2, "shown in full (middle frame)"), *sorted(entrances.items())]
-        if cue:
-            picks.append((cue - 1, "just before the lower tier appears"))
-        if cue is not None and cue_offset is not None:
-            picks.append((cue + cue_offset, "half way into the effects played when the lower tier appears"))
+            target = config.get(f"effect{index}Target", "block")
+            origins = [0] if target == "block" else starts[:1] if target == "line1" else starts[1:2] if target == "line2" else starts
+            for origin in origins:
+                if origin > last:
+                    continue
+                half = (last - origin) // 2
+                length = max(1, min(int((config.get(f"effect{index}Seconds") or 0.5) * fps + 0.5), half))
+                delay = min(int((config.get(f"effect{index}Delay") or 0) * fps + 0.5), max(0, half - length))
+                if effect.slot == "enter":
+                    entrances.setdefault(origin + delay + length // 2, f"half way into the entrance {effect.title}")
+                elif effect.slot == "cue" and cue is not None:
+                    cues.append((cue + delay + length // 2, cue + delay + length))
+                elif effect.slot == "exit":
+                    exit_length = max(exit_length, length)
+        picks = [(last // 2, "middle of the preview"), (last, "last frame of the preview")]
         if exit_length:
             picks.append((last - exit_length // 2, "half way out of the exit"))
+        if cue:
+            picks.append((cue - 1, "just before the lower tier appears"))
+        if cues:
+            middle, end = max(cues, key=lambda window: window[1])
+            picks.extend([(middle, "half way into the effects played when the lower tier appears"),
+                          (end, "end of the effects played when the lower tier appears")])
+        picks.extend(sorted(entrances.items()))
     chosen: dict[int, str] = {}
     for frame, label in picks:
-        if len(chosen) < 4 and 0 <= frame <= last:
+        if len(chosen) < 6 and 0 <= frame <= last:
             chosen.setdefault(frame, label)
     return sorted(chosen.items())
 
@@ -211,7 +222,8 @@ _HINTS = (
     # A keyword hit drawn without its tier's look is not a layout problem; its message says where the look belongs.
     (lambda item: item.message.startswith("text_fit") and _KEYWORD_LOOK_LOST not in item.message,
      "Lay the text out from its content: wrap it onto several lines inside a bounded width, no fixed-height box with "
-     "overflow hidden; use the fontSize parameter as given (the host shrinks long text at render time) and make sure text up to its maxLength fits at the smallest fontSize."),
+     "overflow hidden; use the fontSize parameter as given (the host shrinks long text at render time) and make sure text up to its maxLength fits at the smallest fontSize. "
+     "If a whole tier is missing, check effect endpoints: enter and exit must show it at progress 1. An effect triggered by another tier appearing uses cue, whose progress rises from 0 to 1."),
     (lambda item: item.source == "contract" and item.field is not None,
      "parameter_schema must be a self-contained object schema with additionalProperties false, and default_parameters "
      "must satisfy it."),
@@ -594,13 +606,13 @@ class ToolSession:
 
     async def validate_render(
         self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
-        capture=None,
+        capture=None, text_fit_parameters: dict[str, bool] | None = None,
     ) -> RenderValidationReport:
         """Run the isolated component behavior runner and cache the exact report.
 
         ``transparency`` adds the canvas-coverage measurement, ``lengths`` a mount at those render lengths (frames),
-        ``text_fit`` the longest-text layout measurement of a text effect and ``capture`` (a `FrameCapture`) still
-        frames for the Agent. The options are only forwarded when asked for, so a validator that predates them keeps working.
+        ``text_fit`` measures the text layout, with the host's optional ``text_fit_parameters`` patch; ``capture``
+        supplies actual animated frames for the Agent. Only requested options are forwarded.
         """
         if self.validator is None:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated behavior validator is unavailable.")
@@ -610,6 +622,7 @@ class ToolSession:
             options = {
                 **({"transparency": True} if transparency else {}), **({"lengths": lengths} if lengths else {}),
                 **({"text_fit": True} if text_fit else {}), **({"capture": capture} if capture else {}),
+                **({"text_fit_parameters": text_fit_parameters} if text_fit_parameters is not None else {}),
             }
             report = await self.validator.validate_render(request, **options)
         except ValidationUnavailable as exc:
@@ -835,6 +848,11 @@ class ToolSession:
             # frozen at its preview length instead, so its shortest played length is that threshold.
             lengths=render_lengths(sprite.composition.fps, text=sprite.kind == "text"),
             text_fit=sprite.kind == "text",
+            # A cue can intentionally remove one tier as another arrives. Measure layout without that cue, but
+            # keep enter/exit wrappers: they must still show all text at progress 1, rejecting reversed transitions.
+            # Presence of this host-only patch also permits independent tier timing in a host-composed still block.
+            **({"text_fit_parameters": {f"effect{index}": False for index, effect in enumerate(sprite.text.effects, start=1)
+                                        if effect.slot == "cue"}} if sprite.text is not None and sprite.text.still else {}),
             **({"capture": capture} if capture else {}),
         )
         if report.passed:
