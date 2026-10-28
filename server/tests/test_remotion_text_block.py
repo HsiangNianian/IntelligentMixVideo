@@ -999,6 +999,40 @@ def test_text_and_keywords_are_preview_samples_never_questions():
     assert "The request is user_intent, in the host handoff and at the top of the snapshot" in EXECUTOR_RULES
 
 
+def test_the_executor_recognizes_the_words_a_request_singles_out():
+    """指令回归：用户点名某个词要单独变色或单独动效时，Executor 会把效果画到普通文字上，或改用默认文字的开头字当示例关键词，
+    回看帧因此对不上要求。规则要求认出任意被点名的原文片段、多个选区分别保留，写进 text.preview_keywords，并说明示例词与位置不能写死在
+    Preset 里（真实文字与关键词每次渲染由总线传入）。只校验规则措辞，不代表模型识别准确。"""
+    from server.remotion_templates.agent import EXECUTOR_RULES
+
+    assert "use that exact substring of the sample text in text.preview_keywords" in EXECUTOR_RULES
+    assert "one to five words of the default text, each at most twelve characters" in EXECUTOR_RULES
+    assert "arbitrary user-selected words, not a fixed vocabulary or the opening characters" in EXECUTOR_RULES
+    assert "keep multiple explicitly selected words separate" in EXECUTOR_RULES
+    assert "The real text and keywords come from the bus on every render" in EXECUTOR_RULES
+    assert "never hard-code the sample word, its character indices or its position" in EXECUTOR_RULES
+    assert "leave the keyword options at their defaults: the six off and keywords empty" in EXECUTOR_RULES
+    assert "chars, block, tiers or line1/line2 targets also affect ordinary text" in EXECUTOR_RULES
+
+
+def test_the_review_keyword_description_matches_the_sampler():
+    """文档回归：回看帧与字效工作区预览优先文字块的 preview_keywords，未指定时才退回开头两字，而排版检查 text_fit 仍以开头两字挂载；
+    契约文档、SpriteReview 与 AGENTS.md 须说法一致，不能只改一处又留下相反的旧描述。"""
+    from server.remotion_templates.tools.contracts import SpriteReview
+
+    root = Path(__file__).parents[2]
+    document = (root / "docs/remotion-agent-tool-contracts.md").read_text(encoding="utf-8")
+    server_agents = (root / "server/src/server/remotion_templates/AGENTS.md").read_text(encoding="utf-8")
+    client_agents = (root / "client/src/features/remotion_templates/AGENTS.md").read_text(encoding="utf-8")
+    assert "优先文字块的 preview_keywords" in SpriteReview.__doc__
+    assert "优先文字块的 `preview_keywords`" in document
+    assert "排版检查 `text_fit` 的关键词挂载不看 `preview_keywords`" in document
+    assert "默认文字首个非空行开头至多两个字，与字效工作区预览、排版检查的关键词挂载相同" not in document
+    assert "字效生成按需求区分基础文字外观与关键词外观" in server_agents
+    assert "优先以文字块标出的 `preview_keywords`" in client_agents
+    assert "以当前文字的同样位置为示例关键词" not in client_agents
+
+
 def test_the_executor_knows_what_hides_a_gradient_fill_and_how_to_order_parts():
     """审计复现（作品 c0993bf2、eb692e7e）：上栏用 background-clip: text 画渐变、同一元素又用 text-shadow 叠出描边，阴影画在渐变上面，
     整行成了深棕色块；要「关键词先出、其余随后」时模型只放了一个逐字入场。规则说明这条渲染事实，以及分开的入场用延迟排先后。"""

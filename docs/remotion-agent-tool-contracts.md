@@ -1002,7 +1002,7 @@ class ReviewFrame(ContractModel):
 
 class SpriteReview(ContractModel):
     """保存后供 Agent 对照要求查看的几帧（灰底合成、按内容区域裁切），以及之后还有几次回看。默认没有关键词的字效按示例关键词
-    （默认文字首个非空行开头至多两个字，与字效工作区预览相同）截取，keywords 列出它们。"""
+    （优先文字块的 preview_keywords，与字效工作区预览相同；未指定时退回默认文字首个非空行开头至多两个字，与排版检查 text_fit 的挂载相同）截取，keywords 列出它们。"""
 
     frames: list[ReviewFrame]
     rounds_left: NonNegativeInteger
@@ -1032,7 +1032,7 @@ async def sprite_create(request: SpriteCreateInput) -> ToolResult[SpriteCreateOu
 
 输入为 compose 成功回执中的句柄，即 `{"draft_id": "<data.draft_id>"}`；未知句柄返回 `INVALID_ARGUMENT`，`field` 为 `/draft_id` 并列出本任务已有句柄。成功输出 sprite_id、created_at、composition，并附 CodeValidationReport；完整 SpriteRecord 由宿主保存。
 
-契约版本 2 增加回看帧：一个任务保存的前两个 Sprite，在同一次挂载的各项检查都通过后，宿主按它自己的时序截取至多六帧（字效先取末帧、最长出场的一半、下栏出现前、下栏出现时的特效进行到一半与其结束帧，再为每个入场特效取一半处的一帧（同一入场在多栏上时在标签里写明是哪一栏），最后才是泛用的中间帧（没有下栏切换帧时它反而是唯一的停留证据，因此排在入场之前）；每个特效的窗口按它作用的那一栏实际播放的帧数（而不是整条 Sprite）与半帧向后取整计算，其他分类为 1/4、1/2、3/4 处），按内容区域（文字块区域加边距）裁切、最长边缩到 720 像素，合成在中性 #808080 灰底上（灰底不是内容），`review.frames` 依次给出它在下一轮附带的第几张图片（排在参考图之后）、帧号与采样时机（标签只说明取样时刻，不宣称效果已经正确或完整），`review.rounds_left` 是之后还剩几次回看；默认没有关键词的字效以示例关键词（默认文字首个非空行开头至多两个字，与字效工作区预览、排版检查的关键词挂载相同）截取，`review.keywords` 列出它们，关键词字效与关键词上的特效因此也看得到。这些帧在该步骤结束前附在 Executor 每一轮的参考图之后，并在快照的 `candidate_frames` 里给出同样的对应；步骤结束即不再附带，重新组合（`sprite.compose`）时撤下（帧只描述上次保存的 Sprite），保存更新的 Sprite 时换成它的帧（回看次数用完则不再附带）。回看只供 Agent 核对效果是否符合要求，宿主不据此判定通过与否。
+契约版本 2 增加回看帧：一个任务保存的前两个 Sprite，在同一次挂载的各项检查都通过后，宿主按它自己的时序截取至多六帧（字效先取末帧、最长出场的一半、下栏出现前、下栏出现时的特效进行到一半与其结束帧，再为每个入场特效取一半处的一帧（同一入场在多栏上时在标签里写明是哪一栏），最后才是泛用的中间帧（没有下栏切换帧时它反而是唯一的停留证据，因此排在入场之前）；每个特效的窗口按它作用的那一栏实际播放的帧数（而不是整条 Sprite）与半帧向后取整计算，其他分类为 1/4、1/2、3/4 处），按内容区域（文字块区域加边距）裁切、最长边缩到 720 像素，合成在中性 #808080 灰底上（灰底不是内容），`review.frames` 依次给出它在下一轮附带的第几张图片（排在参考图之后）、帧号与采样时机（标签只说明取样时刻，不宣称效果已经正确或完整），`review.rounds_left` 是之后还剩几次回看；默认没有关键词的字效以示例关键词（优先文字块的 `preview_keywords`，未指定时退回默认文字首个非空行开头至多两个字，与字效工作区预览相同）截取（排版检查 `text_fit` 的关键词挂载不看 `preview_keywords`，仍取开头至多两个字），`review.keywords` 列出它们，关键词字效与关键词上的特效因此也看得到。这些帧在该步骤结束前附在 Executor 每一轮的参考图之后，并在快照的 `candidate_frames` 里给出同样的对应；步骤结束即不再附带，重新组合（`sprite.compose`）时撤下（帧只描述上次保存的 Sprite），保存更新的 Sprite 时换成它的帧（回看次数用完则不再附带）。回看只供 Agent 核对效果是否符合要求，宿主不据此判定通过与否。
 
 错误：`INVALID_ARGUMENT`、`COMPOSITION_FAILED`、`CODE_VALIDATION_FAILED`、`CATEGORY_PARAMETERS_MISSING`、`VALIDATION_UNAVAILABLE`、`SPRITE_STORE_FAILED`、`TIMEOUT`。校验失败不保存；create 的挂载只度量画面是否遮住视频，不运行自定义行为测试，也不声明视觉验收通过。
 
