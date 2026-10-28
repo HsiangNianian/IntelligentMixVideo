@@ -3,6 +3,29 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.17] - 2026-10-28
+### New Features
+- [`2b65f63`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2b65f63f55952eb14edb18e0cd79326bf5a73a32) - **remotion**: overwrite a saved Sprite asset by default *(PR [#262](https://github.com/HsiangNianian/IntelligentMixVideo/pull/262) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`734f9f7`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/734f9f7352ef0da1e62860508c579d49c9262079) - **client**: redesign the composition playground as a three-column workspace *(PR [#263](https://github.com/HsiangNianian/IntelligentMixVideo/pull/263) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`065d430`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/065d4305baa8da8cc27df8bb2f1bc164109b9a02) - apply transitions around subtitle keywords *(PR [#269](https://github.com/HsiangNianian/IntelligentMixVideo/pull/269) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`5bb220a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5bb220a5f8c5d222b26f5984679abff8494230d3) - **segmentation**: split subtitles by meaning and template capacity *(PR [#266](https://github.com/HsiangNianian/IntelligentMixVideo/pull/266) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`a4f15a8`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a4f15a8082a28e00635092dfe19ff4b7f90db1e4) - add avatar openings and configurable shared-screen layouts *(PR [#268](https://github.com/HsiangNianian/IntelligentMixVideo/pull/268) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`89f6eb3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/89f6eb34c1c64b98c56e1470d680ebffe9a6945e) - add configurable top and bottom frame masks *(PR [#270](https://github.com/HsiangNianian/IntelligentMixVideo/pull/270) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`f26f5bd`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f26f5bdf096990ca809ec5760dbb90b67770c46b) - **remotion**: give the Agent the primitives for complex text effects *(PR [#264](https://github.com/HsiangNianian/IntelligentMixVideo/pull/264) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Bug Fixes
+- [`11bacdf`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/11bacdf3018178019f481c26f4399203a7b315ed) - **remotion**: keep wrapped bilingual subtitles apart *(PR [#265](https://github.com/HsiangNianian/IntelligentMixVideo/pull/265) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`24dc04f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/24dc04f57a8cd0d1d9db4db2b2dc8d755c1737bc) - update CHANGELOG.md for v0.9.16 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`e13fe8e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e13fe8eaa2c3648cc17f82773b451fbd3aff77de) - **release**: prepare v0.9.17 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`9978c1f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9978c1f66c732fa366a634c65a5eb080e425210c) - **release**: promote dev to main for v0.9.17 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`f4e1fdf`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f4e1fdffaea6f723d5f31d35b7ef99b5c08bfac3) - Merge remote-tracking branch 'upstream/main' into codex/release-v0.9.17 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.16] - 2026-10-26
 ### BREAKING CHANGES
 - due to [`5ffcd56`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5ffcd56a908df6a8cd6f0db5e023d8c574464e00) - return JSON from template endpoints *(PR [#247](https://github.com/HsiangNianian/IntelligentMixVideo/pull/247) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*:
@@ -1810,3 +1833,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.15]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.14...v0.9.15
 
 [v0.9.16]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.15...v0.9.16
+
+[v0.9.17]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.16...v0.9.17
