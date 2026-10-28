@@ -314,13 +314,15 @@ PLAN_TOOL = HostTool(
     name="tools.plan_execute",
     input=PlanAction,
     description=(
-        "Host control; never runs a business tool. Outer: answer (a question that asks for no Sprite), delegate (the host "
-        "then runs its standard Preset -> Sprite plan) or stop; ask is refused, since a Sprite is built first and changed afterwards. Plan: update_plan (send only the unfinished steps), continue, "
-        "advance, complete (the host publishes the latest Sprite this task saved) or stop."
+        "Host control; never runs a business tool. Outer: answer (a question that asks for no Sprite), ask (a genuine "
+        "ambiguity, or a plan_result whose status is needs_input), delegate (the host "
+        "then runs its standard Preset -> Sprite plan), plan (hand the task to the Plan ReAct to design or revise its steps) or stop. "
+        "Plan: update_plan (send only the unfinished steps), continue, "
+        "advance, complete (the host publishes the latest Sprite this task saved), ask (route a blocking question to Outer) or stop."
     ),
     constraints=(
         "Only Outer and Plan may invoke this tool; Executor may only inspect it.",
-        "Outer answers, delegates or stops; Plan owns ordered step changes.",
+        "Outer answers, asks, delegates, plans or stops; Plan owns ordered step changes and may ask through Outer.",
         "Completion still requires host verification of a saved Sprite; the host, not Outer, publishes it.",
     ),
     error_codes=("INVALID_ARGUMENT", "tool_limit_reached", "tool_budget_exhausted", "agent_stopped"),
@@ -334,10 +336,11 @@ REPORT_TOOL = HostTool(
     name="tools.report_step",
     input=StepResult,
     description=(
-        "Executor: report the current step as step_done or blocked; call it alone. The host checks "
+        "Executor: report the current step as step_done, blocked or needs_input; call it alone. The host checks "
         "the step really produced its output (a sprite_create success in a step with the sprite module, a ready "
-        "Preset in a preset step) and then starts the next step or publishes the Sprite. needs_input is refused: what "
-        "the request leaves open is chosen sensibly, and the user changes the saved Sprite afterwards."
+        "Preset in a preset step) and then starts the next step or publishes the Sprite. needs_input routes a genuine, "
+        "blocking question to Outer, which asks the user and resumes the work; what the request leaves open is otherwise "
+        "chosen sensibly and changed afterwards."
     ),
     constraints=(
         "Only the Executor may invoke this tool; the host records the step's Presets and Sprite from tool receipts.",

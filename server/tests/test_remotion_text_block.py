@@ -988,14 +988,15 @@ def test_the_executor_draws_a_tiers_look_on_its_block():
     assert "so the whole line inherits it" in EXECUTOR_RULES
 
 
-def test_text_and_keywords_are_preview_samples_never_questions():
-    """审计复现（作品 58be1abc、e208020e）：请求「关键词以打字机的样式出现，然后再显示整体的非关键字」时，Outer 直接追问用户文案、
-    关键词与语言；另一次 Executor 把快照里为空的 step_inputs 当成没收到用户需求，报 needs_input 去问。字效的文字与关键词由模板每次
-    渲染时传入，生成只需要预览用的示例文字，规则写明这一点，并说明需求在 user_intent 里。"""
+def test_text_and_keywords_are_preview_samples_not_the_thing_to_ask_about():
+    """审计复现（作品 58be1abc、e208020e）：Outer 追问用户文案、关键词与语言；Executor 把空的 step_inputs 当成没收到需求、报 needs_input 去问。
+    字效的文字与关键词由模板每次渲染时传入，生成只需要预览用的示例文字；规则要说明这一点，并说明需求在 user_intent 里。
+    重构后允许为真正的歧义提问，但这些由模板注入的内容仍不应成为问题。"""
     from server.remotion_templates.agent import EXECUTOR_RULES, OUTER_RULES
 
-    assert "A text effect's words and keywords are never missing" in OUTER_RULES and "ask is refused" in OUTER_RULES
-    assert "its default text and keywords are only the preview sample" in EXECUTOR_RULES and "Never ask the user" in EXECUTOR_RULES
+    assert "are injected by templates on each render" in OUTER_RULES
+    assert "do not ask about those unless the user clearly wants a specific wording chosen now" in OUTER_RULES
+    assert "its default text and keywords are only the preview sample" in EXECUTOR_RULES
     assert "The request is user_intent, in the host handoff and at the top of the snapshot" in EXECUTOR_RULES
 
 
