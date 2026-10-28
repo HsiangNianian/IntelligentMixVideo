@@ -49,9 +49,10 @@ def mask_video(width: int, height: int, box_width: int, box_height: int, radius:
     with TemporaryDirectory(prefix="imv-preview-mask-") as directory:
         root = Path(directory)
         mask_image(width, height, box_width, box_height, radius).save(root / "mask.png")
+        # 单帧时长是整数秒；固定秒级封装时基，避免长时长乘默认刻度后溢出。
         subprocess.run([
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-framerate", f"1/{seconds}",
             "-i", str(root / "mask.png"), "-frames:v", "1", "-c:v", "libx264", "-threads", "1",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(root / "mask.mp4"),
+            "-pix_fmt", "yuv420p", "-video_track_timescale", "1", "-movflags", "+faststart", str(root / "mask.mp4"),
         ], check=True, capture_output=True, timeout=15)
         return (root / "mask.mp4").read_bytes()

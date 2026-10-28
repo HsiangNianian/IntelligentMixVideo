@@ -1,7 +1,9 @@
 """同屏保存、几何、业务时间线及跨布局字幕回归；pytest tests/test_split_screen.py，不访问云服务。"""
 from copy import deepcopy
 import asyncio
+import json
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -90,8 +92,30 @@ def test_preview_mask_crop_and_endpoint(client, monkeypatch):
     assert response.status_code == 200 and response.content == b"mask-mp4"
     assert response.headers["content-type"] == "video/mp4" and calls == [params]
     assert client.get("/template/preview-mask", params={**params, "radius": 201}).status_code == 422
+    for seconds in (0, -1, 1.5, 2147483648):
+        assert client.get("/template/preview-mask", params={**params, "seconds": seconds}).status_code == 422
     assert len(calls) == 1
     assert not client.get("/template").json()["templates"]
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="真实单帧封装校验需要 FFmpeg/ffprobe")
+@pytest.mark.parametrize("seconds", [11, 3600, 7201, 2147483647])
+def test_preview_mask_real_encoding_preserves_full_source_duration(client, seconds):
+    """实际路由编码普通、长片与上限时长，始终只有一帧且时长完整，不因封装溢出返回 503。"""
+    response = client.get("/template/preview-mask", params=dict(
+        width=320, height=240, box_width=100, box_height=160, radius=20, seconds=seconds,
+    ))
+    assert response.status_code == 200, response.text
+    result = subprocess.run([
+        "ffprobe", "-v", "error", "-show_entries", "stream=codec_name,duration,nb_frames:format=duration",
+        "-of", "json", "pipe:0",
+    ], input=response.content, capture_output=True, check=True, timeout=15)
+    metadata = json.loads(result.stdout)
+    assert len(metadata["streams"]) == 1
+    stream = metadata["streams"][0]
+    assert stream["codec_name"] == "h264" and stream["nb_frames"] == "1"
+    assert float(stream["duration"]) == seconds
+    assert float(metadata["format"]["duration"]) == seconds
 
 
 def test_preview_mask_encoder_unavailable(client, monkeypatch):
