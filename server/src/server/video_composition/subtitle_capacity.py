@@ -104,9 +104,6 @@ async def calculate(task_id: str, data: dict) -> int:
         if capacities and min(capacities) < 1:
             raise CompositionError("subtitle_capacity_too_small", "当前字幕样式一行放不下一个全角字，请调整字号、位置或缩放", "template")
         limit = max(1, min(capacities) - 2) if capacities else 8
-        requested = data["request"].get("processRules", {}).get("subtitleMaxChars")
-        if requested is not None:
-            limit = min(limit, requested)
         logger.info("Subtitle capacity task_id=%s full_width_chars=%s max_segment_chars=%s", task_id, capacities, limit)
         return limit
     except CompositionError:

@@ -667,7 +667,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   that stays on one physical line in every tier, within the visible output canvas and the text schema length limit,
   using the same full-size-frame checks as text fit. It does not shrink fonts or move the placement. One browser
   batch shares the render slot and resource admission; the composition passes the smallest capacity minus two
-  (at least one) as `max_segment_chars`, saves it for recovery, and uses an explicitly smaller caller limit when given.
+  (at least one) as the sole `max_segment_chars` limit and saves it for recovery.
   Probes omit keyword highlights; actual keywords, translations and protected long strings still use the render fit check.
 - **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
   placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text

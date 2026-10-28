@@ -219,7 +219,7 @@ result = segment({
 **请求与返回**：`script`、`asr_result`、`title` 都可省略或为 null。
 
 - 有 ASR：必须有有效 `script`，使用第一音轨的词级时间（毫秒）。返回 `segments`（保留标点的原文、秒制时间、分组、关键词）、`warnings` 和 `trace`；传了 `title` 时另返回 `title_keyword`。
-- `max_segment_chars`：每段（字幕一行）最多字数，正整数，独立调用默认 8，不计标点和空白；非法值返回 422。视频合成按本单模板自动计算 `max(1, 最小单行全角字容量 - 2)` 并传入；请求另设 `processRules.subtitleMaxChars` 时取两者较小值。IMS 按居中位置到较近画布边缘的两倍宽度，除以正文与关键词较大字号后向下取整（云端字体/花字按全角字一 em 估算）；Remotion 在隔离浏览器按实际字体、字号、栏宽、位置、缩放、旋转与成片可见范围测量，不缩字号，双栏及多个中文字幕样式取最小容量，并遵守正文参数长度上限。结果随任务保存，恢复沿用；仅标题、无字幕和操练场封存切片不重新测量。容量探针不带关键词，真实关键词、译文及超长受保护串仍经原有成片排版预检。
+- `max_segment_chars`：每段（字幕一行）最多字数，正整数，独立调用默认 8，不计标点和空白；非法值返回 422。视频合成只按本单模板自动计算 `max(1, 最小单行全角字容量 - 2)` 并传入。IMS 按居中位置到较近画布边缘的两倍宽度，除以正文与关键词较大字号后向下取整（云端字体/花字按全角字一 em 估算）；Remotion 在隔离浏览器按实际字体、字号、栏宽、位置、缩放、旋转与成片可见范围测量，不缩字号，双栏及多个中文字幕样式取最小容量，并遵守正文参数长度上限。结果随任务保存，恢复沿用；仅标题、无字幕和操练场封存切片不重新测量。容量探针不带关键词，真实关键词、译文及超长受保护串仍经原有成片排版预检。
 - 只有 `title`：只调用一次模型，返回 `{"title_keyword":"关键词"}`，不校验内容、不纠错，缺失或非字符串按空字符串处理。
 - 可选 `config` 只用于本次调用：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120（切片单次最多取 30 秒），`llm_max_retries` 默认 1（0～3，只用于翻译），`llm_disable_thinking` 默认 false；Python 中传 `segment(payload, config=ClientSettings(...))`。`allow_insecure_llm_http` 由服务端决定，错误响应不回显输入。
 - `IMV_LLM_DISABLE_THINKING=true`（或 `config.llm_disable_thinking`）时，切分、提词与翻译请求附带 `thinking={"type":"disabled"}`。DeepSeek 等默认开启思考的模型应开启它，否则单次切分可能超过 30 秒；不支持该扩展字段的服务保持 false，此时不发送该字段。

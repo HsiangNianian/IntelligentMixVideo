@@ -28,7 +28,7 @@ BROWSER = {name: Path(value) for name, value in (
 
 
 def data(editor=None):
-    """一个有中文 IMS 字幕、可选手动上限的任务快照。"""
+    """一个有中文 IMS 字幕的任务快照。"""
     return {"request": {"processRules": {}}, "output": {"width": 1080, "height": 1920, "fps": 30},
             "template": {"tracks": [{"target": "subtitle", "editor": editor or {"subtitleSize": 96}}]},
             "remotion": {"placements": [], "assets": {}}}
@@ -49,12 +49,12 @@ def test_ims_full_width_formula(editor, width, expected):
     assert record == before
 
 
-@pytest.mark.parametrize("requested,expected", [(4, 4), (100, 9)])
-def test_manual_limit_can_only_lower_capacity(requested, expected):
-    """手动上限只进一步收紧模板计算值，不把九字容量扩大为一百字。"""
+@pytest.mark.parametrize("requested", [4, 100])
+def test_legacy_request_limit_does_not_change_capacity(requested):
+    """旧任务请求中保留的手动上限不参与容量计算，始终使用模板得到的九字上限。"""
     record = data()
     record["request"]["processRules"]["subtitleMaxChars"] = requested
-    assert asyncio.run(subtitle_capacity.calculate("test", record)) == expected
+    assert asyncio.run(subtitle_capacity.calculate("test", record)) == 9
 
 
 def test_unusable_position_is_not_reported_as_capacity():

@@ -325,9 +325,9 @@ def test_materials_presence_selects_matching(upstreams, client, composition_case
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("requested,expected", [(None, 9), (4, 4), (100, 9)])
-async def test_template_capacity_reaches_segmentation(upstreams, client, composition_case, composition_runtime, requested, expected):
-    """字幕字号由模板决定，计算值减二后传给切片并保存；手动上限只能收紧它。"""
+@pytest.mark.parametrize("requested", [None, 4, 100])
+async def test_template_capacity_reaches_segmentation(upstreams, client, composition_case, composition_runtime, requested):
+    """字幕上限只由模板计算并传给切片；旧调用方携带的手动上限忽略且不进入业务快照。"""
     template = composition_case["template"]
     subtitle = next(track for track in template["tracks"] if track["target"] == "subtitle")
     subtitle["editor"].update(subtitleSize=96, subtitleX=50, subtitleKeywordSize=0)
@@ -335,8 +335,10 @@ async def test_template_capacity_reaches_segmentation(upstreams, client, composi
     request = {**composition_case["request"], "processRules": {} if requested is None else {"subtitleMaxChars": requested}}
     record = await composition_runtime.accept(CompositionRequest.model_validate(request), "http://testserver")
     await service.Job(composition_runtime, record, composition_runtime.settings).prepare()
-    assert upstreams["max_segment_chars"] == expected
-    assert store.get(record["task_id"])["data"]["max_segment_chars"] == expected
+    assert upstreams["max_segment_chars"] == 9
+    saved = store.get(record["task_id"])["data"]
+    assert saved["max_segment_chars"] == 9
+    assert "subtitleMaxChars" not in saved["request"]["processRules"]
 
 
 @pytest.mark.anyio
@@ -1733,12 +1735,14 @@ def test_invalid_notification_url_rejected_before_acceptance(upstreams, client, 
 
 
 def test_request_openapi_hides_internal_mode_and_uses_camel_case(client):
-    """公开契约不含内部模式，回调地址与其他请求字段保持 camelCase。"""
-    schema = client.get("/openapi.json").json()["components"]["schemas"]["CompositionRequest"]
+    """公开契约不含内部模式或手动字幕上限，回调地址与其他请求字段保持 camelCase。"""
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    schema = schemas["CompositionRequest"]
     assert "callbackUrl" in schema["properties"] and "callback_url" not in schema["properties"]
     assert "callbackUrl" not in schema["required"]
     assert "compositionMode" not in schema["properties"] and "composition_mode" not in schema["properties"]
     assert "copy" in schema["properties"]
+    assert set(schemas["ProcessRules"]["properties"]) == {"videoDuration"}
 
 
 @pytest.mark.parametrize("code,error,expected", [

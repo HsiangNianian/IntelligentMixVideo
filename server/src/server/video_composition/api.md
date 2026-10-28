@@ -52,7 +52,6 @@
 | `materials` | array | 纯素材必填 | 纯素材必须非空、按数组顺序播放；standard 省略为纯数字人，显式 `[]` 匹配但不指定候选，非空数组指定候选；不接受 null |
 | `packRules` | object | 否 | 当前仅 `backgroundMusic` 生效 |
 | `processRules.videoDuration` | number | materials_silent | 秒制有限正数，允许小数，不接受布尔值或数字字符串；其他模式不使用，可省略或为 null |
-| `processRules.subtitleMaxChars` | integer/null | 否 | 进一步收紧自动计算的字幕每段字数上限，必须为正整数；不能把容量调大 |
 | `callbackUrl` | string/null | 否 | IMV 向业务系统发送最终结果的 HTTP(S) 地址；省略或 null 不通知 |
 
 `text`／`copy` 的缺省、null、空串或全空白均视为无文案，非空正文保持原样。两个字段同时非空，或提供非空文案但未提供 `audioUrl`，均在受理前返回 422，不创建任务。两者不再是同义字段：数字人调用方使用 `text`，纯素材调用方使用 `copy`；无声请求不再允许附带非空口播文案。
@@ -80,7 +79,7 @@ URL 不接受 Markdown 链接、空白、用户名密码或 `#fragment`，允许
 
 `headerSwitch`、`keywordSwitch`、`materialSwitch`、`subtitleSwitch`、`processRules.watermarkShow`、`introduceCard`、`materialSoundSwitch` 等额外字段目前被忽略，不控制输出。正式请求推荐使用本文列出的 camelCase 字段。
 
-有字幕文案时，在 ASR 前按冻结模板计算 `max(1, 最小单行全角字容量 - 2)`，以 `max_segment_chars` 传给切片。IMS 按全角字一 em 与较近画布边缘估算；Remotion 用实际字体和参数在隔离浏览器测量，双栏与多个中文字幕样式取最小值，英文译文沿用成片预检。另传 `subtitleMaxChars` 时只进一步收紧。容量随任务保存，恢复时复用；已有切片与操练场样本不重切。一字也放不下时以 `subtitle_capacity_too_small` 失败，无法测量时以 `subtitle_capacity_failed` 失败，均发生在 `template` 阶段，不调用 ASR 或切片模型。
+有字幕文案时，字数上限只在 ASR 前按冻结模板计算 `max(1, 最小单行全角字容量 - 2)`，以 `max_segment_chars` 传给切片。IMS 按全角字一 em 与较近画布边缘估算；Remotion 用实际字体和参数在隔离浏览器测量，双栏与多个中文字幕样式取最小值，英文译文沿用成片预检。容量随任务保存，恢复时复用；已有切片与操练场样本不重切。一字也放不下时以 `subtitle_capacity_too_small` 失败，无法测量时以 `subtitle_capacity_failed` 失败，均发生在 `template` 阶段，不调用 ASR 或切片模型。
 
 ### 三种模式
 
