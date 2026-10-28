@@ -7,9 +7,12 @@ from pathlib import Path
 from PIL import Image
 import pytest
 
+from server.template.avatar import AvatarEffects
+from server.template.split_screen import SplitScreen
 from server.video_composition import frame_mask, remotion
 from server.video_composition.timeline import build_timeline
 from .template_wire import post_template, saved_template, detail_template
+from .test_split_screen import enable
 
 CASES = json.loads(Path(__file__).with_name("frame_mask_cases.json").read_text())
 
@@ -23,18 +26,26 @@ def mask():
 
 def test_mask_roundtrip_and_legacy_update(client, template_payload, mask):
     """保存、重读与旧客户端省略字段的更新保留蒙版；显式关闭不丢样式。"""
-    created = post_template(client, {**template_payload, "frame_mask": mask})
+    settings = {
+        "frame_mask": mask,
+        "split_screen": SplitScreen(enabled=True).model_dump(mode="json", by_alias=True),
+        "avatar_effects": AvatarEffects(opening_enabled=True, feather=0).model_dump(mode="json", by_alias=True),
+    }
+    created = post_template(client, {**template_payload, **settings})
     assert created.status_code == 201, created.text
     record = saved_template(created)
-    assert record["frame_mask"] == mask
+    assert {field: record[field] for field in settings} == settings
     template_id = record["template_id"]
-    assert detail_template(client.get(f"/template/{template_id}"))["frame_mask"] == mask
+    detail = detail_template(client.get(f"/template/{template_id}"))
+    assert {field: detail[field] for field in settings} == settings
     updated = post_template(client, {**template_payload, "template_id": template_id, "name": "旧客户端修改名称"})
     assert updated.status_code == 200, updated.text
-    assert saved_template(updated)["frame_mask"] == mask
+    saved = saved_template(updated)
+    assert {field: saved[field] for field in settings} == settings
     mask["top"]["enabled"] = mask["bottom"]["enabled"] = False
     disabled = post_template(client, {**template_payload, "template_id": template_id, "frame_mask": mask})
-    assert saved_template(disabled)["frame_mask"] == mask
+    saved = saved_template(disabled)
+    assert {field: saved[field] for field in settings} == settings
 
 
 @pytest.mark.parametrize("field,value", [("height", -1), ("height", 51), ("height", "NaN"), ("height", "Infinity"), ("color", "red"), ("color", "#12345600")])
@@ -114,3 +125,24 @@ def test_enabled_mask_cannot_silently_disappear(composition_case, mask):
     mask["top"]["enabled"] = mask["bottom"]["enabled"] = False
     timeline, _ = build_timeline(**composition_case)
     assert len(timeline["VideoTracks"]) == 1
+
+
+@pytest.mark.parametrize("layout", ["split", "overlay", "circle"])
+def test_mask_covers_split_screen_and_avatar_opening(composition_case, mask, layout):
+    """蒙版位于同屏、边框与数字人开场之上，字幕与后续 Remotion 保持原层级。"""
+    case = enable(composition_case)
+    case["template"]["split_screen"]["layout"] = layout
+    case["template"]["avatar_effects"] = AvatarEffects(opening_enabled=True).model_dump(mode="json", by_alias=True)
+    case["avatar_opening"] = {"duration": 2, "x": 0.5, "y": 0.3, "radius": 0.25,
+                              "aspect": 720 / 1280, "background": "https://example.test/black.png"}
+    baseline, _ = build_timeline(**case)
+    case["template"]["frame_mask"] = mask
+    timeline, _ = build_timeline(**case, frame_mask_url="https://media.test/mask.png")
+    assert timeline["VideoTracks"][:-1] == baseline["VideoTracks"]
+    assert timeline["SubtitleTracks"] == baseline["SubtitleTracks"]
+    clip = timeline["VideoTracks"][-1]["VideoTrackClips"][0]
+    assert clip["MediaURL"] == "https://media.test/mask.png"
+    assert (clip["Width"], clip["Height"], clip["TimelineIn"], clip["TimelineOut"]) == (1080, 1920, 0, 8)
+    remotion.append_track(timeline, {"video_url": "https://media.test/overlay.webm", "duration": 8}, case)
+    assert timeline["VideoTracks"][-2]["VideoTrackClips"][0] == clip
+    assert timeline["VideoTracks"][-1]["VideoTrackClips"][0]["MediaURL"] == "https://media.test/overlay.webm"

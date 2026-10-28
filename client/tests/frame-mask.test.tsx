@@ -6,7 +6,10 @@ import { SaveTemplateRequestSchema, type SaveTemplateRequest } from "@/generated
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { PreviewTimeline } from "@/features/templates/PreviewTimeline";
 import { frameMaskRects, newFrameMask, type FrameMask } from "@/features/templates/frameMask";
-import { newDraft } from "@/features/templates/model";
+import { newDraft, toDraft } from "@/features/templates/model";
+import { saveTemplate, getTemplate } from "@/features/templates/api";
+import { defaultSplitScreen } from "@/features/templates/splitScreen";
+import { defaultAvatarEffects } from "@/features/templates/avatarEffects";
 import { readCatalog } from "@/features/templates/sdk";
 import { addTrack } from "@/features/templates/tracks";
 import { buildPreviewRows, mergeSpriteRows, playerTimeline } from "@/features/templates/timeline";
@@ -113,4 +116,48 @@ test("时间轴显示整段蒙版并按层级排列，关闭后仍可点击配�
   render(<PreviewTimeline ref={null} rows={disabledRows} disabled={false} time={0} duration={30} onSeek={() => {}} onSelect={(id) => selected.push(id)} />);
   fireEvent.click(screen.getByRole("button", { name: "编辑上下蒙版" }));
   expect(selected).toEqual(["frame-mask"]);
+});
+
+// 合并上游协议后，三个配置必须同时经过二进制请求及 JSON 响应，不能互相覆盖。
+test("蒙版、同屏与数字人配置独立保存并读回草稿", async () => {
+  const settings = {
+    frame_mask: newFrameMask(),
+    split_screen: { ...defaultSplitScreen(), enabled: true },
+    avatar_effects: { ...defaultAvatarEffects(), openingEnabled: true, feather: 0 },
+  };
+  const stored = { ...savedTemplate(), ...settings };
+  fetchMock.mockImplementation((async (_url, init) => {
+    if (init?.method === "POST") {
+      const message = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as ArrayBuffer));
+      expect(message.frameMask).toMatchObject(settings.frame_mask);
+      expect(message.splitScreen).toMatchObject(settings.split_screen);
+      expect(message.avatarEffects).toMatchObject(settings.avatar_effects);
+    }
+    return jsonTemplateResponse(stored, init?.method === "POST" ? "save" : "get");
+  }) as typeof fetch);
+  const saved = await saveTemplate({ ...newDraft(), name: "同屏蒙版", ...settings });
+  expect(saved).toMatchObject(settings);
+  expect(toDraft(await getTemplate(saved.template_id))).toMatchObject(settings);
+});
+
+// 蒙版叠在整套同屏画面上，不能插进素材与数字人之间，也不能盖住文字与全局特效。
+test.each(["split", "overlay", "circle"] as const)("%s 布局的蒙版位于全部视频之上、特效与文字之下", (layout) => {
+  spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ fillRect() {}, fillStyle: "" } as unknown as CanvasRenderingContext2D);
+  spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,mask");
+  const catalog = readCatalog();
+  let draft = newDraft();
+  draft.split_screen = { ...defaultSplitScreen(), layout, enabled: true };
+  for (const category of ["filter", "vfx/normal"])
+    draft = addTrack(draft, catalog.find((asset) => asset.category === category)!, "title").draft;
+  const baseline = buildTestTimeline(draft, catalog);
+  const baseLayers = playerTimeline(baseline).VideoTracks;
+  const videoCount = baseline.VideoTracks.length;
+  draft.frame_mask = newFrameMask();
+  const layers = playerTimeline(buildTestTimeline(draft, catalog)).VideoTracks;
+  expect(layers.slice(0, videoCount)).toEqual(baseLayers.slice(0, videoCount));
+  expect(layers[videoCount].VideoTrackClips[0]).toMatchObject({
+    Type: "Image", MediaURL: "data:image/png;base64,mask", TimelineIn: 0, TimelineOut: 30,
+    X: 0, Y: 0, Width: 1, Height: 1, AdaptMode: "Fill",
+  });
+  expect(layers.slice(videoCount + 1)).toEqual(baseLayers.slice(videoCount));
 });
