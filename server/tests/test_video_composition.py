@@ -343,12 +343,12 @@ async def test_template_capacity_reaches_segmentation(upstreams, client, composi
 
 @pytest.mark.anyio
 async def test_recovery_reuses_saved_capacity(upstreams, composition_case, composition_runtime, monkeypatch):
-    """已经保存单行容量的任务恢复准备阶段时沿用旧值，不再次测量或取新模板样式。"""
+    """已经保存单行容量的任务恢复准备阶段时沿用旧值，不再次计算或取新模板样式。"""
     store.initialize_schema()
     record = await composition_runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
     store.advance(record, "template", max_segment_chars=5)
 
-    async def unexpected(*args):
+    def unexpected(*args):
         raise AssertionError("不应重复计算")
 
     monkeypatch.setattr(service.subtitle_capacity, "calculate", unexpected)

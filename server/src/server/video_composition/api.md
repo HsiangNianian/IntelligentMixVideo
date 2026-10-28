@@ -79,7 +79,7 @@ URL 不接受 Markdown 链接、空白、用户名密码或 `#fragment`，允许
 
 `headerSwitch`、`keywordSwitch`、`materialSwitch`、`subtitleSwitch`、`processRules.watermarkShow`、`introduceCard`、`materialSoundSwitch` 等额外字段目前被忽略，不控制输出。正式请求推荐使用本文列出的 camelCase 字段。
 
-有字幕文案时，字数上限只在 ASR 前按冻结模板计算 `max(1, 最小单行全角字容量 - 2)`，以 `max_segment_chars` 传给切片。IMS 按全角字一 em 与较近画布边缘估算；Remotion 用实际字体和参数在隔离浏览器测量，双栏与多个中文字幕样式取最小值，英文译文沿用成片预检。容量随任务保存，恢复时复用；已有切片与操练场样本不重切。一字也放不下时以 `subtitle_capacity_too_small` 失败，无法测量时以 `subtitle_capacity_failed` 失败，均发生在 `template` 阶段，不调用 ASR 或切片模型。
+有字幕文案时，字数上限只在 ASR 前按冻结模板计算 `max(1, 最小单行全角字容量 - 2)`，以 `max_segment_chars` 传给切片。只按模板中文字幕对象的字号与位置估算（全角字一 em，以较近画布边缘为界）；Remotion 字效替代或叠加字幕时同样按该对象估算，不在浏览器里实测，实际放不下时由成片排版预检缩小字号，英文译文沿用成片预检。容量随任务保存，恢复时复用；已有切片与操练场样本不重切。一字也放不下时在 `template` 阶段以 `subtitle_capacity_too_small` 失败，不调用 ASR 或切片模型。
 
 ### 三种模式
 

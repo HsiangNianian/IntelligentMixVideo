@@ -662,13 +662,6 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Longer than `IMV_OVERLAY_MAX_SECONDS` (default 300 seconds / 5 minutes) is a 422 at acceptance when the length is already known (`duration`
   or the clips' end); an `audioUrl` is only probed while rendering, so an over-long one fails the task with
   `duration_too_long`.
-- **Subtitle capacity**: video composition measures full-width Chinese glyphs at the frozen placement's selected
-  font, size and transform before segmentation. The validation worker's `capacity` mode finds the largest count
-  that stays on one physical line in every tier, within the visible output canvas and the text schema length limit,
-  using the same full-size-frame checks as text fit. It does not shrink fonts or move the placement. One browser
-  batch shares the render slot and resource admission; the composition passes the smallest capacity minus two
-  (at least one) as the sole `max_segment_chars` limit and saves it for recovery.
-  Probes omit keyword highlights; actual keywords, translations and protected long strings still use the render fit check.
 - **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
   placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text
   Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's
