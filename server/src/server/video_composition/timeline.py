@@ -226,12 +226,12 @@ def build_timeline(
         }]})
     timeline = {"VideoTracks": [{"VideoTrackClips": clips}], "AudioTracks": audio_tracks,
                 "SubtitleTracks": subtitle_tracks}
-    timeline["VideoTracks"].extend({"VideoTrackClips": items} for items in (material_clips, material_borders, avatar_clips, avatar_borders) if items)
+    overlay_tracks = [{"VideoTrackClips": items} for items in (material_clips, material_borders, avatar_clips, avatar_borders) if items]
     if opening:
         # 覆盖原业务轨，不拆素材、不改变转场数量；原素材在遮挡期间仍按原进度播放。
         w, h = min(width, height * opening["aspect"]), min(height, width / opening["aspect"])
         diameter = opening["radius"] * 2
-        timeline["VideoTracks"].extend([
+        overlay_tracks.extend([
             {"VideoTrackClips": [{"Type": "Image", "MediaURL": opening["background"], "Duration": opening_end,
                 "TimelineIn": 0, "TimelineOut": opening_end, "Width": width, "Height": height, "AdaptMode": "Fill"}]},
             {"VideoTrackClips": [{**video(request.video_url, "video", 0, opening_end, 0),
@@ -239,12 +239,13 @@ def build_timeline(
                 "Effects": [{"Type": "Volume", "Gain": 0}, {"Type": "VFX", "SubType": "mask_circle", "ExtParams":
                     f'x={opening["x"]:.8f},y={opening["y"]:.8f},width={diameter:.8f},height={diameter * opening["aspect"]:.8f},antialias={template.avatar_effects.feather:.6f}'}]}]},
         ])
-    # IMS 独立叠加轨的结束点包含该时刻；减去接口最小精度，表达 [start,end)。
+    # 仅修正同屏和开场创建的轨道；IMS 出点包含该时刻，减去接口最小精度表达 [start,end)。
     # 只改显示终点，源 In/Out、业务边界与总时长不变，避免切换帧出现大小两个人像。
-    for row in timeline["VideoTracks"][1:]:
+    for row in overlay_tracks:
         for clip in row["VideoTrackClips"]:
             if clip["TimelineOut"] < duration:
                 clip["TimelineOut"] = round(clip["TimelineOut"] - 0.0001, 4)
+    timeline["VideoTracks"].extend(overlay_tracks)
     effects = []
     # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验；
     # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。

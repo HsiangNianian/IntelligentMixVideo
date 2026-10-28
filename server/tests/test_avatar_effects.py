@@ -91,6 +91,34 @@ def test_matting_only_on_visible_avatar_and_keeps_material_decoration(compositio
     assert any(effect.get("SubType") == "mask_rec" for clip in all_clips for effect in clip.get("Effects", []))
 
 
+@pytest.mark.parametrize("fps", [25, 30])
+@pytest.mark.parametrize("mode", ["split", "overlay", "circle"])
+@pytest.mark.parametrize("opening_seconds", [2, 8])
+def test_overlay_boundaries_keep_source_times_and_full_length_tail(composition_case, fps, mode, opening_seconds):
+    """各布局在中间边界少显示切换帧，片尾仍完整；开场覆盖整片时也不缩短尾帧或源区间。"""
+    case = opening(enable(composition_case), opening_seconds)
+    case["fps"] = fps
+    case["template"]["split_screen"]["layout"] = mode
+    case["template"]["avatar_effects"]["removeBackground"] = False
+    case["segments"][-1]["end_time"] = case["matches"][-1]["end_time"] = 8
+    for match in case["matches"]:
+        case["split_assets"]["material_borders"][match["matched_candidate_url"]] = "https://example.test/material-frame.png"
+    snapshot = deepcopy(case)
+    timeline, _ = build_timeline(**case)
+    main = timeline["VideoTracks"][0]["VideoTrackClips"]
+    assert [(clip["TimelineIn"], clip["TimelineOut"]) for clip in main] == [(0, 1), (1, 3), (3, 4), (4, 8)]
+    for row in timeline["VideoTracks"][1:]:
+        for clip in row["VideoTrackClips"]:
+            end = clip["TimelineIn"] + (clip["Out"] - clip["In"] if clip["Type"] == "Video" else clip["Duration"])
+            assert end in (2, 3, 8)
+            assert clip["TimelineOut"] == (end if end == 8 else end - 0.0001)
+            assert (end * fps - 1) / fps <= clip["TimelineOut"]
+            if clip["Type"] == "Video" and clip["MediaURL"] == case["request"]["videoUrl"]:
+                assert clip["In"] == clip["TimelineIn"]
+    assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["Out"] == 8
+    assert case == snapshot
+
+
 def test_no_face_and_pure_materials_skip_opening(composition_case):
     """无脸从 0 秒按原规则显示；纯素材模式不受开场与抠像配置影响。"""
     case = opening(enable(composition_case))
