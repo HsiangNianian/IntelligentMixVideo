@@ -1,14 +1,35 @@
-/** 转场列表、预览选择与统一时长的真实计算测试；执行 bun run test。 */
+/** 转场列表、预览选择与前后端共享时长的真实计算测试；执行 bun run test。 */
 import { expect, test } from "bun:test";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
+import { ListSpritesResponseSchema, SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
+import { listSprites } from "@/features/sprites/api";
 import { newDraft, toDraft } from "@/features/templates/model";
 import { readCatalog } from "@/features/templates/sdk";
 import { addTrack, previewContext, resolveTemplate, removeTrack } from "@/features/templates/tracks";
 import { previewTransitions, setTransitionDuration, transitionItems } from "@/features/templates/transitions";
 import { buildPreviewRows, playerTimeline } from "@/features/templates/timeline";
-import { hiddenTextClips, timeClips } from "@/features/templates/clips";
+import { addClip, hiddenTextClips, timeClips } from "@/features/templates/clips";
 import { sampleMedia, buildTestTimeline, savedTemplate } from "./fixtures";
+import { fetchMock } from "./setup";
+import durationCases from "../../server/tests/transition_duration_cases.json";
+
+// 真实目录协议转换与正式合成共用预期；新增摆放写入显式默认值，已有空值和显式值在保存时保留。
+for (const item of durationCases) test(item.name, async () => {
+  const body = toBinary(ListSpritesResponseSchema, create(ListSpritesResponseSchema, { sprites: [{
+    spriteId: "sprite", name: "转场", kind: SpriteKind.TRANSITION_OVERLAY,
+    canvas: { width: 1080, height: 1920, fps: item.fps, previewFrames: item.preview_frames },
+  }] }));
+  fetchMock.mockResolvedValue(new Response(Uint8Array.from(body)));
+  const [asset] = await listSprites();
+  const draft = addClip(newDraft(), asset, [asset]);
+  expect(draft.clips[0].duration).toBe(item.preview_frames / item.fps);
+  draft.clips[0].duration = item.duration;
+  const preview = previewTransitions(draft, [0, 0], [asset]).draft;
+  const resolved = resolveTemplate(preview, previewContext(sampleMedia));
+  expect(timeClips(preview, resolved).clips.map((clip) => clip.duration)).toEqual([item.expected_seconds, item.expected_seconds]);
+  expect(timeClips(draft, resolved, "save").clips[0].duration).toBe(item.duration);
+});
 
 test.each(["sequence", "random"] as const)("%s 混合转场只更新 IMS 时长", (mode) => {
   const ims = readCatalog().find((item) => item.category === "transition/normal")!;
@@ -68,9 +89,9 @@ test("预览从完整列表选择效果且开关不删除候选", () => {
   const sequential = previewTransitions(draft, [0.8, 0.6]);
   expect([...sequential.targets.values()]).toEqual(candidates.slice(0, 2).map((item) => item.id));
   const random = previewTransitions({ ...draft, transition_mode: "random" }, [0.8, 0.6]);
-  expect([...random.targets.values()]).toEqual([candidates[3].id, candidates[1].id]);
+  expect([...random.targets.values()]).toEqual([candidates[3].id, candidates[2].id]);
   const actions = buildPreviewRows(buildTestTimeline(random.draft, catalog)).find((row) => row.id === "transitions")!.actions;
-  expect(actions.map((item) => item.effectName)).toEqual([3, 1].map((index) => catalog.find((asset) => asset.id === draft.tracks[index + 2].editor.transition)!.name));
+  expect(actions.map((item) => item.effectName)).toEqual([3, 2].map((index) => catalog.find((asset) => asset.id === draft.tracks[index + 2].editor.transition)!.name));
   expect(actions.map((item) => [item.start, item.end])).toEqual([[9.5, 10.5], [19.5, 20.5]]);
   const disabled = previewTransitions({ ...draft, transition_enabled: false }, [0.8, 0.6]);
   const timeline = buildTestTimeline(disabled.draft, catalog);
@@ -80,17 +101,19 @@ test("预览从完整列表选择效果且开关不删除候选", () => {
   expect(draft).toEqual(original);
 });
 
-// 两次相同随机输入也只能选中不同候选，预览片段保留各自对象 ID。
-test.each([0, 0.5, 0.999])("随机输入 %s 不重复选择转场", (value) => {
+// 每次从完整候选池抽取；重复效果保留独立实例 ID，并指向同一个可编辑候选。
+test.each([0, 0.5, 0.999])("随机输入 %s 允许重复选择转场", (value) => {
   const catalog = readCatalog();
   let draft = newDraft();
   for (const asset of catalog.filter((item) => item.category === "transition/normal").slice(0, 2))
     draft = addTrack(draft, asset, "transition").draft;
   const preview = previewTransitions({ ...draft, transition_mode: "random" }, [value, value]);
   const ids = transitionItems(draft).map((item) => item.id);
-  expect([...preview.targets.values()].sort()).toEqual([...ids].sort());
+  const selected = ids[Math.floor(value * ids.length)];
+  expect([...preview.targets.values()]).toEqual([selected, selected]);
+  expect(new Set(transitionItems(preview.draft).map((item) => item.id)).size).toBe(2);
   const actions = buildPreviewRows(buildTestTimeline(preview.draft, catalog)).find((row) => row.id === "transitions")!.actions;
-  expect(actions.map((action) => action.targetId).sort()).toEqual([...ids].sort());
+  expect(actions.map((action) => preview.targets.get(action.targetId!))).toEqual([selected, selected]);
 });
 
 // 只有一个候选时，两种选择方式均用于两个连接位置，两个预览片段指向同一个可编辑对象。

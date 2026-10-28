@@ -51,6 +51,7 @@ export function TransitionInspector({ draft, catalog, sprites, onChoose, onRemov
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
+      <p className="text-xs text-muted-foreground">预览仅示意效果</p>
     </div>
     <div aria-label="转场时间设置" className="space-y-1.5">
       <Label htmlFor={id}>IMS 转场持续时间 / 秒</Label>

@@ -169,6 +169,8 @@ The preview uses the first ten seconds of each of three videos, or the full sour
 
 Default and custom sources both use their actual media durations. Template rules and media information produce a shared timing result: preview duration subtracts transition overlaps, while composition preserves the fixed audio and material timing. Transitions require a boundary and duration; unavailable boundaries produce an explanation. Saving enforces the object count and timing rules. Invalid stored templates remain visible with their ID, validation reason, and individual delete action; valid templates remain usable. Upgrade the client and server together.
 
+New compositions apply transitions at the nearest cuts strictly before and after each subtitle keyword appears; a simultaneous cut is excluded, and shared cuts receive only one effect. Mixed avatar videos search avatar/material switches, while material-only videos search material cuts. With no spoken keywords anywhere in the video, every cut is eligible. Sequential selection cycles through configured effects; random selection allows unlimited reuse. Existing tasks retain their accepted rules when resumed.
+
 See [template behavior](client/README.md#模板行为) for timing rules, asset operations, and save constraints.
 
 ### Using Remotion Effects

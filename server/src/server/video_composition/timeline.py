@@ -5,6 +5,7 @@ from math import floor
 from pydantic import TypeAdapter
 
 from .text_events import subtitle_events
+from .transitions import keyword_transitions
 from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template, active_tracks
 from ..template.timing import ClipContext, TimelineContext, resolve_template, resolve_track
 from ..template.transitions import select_transitions
@@ -71,6 +72,7 @@ def build_timeline(
     duration_ms: int | float, *, width: int, height: int, fps: int,
     material_durations: list[float] | None = None, title_keyword: str = "", transition_seed: str = "",
     title_en: str | None = None, title_keyword_en: str = "",
+    use_keyword_transitions: bool = False, remotion_assets: dict | None = None,
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
     request = CompositionRequest.from_snapshot(request)
@@ -199,13 +201,17 @@ def build_timeline(
     tracks = [track for track in template.tracks if track.target != "remotion" and (track.target, track.language) not in remotion_texts]
     if not template.transition_enabled:
         tracks = [track for track in tracks if track.target != "transition"]
-    elif template.transition_mode is not None:
-        selected = select_transitions([track.model_dump(mode="json") for track in template.tracks],
-                                      len(clips) - 1, template.transition_mode, transition_seed)
+    elif use_keyword_transitions or template.transition_mode is not None:
+        selected = keyword_transitions(template.model_dump(mode="json"), clips, source, matches,
+                                       standard=standard, fps=fps, seed=transition_seed, assets=remotion_assets or {}) \
+            if use_keyword_transitions else select_transitions(
+                [track.model_dump(mode="json") for track in template.tracks],
+                len(clips) - 1, template.transition_mode, transition_seed)
         by_track = {track.id: track for track in template.tracks}
         tracks = [track for track in tracks if track.target != "transition"] + [
             by_track[item["id"]].model_copy(update={"id": f"{item['id']}:{boundary}",
-                "transition_boundary": boundary, "duration": template.transition_duration_seconds})
+                "transition_boundary": boundary,
+                "duration": item["duration"] if use_keyword_transitions else template.transition_duration_seconds})
             for item, boundary in selected if item["target"] == "transition"
         ]
     if not standard:
