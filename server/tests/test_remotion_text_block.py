@@ -415,7 +415,7 @@ def test_only_a_keyword_preset_that_draws_the_hosts_glyphs_offers_keyword_chars(
 
 @needs_bundler
 def test_glyph_effects_stagger_and_the_block_names_its_preview_keywords(tmp_path, monkeypatch):
-    """逐字位置的入场、出场有「逐字错开」配置参数 effect{k}Stagger（0～1，省略为 1），其他位置与持续特效给 stagger 被拒；文字块的
+    """逐字位置的入场、出场有「逐字错开」配置参数 effect{k}Stagger（0～1，须明确选择），其他位置与持续特效给 stagger 被拒；文字块的
     preview_keywords 须是默认文字里的词，记在组合结果里，编辑快照原样交回，回看帧以它们为示例关键词（审计复现：作品 06eb0788
     的回看帧以开头两个字为关键词，Executor 据此把正确的「关键词先出」改反）。"""
     from server.remotion_templates.tools.session import sample_keywords
@@ -432,7 +432,7 @@ def test_glyph_effects_stagger_and_the_block_names_its_preview_keywords(tmp_path
                    "text": {"layout": {"x": 54, "y": 700, "width": 972, "height": 300}, "text": "想玩小众黑科技", "font_size": 96, "duration_frames": 30,
                             "tiers": [{"instance_id": "body", "source": {"kind": "stored", "preset_id": tier["preset"]["preset_id"]}, "font_family": "Noto Sans CJK SC", "font_weight": 700}],
                             "preview_keywords": ["小众黑科技"],
-                            "effects": [{"instance_id": "typeIn", "source": source, "title": "打字", "slot": "enter", "target": "keywordChars"},
+                            "effects": [{"instance_id": "typeIn", "source": source, "title": "打字", "slot": "enter", "target": "keywordChars", "stagger": 1},
                                         {"instance_id": "showIn", "source": source, "title": "显现", "slot": "enter", "target": "plainChars", "delay": 1, "stagger": 0},
                                         {"instance_id": "fadeOut", "source": source, "title": "淡出", "slot": "exit", "target": "block"}]}}
         composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
@@ -716,7 +716,10 @@ def test_an_edit_snapshot_hands_back_the_text_block(tmp_path, monkeypatch):
     ("effect", None, "/usage", "An effect Preset records how it is used"),
     ("text", FADE_USAGE, "/usage", "Only an effect Preset (role effect) records a usage"),
     ("effect", {"title": "发光", "slot": "loop", "target": "block", "seconds": 1}, "/usage/seconds", "leave usage.seconds out"),
-], ids=["effect-without", "text-with", "loop-seconds"])
+    ("effect", {"title": "显现", "slot": "enter", "target": "plainChars"}, "/usage/stagger", "Choose usage.stagger explicitly"),
+    ("effect", {"title": "发光", "slot": "loop", "target": "chars", "stagger": 1}, "/usage/stagger", "Only an entrance, exit or cue"),
+    ("effect", {"title": "淡入", "slot": "enter", "target": "block", "stagger": 0}, "/usage/stagger", "Only an entrance, exit or cue"),
+], ids=["effect-without", "text-with", "loop-seconds", "glyph-without-timing", "loop-with-timing", "block-with-timing"])
 def test_only_effect_presets_record_a_usage(tmp_path, role, usage, field, message):
     """特效 Preset 新建时必须记下默认用法（名称、类型、位置、时长），以后的作品检索到就能原样复用；其他角色不记，持续特效没有时长。"""
     data = (effect_preset(FADE_CODE) if role == "effect" else preset("text", TIER_CODE, "color")).model_dump(mode="json", exclude_unset=True)
@@ -837,7 +840,7 @@ def test_preset_search_ranks_by_matched_words_and_proven_uses(tmp_path):
         tier = await current.execute("preset.create", preset("text", TIER_CODE, "color").model_copy(update={"description": "金色描边大字，双栏下栏"}), available())
         await current.execute("preset.create", preset("keyword", KEYWORD_CODE, "glowColor").model_copy(update={"description": "关键词发光"}), available())
         await current.execute("preset.create", preset(None, TIER_CODE, "color").model_copy(update={"description": "金色描边旧字效"}), available())
-        typing = effect_preset(FADE_CODE, usage={"title": "打字", "slot": "enter", "target": "chars", "seconds": 1})
+        typing = effect_preset(FADE_CODE, usage={"title": "逐字淡入", "slot": "enter", "target": "chars", "seconds": 1, "stagger": 1})
         await current.execute("preset.create", typing.model_copy(update={"description": "逐字淡入：每个字依次显现，像打字机"}), available())
         await current.execute("preset.create", effect_preset(SHINE_CODE, "glowColor", {"title": "发光", "slot": "loop", "target": "block"}), available())
         found = lambda **query: [item.description for item in current.search_presets(PresetSearchInput(**query)).presets]
@@ -1145,7 +1148,7 @@ BOXED_FADE = FADE_CODE.replace("{opacity: props.progress}", '{opacity: props.pro
 
 @needs_browser
 def test_real_render_reveals_the_glyphs_in_turn(tmp_path):
-    """真实沙箱渲染（打字机）：入场特效放在 chars，两个字依次分享 20 帧的入场：第一个字在前 10 帧显现，第二个字在后 10 帧显现；
+    """真实沙箱渲染（逐字淡入）：入场特效放在 chars，两个字依次分享 20 帧的入场：第一个字在前 10 帧显现，第二个字在后 10 帧显现；
     栏被定格在中间帧，逐字单元仍取实时帧；入场结束后两个字都完整显示。"""
     tier = {"instance_id": "body", "preset": {"code": CHILD_TIER, "parameter_schema": {"type": "object", "properties": {"color": COLOR}, "required": ["color"], "additionalProperties": False},
                                               "default_parameters": {"color": "#FFFFFF"}}, "parameters": {"color": "#FFFFFF"}}
@@ -1217,7 +1220,7 @@ def test_real_render_splits_the_upper_tier_when_the_lower_one_appears(tmp_path):
 
 @needs_browser
 def test_real_render_types_the_keyword_in_before_the_rest_appears(tmp_path):
-    """真实沙箱渲染（审计复现：作品 c0993bf2、06eb0788 要「关键词以打字机出现，然后再显示整体的非关键词」）：关键词「上下」的两个字在
+    """真实沙箱渲染（关键词逐字淡入，范围与延迟回归；打字机的离散显字另见 test_remotion_typewriter）：关键词「上下」的两个字在
     keywordChars 依次分享 20 帧的入场；其余的「左右」在 plainChars 推迟 20 帧后，以 stagger 0 在 6 帧里一起显现，而不是又逐个打出。"""
     color = {"type": "object", "properties": {"color": COLOR}, "required": ["color"], "additionalProperties": False}
     tier = {"instance_id": "body", "preset": {"code": CHILD_TIER, "parameter_schema": color, "default_parameters": {"color": "#FFFFFF"}}, "parameters": {"color": "#FFFFFF"}}
@@ -1276,10 +1279,11 @@ def test_real_creation_saves_a_text_block_from_role_presets(tmp_path, monkeypatc
         request["text"]["tiers"][1]["font_family"] = "Noto Sans CJK SC"
         if variant != "segments":
             request["text"]["effects"][0]["target"] = "chars"
+            request["text"]["effects"][0]["stagger"] = 1
         if variant == "children":
             # The keyword's glyphs type in first, the other glyphs follow.
             request["text"]["effects"][0]["target"] = "keywordChars"
-            request["text"]["effects"].append({**request["text"]["effects"][0], "instance_id": "restIn", "target": "plainChars", "title": "显现", "delay": 0.3, "seconds": 0.2})
+            request["text"]["effects"].append({**request["text"]["effects"][0], "instance_id": "restIn", "target": "plainChars", "title": "显现", "delay": 0.3, "seconds": 0.2, "stagger": 0})
         if variant == "split":
             split = await current.execute("preset.create", effect_preset(SPLIT_CODE), available())
             del request["text"]["line_gap"]

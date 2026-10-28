@@ -98,10 +98,11 @@ PresetRole = Literal["text", "keyword", "effect"]
 # text Preset 可以画宿主排好的这一栏 children（关键词命中已由宿主包好，逐字特效时每个字是一个单元），也可以按 segments 自己画；
 # 只有前者能用逐字位置。keyword Preset 同样可以画宿主交来的这个命中的各个字 children（逐字特效时每个字是一个单元），
 # 只画 text 的旧写法没有关键词逐字位置。effect 另收 index、count：逐字位置是这个字在本栏该位置的序号与字数，各栏时是栏序号与栏数，其余为 0 与 1。
+# completedCount 是本栏该位置中局部进度达到 1 的单元个数，所有单元共享；非逐字位置完成时为 count、此前为 0。
 ROLE_PROPS: dict[str, tuple[str, ...]] = {
     "text": ("text", "segments", "Keyword", "children", "fontFamily", "fontWeight", "fontSize"),
     "keyword": ("text", "children"),
-    "effect": ("children", "progress", "Box", "index", "count"),
+    "effect": ("children", "progress", "Box", "index", "count", "completedCount"),
 }
 
 
@@ -113,6 +114,8 @@ class EffectUsage(ContractModel):
     slot: EffectSlot
     target: EffectTarget
     seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
+    # 逐字位置的入场、出场与下栏出现须明确选定；组合时可覆盖，旧配方缺失时由组合条目给出。
+    stagger: Omittable[Annotated[FiniteNumber, Field(ge=0, le=1)]]
 
 
 class PresetDraft(ComponentDefinition):
@@ -415,7 +418,8 @@ class TextEffect(ContractModel):
     seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
     # 入场、下栏出现特效推迟开始的秒数，省略为 0，让特效可以一个接一个；出场与持续特效没有延迟。
     delay: Omittable[Annotated[FiniteNumber, Field(ge=0, le=3)]]
-    # 逐字位置的特效里各个字错开的程度（0～1，省略为 1）：1 一个接一个，0 所有字一起，介于其间则前后交叠。
+    # 逐字位置的特效里各个字错开的程度（0～1）：1 一个接一个，0 所有字一起，介于其间则前后交叠。
+    # 非持续的逐字特效必须在这里或 Preset 的 usage 中明确选择，不按位置暗中推断。
     stagger: Omittable[Annotated[FiniteNumber, Field(ge=0, le=1)]]
     # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
     enabled: Omittable[StrictBool]

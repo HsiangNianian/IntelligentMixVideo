@@ -57,14 +57,20 @@ jieba.setLogLevel(logging.WARNING)
 
 def _usage_problem(draft: PresetDraft) -> tuple[str, str] | None:
     """Why a Preset's usage does not fit its role, as (field, message), or None: an effect Preset records its default
-    title, slot, position and length so later works reuse it as it is; other roles take none, and a loop has no length."""
+    title, slot, position, length and glyph timing so later works can reuse it; other roles take none, and a loop has no length or stagger."""
     if draft.role == "effect" and draft.usage is None:
         return "/usage", ('An effect Preset records how it is used: give usage {"title": "<short Chinese name such as 淡入>", "slot": "enter|exit|loop|cue", '
-                          '"target": "block|tiers|line1|line2|chars|keyword", "seconds": 0.5}, the defaults a later work reuses it with.')
+                          '"target": "block|tiers|line1|line2|chars|keywordChars|plainChars|keyword", "seconds": 0.5}, plus stagger (0 together, 1 sequential) at glyph targets; these are the defaults a later work reuses it with.')
     if draft.role != "effect" and draft.usage is not None:
         return "/usage", "Only an effect Preset (role effect) records a usage; leave it out."
     if draft.usage is not None and draft.usage.slot == "loop" and draft.usage.seconds is not None:
         return "/usage/seconds", "A looping effect lasts as long as its position shows: leave usage.seconds out."
+    if draft.usage is not None:
+        glyphs = draft.usage.target in GLYPH_TARGETS and draft.usage.slot != "loop"
+        if glyphs and draft.usage.stagger is None:
+            return "/usage/stagger", "Choose usage.stagger explicitly for a glyph effect: 0 shows all its glyphs together; 1 animates them one after another."
+        if not glyphs and draft.usage.stagger is not None:
+            return "/usage/stagger", "Only an entrance, exit or cue at chars, keywordChars or plainChars takes usage.stagger."
     return None
 
 
@@ -979,6 +985,10 @@ class ToolSession:
             if effect.stagger is not None and (effect.slot == "loop" or effect.target not in GLYPH_TARGETS):
                 raise ToolFault("INVALID_ARGUMENT", "stagger spreads an entrance, exit or cue over the glyphs, so only such an effect at chars, keywordChars "
                                 "or plainChars takes it.", field=f"/text/effects/{index}/stagger")
+            if effect.slot != "loop" and effect.target in GLYPH_TARGETS and effect.stagger is None:
+                raise ToolFault("INVALID_ARGUMENT", "Choose stagger explicitly here or in the Preset's usage: 0 shows all glyphs at this position together; "
+                                "1 animates them one after another. A plainChars fade for the whole non-keyword part needs 0, not 1.",
+                                field=f"/text/effects/{index}/stagger")
             if effect.delay is not None and effect.slot not in {"enter", "cue"}:
                 raise ToolFault("INVALID_ARGUMENT", "Only an entrance or a cue effect waits: leave delay out of an exit or a looping effect.",
                                 field=f"/text/effects/{index}/delay")
@@ -1045,9 +1055,10 @@ class ToolSession:
         ), summaries)
 
     async def _with_usage(self, effect, index: int):
-        """The effect entry at ``index`` with the title, slot, position and length it leaves out taken from its Preset's usage."""
+        """Fill omitted usage fields, including glyph timing only where the effective slot and target support it."""
         missing = [name for name in ("title", "slot", "target") if getattr(effect, name) is None]
-        if not missing and (effect.seconds is not None or effect.slot == "loop"):
+        needs_stagger = effect.slot != "loop" and effect.target in GLYPH_TARGETS and effect.stagger is None
+        if not missing and not needs_stagger and (effect.seconds is not None or effect.slot == "loop"):
             return effect
         field = f"/text/effects/{index}"
         source = effect.source
@@ -1062,6 +1073,8 @@ class ToolSession:
         filled = {name: getattr(usage, name) for name in missing}
         if effect.seconds is None and (effect.slot or usage.slot) != "loop" and usage.seconds is not None:
             filled["seconds"] = usage.seconds
+        if effect.stagger is None and (effect.slot or usage.slot) != "loop" and (effect.target or usage.target) in GLYPH_TARGETS and usage.stagger is not None:
+            filled["stagger"] = usage.stagger
         return effect.model_copy(update=filled)
 
     def _check_bindings(self, parameters, schema: dict) -> None:

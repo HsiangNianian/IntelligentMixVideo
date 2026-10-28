@@ -229,7 +229,7 @@ slices, echoes), and the element around each tier carries the tier's font size, 
 tiers are stacked `lineGap` apart or, with the configuration parameter `tierLayout` "overlap" (`arrangement` in the
 block), share one grid cell, centred on each other with the lower tier on top. At `chars` the glyphs share their tier's entrance or exit in turn: while
 such an effect is on, the host cuts each line into units (a grapheme, a keyword hit as one, spaces none) and unit i of
-n shows `clamp(P * n - i)` of the position's progress P, so the text types in in reading order, leaves from its last
+n shows `clamp(P * n - i)` of the position's progress P at stagger 1, so glyphs transition in reading order, leave from the last
 glyph and a longer line goes faster. A line stays one run of text otherwise. Only tiers whose text Preset takes
 `children` have glyph units, so with an older tier the `effect{k}Target` enum leaves `chars` out and composing an
 effect there is refused with the fix. Every effect Preset also receives `index` and `count`: the unit within its tier
@@ -245,6 +245,23 @@ the effects at `keyword` keep playing. Edits of a text effect made before effect
 their tier Presets' own motion and need no effects. The workspace parameter panel shows such a block as two sections,
 「文字」 (the text itself) and 「特效」 (one card per effect and the keyword effect, each with its switch, position, length
 and own look).
+
+Glyph targets select the affected text, not the order in which it appears. Contract v10 requires an explicit
+`stagger` on a non-loop glyph effect, either in the composition entry or in the Preset's `usage`; omission is refused
+with an actionable field error. Use 0 to show the selected text together, 1 sequentially, or a fraction for overlap.
+New glyph Presets must record that choice so reuse preserves it. An entry overrides its usage, and changing the entry
+to a non-glyph target or a loop does not inherit an inapplicable `stagger`. Old immutable records remain readable;
+composing one whose usage lacks the choice requires it in the entry. Saved versions are not rewritten.
+
+`progress` remains continuous: setting opacity to it fades a glyph rather than typing it. Every effect also receives
+the host prop `completedCount`, the number of its target's units in this tier whose local progress has reached 1.
+All units of that target see the same count, including exact boundary frames and simultaneous or overlapping timing.
+Outside glyph positions it is `count` at progress 1 and 0 before; loops have all units completed. Discrete visibility
+can use `index < completedCount`; a cursor follows `completedCount - 1`, starts before the first glyph and disappears
+when all are complete. The Executor receives a working example from `agent_examples.py`; real browser tests render
+that same source and check glyph colours, discrete visibility, cursor position and keyword scope frame by frame.
+The reuse instructions require reading the source as well as its description: a saved Preset's name does not prove
+that it implements the requested motion. Existing generated source needs a new version to adopt the correction.
 
 The Agent decides from the request and the reference images whether the block has two tiers and a keyword Preset. The
 new-chat switches are a temporary explicit choice: `POST /works` takes `keyword_effect` and `two_tier` (strict booleans,

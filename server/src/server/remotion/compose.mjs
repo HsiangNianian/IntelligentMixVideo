@@ -85,6 +85,8 @@ const prelude = [
  * together, and in between their windows overlap. Every
  * effect Preset also receives `index` and `count`: the unit's place among that glyph position's units in its tier, the
  * tier's place at `tiers` and `line1`/`line2`, and 0 of 1 elsewhere.
+ * `completedCount` is the number of that position's units whose local progress has reached 1. It is shared by all
+ * units, so discrete reveals and a cursor can use the same boundary, including exact boundary frames and stagger 0.
  *
  * A still block (`block.still`, a work made with effects) holds each tier Preset on the middle frame of the frames the
  * tier plays, so any motion of its own never plays and the effects alone move it; the keyword hits and the units inside
@@ -142,7 +144,9 @@ function textEntry() {
       // The units of a glyph position take its progress in turn, as far apart as the effect's stagger says.
       + `const [i, n] = units?.[target] ?? [index, count]; const stagger = Number.isFinite(props["effect" + item.k + "Stagger"]) ? __clamp(props["effect" + item.k + "Stagger"]) : 1; `
       + `const progress = item.slot !== "loop" && units?.[target] ? __clamp((shown - stagger * i / n) / (1 - stagger + stagger / n)) : shown; `
-      + `node = <item.Preset {...item.props(props)} progress={progress} index={i} count={n} Box={inline ? __InlineBox : __BlockBox}>{node}</item.Preset>; } return node; }`,
+      // A tiny tolerance preserves completed units at exact frame boundaries despite floating-point division.
+      + `const completedCount = item.slot !== "loop" && units?.[target] && stagger > 0 ? Math.min(n, Math.floor(__clamp((shown - 1 + stagger) / stagger) * n + 1e-7)) : shown >= 1 ? n : 0; `
+      + `node = <item.Preset {...item.props(props)} progress={progress} index={i} count={n} completedCount={completedCount} Box={inline ? __InlineBox : __BlockBox}>{node}</item.Preset>; } return node; }`,
     // Whether an effect at a glyph position is on: only then is a line cut into units, so its text otherwise shapes as one run.
     `const __glyphsOn = (props) => __effects.some((item) => props["effect" + item.k] !== false && ["chars", "keywordChars", "plainChars"].includes(props["effect" + item.k + "Target"]));`,
     `const __split = (text) => typeof Intl.Segmenter === "function" ? Array.from(new Intl.Segmenter(undefined, {granularity: "grapheme"}).segment(text), (part) => part.segment) : Array.from(text);`,

@@ -187,6 +187,8 @@ class EffectUsage(ContractModel):
     slot: EffectSlot
     target: EffectTarget
     seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
+    # 逐字位置的入场、出场与下栏出现须明确选定；组合时可覆盖，旧配方缺失时由组合条目给出。
+    stagger: Omittable[Annotated[FiniteNumber, Field(ge=0, le=1)]]
 
 
 class PresetDraft(ComponentDefinition):
@@ -732,7 +734,8 @@ class TextEffect(ContractModel):
     seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
     # 入场、下栏出现特效推迟开始的秒数，省略为 0，让特效可以一个接一个；出场与持续特效没有延迟。
     delay: Omittable[Annotated[FiniteNumber, Field(ge=0, le=3)]]
-    # 逐字位置的特效里各个字错开的程度（0～1，省略为 1）：1 一个接一个，0 所有字一起，介于其间则前后交叠。
+    # 逐字位置的特效里各个字错开的程度（0～1）：1 一个接一个，0 所有字一起，介于其间则前后交叠。
+    # 非持续的逐字特效必须在这里或 Preset 的 usage 中明确选择，不按位置暗中推断。
     stagger: Omittable[Annotated[FiniteNumber, Field(ge=0, le=1)]]
     # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
     enabled: Omittable[StrictBool]
@@ -864,6 +867,10 @@ async def sprite_compose(request: SpriteComposeInput) -> ToolResult[SpriteCompos
 ```
 
 description 非空；字效给出 text 文字块且 instances 为空，其他分类 instances 非空。主画布配置不作为输入；起点之前和实例之间未被内容覆盖的区间保持空画布。
+
+契约版本 10 要求明确选择逐字时序：非持续特效放在 `chars`、`keywordChars` 或 `plainChars` 时，必须在条目或 Preset 的 `usage.stagger` 中给出 `stagger`，否则按字段返回 `INVALID_ARGUMENT`，提示 0 同时、1 依次、其间交叠。新建这样的配方同样要求记录 `usage.stagger`；组合时显式值优先，改到非逐字位置或持续时不继承它。旧记录仍能读取，缺少该项的旧配方在新组合时须明确补上；已封存的版本不改写。
+
+所有 effect Preset 另收宿主 prop `completedCount`：当前栏内该作用位置的单元中，局部进度已达 1 的个数，所有单元共享，考虑 `stagger`；非逐字位置在进度达 1 时为 `count`、此前为 0，持续为 `count`。离散显字可用 `index < completedCount`，光标跟在 `completedCount - 1` 后、尚未显字时在首字之前、全部完成后隐藏。`progress` 保持连续，供淡入等平滑效果使用；`index`、`count` 是静态编号，不能单靠它们判断光标所在字。该 prop 不能放进参数 Schema。模型收到的示例源码在 `agent_examples.py`，真实浏览器回归运行同一份源码，核对整行/仅关键词的逐帧显字、颜色、光标和非关键词整段淡入。
 
 契约版本 9 让逐字位置的特效可以不逐个出现、并让预览知道示例文字里的关键词：放在逐字位置的入场、出场与下栏出现特效可给 `stagger`（0～1，省略为 1），宿主生成配置参数 `effect{k}Stagger`（标题「名称逐字错开」），第 i 个单元（共 n 个）取进度 P 的 `clamp((P − s·i/n)/(1 − s + s/n))`：1 一个接一个，0 所有字一起，介于其间前后交叠；不在逐字位置或是持续特效时给 `stagger` 按字段返回 INVALID_ARGUMENT。文字块可给 `preview_keywords`（1～5 个默认文字里的词，每个 1～12 字），记在组合后的文字块里：模板没有传关键词时，`sprite.create` 的回看帧与字效工作区预览以它们为示例关键词（没有时退回默认文字开头至多两个字）；不在默认文字里的词按字段返回 INVALID_ARGUMENT。审计复现：作品 06eb0788 的回看帧以开头两个字为关键词，Executor 看到它们先打出来，把本来正确的「关键词先出」改成了反的。
 
@@ -1394,7 +1401,7 @@ async def tools_inspect(request: ToolInspectInput) -> ToolResult[ToolDescriptor]
 
 根据精确工具名返回真实契约，不做语义搜索、不执行被查询工具。未知名称返回 `TOOL_NOT_FOUND`，消息可附最多两个拼写相近的名称（`Closest:`）以便纠正拼写，但不会据此返回任何契约。输入格式错误返回 `INVALID_ARGUMENT`。
 
-描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2、按分词与使用记录排序为版本 3，`sprite.compose` 的文字块为版本 3、文字块特效为版本 4、逐字位置为版本 5、双栏排布与下栏出现为版本 6、特效默认用法为版本 7、关键词逐字与特效延迟为版本 8、逐字错开与示例关键词为版本 9，`sprite.create` 带回看帧为版本 2。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
+描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2、按分词与使用记录排序为版本 3，`sprite.compose` 的文字块为版本 3、文字块特效为版本 4、逐字位置为版本 5、双栏排布与下栏出现为版本 6、特效默认用法为版本 7、关键词逐字与特效延迟为版本 8、逐字错开与示例关键词为版本 9、明确逐字时序与完成字数为版本 10，`sprite.create` 带回看帧为版本 2。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
 
 input_schema 描述完整入参；output_schema 描述包含 ok/data/error 的完整 ToolResult，而非只描述成功 data。Schema 为自包含 JSON Schema，公共类型可以放入 `$defs`，不能依赖 Agent 自行查找未给出的模型。
 

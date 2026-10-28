@@ -394,7 +394,7 @@ async function lengthsCheck(page) {
 const ROLE_HOST_PROPS = {
   text: 'fontFamily={"Noto Sans CJK SC"} fontWeight={700} fontSize={96} {...{text: "示例文字", segments: [{text: "示例", keyword: true}, {text: "文字", keyword: false}], Keyword: (keyword: {text: string}) => <span>{keyword.text}</span>, children: <span>示例文字</span>}}',
   keyword: '{...{text: "示例", children: <span>示例</span>}}',
-  effect: 'progress={1} Box={(box: {style?: React.CSSProperties; children?: React.ReactNode}) => <div style={box.style}>{box.children}</div>} children={<span>示例文字</span>} {...{index: 0, count: 1}}',
+  effect: 'progress={1} Box={(box: {style?: React.CSSProperties; children?: React.ReactNode}) => <div style={box.style}>{box.children}</div>} children={<span>示例文字</span>} {...{index: 0, count: 1, completedCount: 1}}',
 };
 
 /**
