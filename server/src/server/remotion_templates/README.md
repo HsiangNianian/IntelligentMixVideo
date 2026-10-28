@@ -216,6 +216,14 @@ other top-level parameter; the edit snapshot leaves them out and hands back `bas
 drafts with the current configuration values. The Agent binds style parameters only (`color`, or `line1Color` and
 `line2Color` for two tiers, keyword looks as `keywordEffect…`), never a configuration name.
 
+The Executor distinguishes the user's sample keywords from the reusable keyword style. Explicitly named keywords
+(or substrings singled out for a different look) go in `text.preview_keywords`; their colour and appearance belong
+in the keyword Preset, and keyword-only motion targets `keyword` or `keywordChars`, overriding unrelated stored
+usage defaults. This applies to arbitrary user-selected words, including multiple words, and preserves the base
+look of the remaining text. The bus still supplies real text and keywords on every render: sample
+words and character positions must not be hard-coded into Presets. This is generation guidance, with no added
+composition validation or change to the template keyword defaults.
+
 Motion is split out of the tiers (contract v4): `text.effects` lists `effect` Presets, each with a Chinese title, a
 slot (`enter`, `exit` or `loop`), a default position and, entering or exiting, a length in seconds (0.1–3, default
 0.5). An effect Preset receives `children`, the host's `Box` and `progress` and only restyles what it wraps.
