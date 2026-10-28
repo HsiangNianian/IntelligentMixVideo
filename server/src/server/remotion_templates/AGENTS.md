@@ -11,10 +11,10 @@
 | 作品、任务、事件送达、设备归属、对象存储、定时清理 | README「Storage」 |
 | Preset 库与 `preset.search` 的返回限制 | README「Preset storage」 |
 | 工具目录、未实现的工具、参考图 | README「Tool catalog」 |
-| 文字组合、特效、关键词字效、双栏与关键词开关 | README「Text effects are composed from role Presets」 |
+| 文字组合、特效与逐字时序、关键词字效、双栏与关键词开关 | README「Text effects are composed from role Presets」 |
 | 字体库：预装、上传与归卡、沙箱字体、Agent 的字体枚举 | README「Font library」 |
 | 隔离环境、503 预检、macOS 无沙箱开发、即时保存的参数修订 | README「Font library」之后的几段 |
-| `sprite.create` 的透明度检查、`text_fit`、多行字效 | README「Creating a Sprite」 |
+| `sprite.create` 的透明度检查、`text_fit`、回看帧、多行字效 | README「Creating a Sprite」 |
 | 三层 ReAct、空转判断、步骤产出、调用参数解析、公开的轮次记录 | README「Loop rounds」 |
 | 资产发布、覆盖、删除、改名、目录 SSE、边界样本、单 Sprite 渲染、叠加预览协议 | README「Sprite assets」 |
 | 总线叠加渲染：时长、排版预检、准入、执行、性能 | README「Overlay renders for the bus」 |
@@ -57,11 +57,18 @@
 - 透明度之后再以 Sprite 可能按自身长度播放的最短（0.5 秒，15 帧；字效更短时会被定格，所以字效为 1.5 秒）与最长（120 秒，3600 帧）长度各挂载首、中、尾帧（失败后恢复预览长度再跑自定义测试），抛错以 `render_lengths` 失败交给 Actor 修复（说明长度与帧号），不新增时长相关的提示词。
 - 契约违规的诊断携带行列与范围，跨行节点的终点取自节点自身的结束位置，空转判断忽略消息里的位置，同一条违规只是换了行号不算新证据。
 - 工具调用与检查共用 `registry.get_tool`，执行时只在当前层可用的工具中解析。
+- 生成任务从不向用户提问：先按合理的选择做出 Sprite，用户之后再改。宿主拒绝 Outer 的 `ask`、Executor 的 `needs_input` 与 Plan 的 needs_input 结果；已委派（或已保存）的任务不能再以普通回答结束。字效的文字与关键词由模板每次渲染时传入，生成只需要预览用的示例文字，不为文案、关键词或其语言追问。
+- 交给 Executor 的交接消息带上用户需求 `user_intent`（不含基线 spec），快照也把它放在最前。
+- 回看帧：`sprite.create` 各项检查通过后，为任务保存的前两个 Sprite（`session.VISUAL_REVIEW_ROUNDS`）按该 Sprite 自身时序截取至多六帧附给 Executor，特效窗口按其作用栏实际播放的帧计算，切换帧只挤掉停留帧、不挤掉入场帧；回执只列帧号与采样时机，不宣称视觉通过。这些帧只供 Agent 对照要求与参考图，宿主不据此判定通过与否。
 - 编辑任务只改用户要求的部分：基线已暴露为参数的数值走参数，写死在代码里的数值与画法从 `base_*` 草稿出发用 `edits` 只替换相关行，不改名、不重排、不重构其余代码，只在基线没有的元素上用 `preset_create`。
 - 新字效用文字块（`sprite_compose` 的 `text`）组合；配置参数由宿主按固定名称生成（`compose.text_configuration`），Agent 只绑定样式参数，不能占用配置名。
+- 逐字时序（契约 v10）：`chars`、`keywordChars`、`plainChars` 只选择作用范围；非持续特效必须在条目或 Preset 的 `usage.stagger` 里明确给出 0（同时）、1（依次）或其间值，漏填按字段拒绝，宿主不暗中选择逐字。已封存的版本不改写。
+- Preset 库就是此前作品做成功的配方，规则里不维护「需求→做法」的配方表。使用记录在 `remotion_preset_uses`，登记失败只记日志；`role=effect` 的 Preset 新建时必须记下默认用法 `usage`。检索复用要读源码核对描述，错误的旧配方通过副本修订，不覆盖不可变的原件。
+- Executor 的可执行示例在 `agent_examples.py`，浏览器回归运行同一份源码，检查显字、颜色、范围与光标；其中分片示例演示同一内容的互补裁片与独立位移，是绘制原语，不是预装配方或「需求→做法」的匹配表。
 - 字效必须声明七个关键词参数，默认全部关闭；各分类的必备参数由 `categories.py` 定义，`sprite.create` 与发布都检查。
 - 发布前渲染边界样本，样本失败只记日志、照常保存（可用性优先）。覆盖发布必须保留已有可编辑参数的契约，收紧即 422、提示另存；重复保存、覆盖、预览修复与删除共用该资产的 bundle 锁。
 - `SpriteRenderInput` 已删除的 `effect_offset_frames`、`render_frame_count` 保留字段号，不能复用。
+- 宿主生成的 `still` 文字块只按内容区域核对排版：`text_fit` 经仅宿主可用的 `text_fit_parameters` 临时关掉 `cue` 包裹，入场、出场与持续特效仍参与测量，`cue` 另在停留期初态测量，藏起该栏即拒绝；各栏可独立时序，旧自带动画组件保持同进同出。该补丁不写入资产与渲染参数，真实运行、透明度、不同时长与回看保留原动画。运行通过不等于视觉正确，完成说明要引用回看帧核对要求。
 - 调整生成规则（如 `text` 的长度、提示词示例）不追溯已发布资产与任务快照，它们保留各自的封存 Schema；要更新资产需生成新版本。
 
 ## Actor 与 Judge 评审

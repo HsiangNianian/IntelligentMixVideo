@@ -12,14 +12,15 @@
 
 ## 保存契约
 
-- `tracks` 必填，参数只放在 `tracks[].editor`；拒绝缺少 `tracks`、`tracks: null` 或带顶层 `editor` 的模板，不提供旧格式转换。前端保存、详情读取与合成执行同一套规则。
+- `tracks` 必填，对象参数只放在 `tracks[].editor`；拒绝缺少 `tracks`、`tracks: null` 或带顶层 `editor` 的模板，不提供旧格式转换。云端保存、详情读取与合成按完整规则校验；前端保存前只先检查对象时间、文字槽位、同屏与数字人配置等（`client/src/features/templates/api.ts` 的 `saveTemplate`）。
 - 创建与更新都必须恰好有中文标题和中文字幕各一个，缺少即 422 且不写入。
 - 名称去除首尾空白后不能为空，重名由 MySQL 唯一约束拒绝（409）；数值范围、效果目录、动画互斥不合法返回 422。
 - ID、UTC 时间与效果参数快照由服务端生成，不接受客户端提交的渲染参数。
 - POST 无 ID 才创建（201），有 ID 完整更新（200）；不存在的 ID 返回 404，不做 upsert。没有独立的 Connect 路由。
 - 成功响应默认经 `MessageToDict` 转成 JSON；只有请求带单一 `Accept: application/x-protobuf` 才返回二进制，成功响应都带 `Vary: Accept`；删除返回 204 空响应。客户端按 `Content-Type` 解析，JSON 用 `ignoreUnknownFields: true` 容忍新增字段。
 - 列表逐条校验：无效记录带 `validation_error`，其详情返回 409，不影响同库的有效模板。列表消息与转场字段要求客户端、服务端一起升级。
-- `split_screen`、`avatar_effects` 等后加的配置缺省为关闭；旧客户端省略这些字段重存时保留已有配置。
+- `split_screen`、`avatar_effects`、`frame_mask` 等后加的配置缺省为关闭；旧客户端省略这些字段重存时保留已有配置。
+- 模板级 `frame_mask` 保存上下纯色蒙版：`top`/`bottom` 各有 `enabled`、`height`（画布高度百分比 0～50）与 `color`（`#RRGGBB`）。它不是 `tracks` 里的对象，使用它需要客户端与服务端一起升级。
 
 ## 字体与效果目录
 

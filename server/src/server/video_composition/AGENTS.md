@@ -26,6 +26,12 @@
 - IMS 渲染完成后，成片必须转存到 ZOS 的 `imv/video_composition/{task_id}.mp4`，并截第 3 帧存为同名 `.png`；只给这两个对象设 `public-read`，核对大小与匿名读取后才算成功。转存失败不能把 IMS 临时直链当成功结果返回。
 - PNG 地址不进入 GET 或回调；旧的成功任务不补图。ZOS 凭据只读服务端环境，不进入客户端配置头或任务快照。
 
+## 上下蒙版
+
+- 两栏全宽、贯穿全片，覆盖原视频、不改变构图；层级在主体与 IMS 转场之上，全局效果、Remotion 与文字之下。
+- 后端用 Pillow 按与客户端相同的四舍五入规则生成整数像素的透明 PNG，在线程池里上传 ZOS；IMS 用实际画布像素宽高，与 SDK 预览的单位（Width/Height=1 表示铺满）不能直接互换。
+- 任务保存 `frame_mask_url`，恢复时复用；缺图或上传失败时不提交没有蒙版的成片。
+
 ## Remotion 叠加
 
 - 合成侧解析 Remotion 资产业务参数的代码只放在 `remotion_content.py`，读取已发布资产的契约，不修改 Agent 生成或发布流程；固定时长资产的时钟映射只在 `remotion_timing.py` / `remotion-timing.mjs`。
