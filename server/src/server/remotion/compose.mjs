@@ -77,9 +77,10 @@ const prelude = [
  * rises from 0 at the position's first frame to 1 after `effect{k}Seconds`, an exit falls to 0 on the last frame, a
  * looping effect stays at 1, and a cue effect stays at 0 until the lower tier appears and then rises to 1 over its
  * length (it never rises while the lower tier has no text). An entrance or cue effect starts `effect{k}Delay` seconds
- * later, so effects can follow one another. Each length (with its delay) is at most half of the frames the position plays less one, so short renders
- * and a text frozen on its middle frame (`D // 2` or `(D - 1) // 2` of D frames) still show it in full there. At a glyph
- * position the units share that length in turn: with `effect{k}Stagger` s (1 when absent) unit i of n shows
+ * later, so effects can follow one another. Every window is measured in the position's own frames (`span`, the frames
+ * it plays less one, not the whole Sprite): each length (with its delay) is at most half of `span`, so short renders
+ * and a text frozen on the position's middle frame still show it in full there, and a tier that starts late still
+ * finishes its entrance and its exit. At a glyph position the units share that length in turn: with `effect{k}Stagger` s (1 when absent) unit i of n shows
  * `clamp((P - s * i / n) / (1 - s + s / n))` of the position's progress P, so at 1 an entrance reveals them one after
  * another in reading order (an exit removes the last one first, and a longer text goes faster), at 0 they all show
  * together, and in between their windows overlap. Every
@@ -134,13 +135,13 @@ function textEntry() {
     `const __clamp = (value) => Math.min(1, Math.max(0, value));`,
     // A held tier's live frame, for the keyword hits and units drawn inside it; null outside a held tier.
     `const __Live = React.createContext(null);`,
-    `function __Hold({children}) { const frame = useCurrentFrame(); const {durationInFrames} = useVideoConfig(); return <__Live.Provider value={frame}><Freeze frame={Math.max(0, Math.floor((durationInFrames - 1) / 2))}>{children}</Freeze></__Live.Provider>; }`,
+    `function __Hold({children}) { const frame = useCurrentFrame(); const {durationInFrames} = useVideoConfig(); const origin = React.useContext(__Origin); return <__Live.Provider value={frame}><Freeze frame={Math.max(0, Math.floor((durationInFrames - 1 - origin) / 2))}>{children}</Freeze></__Live.Provider>; }`,
     // A glyph unit passes `units`, its [index, count] at each glyph position it belongs to.
     `function __Effects({at, inline, index = 0, count = 1, units, children}) { const {props, cue} = React.useContext(__Context); const origin = React.useContext(__Origin); const frame = useCurrentFrame(); const {fps, durationInFrames} = useVideoConfig(); let node = children; `
       + `for (const item of __effects) { const target = props["effect" + item.k + "Target"]; if (props["effect" + item.k] === false || !at.includes(target)) continue; `
-      + `const half = Math.floor((durationInFrames - 1) / 2); const length = Math.max(1, Math.min(Math.round((Number(props["effect" + item.k + "Seconds"]) || 0.5) * fps), half)); `
+      + `const span = durationInFrames - 1 - origin; const half = Math.floor(span / 2); const length = Math.max(1, Math.min(Math.round((Number(props["effect" + item.k + "Seconds"]) || 0.5) * fps), half)); `
       + `const delay = item.slot === "enter" || item.slot === "cue" ? Math.min(Math.round((Number(props["effect" + item.k + "Delay"]) || 0) * fps), Math.max(0, half - length)) : 0; `
-      + `const shown = item.slot === "enter" ? __clamp((frame - delay) / length) : item.slot === "exit" ? __clamp((durationInFrames - 1 - frame) / length) : item.slot === "cue" ? (cue === null ? 0 : __clamp((frame - (cue - origin) - delay) / length)) : 1; `
+      + `const shown = item.slot === "enter" ? __clamp((frame - delay) / length) : item.slot === "exit" ? __clamp((span - frame) / length) : item.slot === "cue" ? (cue === null ? 0 : __clamp((frame - (cue - origin) - delay) / length)) : 1; `
       // The units of a glyph position take its progress in turn, as far apart as the effect's stagger says.
       + `const [i, n] = units?.[target] ?? [index, count]; const stagger = Number.isFinite(props["effect" + item.k + "Stagger"]) ? __clamp(props["effect" + item.k + "Stagger"]) : 1; `
       + `const progress = item.slot !== "loop" && units?.[target] ? __clamp((shown - stagger * i / n) / (1 - stagger + stagger / n)) : shown; `

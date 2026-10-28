@@ -94,7 +94,7 @@ class ComponentDefinition(ContractModel):
 # effect 包住文字块的某个位置画入场、出场或持续特效。不填的是自由组件（滤镜、特效，以及更早按固定框组合的字效）。
 PresetRole = Literal["text", "keyword", "effect"]
 # 宿主传给各角色 Preset 的 prop：它们不属于 Preset 自己的参数，不能写进 parameter_schema。effect 收到被包住的内容 children、
-# 显现进度 progress（0 还没出现，1 完全显示）与宿主的外层元素 Box（它按位置决定块级或行内）。
+# 进度 progress（enter/exit 的 0 为隐藏、1 为完整显示；cue 的 0 为初态、1 为终态）与宿主的外层元素 Box（块级或行内）。
 # text Preset 可以画宿主排好的这一栏 children（关键词命中已由宿主包好，逐字特效时每个字是一个单元），也可以按 segments 自己画；
 # 只有前者能用逐字位置。keyword Preset 同样可以画宿主交来的这个命中的各个字 children（逐字特效时每个字是一个单元），
 # 只画 text 的旧写法没有关键词逐字位置。effect 另收 index、count：逐字位置是这个字在本栏该位置的序号与字数，各栏时是栏序号与栏数，其余为 0 与 1。
@@ -528,7 +528,7 @@ class SpriteCreateInput(ContractModel):
 
 
 class ReviewFrame(ContractModel):
-    """回看的一帧：它是下一轮附带的第几张图片（参考图在前）、在 Sprite 里的帧号，以及这一帧应当显示什么。"""
+    """回看的一帧：下一轮图片序号（参考图在前）、Sprite 帧号与采样时机；标签不代表视觉结论。"""
 
     image: PositiveInteger
     frame: NonNegativeInteger
