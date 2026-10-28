@@ -325,6 +325,39 @@ def test_materials_presence_selects_matching(upstreams, client, composition_case
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("requested", [None, 4, 100])
+async def test_template_capacity_reaches_segmentation(upstreams, client, composition_case, composition_runtime, requested):
+    """字幕上限只由模板计算并传给切片；旧调用方携带的手动上限忽略且不进入业务快照。"""
+    template = composition_case["template"]
+    subtitle = next(track for track in template["tracks"] if track["target"] == "subtitle")
+    subtitle["editor"].update(subtitleSize=96, subtitleX=50, subtitleKeywordSize=0)
+    assert post_template(client, {key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}).status_code == 200
+    request = {**composition_case["request"], "processRules": {} if requested is None else {"subtitleMaxChars": requested}}
+    record = await composition_runtime.accept(CompositionRequest.model_validate(request), "http://testserver")
+    await service.Job(composition_runtime, record, composition_runtime.settings).prepare()
+    assert upstreams["max_segment_chars"] == 9
+    saved = store.get(record["task_id"])["data"]
+    assert saved["max_segment_chars"] == 9
+    assert "subtitleMaxChars" not in saved["request"]["processRules"]
+
+
+@pytest.mark.anyio
+async def test_recovery_reuses_saved_capacity(upstreams, composition_case, composition_runtime, monkeypatch):
+    """已经保存单行容量的任务恢复准备阶段时沿用旧值，不再次计算或取新模板样式。"""
+    store.initialize_schema()
+    record = await composition_runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
+    store.advance(record, "template", max_segment_chars=5)
+
+    def unexpected(*args):
+        raise AssertionError("不应重复计算")
+
+    monkeypatch.setattr(service.subtitle_capacity, "calculate", unexpected)
+    restored = store.get(record["task_id"])
+    await service.Job(composition_runtime, restored, composition_runtime.settings).prepare()
+    assert upstreams["max_segment_chars"] == 5
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("stage", ["queued", "template", "assembling"])
 async def test_avatar_recovery_keeps_omitted_materials(upstreams, composition_case, composition_runtime, stage):
     """从数据库恢复缺省字段的任务仍跳过匹配，已保存的切片不重复调用 ASR 或切片。"""
@@ -441,7 +474,8 @@ def upstreams(monkeypatch, composition_settings, composition_case):
             assert set(body) == {"title"}
             return {"title_keyword": ""}
         assert body["asr_result"] is raw
-        assert set(body) == {"title", "script", "asr_result"}
+        assert set(body) == {"title", "script", "asr_result", "max_segment_chars"}
+        state["max_segment_chars"] = body["max_segment_chars"]
         return {"segments": deepcopy(composition_case["segments"]), "warnings": [{"code": "example-warning"}], "trace": {"example": True}}
 
     async def handle(request):
@@ -548,6 +582,91 @@ def finished(client, task_id, headers=None):
             return data
         sleep(0.005)
     pytest.fail(f"任务未在测试预算内结束：{data}")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scenario", ["fresh", "resume", "resume-before-save", "upload-failed", "disabled"])
+async def test_frame_mask_task_snapshot_and_recovery(upstreams, composition_case, composition_runtime, monkeypatch, scenario):
+    """真实 PNG 与任务恢复：URL 落库前中断允许同 key 覆盖，落库后复用，上传失败不提交 IMS。"""
+    from threading import get_ident
+    from PIL import Image
+    from server.template import store as templates
+    from server.template.schema import TemplateSave
+    from server.video_composition import frame_mask
+
+    store.initialize_schema()
+    template = composition_case["template"]
+    mask = {"top": {"enabled": scenario != "disabled", "height": 18.4, "color": "#112233"},
+            "bottom": {"enabled": False, "height": 16.6, "color": "#445566"}}
+    templates.save_template(TemplateSave.model_validate({
+        **{key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}, "frame_mask": mask,
+    }))
+    calls = []
+    loop_thread = get_ident()
+    url = "https://media.test/frame-mask.png"
+
+    def upload(files, settings, timeout):
+        """只隔离外部存储；PNG 生成与线程调度使用生产实现。"""
+        assert get_ident() != loop_thread
+        assert settings.zos_bucket == "archives" and timeout > 0
+        path, key, mime = files[0]
+        with Image.open(path) as image:
+            assert image.size == (1080, 1920)
+            assert image.getpixel((0, 352)) == (17, 34, 51, 255)
+            assert image.getpixel((0, 353)) == (0, 0, 0, 0)
+        calls.append((key, path.read_bytes()))
+        assert mime == "image/png"
+        if scenario == "upload-failed":
+            raise ValueError("测试上传失败")
+        return [url]
+
+    monkeypatch.setattr(frame_mask, "upload_public", upload)
+    request = CompositionRequest.model_validate({
+        "styleId": template["template_id"], "processRules": {"videoDuration": 8},
+        "materials": [{"fileUrl": f"https://media.test/{index}.jpg", "type": "image"} for index in range(3)],
+    })
+    record = await composition_runtime.accept(request, "http://testserver")
+    if scenario in ("resume", "resume-before-save"):
+        job = service.Job(composition_runtime, record, composition_runtime.settings)
+        await job.prepare()
+        if scenario == "resume":
+            await job.save("assembling", frame_mask_url=url)
+        else:
+            advance = store.advance
+
+            def interrupt_before_url_save(record, stage, **data):
+                """上传已返回成功，在 URL 事务写入前中断，不进入普通业务失败处理。"""
+                if "frame_mask_url" in data:
+                    raise asyncio.CancelledError
+                return advance(record, stage, **data)
+
+            with monkeypatch.context() as interrupted:
+                interrupted.setattr(store, "advance", interrupt_before_url_save)
+                with pytest.raises(asyncio.CancelledError):
+                    await job.assemble()
+            assert len(calls) == 1 and upstreams["submits"] == []
+        record = store.get(record["task_id"])
+        if scenario == "resume-before-save":
+            assert record["stage"] == "assembling" and record["status"] == "processing"
+            assert "frame_mask_url" not in record["data"]
+    await composition_runtime._execute(record)
+    saved = store.get(record["task_id"])
+    assert saved["data"]["template"]["frame_mask"] == mask
+    assert len(calls) == (2 if scenario == "resume-before-save" else int(scenario in ("fresh", "upload-failed")))
+    if scenario == "resume-before-save":
+        assert calls[0] == calls[1]  # 恢复覆盖同 key、相同 PNG 字节，不另建对象。
+        assert calls[0][0] == f"imv/video_composition/{record['task_id']}-mask.png"
+    if scenario == "upload-failed":
+        assert saved["status"] == "failed"
+        assert upstreams["submits"] == []
+    else:
+        assert saved["status"] == "succeeded", saved["data"].get("error")
+        assert saved["data"]["frame_mask_url"] == (None if scenario == "disabled" else url)
+        assert len(upstreams["submits"]) == 1
+        tracks = json.loads(upstreams["submits"][0]["timeline"])["VideoTracks"]
+        assert len(tracks) == (1 if scenario == "disabled" else 2)
+        if scenario != "disabled":
+            assert tracks[1]["VideoTrackClips"][0]["MediaURL"] == url
 
 
 @pytest.mark.parametrize("mode,title_on,subtitle_on", [
@@ -1141,9 +1260,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
         keywords["title_keyword"] = title_keyword
     model = MagicMock()
     model.chat.completions.create.side_effect = [
-        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(output)))])
-        for output in [{"boundaries_after": []}, keywords]
-    ]
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(keywords)))])]
     factory = MagicMock()
     factory.return_value.__enter__.return_value = model
     monkeypatch.setattr(segmentation, "OpenAI", factory)
@@ -1165,17 +1282,20 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     snapshot = store.get(task_id)["data"]
     assert snapshot["segmentation"]["trace"]["edit_cost"] == 0
     assert "".join(s["text"] for s in snapshot["segmentation"]["segments"]) == snapshot["request"]["text"]
-    assert snapshot["segmentation"]["segments"] == [{
-        "segment_id": 1, "text": "甲乙丙丁。戊己庚辛。", "start_time": 1, "end_time": 6,
-        "keyword": "甲乙", "level": 2, "group_id": [1, 1],
-    }]
+    # 句号处切开，两段都不超过上限，不请求语义切分。
+    assert snapshot["segmentation"]["segments"] == [
+        {"segment_id": 1, "text": "甲乙丙丁。", "start_time": 1, "end_time": 3,
+         "keyword": "甲乙", "level": 2, "group_id": [1, 2]},
+        {"segment_id": 2, "text": "戊己庚辛。", "start_time": 4, "end_time": 6,
+         "keyword": "", "level": 1, "group_id": [2, 2]},
+    ]
     if mode == "matching":
         assert json.loads(upstreams["posts"][0]["llm"])["segments"] == snapshot["segmentation"]["segments"]
     else:
         assert upstreams["posts"] == []
     subtitle_index = 0 if title_keyword is None else 1
     assert [clip["Content"] for clip in snapshot["timeline"]["SubtitleTracks"][subtitle_index]["SubtitleTrackClips"]] == [
-        "甲乙丙丁戊己庚辛",
+        "甲乙丙丁", "戊己庚辛",
     ]
     if title_keyword is None:
         assert "title_keyword" not in snapshot["segmentation"]
@@ -1187,7 +1307,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
         messages = model.chat.completions.create.call_args.kwargs["messages"]
         assert json.loads(messages[1]["content"])["title"] == request["title"]
     assert json.loads(upstreams["submits"][0]["timeline"]) == snapshot["timeline"]
-    assert model.chat.completions.create.call_count == 2 and factory.return_value.__exit__.call_count == 1
+    assert model.chat.completions.create.call_count == 1 and factory.return_value.__exit__.call_count == 1
 
 
 def test_template_changes_do_not_change_running_snapshot(upstreams, client, composition_case):
@@ -1700,12 +1820,14 @@ def test_invalid_notification_url_rejected_before_acceptance(upstreams, client, 
 
 
 def test_request_openapi_hides_internal_mode_and_uses_camel_case(client):
-    """公开契约不含内部模式，回调地址与其他请求字段保持 camelCase。"""
-    schema = client.get("/openapi.json").json()["components"]["schemas"]["CompositionRequest"]
+    """公开契约不含内部模式或手动字幕上限，回调地址与其他请求字段保持 camelCase。"""
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    schema = schemas["CompositionRequest"]
     assert "callbackUrl" in schema["properties"] and "callback_url" not in schema["properties"]
     assert "callbackUrl" not in schema["required"]
     assert "compositionMode" not in schema["properties"] and "composition_mode" not in schema["properties"]
     assert "copy" in schema["properties"]
+    assert set(schemas["ProcessRules"]["properties"]) == {"videoDuration"}
 
 
 @pytest.mark.parametrize("code,error,expected", [

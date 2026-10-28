@@ -28,7 +28,7 @@ SEGMENTATION_REQUEST_EXAMPLE = {
     },
 }
 
-# 文档成功响应示例：超长片段优先按标点、词边界切至最多 8 字，原文标点保留给下游。
+# 文档成功响应示例：先按标点切开，超过 8 字的片段由模型按语义切分，原文标点保留给下游。
 # warnings 非空时元素为 {"code", "message"}，此处展示正常对齐情况所以为空数组。
 SEGMENTATION_RESPONSE_EXAMPLE = {
     "title_keyword": "散养土鸡",

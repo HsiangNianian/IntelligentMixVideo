@@ -66,7 +66,7 @@ export interface Version {
     composition: Composition;
     text_layers: { id: string; text: string }[];
     /** 组合版本的分类与顶层参数绑定，字效的文字组合另有各栏、关键词与特效的实例 ID（特效带中文名称）；更早的版本没有。 */
-    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string; targets?: { instance_id: string; parameter: string }[] }[]; text?: { tiers: string[]; keyword?: string; effects?: { instance_id: string; title: string }[] } };
+    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string; targets?: { instance_id: string; parameter: string }[] }[]; text?: { tiers: string[]; keyword?: string; effects?: { instance_id: string; title: string }[]; preview_keywords?: string[] } };
   };
 }
 
@@ -160,7 +160,7 @@ export interface EffectCard {
 /**
  * 文字组合字效的两块参数。「文字」是文字本身：内容、字号、字体与字重、双栏排版、各栏外观（Agent 绑定在各栏上的颜色、描边、
  * 字间距等）、关键词选项，以及各栏 Preset 的内部参数（`instances`）。「特效」按特效列出卡片：开关 `effect{k}`、位置
- * `effect{k}Target`、时长 `effect{k}Seconds`、绑定在这个特效实例上的样式参数及其内部参数；关键词字效（关键词 Preset）也是一张
+ * `effect{k}Target`、时长 `effect{k}Seconds`、延迟 `effect{k}Delay`、逐字错开 `effect{k}Stagger`、绑定在这个特效实例上的样式参数及其内部参数；关键词字效（关键词 Preset）也是一张
  * 卡片，开关为 `keywordEffect`。顶层参数按绑定目标归入实例；没有文字组合的版本返回 null，沿用 `schemaGroups`。
  */
 export function textSections(version: Version): {
@@ -189,7 +189,7 @@ export function textSections(version: Version): {
     return { id: instance, title, toggle: field(toggle), fields: names.flatMap((name) => field(name) ?? []), instance: nested(instance) };
   };
   const effects = (block.effects ?? []).map((effect, index) =>
-    card(effect.instance_id, properties[`effect${index + 1}`]?.title || effect.title, `effect${index + 1}`, [`effect${index + 1}Target`, `effect${index + 1}Seconds`]));
+    card(effect.instance_id, properties[`effect${index + 1}`]?.title || effect.title, `effect${index + 1}`, [`effect${index + 1}Target`, `effect${index + 1}Seconds`, `effect${index + 1}Delay`, `effect${index + 1}Stagger`]));
   if (block.keyword) effects.push(card(block.keyword, "关键词字效", "keywordEffect", []));
   const text: ParameterField[] = [];
   const keyword: ParameterField[] = [];
@@ -267,16 +267,21 @@ export interface ChatMessage {
 }
 
 /**
- * 预览用的示例关键词。有以 keywordEffect 开头的顶层参数（关键词 Preset 的开关或关键词外观，与服务端
- * `categories.has_keyword_effect` 一致）说明这个字效在生成时带了关键词字效；默认关键词为空时它不出现，所以取当前文字
- * 首个非空行开头至多两个字作示例（文字未改时即默认文字，与生成校验挂载的示例相同；改了文字仍能命中）。
- * 已填关键词、没有关键词字效、关键词字效开关（keywordEffect）已关或没有文字时返回空串；只影响预览，不改参数、不进入保存。
+ * 预览用的示例关键词（默认关键词为空时，模板渲染时才传入真实关键词）。Agent 在文字块里标出的 `preview_keywords`（示例文字里
+ * 该是关键词的词，服务端回看帧用同一组）只要还在当前文字里就用它们；否则有以 keywordEffect 开头的顶层参数（关键词 Preset 的开关或
+ * 关键词外观，与服务端 `categories.has_keyword_effect` 一致）时取当前文字首个非空行开头至多两个字（与生成校验挂载的示例相同），
+ * 关键词字效开关（keywordEffect）已关时不取。已填关键词或没有文字时返回空数组；只影响预览，不改参数、不进入保存。
  */
-export function sampleKeyword(version: Version | null, values: Values): string {
+export function sampleKeywords(version: Version | null, values: Values): string[] {
+  if (!Array.isArray(values.keywords) || values.keywords.length || typeof values.text !== "string") return [];
+  const text = values.text;
+  const declared = (version?.spec.sprite?.text?.preview_keywords ?? []).filter((word) => text.includes(word));
+  if (declared.length) return declared;
   const properties = version?.candidate.config_schema.properties ?? {};
   const effect = Object.keys(properties).some((key) => key.startsWith("keywordEffect"));
-  if (!effect || values.keywordEffect === false || !Array.isArray(values.keywords) || values.keywords.length || typeof values.text !== "string") return "";
-  return values.text.split("\n").find((line) => line.trim())?.match(/\S{1,2}/u)?.[0] ?? "";
+  if (!effect || values.keywordEffect === false) return [];
+  const word = text.split("\n").find((line) => line.trim())?.match(/\S{1,2}/u)?.[0];
+  return word ? [word] : [];
 }
 
 /** 稳定比较完整参数快照，避免依赖对象属性插入顺序。 */

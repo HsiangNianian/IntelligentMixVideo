@@ -17,13 +17,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..segmentation import segment, translate
 from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
-from . import ims, media, playground, remotion, store, zos
+from . import ims, media, playground, remotion, store, subtitle_capacity, zos
 from .errors import CompositionError, remaining
 from .execution_log import close_logs, exception_details, log_dispatch_error
 from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, MatchedSegment, PlaygroundRequest, PositiveSeconds, Segment, TaskResponse
 from .settings import ClientSettings, Settings, ZosSettings
 from .timeline import build_timeline, validate_segments
+from .frame_mask import upload_mask
+from . import avatar, split_screen
 
 logger = logging.getLogger(__name__)
 
@@ -474,6 +476,9 @@ class Job:
         template = self.record["data"]["template"]
         # 恢复时同样复核：叠加渲染环境缺失要在 ASR 与切片模型产生成本前失败。
         await remotion.require_environment(self.record["data"])
+        if request.text and request.composition_mode != "materials_silent" and "max_segment_chars" not in self.record["data"]:
+            limit = subtitle_capacity.calculate(self.record["task_id"], self.record["data"])
+            await self.save("template", max_segment_chars=limit)
         if request.composition_mode == "materials_silent":
             prepared = dict(template=template,
                             duration_ms=request.process_rules.video_duration * 1000)
@@ -497,6 +502,7 @@ class Job:
         if request.text:
             await self.save("segmentation", duration_ms=duration_ms)
             segment_input = {"title": request.title, "script": request.text, "asr_result": asr_result}
+            segment_input["max_segment_chars"] = self.record["data"]["max_segment_chars"]
             segmented = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
             segments = TypeAdapter(list[Segment]).validate_python(segmented["segments"])
             validate_segments(segments, duration_ms)
@@ -569,6 +575,15 @@ class Job:
         """组装只读业务快照，提交前持久化完整请求、稳定 ClientToken 和总截止时间。"""
         data = self.record["data"]
         request = CompositionRequest.from_snapshot(data["request"])
+        # 上传成功但 URL 尚未落库时若进程中断，恢复会按固定任务 key 幂等覆盖同一份蒙版。
+        # 允许重复上传这张小 PNG；URL 已落库时直接复用。
+        if data["template"].get("frame_mask") and "frame_mask_url" not in data:
+            mask_url = await self.runtime.step(self.record, "frame_mask_upload", lambda: self.runtime.sync(
+                upload_mask, data["template"]["frame_mask"], data["output"]["width"], data["output"]["height"],
+                self.record["task_id"], ZosSettings(), self.settings.composition_http_timeout_seconds, zos.object_prefix(data),
+            ), {"frame_mask": data["template"]["frame_mask"]})
+            await self.save("assembling", frame_mask_url=mask_url)
+            data = self.record["data"]
         if request.composition_mode != "standard" and "material_durations" not in data:
             durations = await self.runtime.step(self.record, "material_probe", lambda: media.material_durations(
                 request.materials, data["duration_ms"] / 1000, self.settings.composition_http_timeout_seconds,
@@ -576,6 +591,9 @@ class Job:
             await self.save("assembling", material_durations=durations)
             data = self.record["data"]
         inputs = dict(request=data["request"], template=data["template"], transition_seed=self.record["task_id"], segments=data.get("segmentation", {}).get("segments", []),
+                      frame_mask_url=data.get("frame_mask_url"),
+                      use_keyword_transitions=data.get("keyword_transitions", False),
+                      remotion_assets=(data.get("remotion") or {}).get("assets", {}),
                       title_keyword=data.get("segmentation", {}).get("title_keyword", ""),
                       title_en=data.get("segmentation", {}).get("title_en"),
                       title_keyword_en=data.get("segmentation", {}).get("title_keyword_en", ""),
@@ -583,6 +601,29 @@ class Job:
                       **{key: data["output"][key] for key in ("width", "height", "fps")})
         if request.composition_mode != "standard":
             inputs["material_durations"] = data["material_durations"]
+        layout = data["template"].get("split_screen") or {}
+        avatar_effects = data["template"].get("avatar_effects") or {}
+        needs_circle = layout.get("enabled") and layout.get("layout") == "circle" and any(
+            item.get("matched_candidate_url") for item in data.get("matches", []))
+        if request.composition_mode == "standard" and (avatar_effects.get("openingEnabled") or needs_circle):
+            if "avatar_opening" not in data:
+                opening = await self.runtime.step(self.record, "avatar_opening", lambda: avatar.prepare(
+                    self.record["task_id"], data, self.settings.composition_http_timeout_seconds), {})
+                await self.save("assembling", avatar_opening=opening)
+                data = self.record["data"]
+            inputs["avatar_opening"] = data["avatar_opening"]
+        if request.composition_mode == "standard" and layout.get("enabled"):
+            if layout.get("layout") != "circle" and avatar_effects.get("removeBackground") and any(
+                item.get("matched_candidate_url") and item["end_time"] > (data.get("avatar_opening") or {}).get("duration", 0)
+                for item in data.get("matches", [])
+            ) and data["output"]["region_id"] not in ("cn-beijing", "cn-shanghai", "cn-hangzhou"):
+                raise CompositionError("avatar_matting_region_unsupported", "数字人抠像仅支持 IMS 北京、上海、杭州地域", "assembling")
+            if "split_assets" not in data:
+                assets = await self.runtime.step(self.record, "split_screen", lambda: split_screen.prepare(
+                    self.record["task_id"], data, self.settings.composition_http_timeout_seconds), {})
+                await self.save("assembling", split_assets=assets)
+                data = self.record["data"]
+            inputs["split_assets"] = data["split_assets"]
         await self.runtime.log(self.record, "step_started", step="assembling", input=inputs)
         try:
             timeline, warnings = build_timeline(**inputs)

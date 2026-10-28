@@ -114,3 +114,42 @@ def test_catalog_waits_leave_the_event_loop_responsive(tmp_path, monkeypatch, op
             await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(scenario())
+
+
+def test_an_accepted_version_records_the_presets_it_draws_with(template_db, caplog):
+    """生成成功的版本登记它画法所用的库内 Preset：原样使用的记在那条 Preset 上；改过的副本（任务里 preset_modify 修好的）另存为
+    新的 Preset 并记在它上面，不再记到坏掉的原件上，以后另一个版本用同样的副本也找回这一条、不重复存；没有来源的实例跳过。
+    存进资产库再标记已发布。登记失败只少一条排序依据，记日志，不让已经完成的任务失败。"""
+    from server.remotion_templates.runtime import record_uses
+    from server.remotion_templates.tools.contracts import SpriteDraft
+
+    tier = record("tier")
+    CatalogStore().append_preset(tier)
+    drawn = tier.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
+    fixed = {**drawn, "code": "export default function Fixed(){return null}", "description": "fixed"}
+    instance = {"parameters": {}, "layout": {"x": 0, "y": 0, "width": 10, "height": 10, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 30}}
+
+    def version(identifier, *presets):
+        """An accepted version whose instances draw with ``presets``."""
+        sprite = SpriteDraft(description="s", code="export default function S(){return null}", parameter_schema={"type": "object", "properties": {}},
+                             default_parameters={}, composition={"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
+                             instances=[{**instance, "instance_id": f"i{index}", "preset": preset} for index, preset in enumerate(presets)])
+        return SimpleNamespace(id=identifier, spec=SimpleNamespace(sprite=sprite))
+
+    record_uses(version("version-1", {**drawn, "source_preset_id": "tier"}, {**fixed, "source_preset_id": "tier"}, drawn))
+    copies = [item for item in CatalogStore().read_presets() if item.preset_id != "tier"]
+    assert [(item.code, item.source_preset_id) for item in copies] == [(fixed["code"], "tier")]
+    record_uses(version("version-2", {**fixed, "source_preset_id": "tier"}))
+    assert len(CatalogStore().read_presets()) == 2
+    assert CatalogStore().use_counts() == {"tier": (1, 0), copies[0].preset_id: (2, 0)}
+    CatalogStore().mark_published("version-2")
+    assert CatalogStore().use_counts()[copies[0].preset_id] == (2, 1)
+
+    def unavailable(self):
+        """模拟连接失败的 MySQL。"""
+        raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(CatalogStore, "_engine", unavailable)
+        record_uses(version("version-3", {**drawn, "source_preset_id": "tier"}))
+    assert "Preset uses of version version-3 were not recorded" in caplog.text

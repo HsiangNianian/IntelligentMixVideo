@@ -20,6 +20,7 @@ from pydantic import TypeAdapter
 from ..remotion_templates import sprites
 from ..remotion_templates.categories import LINE_START_MAX_FRAMES, line_count
 from ..remotion_templates.placement import resolve as resolve_placement
+from ..template.split_screen import SplitScreen
 from ..template.schema import EffectTrack, RemotionTrackEditor, active_tracks
 from ..template.timing import resolve_track
 from ..template.transitions import select_transitions
@@ -33,6 +34,7 @@ from .errors import CompositionError
 from .schema import CompositionRequest, Segment
 from .settings import ZosSettings
 from .text_events import subtitle_blocks, subtitle_events
+from .transitions import keyword_transitions
 from .zos import object_prefix, upload_public
 
 logger = logging.getLogger(__name__)
@@ -102,7 +104,9 @@ def active_placements(data: dict) -> list[dict]:
     """恢复同样以本单模板快照里的英文开关为准，旧摆放默认中文。"""
     enabled = {track["target"] for track in data.get("template", {}).get("tracks", [])
                if track.get("language") == "en" and track.get("enabled", True) and track["target"] in {"title", "subtitle"}}
+    split = data.get("request", {}).get("compositionMode", "standard") == "standard" and (data.get("template", {}).get("split_screen") or {}).get("enabled")
     return [item for item in (data.get("remotion") or {}).get("placements", [])
+            if not (split and item.get("transition_boundary") is not None)
             if item.get("language", "zh") != "en" or item.get("text_target") in enabled]
 
 
@@ -152,19 +156,40 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
     timed_sources = {}
     placements = sorted(active_placements(data), key=lambda item: item.get("order", 0))
     template = data.get("template", {})
+    layout = SplitScreen.model_validate(template["split_screen"]) if request.composition_mode == "standard" and (template.get("split_screen") or {}).get("enabled") else None
+    intervals = []
+    if layout and not (layout.layout == "circle" and not data.get("avatar_opening")):
+        matched_ids = {item["segment_id"] for item in data.get("matches", []) if item.get("matched_candidate_url")}
+        for segment in segments:
+            if segment.segment_id in matched_ids:
+                a, b = to_frames(segment.start_time, fps), to_frames(segment.end_time, fps)
+                a = max(a, to_frames((data.get("avatar_opening") or {}).get("duration", 0), fps))
+                if a >= b:
+                    continue
+                if intervals and intervals[-1][1] == a:
+                    intervals[-1] = (intervals[-1][0], b)
+                else:
+                    intervals.append((a, b))
+    english_subtitle = any(track.get("target") == "subtitle" and track.get("language") == "en" and track.get("enabled", True)
+                           for track in template.get("tracks", []))
     if template.get("transition_enabled") is False:
         placements = [item for item in placements if item.get("transition_boundary") is None]
-    if template.get("transition_mode") is not None and any(item.get("transition_boundary") is not None for item in placements):
+    use_keywords = data.get("keyword_transitions", False)
+    if (use_keywords or template.get("transition_mode") is not None) and any(item.get("transition_boundary") is not None for item in placements):
         if timeline is None:
             raise ContentError("Remotion 转场缺少最终素材时间线")
-        selected = select_transitions(template["tracks"], len(timeline["VideoTracks"][0]["VideoTrackClips"]) - 1,
-                                      template["transition_mode"], transition_seed)
+        clips = timeline["VideoTracks"][0]["VideoTrackClips"]
+        selected = keyword_transitions(template, clips, segments if spoken else [], data.get("matches", []),
+                                       standard=request.composition_mode == "standard", fps=fps,
+                                       seed=transition_seed, assets=saved["assets"]) \
+            if use_keywords else select_transitions(template["tracks"], len(clips) - 1, template["transition_mode"], transition_seed)
         expanded = []
         for placement in placements:
             if placement.get("transition_boundary") is None:
                 expanded.append(placement)
             else:
-                expanded.extend({**placement, "transition_boundary": boundary}
+                expanded.extend({**placement, "transition_boundary": boundary,
+                                 **({"duration": item["duration"]} if use_keywords else {})}
                                 for item, boundary in selected if item["id"] == placement["id"])
         placements = expanded
     for placement in placements:
@@ -202,7 +227,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             clips = timeline["VideoTracks"][0]["VideoTrackClips"]
             if boundary >= len(clips):
                 continue
-            if template.get("transition_mode") is not None:
+            if not use_keywords and template.get("transition_mode") is not None:
                 length_seconds = min(math.floor(length_seconds * fps + 0.5),
                     math.floor((clips[boundary - 1]["TimelineOut"] - clips[boundary - 1]["TimelineIn"]) * fps + 1e-8) // 2,
                     math.floor((clips[boundary]["TimelineOut"] - clips[boundary]["TimelineIn"]) * fps + 1e-8) // 2) / fps
@@ -210,6 +235,13 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                     continue
             start = max(0, clips[boundary - 1]["TimelineOut"] - length_seconds / 2)
         lines = line_count(json.loads(sprite.config_schema_json)) if sprite.kind == pb.SPRITE_KIND_TEXT else 1
+        # 英文标题和字幕的字效按单行设计：译文过长时排版预检缩到能单行显示的最大字号，避免换行压到另一语言的文字。
+        one_line = lines == 1 and language == "en" and target in {"title", "subtitle"}
+        # 字幕轨的文字换行时朝远离另一语言字幕的方向展开：英文向下，中文字幕在启用英文字幕时向上，两条字幕因此不会
+        # 互相压住；没有启用英文字幕时中文保持原本的居中展开（上下同时长）。
+        grow = None
+        if lines == 1 and target == "subtitle":
+            grow = "down" if language == "en" else "up" if english_subtitle else None
         # 每项内容是 (各行文字, 各行关键词, 各行出现的秒数, 开始, 结束)；单行字效只有一行。
         if target == "subtitle":
             # 多行字效把同一句里最多 lines 个连续切片合成一组：逐行出现，整组在最后一个切片结束时清空。
@@ -266,10 +298,23 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             length = count if dynamic else max(1, to_frames(min(length_seconds, max_seconds), fps))
             # 资产与实际正文供渲染前的排版预检：正文可能写入多个参数路径，这里给出唯一的显示文字。
             # 多行字效在最后一行出现后才完整，排版预检只测量这之后的帧。
-            instances.append({"sprite_id": placement["sprite_id"], **({"text": text} if dynamic else {}),
+            instance = {"sprite_id": placement["sprite_id"], **({"text": text} if dynamic else {}),
                               **({"reveal_frame": offsets[-1]} if dynamic and lines > 1 else {}),
+                              **({"one_line": True} if one_line else {}),
+                              **({"grow": grow} if grow else {}),
                               "code": code, "config": values, "host": host, "start_frame": first,
-                              "duration_frames": length, "width": sprite.canvas.width, "height": sprite.canvas.height})
+                              "duration_frames": length, "width": sprite.canvas.width, "height": sprite.canvas.height}
+            if layout and target == "subtitle" and intervals:
+                point = layout.subtitle_en if language == "en" else layout.subtitle
+                moved = {**host, "transform": {**host["transform"], "x": point.x * sprite.canvas.width / 100,
+                    "y": point.y * sprite.canvas.height / 100 + host["box"]["height"] * host["transform"].get("scale", 1) / 2}}
+                cuts = sorted({first, last, *(frame for interval in intervals for frame in interval if first < frame < last)})
+                for a, b in zip(cuts, cuts[1:]):
+                    # 可见区间与动画区间分开：跨布局的多行字幕保持原起点、长度和逐行时钟。
+                    instances.append({**instance, "visible_start_frame": a, "visible_end_frame": b,
+                                      "host": moved if any(left <= a < right for left, right in intervals) else host})
+            else:
+                instances.append(instance)
     if not instances:
         return None
     if duration > max_seconds:

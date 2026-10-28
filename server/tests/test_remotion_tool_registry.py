@@ -239,11 +239,11 @@ def test_search_tolerates_invalid_and_naive_catalog_timestamps(tmp_path, monkeyp
 
 
 def test_search_contract_version_is_discoverable_before_calling():
-    """调用方可先检查版本和 Schema，区分旧 matches 契约与已实现的 v2 列表。"""
+    """调用方可先检查版本和 Schema，区分旧 matches 契约与已实现的 v3 排序列表（摘要带特效用法与使用次数）。"""
     result = asyncio.run(get_tool("tools.inspect").invoke(None, {"tool_name": "preset_search"}))
     descriptor = result["data"]
-    assert descriptor["contract_version"] == 2
-    assert "presets" in json.dumps(descriptor["output_schema"])
+    assert descriptor["contract_version"] == 3
+    assert "presets" in json.dumps(descriptor["output_schema"]) and "published_uses" in json.dumps(descriptor["output_schema"])
     assert "matches" not in json.dumps(descriptor["output_schema"])
     assert get_tool("preset.create").describe()["contract_version"] == 1
 

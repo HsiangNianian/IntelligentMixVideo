@@ -211,11 +211,18 @@ message PublishSpriteRequest {
   // 要发布的 Agent 成功版本 UUID。
   string source_version_id = 1;
   // 发布类型，默认取 Agent 判断的分类，用户可以改选；服务端按此类型检查必备参数。
+  // 覆盖保存时必须与目标资产的类型一致。
   SpriteKind kind = 2;
   // 字效的文字配置字段，新版本必须为 text；视觉 Sprite 留空。
   string text_prop = 3;
   // 字效的关键词配置字段，新版本声明了关键词时为 keywords，否则留空。
+  // 覆盖保存时不能去掉目标资产已有的关键词字段。
   string keywords_prop = 4;
+  // 覆盖保存的目标资产 UUID；为空时保存为新资产。提供时用本版本内容替换该资产并沿用它的
+  // sprite_id 与名称，模板里引用它的片段随即可用新版本；画布、类型与文字/关键词字段须与目标一致。
+  string target_sprite_id = 5;
+  // 选填资产名称，去除首尾空白后最多 100 字符；留空时新资产用 AI 生成的名称，覆盖或重复保存保留现名。
+  string name = 6;
 }
 
 // 发布结果只返回可公开的摘要；相同源版本和参数重复发布返回原 Sprite。

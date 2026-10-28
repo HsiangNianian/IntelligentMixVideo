@@ -101,3 +101,16 @@ test("关键词字效以示例关键词预览，不改参数", async () => {
   Object.assign(hinted.candidate.config_schema.properties, { keywords: { type: "array" }, keywordHint: { type: "string" } });
   expect((await previewValues(hinted)).keywords).toEqual([]);
 });
+
+// 场景（审计复现：作品 06eb0788）：Agent 在文字块里标出示例文字的关键词（preview_keywords），预览就以它们为示例关键词，
+// 不再取开头两个字；它们不在当前文字里时退回开头两个字。参数本身不变。
+test("文字块标出的示例关键词优先于开头两个字", async () => {
+  const version = remotionVersion("version-1", { keywords: [], keywordEffectScale: 1.3 });
+  Object.assign(version.candidate.config_schema.properties, { keywords: { type: "array" }, keywordEffectScale: { type: "number" } });
+  version.spec.sprite = { text: { tiers: ["body"], preview_keywords: ["灵感"] } };
+  expect((await previewValues(version)).keywords).toEqual(["灵感"]);
+  expect(screen.getByText(/预览以「灵感」为示例关键词/)).toBeTruthy();
+  cleanup();
+  version.spec.sprite.text!.preview_keywords = ["别的词"];
+  expect((await previewValues(version)).keywords).toEqual(["今日"]);
+});

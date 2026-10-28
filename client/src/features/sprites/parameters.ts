@@ -49,19 +49,20 @@ export function instanceTransformFields(kind: SpriteKind): TransformField[] {
 export const TEMPLATE_KEYWORD_PARAMETERS = ["keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize"];
 
 /**
- * 字效的排版参数：基准字号、单栏的字体与字重、双栏的栏间距与逐栏字体、字重、字号比例（名称与服务端 `categories.FIXED_TITLES` 一致）。
+ * 字效的排版参数：基准字号、单栏的字体与字重、双栏的排布（上下排列或重叠）、栏间距与逐栏字体、字重、字号比例（名称与服务端 `categories.FIXED_TITLES` 一致）。
  * 字效工作区的「配置」组与模板编辑的「外观与位置」共用这份清单，两处能调的排版项相同。
  */
 export const TEXT_LAYOUT_PARAMETERS = [
-  "fontSize", "fontFamily", "fontWeight", "lineGap",
+  "fontSize", "fontFamily", "fontWeight", "tierLayout", "lineGap",
   ...[1, 2].flatMap((tier) => [`line${tier}SizeRatio`, `line${tier}FontFamily`, `line${tier}FontWeight`]),
 ];
 
 /**
- * 字效特效的配置参数：第 k 个特效的开关 `effect{k}`、作用位置 `effect{k}Target` 与入场、出场的时长 `effect{k}Seconds`（秒），
- * 名称与服务端 `categories.EFFECT_PARAMETER` 一致。字效工作区单列为「特效」组，模板编辑按摆放调整。
+ * 字效特效的配置参数：第 k 个特效的开关 `effect{k}`、作用位置 `effect{k}Target`、入场与出场等的时长 `effect{k}Seconds`（秒）、
+ * 入场与下栏出现推迟开始的 `effect{k}Delay`（秒）及逐字位置上各字错开的程度 `effect{k}Stagger`（0～1），名称与服务端
+ * `categories.EFFECT_PARAMETER` 一致。字效工作区单列为「特效」组，模板编辑按摆放调整。
  */
-export const EFFECT_PARAMETER = /^effect[1-9][0-9]*(?:Target|Seconds)?$/;
+export const EFFECT_PARAMETER = /^effect[1-9][0-9]*(?:Target|Seconds|Delay|Stagger)?$/;
 
 /**
  * 模板编辑里开放的资产参数：字效的排版参数、特效的开关、位置与时长以及关键词样式；颜色、特效与关键词效果的外观等属于资产本身，

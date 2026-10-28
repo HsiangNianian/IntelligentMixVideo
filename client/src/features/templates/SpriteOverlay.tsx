@@ -5,7 +5,7 @@
  * 播放器是跨源沙箱页面，无法监听其内部错误：挂载后迟迟不就绪、能力不足或预览页回报错误时写调试日志；
  * 调试模式下另记录偏慢的就绪与参数更新。预览协议没有逐帧回执，定位是否跟得上无法测量。
  */
-import { useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent, type PointerEvent, type Ref } from "react";
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type Ref } from "react";
 import { apiBase } from "@/lib/api-base";
 import { HOST_FONTS, sendPreviewFonts } from "@/features/sprites/previewFonts";
 import type { SpriteClip } from "./timeline";
@@ -60,8 +60,8 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
   // 每个已挂载播放器的就绪等待计时器，就绪后置为 null；loaded 记录页面 load 事件已触发的播放器，用来区分超时原因。
   const readiness = useRef(new Map<string, ReturnType<typeof setTimeout> | null>());
   const loaded = useRef(new Set<string>());
-  // 上一次 load 事件的 iframe 地址；地址变化说明同一播放器重新加载，需要重新握手并等待就绪。
-  const loadedSrc = useRef(new Map<string, string>());
+  // 已挂载的 iframe 地址；地址改变时立即清除旧握手，不等新页面的 load（ready 可能先于 load）。
+  const frameSources = useRef(new Map<string, string>());
   const requests = useRef(0);
   // 调试模式下的计时：播放器挂载的时刻，以及已发出、等待预览页回报画完（imv-preview-rendered）的更新。
   const mountedAt = useRef(new Map<string, number>());
@@ -74,10 +74,11 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
   // 已挂载播放器的片段，随预览时间在 flush 中更新；shown 同步记录最新的集合，让逐帧调用只在集合变化时提交渲染。
   const [mounted, setMounted] = useState(() => nearby(clips, initialTime, []));
   const shown = useRef(mounted);
-  // 每个播放器使用独立消息通道；通道随片段 ID 稳定，片段移动不重载页面。
-  const channels = useRef(new Map<string, string>());
+  // 通道在片段移动、改名时稳定；换资产或覆盖成新版本时更新，旧页面迟到的消息不再生效。
+  const channels = useRef(new Map<string, { source: string; channel: string }>());
   for (const clip of clips) {
-    if (!channels.current.has(clip.id)) channels.current.set(clip.id, crypto.randomUUID());
+    const source = `${clip.spriteId}:${clip.sourceVersionId ?? ""}`;
+    if (channels.current.get(clip.id)?.source !== source) channels.current.set(clip.id, { source, channel: crypto.randomUUID() });
   }
   latest.current = clips;
 
@@ -101,7 +102,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
       }
       updates.current.set(requests.current, { id: clip.id, at: now });
     }
-    frame.contentWindow?.postMessage({ type: "imv-preview-update", channel: channels.current.get(clip.id), requestId: requests.current, values, background: "", host: { transform } }, "*");
+    frame.contentWindow?.postMessage({ type: "imv-preview-update", channel: channels.current.get(clip.id)?.channel, requestId: requests.current, values, background: "", host: { transform } }, "*");
   }
   /** 按最新片段与时间更新需要挂载的播放器；集合不变时不触发渲染。 */
   function remount() {
@@ -120,7 +121,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
       const active = supported.current.has(clip.id) && time.current >= clip.start && time.current < clip.end;
       frame.style.visibility = active ? "visible" : "hidden";
       // 带上摆放的完整时长：Sprite 按它排布，与总线渲染时一致，而不是停在资产的预览长度。
-      if (active) frame.contentWindow?.postMessage({ type: "imv-preview-sync", channel: channels.current.get(clip.id), time: time.current - clip.start, duration: clip.length }, "*");
+      if (active) frame.contentWindow?.postMessage({ type: "imv-preview-sync", channel: channels.current.get(clip.id)?.channel, time: time.current - clip.start, duration: clip.length }, "*");
     }
   }
   /** 合并同一浏览器帧内的更新，回调只读取当前 refs，避免捕获旧通道。 */
@@ -140,15 +141,19 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
   /** 同一播放器换资产后页面重新加载：旧握手作废，清掉旧能力标记并重新等待就绪通知。 */
   function reloaded(id: string) {
     clearTimeout(readiness.current.get(id) ?? undefined);
+    loaded.current.delete(id);
     supported.current.delete(id);
     hosts.current.delete(id);
     sent.current.delete(id);
+    for (const [requestId, request] of updates.current) if (request.id === id) updates.current.delete(requestId);
+    const frame = frames.current.get(id);
+    if (frame) frame.style.visibility = "hidden";
     setUnsupported((items) => items.includes(id) ? items.filter((item) => item !== id) : items);
     setFixed((items) => items.includes(id) ? items.filter((item) => item !== id) : items);
     startReadyTimer(id);
   }
   useImperativeHandle(ref, () => ({ setTime(value) { time.current = value; schedule(); } }), []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const ids = new Set(clips.map((clip) => clip.id));
     for (const id of channels.current.keys()) {
       if (!ids.has(id)) { channels.current.delete(id); supported.current.delete(id); hosts.current.delete(id); sent.current.delete(id); }
@@ -156,9 +161,17 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     setUnsupported((items) => items.some((id) => !ids.has(id)) ? items.filter((id) => ids.has(id)) : items);
     setFixed((items) => items.some((id) => !ids.has(id)) ? items.filter((id) => ids.has(id)) : items);
     remount();
-    for (const clip of clips) update(clip);
+    for (const clip of clips) {
+      const src = frames.current.get(clip.id)?.src;
+      if (src) {
+        const previous = frameSources.current.get(clip.id);
+        frameSources.current.set(clip.id, src);
+        if (previous !== undefined && previous !== src) reloaded(clip.id);
+      }
+      update(clip);
+    }
     schedule();
-  }, [clips]);
+  }, [clips, mounted]);
 
   // 卸载的播放器重新挂载时是新页面，需要重新握手并重发参数。
   useEffect(() => {
@@ -167,7 +180,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     for (const id of [...hosts.current]) if (!ids.has(id)) hosts.current.delete(id);
     for (const id of [...sent.current.keys()]) if (!ids.has(id)) sent.current.delete(id);
     for (const id of [...loaded.current]) if (!ids.has(id)) loaded.current.delete(id);
-    for (const id of [...loadedSrc.current.keys()]) if (!ids.has(id)) loadedSrc.current.delete(id);
+    for (const id of [...frameSources.current.keys()]) if (!ids.has(id)) frameSources.current.delete(id);
     for (const [id, timer] of readiness.current) if (!ids.has(id)) { clearTimeout(timer ?? undefined); readiness.current.delete(id); }
     for (const id of [...mountedAt.current.keys()]) if (!ids.has(id)) mountedAt.current.delete(id);
     // 跨源沙箱页面的报错无法监听：预览包缺失、服务端出错或脚本崩溃时只会一直不就绪，超时后记录资产与地址。
@@ -183,7 +196,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     function receive(event: MessageEvent) {
       const entry = [...frames.current].find(([, frame]) => frame.contentWindow === event.source);
       const id = entry?.[0];
-      const channel = id ? channels.current.get(id) : undefined;
+      const channel = id ? channels.current.get(id)?.channel : undefined;
       if (!entry?.[1].contentWindow || !channel || event.data?.channel !== channel) return;
       if (event.data?.type === "imv-preview-fonts-request") return sendPreviewFonts(entry[1].contentWindow, channel);
       if (!id) return;
@@ -247,14 +260,8 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
           ref={(element) => { if (element) frames.current.set(clip.id, element); else frames.current.delete(clip.id); }}
           title={`AI 资产预览：${clip.name}`}
           sandbox="allow-scripts"
-          onLoad={(event) => {
-            loaded.current.add(clip.id);
-            const src = event.currentTarget.src;
-            const previous = loadedSrc.current.get(clip.id);
-            loadedSrc.current.set(clip.id, src);
-            if (previous !== undefined && previous !== src) reloaded(clip.id);
-          }}
-          src={`${apiBase()}/api/sprites/${encodeURIComponent(clip.spriteId)}/preview?overlay=true&sync=1&${HOST_FONTS}#${channels.current.get(clip.id)}`}
+          onLoad={() => loaded.current.add(clip.id)}
+          src={`${apiBase()}/api/sprites/${encodeURIComponent(clip.spriteId)}/preview?overlay=true&sync=1&${HOST_FONTS}${clip.sourceVersionId ? `&version=${encodeURIComponent(clip.sourceVersionId)}` : ""}#${channels.current.get(clip.id)?.channel}`}
           className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 border-0"
           style={{ colorScheme: "light", visibility: "hidden", aspectRatio: clip.aspect, ...(clip.aspect > stageAspect ? { height: "100%" } : { width: "100%" }) }}
         />

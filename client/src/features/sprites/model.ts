@@ -7,6 +7,8 @@ export interface SpriteAsset {
   id: string;
   name: string;
   kind: SpriteKind;
+  /** 发布它的字效会话版本；工作区据此找出本会话上次保存的资产，用来默认覆盖保存。旧服务端可能不返回。 */
+  sourceVersionId?: string;
   seconds: number;
   /** 发布画布宽高比，叠加预览按 Cover 方式铺满模板画面。 */
   aspect: number;

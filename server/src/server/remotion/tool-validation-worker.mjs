@@ -1,8 +1,9 @@
 /**
  * Networkless browser behavior validator for PR76 components.  It performs
  * source-policy/type checks and drives a fixed Remotion Player through a small
- * page bridge; it never captures frames, encodes media, or invokes a visual
- * reviewer.
+ * page bridge; it never encodes media or invokes a visual reviewer. On request,
+ * once every check has passed, it captures a few still frames for the Agent to
+ * look at (`captureFrames`).
  */
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -322,6 +323,31 @@ async function transparencyCheck(page) {
   return { name: "transparency", status: "passed", message: `The video stays visible: the canvas is covered in ${covered} of the ${samples.length} measured frames (${summary}).` };
 }
 
+/**
+ * Capture `request.capture.frames` of the component as it is configured (with `request.capture.parameters` over it,
+ * such as sample keywords), composited onto neutral #808080 gray (the gray the model is told is not content) and cut
+ * to `request.capture.box` at `request.capture.scale`, as `frames/frame-<n>.png` for the Agent to compare with what was
+ * asked. The checks before may leave other values or another render length mounted, so these are put back first.
+ */
+async function captureFrames(page) {
+  const { frames, box, scale } = request.capture;
+  await fs.mkdir(`${root}/frames`, { recursive: true });
+  await page.evaluate((frames) => window.__imvTool.setDuration(frames), request.composition.duration_frames);
+  await page.evaluate((values) => window.__imvTool.setParameters(values), { ...(request.parameters ?? {}), ...(request.capture.parameters ?? {}) });
+  const client = page._client();
+  await client.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 128, g: 128, b: 128, a: 1 } });
+  try {
+    for (const frame of frames) {
+      await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+      const shot = await client.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: true, clip: { ...box, scale } });
+      // The renderer's protocol client wraps the CDP result as `{ value: { data } }`.
+      await fs.writeFile(`${root}/frames/frame-${frame}.png`, Buffer.from((shot.value ?? shot).data, "base64"));
+    }
+  } finally {
+    await client.send("Emulation.setDefaultBackgroundColorOverride", {});
+  }
+}
+
 /** First, middle and last frame of one render length. */
 function edgeFrames(length) {
   return [...new Set([0, Math.floor((length - 1) / 2), length - 1])];
@@ -358,14 +384,17 @@ async function lengthsCheck(page) {
 }
 
 /**
- * Sample values of the props the host passes a text-block Preset (`ROLE_PROPS` in contracts.py), as JSX attributes of
- * the type check's call site: a text Preset draws one tier from its text, keyword segments and fonts, a keyword Preset one hit,
- * an effect Preset wraps children in the host's Box at a progress.
+ * Sample values of the props the host passes a text-block Preset (`ROLE_PROPS` in contracts.py), for the type check's
+ * call site: a text Preset draws one tier from the host's line (`children`) or from its text, keyword segments and
+ * `Keyword` itself, in its fonts; a keyword Preset draws one hit from the host's glyphs (`children`) or its `text`; an
+ * effect Preset wraps children in the host's Box at a progress, as unit `index` of `count`. Props a Preset may leave undeclared are spread: TypeScript checks the type of
+ * a spread prop the component declares (and its absence when required) but not an extra one, as at runtime, where the
+ * host passes them all.
  */
 const ROLE_HOST_PROPS = {
-  text: 'text={"示例文字"} segments={[{text: "示例", keyword: true}, {text: "文字", keyword: false}]} Keyword={(keyword: {text: string}) => <span>{keyword.text}</span>} fontFamily={"Noto Sans CJK SC"} fontWeight={700} fontSize={96}',
-  keyword: 'text={"示例"}',
-  effect: 'progress={1} Box={(box: {style?: React.CSSProperties; children?: React.ReactNode}) => <div style={box.style}>{box.children}</div>} children={<span>示例文字</span>}',
+  text: 'fontFamily={"Noto Sans CJK SC"} fontWeight={700} fontSize={96} {...{text: "示例文字", segments: [{text: "示例", keyword: true}, {text: "文字", keyword: false}], Keyword: (keyword: {text: string}) => <span>{keyword.text}</span>, children: <span>示例文字</span>}}',
+  keyword: '{...{text: "示例", children: <span>示例</span>}}',
+  effect: 'progress={1} Box={(box: {style?: React.CSSProperties; children?: React.ReactNode}) => <div style={box.style}>{box.children}</div>} children={<span>示例文字</span>} {...{index: 0, count: 1, completedCount: 1}}',
 };
 
 /**
@@ -440,12 +469,14 @@ function visibleWindow(canvas, output) {
  * latter sticks out of a box that holds the line exactly, although no glyph is cut. Returns `null` when no part of
  * the text is shown at this frame (not yet shown), otherwise the `problems` (empty when all of it is shown and fits)
  * and the `area` of the shown lines, which tells the frames that show the text at its full size. `extent` is the canvas
- * rectangle of all shown text after the transform and `view` the window of the canvas the video shows. Render
- * preflight (`mode: fit`) also counts laid-out transparent text toward completeness: an operator may set one
- * tier's opacity to zero. Only painted text contributes geometry; generation still requires visible text.
+ * rectangle of all shown text after the transform and `view` the window of the canvas the video shows. With
+ * `collectLines` it also names the top and bottom visual line (their canvas centre and their text), which `fitTexts`
+ * uses to find where that line would sit as a single line. Render preflight (`mode: fit`) also counts laid-out
+ * transparent text toward completeness: an operator may set one tier's opacity to zero. Only painted text contributes
+ * geometry; generation still requires visible text.
  */
-function textFitProblems(page, needle, placement) {
-  return page.evaluate((needle, minLine, tolerance, placement, countTransparentText) => {
+function textFitProblems(page, needle, placement, collectLines = false) {
+  return page.evaluate((needle, minLine, tolerance, placement, countTransparentText, collectLines) => {
     const canvasNode = document.querySelector("[data-imv-validation-canvas]");
     const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
     if (!canvasNode || !layer) return null;
@@ -484,6 +515,40 @@ function textFitProblems(page, needle, placement) {
         return { left: rect.left, right: rect.right, top: rect.top + inset, bottom: rect.bottom - inset, height: rect.height - 2 * inset };
       });
     };
+    /**
+     * The text of each visual line of `node`, paired with the line's left edge, when `collectLines` is on. Every
+     * character is mapped to the line box that contains it, so keyword spans on the same line keep their own text and
+     * the top and bottom lines can be measured on one line to find where a single line would sit.
+     */
+    const lineSegments = (node, rects) => {
+      const value = node.nodeValue;
+      const spans = rects.map(() => null);
+      if (!value) return spans;
+      const range = document.createRange();
+      let offset = 0;
+      for (const char of value) {
+        const end = offset + char.length;
+        range.setStart(node, offset);
+        range.setEnd(node, end);
+        offset = end;
+        const box = Array.from(range.getClientRects()).find((rect) => rect.width > 0 && rect.height > 0);
+        if (!box) continue;
+        const middle = (box.top + box.bottom) / 2;
+        let index = rects.findIndex((rect) => middle >= rect.top && middle <= rect.bottom);
+        if (index < 0) {
+          let overlap = -Infinity;
+          rects.forEach((rect, candidate) => {
+            const shared = Math.min(rect.bottom, box.bottom) - Math.max(rect.top, box.top);
+            if (shared > overlap) { overlap = shared; index = candidate; }
+          });
+        }
+        if (index < 0) continue;
+        const span = spans[index] ?? { start: offset - char.length, end: offset };
+        span.end = offset;
+        spans[index] = span;
+      }
+      return spans.map((span, index) => span && { left: rects[index].left, text: value.slice(span.start, span.end) });
+    };
     // Components may split the text into words or glyphs and drop the spaces between them.
     const compact = (value) => value.replace(/\s+/g, "");
     const wanted = compact(needle);
@@ -492,6 +557,10 @@ function textFitProblems(page, needle, placement) {
     let joined = "";
     let area = 0;
     let extent = null; // canvas rectangle of all shown text after the transform
+    // The visual text lines: rectangles whose vertical ranges overlap belong to the same line, so the pieces of a line
+    // split into keyword spans still count once. A text block laid out for one line that wraps is then two lines.
+    // `segments` holds the line's text pieces, ordered by their left edge when the top and bottom lines are needed.
+    const rows = [];
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const shown = compact(node.nodeValue);
       if (!shown || !(wanted.includes(shown) || shown.includes(wanted)) || !node.parentElement || getComputedStyle(node.parentElement).visibility !== "visible") continue;
@@ -511,6 +580,23 @@ function textFitProblems(page, needle, placement) {
         top: Math.min(...lines.map((rect) => rect.top)), bottom: Math.max(...lines.map((rect) => rect.bottom)),
       };
       area += lines.reduce((sum, rect) => sum + (rect.right - rect.left) * rect.height, 0);
+      const segments = collectLines ? lineSegments(node, lines) : null;
+      for (const [index, rect] of lines.entries()) {
+        // Spans of one line overlap almost completely; line boxes of two stacked lines only touch, so half the smaller
+        // height tells them apart even when a taller keyword span shifts slightly.
+        const same = rows.find((row) => Math.min(row.bottom, rect.bottom) - Math.max(row.top, rect.top) > Math.min(row.bottom - row.top, rect.height) / 2);
+        const segment = segments?.[index];
+        if (same) {
+          same.left = Math.min(same.left, rect.left);
+          same.right = Math.max(same.right, rect.right);
+          same.top = Math.min(same.top, rect.top);
+          same.bottom = Math.max(same.bottom, rect.bottom);
+          if (segment) same.segments.push(segment);
+        } else rows.push({
+          left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+          segments: segment ? [segment] : [],
+        });
+      }
       const smallest = Math.min(...lines.map((rect) => rect.height));
       if (smallest < minLine) problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
       const corners = lines.flatMap((rect) => [place(rect.left, rect.top), place(rect.right, rect.top), place(rect.left, rect.bottom), place(rect.right, rect.bottom)]);
@@ -537,8 +623,17 @@ function textFitProblems(page, needle, placement) {
     }
     if (!extent) return null;
     if (!joined.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
-    return { problems: [...problems], area, extent, view };
-  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, request.mode === "fit");
+    const ordered = [...rows].sort((first, second) => first.top - second.top);
+    /** The canvas centre and rendered text of one visual line, for measuring its single-line position. */
+    const describe = (row) => row && {
+      center: place((row.left + row.right) / 2, (row.top + row.bottom) / 2),
+      text: row.segments.sort((first, second) => first.left - second.left).map((segment) => segment.text).join(""),
+    };
+    return {
+      problems: [...problems], area, extent, view, lines: rows.length,
+      ...(collectLines ? { first: describe(ordered[0]), last: describe(ordered.at(-1)) } : {}),
+    };
+  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, request.mode === "fit", collectLines);
 }
 
 /** No host transform: generation checks mount the Sprite over the whole canvas where it was laid out. */
@@ -554,15 +649,20 @@ const UNPLACED = Object.freeze({ cx: 0, cy: 0, x: 0, y: 0, scale: 1, rotation: 0
  * With `placement.nudge` the text leaving the window is no problem and `shift` is the smallest move of the placement
  * (`{x, y}` in canvas pixels, zero when none is needed) that brings the text of the middle one of the problem-free
  * full-size frames back inside it; when that text is larger than the window no move helps and it does not fit.
+ * `lines` is the largest number of visual lines those full-size frames show, which `fitTexts` uses to keep an English
+ * title or subtitle on one line, and `extent` is the canvas rectangle of the text in the middle problem-free one of
+ * them (the middle full-size one when none is problem-free). With `collectLines`, `first` and `last` describe the top
+ * and bottom visual line of that frame, and `frame` is its frame number so a one-line sample of an anchor line can be
+ * measured at the same point of the animation.
  */
-async function measureTextFit(page, needle, frames = sampleFrames(request.composition.duration_frames), placement = UNPLACED) {
+async function measureTextFit(page, needle, frames = sampleFrames(request.composition.duration_frames), placement = UNPLACED, collectLines = false) {
   const verdicts = [];
   for (const frame of frames) {
     await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
     const error = await page.evaluate(() => window.__imvRuntimeError ?? null);
-    if (error) return { error, frame, shown: verdicts.length, full: 0, fits: false, problems: [] };
-    const verdict = await textFitProblems(page, needle, placement);
-    if (verdict) verdicts.push(verdict);
+    if (error) return { error, frame, shown: verdicts.length, full: 0, fits: false, lines: 0, extent: null, first: null, last: null, problems: [] };
+    const verdict = await textFitProblems(page, needle, placement, collectLines);
+    if (verdict) verdicts.push({ ...verdict, frame });
   }
   const largest = Math.max(0, ...verdicts.map((verdict) => verdict.area));
   const full = verdicts.filter((verdict) => verdict.area >= largest * FULL_SIZE_SHARE);
@@ -576,7 +676,14 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
     if (x !== null && y !== null) shift = { x, y };
   }
   const fits = placement.nudge ? shift !== null : clean.length > 0;
-  return { error: null, shown: verdicts.length, full: full.length, fits, shift, problems: fits ? [] : [...new Set(full.flatMap((verdict) => verdict.problems))] };
+  // The anchor line and its text come from a frame without problems, so an entrance or exit offset cannot move it.
+  const middle = (clean.length ? clean : full)[Math.floor(((clean.length ? clean : full).length - 1) / 2)] ?? null;
+  return {
+    error: null, shown: verdicts.length, full: full.length, fits,
+    lines: Math.max(0, ...full.map((verdict) => verdict.lines)), extent: middle?.extent ?? null,
+    first: middle?.first ?? null, last: middle?.last ?? null, frame: middle?.frame ?? null, shift,
+    problems: fits ? [] : [...new Set(full.flatMap((verdict) => verdict.problems))],
+  };
 }
 
 /**
@@ -589,8 +696,9 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
  * samples show every line from the first frame; its default lines must also pass `lineSyncProblem` and `lineJumpProblem`.
  * An effect with a `keywords` parameter is also mounted with a hit in its default text: the hit, and any keyword effect
  * drawn on it, must not throw or keep the default text from showing in full, and in a text block the hit must keep
- * its tier's look (`keywordLookProblem`).
- * Apart from that look comparison this is a geometric measurement of the text boxes, not a visual review of how the result looks.
+ * its tier's look (`keywordLookProblem`). The default text must also keep the fill it is painted with
+ * (`coveredFillProblem`).
+ * Apart from those paint comparisons this is a geometric measurement of the text boxes, not a visual review of how the result looks.
  */
 async function textFitCheck(page) {
   const composition = request.composition;
@@ -647,6 +755,8 @@ async function textFitCheck(page) {
           + "A user sees the default text first, so it must fit the canvas at the default fontSize without relying on the host shrinking it: adjust the default fontSize or the layout.",
       };
     shortNote = " The default text is shown in full at the default fontSize too.";
+    const covered = await coveredFillProblem(page, allLines);
+    if (covered) return { name: "text_fit", status: "failed", message: covered };
     const defaultLines = shortText.split("\n");
     const sync = multi && defaultLines.length === lines ? (await lineSyncProblem(page, defaultLines)) ?? (await lineJumpProblem(page, defaultLines)) : null;
     if (sync) return { name: "text_fit", status: "failed", message: sync };
@@ -670,6 +780,44 @@ async function textFitCheck(page) {
     }
   }
   return { name: "text_fit", status: "passed", message: `The ${length}-character text${multi ? ` over ${lines} lines` : ""} is shown in full${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""} (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).${shortNote}` };
+}
+
+/**
+ * Text whose fill is a background clipped to it (`background-clip: text` on its element or an ancestor, with a
+ * transparent text fill) loses that fill under any text-shadow of its own: text shadows are painted above the
+ * element's background, so the text shows only the shadow colour (audit: a gold gradient tier outlined with eight
+ * text shadows rendered as a dark blob, work eb692e7e). Mounts `values` on the middle frame and returns the failure
+ * message for the first such text, or null.
+ */
+async function coveredFillProblem(page, values) {
+  await page.evaluate((patch) => window.__imvTool.setParameters(patch), values);
+  try {
+    await page.evaluate((frame) => window.__imvTool.setFrame(frame), Math.floor((request.composition.duration_frames - 1) / 2));
+    return await page.evaluate(() => {
+      const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
+      if (!layer) return null;
+      const clear = (color) => color === "transparent" || /^rgba\([^)]*,\s*0\)$/.test(color);
+      const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const element = node.parentElement;
+        if (!element || !node.nodeValue.trim()) continue;
+        const style = getComputedStyle(element);
+        if (style.textShadow === "none" || !clear(style.webkitTextFillColor)) continue;
+        for (let item = element; item && layer.contains(item); item = item.parentElement) {
+          const own = getComputedStyle(item);
+          if (own.backgroundClip !== "text" && own.webkitBackgroundClip !== "text") continue;
+          return `The text "${node.nodeValue.trim().slice(0, 20)}" takes its fill from a background-clip: text background (on a <${item.tagName.toLowerCase()}>) `
+            + `with a transparent text fill, and also has text-shadow ${style.textShadow.slice(0, 160)}: text shadows are painted over that background, `
+            + "so the text shows only its shadow colour. Keep text-shadow off text drawn with background-clip: text: outline it with -webkit-text-stroke "
+            + "(paint-order: stroke fill), or draw the outline and shadow on a separate copy of the text behind it.";
+        }
+      }
+      return null;
+    });
+  } finally {
+    await page.evaluate((patch) => window.__imvTool.setParameters(patch), request.parameters ?? {});
+    await page.evaluate(() => window.__imvTool.setFrame(0));
+  }
 }
 
 /** Inherited text paint a keyword hit takes from its tier; with the keyword options off it equals that of the tier's other text. */
@@ -875,41 +1023,87 @@ function valuesAtSize(item, size) {
  * shows (a long title placed at the top edge), the placement is moved the shortest way back inside at `min`:
  * the answer's `shift` is that move in canvas pixels. `fits: false` means the text is too long even for that. When the
  * size is lowered the answer also carries the matching `keyword_size` (see `valuesAtSize`).
+ *
+ * An item with `one_line` (an English title or subtitle, which is laid out for one line and would otherwise wrap into
+ * the other language's text) is fitted to the largest size that also shows it on one line, shrinking it as needed.
+ * This is best effort: a text that cannot be one line at the readable floor keeps the largest size that fits it
+ * wrapped, so a long translation is still shown in full. An item with `grow` (a subtitle's `up` or `down`) that still
+ * wraps answers `grow_shift`: the line nearest the other language (the first line for `down`, the last for `up`) is
+ * measured again on one line, and the placement moves vertically so that line sits where the single line would. This is
+ * exact for any vertical alignment of the effect (top, centre or bottom), not only for centred text; the move is
+ * clamped to the part of the canvas the video shows.
  */
 async function fitTexts(page, loadError, sprite) {
   if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
   const canvas = sprite.canvas ?? request.composition;
   const box = sprite.box ?? { x: 0, y: 0, width: canvas.width, height: canvas.height };
   const visible = visibleWindow(canvas, request.composition);
-  const measure = async (item, size, nudge) => {
+  /**
+   * The item's values with the visible text replaced. A composition fills the same text into every text parameter path,
+   * so every exact match is replaced; keywords stay and are applied where the sample still contains them.
+   */
+  const valuesWithText = (item, size, text) => {
+    const replace = (value) => {
+      if (typeof value === "string") return value === item.text ? text : value;
+      if (Array.isArray(value)) return value.map(replace);
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, replace(child)]));
+      return value;
+    };
+    return replace(valuesAtSize(item, size));
+  };
+  const measure = async (item, size, nudge, collectLines = false) => {
     await page.evaluate(() => window.__imvTool.reset());
     await page.evaluate((frames) => window.__imvTool.setDuration(frames), item.length);
     await page.evaluate((values) => window.__imvTool.setSample(values, {}), valuesAtSize(item, size));
-    return measureTextFit(page, item.text, item.frames, hostPlacement(box, item.transform, visible, nudge));
+    return measureTextFit(page, item.text, item.frames, hostPlacement(box, item.transform, visible, nudge), collectLines);
   };
-  const fits = async (item, size) => {
-    const measured = await measure(item, size, false);
-    return measured.error !== null || measured.shown === 0 || measured.fits;
+  /** Mount a one-line sample of the same values at `size` and measure where that line sits on the canvas. */
+  const measureSample = async (item, size, text, frames) => {
+    await page.evaluate(() => window.__imvTool.reset());
+    await page.evaluate((value) => window.__imvTool.setDuration(value), item.length);
+    await page.evaluate((values) => window.__imvTool.setSample(values, {}), valuesWithText(item, size, text));
+    return measureTextFit(page, text, frames, hostPlacement(box, item.transform, visible, false));
   };
+  /** A component that throws or never renders its text is left alone; the render reports that itself. */
+  const usable = (measured) => measured.error !== null || measured.shown === 0 || measured.fits;
   const answers = [];
   for (const item of sprite.fit) {
+    /** One measurement per size: the size search and the subtitle shift read the same result. */
+    const measuredSizes = new Map();
+    const measureSize = async (size) => {
+      if (!measuredSizes.has(size)) measuredSizes.set(size, await measure(item, size, false));
+      return measuredSizes.get(size);
+    };
     const requested = item.values[item.size_key];
     // Never below what is readable, and never above what was asked for.
     const floor = Math.min(requested, Math.max(item.min, readableFontSize(item.values)));
+    // Turning this off when the text cannot be one line makes `accepts` check the wrapped fit instead.
+    let oneLine = item.one_line === true;
+    const accepts = (measured) => usable(measured) && (!oneLine || measured.lines <= 1);
     let size = requested;
-    let ok = await fits(item, requested);
+    const atRequested = await measureSize(requested);
+    let ok = accepts(atRequested);
     if (!ok) {
-      ok = requested > floor && await fits(item, floor);
-      if (ok) {
-        // `low` fits: the answer lies in [low, requested - 1].
-        let low = floor;
-        let high = requested - 1;
-        while (low < high) {
-          const middle = Math.ceil((low + high) / 2);
-          if (await fits(item, middle)) low = middle; else high = middle - 1;
-        }
-        size = low;
-      } else size = floor;
+      const atFloor = floor < requested ? await measureSize(floor) : atRequested;
+      const floorOK = accepts(atFloor);
+      if (oneLine && !floorOK && atRequested.fits) {
+        // It cannot be one line at any readable size: keep the text whole, wrapped, at the size asked for.
+        ok = true;
+      } else {
+        // One line where possible; otherwise the normal wrapped fit below.
+        if (!floorOK) oneLine = false;
+        ok = accepts(atFloor);
+        if (ok) {
+          // `floor` fits: the answer lies in [floor, requested - 1].
+          let low = floor;
+          let high = requested - 1;
+          while (low < high) {
+            const middle = Math.ceil((low + high) / 2);
+            if (accepts(await measureSize(middle))) low = middle; else high = middle - 1;
+          }
+          size = low;
+        } else size = floor;
+      }
     }
     let shift = null;
     if (!ok) {
@@ -917,10 +1111,66 @@ async function fitTexts(page, loadError, sprite) {
       ok = nudged.fits;
       shift = nudged.shift;
     }
+    // An English subtitle (`down`) keeps its first line and grows below; a Chinese one (`up`) keeps its last line and
+    // grows above. Measure that line and the same text on one line, then move the placement so the line sits exactly
+    // where the single line would, whatever vertical alignment the effect uses. Never move it past the shown canvas.
+    let growShift = null;
+    // A rotated subtitle adds its lines along the rotated direction; moving only host y would not keep the nearest line
+    // away from the other language. Leave that placement on its original layout rather than moving it the wrong way.
+    const upright = Math.abs(item.transform.rotation ?? 0) < 0.5;
+    if (item.grow && ok && upright) {
+      const measured = await measureSize(size);
+      // A text that throws or shows nothing here is reported by the render; a sample measurement is only an improvement.
+      if (!measured.error && measured.shown > 0 && measured.lines > 1 && measured.extent) {
+        let anchored = false;
+        const detailed = await measure(item, size, false, true);
+        if (!detailed.error && detailed.shown > 0 && detailed.lines > 1 && detailed.extent) {
+          const anchor = item.grow === "down" ? detailed.first : detailed.last;
+          // Only the anchor line's own text keeps its style. If the row text is not the start (for `down`) or end (for
+          // `up`) of the passed text (a duplicated layer or reordered spans), use one character on that line instead.
+          const edge = Array.from(item.text.trim())[item.grow === "down" ? 0 : -1];
+          const exact = anchor?.text && (item.grow === "down" ? item.text.startsWith(anchor.text) : item.text.endsWith(anchor.text));
+          const candidates = [...new Set([exact ? anchor.text : edge, edge].filter(Boolean))];
+          let sample = null;
+          for (const text of candidates) {
+            let single;
+            try {
+              single = await measureSample(item, size, text, detailed.frame == null ? item.frames : [detailed.frame]);
+            } catch {
+              continue;
+            }
+            if (!single.error && single.shown > 0 && single.lines <= 1 && single.extent) { sample = single; break; }
+          }
+          // The nudge (when the floor size still left the canvas) moves the text too, so clamp against where it will sit.
+          const nudged = { top: detailed.extent.top + (shift?.y ?? 0), bottom: detailed.extent.bottom + (shift?.y ?? 0) };
+          if (anchor?.center && sample?.extent) {
+            const middle = (sample.extent.top + sample.extent.bottom) / 2;
+            let move = middle - anchor.center[1];
+            // Keep the whole multi-line text inside the window the video shows, without ever reversing the direction.
+            if (item.grow === "down") move = Math.max(0, Math.min(move, visible.y + visible.height - nudged.bottom));
+            else move = Math.min(0, Math.max(move, visible.y - nudged.top));
+            growShift = Math.round(move);
+            anchored = true;
+            if (growShift === 0) growShift = null;
+          }
+        }
+        if (!anchored) {
+          // A component that cannot render its anchor line as one line keeps the old centred-growth estimate.
+          const nudged = { top: measured.extent.top + (shift?.y ?? 0), bottom: measured.extent.bottom + (shift?.y ?? 0) };
+          const height = measured.extent.bottom - measured.extent.top;
+          const grow = (height * (measured.lines - 1)) / (2 * measured.lines);
+          if (item.grow === "down") growShift = Math.min(grow, Math.max(0, visible.y + visible.height - nudged.bottom));
+          else if (item.grow === "up") growShift = -Math.min(grow, Math.max(0, nudged.top - visible.y));
+          if (growShift !== null) growShift = Math.round(growShift);
+          if (growShift === 0) growShift = null;
+        }
+      }
+    }
     const keywordSize = valuesAtSize(item, size).keywordSize;
+    const final = await measureSize(size);
     answers.push({
-      index: item.index, fits: ok, size, ...(keywordSize !== item.values.keywordSize ? { keyword_size: keywordSize } : {}),
-      ...(shift && (shift.x || shift.y) ? { shift } : {}),
+      index: item.index, fits: ok, size, lines: final.lines, ...(keywordSize !== item.values.keywordSize ? { keyword_size: keywordSize } : {}),
+      ...(shift && (shift.x || shift.y) ? { shift } : {}), ...(growShift ? { grow_shift: growShift } : {}),
     });
   }
   return answers;
@@ -1049,6 +1299,7 @@ async function main() {
     if (baseReady && request.transparency === true) checks.push(await transparencyCheck(page));
     if (baseReady && Array.isArray(request.lengths)) checks.push(await lengthsCheck(page));
     if (baseReady && request.text_fit === true) checks.push(await textFitCheck(page));
+    if (baseReady && request.capture && checks.every((item) => item.status === "passed" || item.status === "pass")) await captureFrames(page);
     if (!baseReady) {
       result.tests = (request.tests ?? []).map((test) => ({ name: test.name, status: "not_run", message: "Base render failed.", assertions: [] }));
       result.custom_tests_executed = 0;

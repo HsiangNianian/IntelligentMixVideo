@@ -74,6 +74,7 @@ function toAsset(summary: SpriteSummary): SpriteAsset {
     id: summary.spriteId,
     name: summary.name,
     kind: summary.kind,
+    sourceVersionId: summary.sourceVersionId,
     seconds: summary.canvas && summary.canvas.fps ? summary.canvas.previewFrames / summary.canvas.fps : 0,
     aspect: summary.canvas && summary.canvas.height ? summary.canvas.width / summary.canvas.height : 9 / 16,
     width: summary.canvas?.width ?? 0,
@@ -92,9 +93,17 @@ export async function listSprites(signal?: AbortSignal): Promise<SpriteAsset[]> 
   return fromBinary(ListSpritesResponseSchema, await request("/api/sprites", "GET", signal)).sprites.map(toAsset);
 }
 
-/** 把本机会话的成功版本保存为资产（服务端先渲染参数边界样本）；相同选择重复调用返回原资产。 */
-export async function publishSprite(versionId: string, choice: PublishChoice): Promise<SpriteAsset> {
-  const body = toBinary(PublishSpriteRequestSchema, create(PublishSpriteRequestSchema, { sourceVersionId: versionId, ...choice }));
+/**
+ * 把本机会话的成功版本保存为资产（服务端先渲染参数边界样本）；相同选择重复调用返回原资产。
+ * 提供 `target` 时覆盖该资产（保留 sprite_id），否则保存为新资产；可同时命名，留空使用服务端默认名称。
+ */
+export async function publishSprite(versionId: string, choice: PublishChoice, target?: string, name?: string): Promise<SpriteAsset> {
+  const body = toBinary(PublishSpriteRequestSchema, create(PublishSpriteRequestSchema, {
+    sourceVersionId: versionId,
+    ...choice,
+    ...(target ? { targetSpriteId: target } : {}),
+    ...(name?.trim() ? { name: name.trim() } : {}),
+  }));
   const device = await deviceId();
   const { sprite } = fromBinary(PublishSpriteResponseSchema, await request("/api/sprites/publish", "POST", undefined, body, PUBLISH_TIMEOUT_MS, device));
   if (!sprite) throw new Error("发布响应缺少内容");

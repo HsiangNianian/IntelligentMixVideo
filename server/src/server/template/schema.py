@@ -14,6 +14,9 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from .split_screen import SplitScreen
+from .avatar import AvatarEffects
+
 EffectCategory = Literal[
     "flower",
     "in",
@@ -345,6 +348,23 @@ class EffectTrack(BaseModel):
         return self
 
 
+class FrameMaskBar(BaseModel):
+    """贴住画布边缘的全宽纯色栏；两栏各最多半屏，不改变视频构图。"""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: StrictBool
+    height: float = Field(ge=0, le=50, allow_inf_nan=False)
+    color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+
+
+class FrameMask(BaseModel):
+    """整段上下蒙版；关闭时仍保存高度与颜色。"""
+
+    model_config = ConfigDict(extra="forbid")
+    top: FrameMaskBar
+    bottom: FrameMaskBar
+
+
 class TemplateData(BaseModel):
     """完整模板配置；API 和数据库读取共用字段定义。"""
 
@@ -357,7 +377,10 @@ class TemplateData(BaseModel):
     transition_duration_seconds: float = Field(default=1, ge=0.1, le=3, allow_inf_nan=False)
     transition_mode: Literal["sequence", "random"] | None = Field(default=None, exclude_if=lambda value: value is None)
     transition_enabled: bool = Field(default=True, strict=True)
+    split_screen: SplitScreen | None = Field(default=None, exclude_if=lambda value: value is None)
+    avatar_effects: AvatarEffects | None = Field(default=None, exclude_if=lambda value: value is None)
     tracks: list[EffectTrack] = Field(max_length=100)
+    frame_mask: FrameMask | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def validate_tracks(self) -> "TemplateData":

@@ -1,6 +1,6 @@
 [project]
 name = "imv-server"
-version = "0.9.16"
+version = "0.9.17"
 description = "IntelligentMixVideo Server End"
 readme = "README.md"
 authors = [
@@ -28,6 +28,7 @@ dependencies = [
     "darabonba-core>=1.0.9",
     "boto3>=1.40,<2",
     "referencing>=0.37.0",
+    "opencv-python-headless==4.12.0.88",
 ]
 
 [project.scripts]

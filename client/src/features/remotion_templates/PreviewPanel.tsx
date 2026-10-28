@@ -1,13 +1,13 @@
 /**
  * 隔离预览容器；仅向当前成功版本的 iframe 发送参数，直链或本地背景视频在客户端底层独立播放，
- * 清理消息监听和就绪超时。带关键词字效的字效在未填关键词时以示例关键词预览（见 `sampleKeyword`），参数本身不变。
+ * 清理消息监听和就绪超时。未填关键词时以示例关键词预览（见 `sampleKeywords`），参数本身不变。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Film, FolderOpen, Maximize, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiUrl } from "./api";
-import { backgroundUrl, sampleKeyword, type Values, type Version } from "./model";
+import { backgroundUrl, sampleKeywords, type Values, type Version } from "./model";
 import { Spinner } from "@/components/ui/spinner";
 
 /** 背景链接不进入生成请求，模板切换后的旧 iframe 消息不会影响当前画面。 */
@@ -22,8 +22,8 @@ export function PreviewPanel({
   pending: boolean;
   onBusyChange: (busy: boolean) => void;
 }) {
-  const sample = sampleKeyword(version, values);
-  const shown = useMemo(() => (sample ? { ...values, keywords: [sample] } : values), [values, sample]);
+  const sample = sampleKeywords(version, values).join("、");
+  const shown = useMemo(() => (sample ? { ...values, keywords: sample.split("、") } : values), [values, sample]);
   const [link, setLink] = useState("");
   const [background, setBackground] = useState("");
   const [backgroundError, setBackgroundError] = useState("");
@@ -284,7 +284,7 @@ export function PreviewPanel({
         </div>
         {sample && (
           <p className="mt-2 text-xs text-fg-subtle">
-            预览以「{sample}」为示例关键词展示关键词字效；模板里由切片关键词决定，只能开关六个关键词样式。
+            预览以「{sample}」为示例关键词展示关键词与作用于关键词的特效；模板里由切片关键词决定，只能开关六个关键词样式。
           </p>
         )}
         {backgroundError && <p role="alert" className="mt-2 text-xs text-danger">{backgroundError}</p>}

@@ -1,7 +1,9 @@
-"""MySQL storage of published Remotion Sprites: one immutable row per publication.
+"""MySQL storage of published Remotion Sprites: one row per published Sprite.
 
 A row holds the `imv.sprite.v1.PublishedSprite` JSON and the columns that identify a publication: its source
-version and field choice, which are unique together. A row is only deleted as a whole, when nothing uses it. The preview bundle stays a file in the Remotion data
+version and field choice, which are unique together. Saving an asset again from the same version keeps the row;
+overwriting an asset from another version replaces the row in place (same `sprite_id`, name kept) so templates
+that reference it keep working. A row is only deleted as a whole, when nothing uses it. The preview bundle stays a file in the Remotion data
 folder (`sprites.py`). Like the template and Preset tables, the table is created on first use and never altered.
 Templates reference Sprites by ID, and keeping both in one database lets a template be checked against the
 published Sprites when it is saved. The functions are synchronous; callers run them in a worker thread. Every
@@ -115,6 +117,33 @@ def update_data(sprite_id: str, fields: dict) -> dict | None:
             return None
         data = {**data, **fields}
         connection.execute(update(sprites).where(sprites.c.sprite_id == sprite_id).values(data=data))
+    sprite_events.changed()
+    return data
+
+
+def replace(
+    sprite_id: str, *, source_version_id: str, kind: int, text_prop: str, keywords_prop: str,
+    published_at: datetime, data: dict, name: str | None = None,
+) -> dict | None:
+    """Overwrite one publication, including its identifying columns, and return the new JSON.
+
+    Used when the source chat overwrites an existing asset: the Sprite ID stays the same so templates keep
+    referencing it, while the source version, field choice, publication time and stored JSON are replaced. The row
+    is locked before reading its latest name: omitted names preserve a rename committed during sampling, while an
+    explicit name replaces it with the content. The new content supplies its own preview hash. None means the ID
+    no longer exists. A duplicate key means another row already owns this source and field choice and propagates.
+    """
+    with initialize_schema().begin() as connection:
+        existing = connection.execute(
+            select(sprites.c.data).where(sprites.c.sprite_id == sprite_id).with_for_update()
+        ).scalar()
+        if existing is None:
+            return None
+        data = {**data, "name": name if name is not None else existing["name"]}
+        connection.execute(update(sprites).where(sprites.c.sprite_id == sprite_id).values(
+            source_version_id=source_version_id, kind=kind, text_prop=text_prop,
+            keywords_prop=keywords_prop, published_at=published_at.astimezone(UTC).replace(tzinfo=None), data=data,
+        ))
     sprite_events.changed()
     return data
 

@@ -30,6 +30,12 @@ function reducedMotion(): boolean {
  * 就绪握手沿用叠加预览的 `imv-preview-ready` / `imv-preview-sync` 协议：旧版本资产不支持逐帧定位，显示“暂无封面”。
  */
 export function SpriteCover({ asset, active }: { asset: SpriteAsset; active: boolean }) {
+  // 覆盖保留资产 ID，但来源版本改变：重建播放器，连失败状态、通道与计时器一起重置；单纯改名不重载。
+  return <CoverPlayer key={`${asset.id}:${asset.sourceVersionId ?? ""}`} asset={asset} active={active} />;
+}
+
+/** 单个发布版本的封面生命周期；卸载时清理可见性观察、握手与轮播计时器。 */
+function CoverPlayer({ asset, active }: { asset: SpriteAsset; active: boolean }) {
   const [channel] = useState(() => crypto.randomUUID());
   const box = useRef<HTMLDivElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -107,7 +113,7 @@ export function SpriteCover({ asset, active }: { asset: SpriteAsset; active: boo
           title={`AI 资产封面：${asset.name}`}
           sandbox="allow-scripts"
           tabIndex={-1}
-          src={`${apiBase()}/api/sprites/${encodeURIComponent(asset.id)}/preview?sync=1&${HOST_FONTS}#${channel}`}
+          src={`${apiBase()}/api/sprites/${encodeURIComponent(asset.id)}/preview?sync=1&${HOST_FONTS}${asset.sourceVersionId ? `&version=${encodeURIComponent(asset.sourceVersionId)}` : ""}#${channel}`}
           className="pointer-events-none absolute inset-0 h-full w-full border-0"
           style={{ colorScheme: "light", visibility: shown ? "visible" : "hidden" }}
         />

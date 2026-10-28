@@ -67,7 +67,8 @@ def _deferred(name: str):
     "preset.create",
     constraints=[
         "The complete source, parameter schema and defaults are saved as a new immutable record.",
-        "role text, keyword or effect marks a Preset for a text effect's text block. The host passes a text Preset text, segments, Keyword, fontFamily, fontWeight and fontSize, a keyword Preset text and an effect Preset children, progress and Box; it is type-checked with those props, and its parameter_schema declares only its own style parameters, never these.",
+        "role text, keyword or effect marks a Preset for a text effect's text block. The host passes a text Preset children (the line it renders), fontFamily, fontWeight and fontSize, and still text, segments and Keyword for Presets that draw the line themselves, a keyword Preset text and children (the hit's glyphs) and an effect Preset children, progress, Box, index, count and completedCount; it is type-checked with those props, and its parameter_schema declares only its own style parameters, never these.",
+        "An effect Preset records usage {title, slot, target, seconds, stagger}: its short Chinese name and the slot, position and length it is used with by default. text.effects entries may leave those out and take them from it, so a later work reuses the effect by listing only its instance_id and source. Only effect Presets take a usage; a loop has no seconds or stagger. A non-loop glyph usage must explicitly choose stagger (0 together, 1 sequential).",
         "In a new work the host holds each text Preset on its middle frame, so motion of its own never plays: the text's motion belongs in effect Presets, while keyword Presets keep playing.",
     ],
     side_effects=["code validation and preset catalog write"],
@@ -85,11 +86,17 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
 
 @tool(
     "sprite.compose",
-    contract_version=4,
+    contract_version=10,
     constraints=[
         "The host canvas is fixed at 1080x1920, 30 FPS. When the snapshot has target_duration_frames (a new work), the Sprite must last exactly that long (the last instance's end, or the text block's duration_frames), otherwise the call is refused.",
         "Contract v4: kind is required (text, filter_overlay, video_overlay or transition_overlay). A text effect is composed from text {layout, text, font_size, tiers, line_gap, line_starts, keyword, effects, duration_frames} with role text Presets for the tiers, an optional role keyword Preset and role effect Presets, and no instances; the host lays the block out and provides its configuration parameters. Other kinds place instances by layout and timing.",
-        "text.effects (v4) lists up to 6 effects {instance_id, source, parameters, title, slot enter|exit|loop, target block|tiers|line1|line2|keyword, seconds (enter and exit only), enabled}, the first innermost; tiers, line1 and line2 need two tiers; a new work's block has at least one enter and one exit effect. Effect k gets the configuration parameters effect{k} (switch), effect{k}Target (position) and, entering or exiting, effect{k}Seconds (length).",
+        "text.effects (v4) lists up to 6 effects {instance_id, source, parameters, title, slot enter|exit|loop, target block|tiers|line1|line2|chars|keyword, seconds (enter and exit only), enabled}, the first innermost; tiers, line1 and line2 need two tiers; a new work's block has at least one enter and one exit effect. Effect k gets the configuration parameters effect{k} (switch), effect{k}Target (position) and, entering or exiting, effect{k}Seconds (length).",
+        "v5: a text Preset may draw the line the host passes as children (keyword hits already drawn) instead of drawing segments itself; only such tiers offer the position chars, where every glyph is a unit and the units take an entrance or exit in turn (reading order in, last first out). Every effect Preset also receives index and count (the unit in its tier at chars, the tier at tiers/line1/line2, 0 of 1 elsewhere).",
+        "v6: a two-tier text takes arrangement stack (default; line_gap apart) or overlap (both tiers in one place, centred on each other, the lower one on top; line_gap may be left out), which becomes the configuration parameter tierLayout. The slot cue (two tiers only) keeps progress 0 until the lower tier appears and then rises to 1 over seconds; it stays 0 while the lower tier has no text. The element around each tier carries the tier's font size.",
+        "v7: a text.effects entry may leave out title, slot, target and seconds; the host takes them from its effect Preset's usage, and an entry without them whose Preset records no usage is refused.",
+        "v8: a keyword Preset may draw the hit's glyphs the host passes as children, so a hit's glyphs are units too; the glyph positions are chars (all glyphs), keywordChars (the keyword hits' glyphs, only with such a keyword Preset or none) and plainChars (the other glyphs), each counting its own units. An entrance or cue effect takes delay (0-3 seconds, configuration parameter effect{k}Delay) and starts that much later, so effects can follow one another.",
+        "v9: an entrance, exit or cue effect at a glyph position takes stagger (0-1, configuration parameter effect{k}Stagger): 1 one glyph after another, 0 all together, in between overlapping. The text block may name preview_keywords, words of its default text that the review frames and the workspace preview show as keywords while templates pass none.",
+        "v10: glyph timing must be chosen explicitly with stagger in the entry or its Preset's usage; omission is refused instead of silently animating all selected text glyph by glyph. usage.stagger is inherited only at a glyph target with enter, exit or cue. Each effect receives completedCount, the count of this target's units in its tier whose local progress is 1. Use index < completedCount for discrete visibility and completedCount - 1 for a following cursor; progress itself remains continuous for fades.",
         "parameters lifts Preset props to required top-level Sprite style parameters that templates may change per placement; each binding targets declared top-level Preset props that share one object schema and one value; a bound number needs minimum and maximum (integers for an integer), a bound string a colour pattern, enum or maxLength of at most 2000; only type, title, description, default, minimum, maximum, enum, minLength, maxLength, the colour pattern (or the keywordColor pattern), maxItems and items.maxLength may be used. A text block's configuration names (text, fontSize, fonts, weights, size ratios, lineGap, lineStartFrames, keyword options, keywordEffect, effect{k}...) are taken, for parameter names and for the tiers', keyword's and effects' instance_id alike.",
         "The host owns position, scale, rotation and opacity of the whole Sprite; do not bind or implement them.",
     ],
@@ -123,12 +130,14 @@ async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[Sprit
 
 @tool(
     "sprite.create",
+    contract_version=2,
     constraints=[
         "Takes the draft_id that sprite.compose returned in this task; the host keeps the composed source, so it is never re-sent.",
         "The Sprite is mounted once in the browser and must leave the user's video visible: a canvas that is opaque in most sampled frames (4 of 5) is refused with CODE_VALIDATION_FAILED.",
         "The Sprite must expose its kind's required top-level parameters (text: a text block provides its configuration and needs the style parameter color for one tier or line1Color and line2Color for two tiers; filter_overlay: intensity, tintColor; video_overlay and transition_overlay: color, speed), otherwise CATEGORY_PARAMETERS_MISSING lists what to bind.",
+        "v2: for the first two Sprites a task saves, the same mount captures up to four still frames (cut to the content, composited onto neutral #808080 gray, which is not content), listed in review.frames with what each should show; they are attached after the reference images to the following Executor turns of the step, so the Agent can compare its result with the request and fix it. review.rounds_left counts the reviews still to come.",
     ],
-    side_effects=["code validation, one browser mount with a transparency measurement, and sprite catalog write"],
+    side_effects=["code validation, one browser mount with a transparency measurement and review frames, and sprite catalog write"],
     error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "CATEGORY_PARAMETERS_MISSING", "VALIDATION_UNAVAILABLE", "SPRITE_STORE_FAILED"],
     starts_generation=True,
     examples=[{"input": {"draft_id": "sprite_draft_0123456789ab"}, "output": {"ok": False, "error": {"code": "INVALID_ARGUMENT", "message": "Unknown draft_id sprite_draft_0123456789ab; drafts in this task: none", "field": "/draft_id"}}}],
@@ -213,8 +222,8 @@ async def image_crop(owner, request: ImageCropInput) -> ToolResult[ProcessedImag
 
 @tool(
     "preset.search",
-    contract_version=2,
-    constraints=["Contract v2: presets summaries replace the former unimplemented matches contract. Optional query whose every whitespace-separated word must appear in the description, and an optional role (text or keyword) for text-block Presets; limit is 1-100. Results also have a 40000-byte serialized content budget; has_more indicates omitted summaries. Use a narrower query or preset_id to read a full record. An oversized full record fails without truncating code."],
+    contract_version=3,
+    constraints=["Contract v3: the optional query is cut into words (Chinese needs no spaces) and the summaries come best match first: by the number of query words a Preset's description or usage title contains (a Preset matching none is left out), then by how many accepted versions used it and how many were saved to the asset library (published_uses, accepted_uses), then newest first; an empty query lists every Preset in that order. Optional role (text, keyword or effect) and slot (an effect's usage slot) filter it; summaries carry an effect's usage; limit is 1-100. Results also have a 40000-byte serialized content budget; has_more indicates omitted summaries. Use a narrower query or preset_id to read a full record. An oversized full record fails without truncating code."],
     side_effects=["read-only catalog listing"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "PRESET_STORE_FAILED", "RESOURCE_LIMIT_EXCEEDED"],
     examples=[{"input": {"query": "描边", "role": "text", "limit": 5}, "output": {"ok": True, "data": {"presets": []}}}],
@@ -231,7 +240,7 @@ async def preset_search(owner, request: PresetSearchInput) -> ToolResult[PresetS
     "preset.modify",
     constraints=[
         "The original record never changes and no new preset_id is created. preset_id may also be a task draft handle (base_* or an earlier draft_id). The copy is kept by the host: compose it with source {kind: \"draft\", draft_id}.",
-        "changes.edits replaces exact text in the copied code, in order: each old_str is copied verbatim from the code as the earlier edits left it and must occur there exactly once, otherwise nothing is copied and the error names the edit. edits and code are exclusive; code replaces the whole source. description, parameter_schema and default_parameters replace whole fields.",
+        "changes.edits replaces exact text in the copied code, in order: each old_str is copied verbatim from the code as the earlier edits left it and must occur there exactly once, otherwise nothing is copied and the error names the edit. edits and code are exclusive; code replaces the whole source. description, parameter_schema, default_parameters and usage replace whole fields.",
         "The reply counts the code lines the copy removed and added relative to its source, and carries a notice when an edit task copies a stored Preset the accepted version does not draw with instead of its base_* draft.",
     ],
     side_effects=["read-only copy of one stored Preset"],
@@ -305,13 +314,13 @@ PLAN_TOOL = HostTool(
     name="tools.plan_execute",
     input=PlanAction,
     description=(
-        "Host control; never runs a business tool. Outer: answer, ask (clarification), delegate (the host then runs "
-        "its standard Preset -> Sprite plan) or stop. Plan: update_plan (send only the unfinished steps), continue, "
+        "Host control; never runs a business tool. Outer: answer (a question that asks for no Sprite), delegate (the host "
+        "then runs its standard Preset -> Sprite plan) or stop; ask is refused, since a Sprite is built first and changed afterwards. Plan: update_plan (send only the unfinished steps), continue, "
         "advance, complete (the host publishes the latest Sprite this task saved) or stop."
     ),
     constraints=(
         "Only Outer and Plan may invoke this tool; Executor may only inspect it.",
-        "Outer answers, asks, delegates or stops; Plan owns ordered step changes.",
+        "Outer answers, delegates or stops; Plan owns ordered step changes.",
         "Completion still requires host verification of a saved Sprite; the host, not Outer, publishes it.",
     ),
     error_codes=("INVALID_ARGUMENT", "tool_limit_reached", "tool_budget_exhausted", "agent_stopped"),
@@ -325,10 +334,10 @@ REPORT_TOOL = HostTool(
     name="tools.report_step",
     input=StepResult,
     description=(
-        "Executor: report the current step as step_done, blocked or needs_input; call it alone. The host checks "
+        "Executor: report the current step as step_done or blocked; call it alone. The host checks "
         "the step really produced its output (a sprite_create success in a step with the sprite module, a ready "
-        "Preset in a preset step) and then starts the next step or publishes the Sprite. needs_input takes the questions "
-        "for the user, which Outer asks."
+        "Preset in a preset step) and then starts the next step or publishes the Sprite. needs_input is refused: what "
+        "the request leaves open is chosen sensibly, and the user changes the saved Sprite afterwards."
     ),
     constraints=(
         "Only the Executor may invoke this tool; the host records the step's Presets and Sprite from tool receipts.",

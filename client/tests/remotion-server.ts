@@ -191,6 +191,8 @@ export function remotionServer(
         const path = url.pathname.replace("/api/templates", "");
         const custom = overrides(path, options, url);
         if (custom) return capture(path, options, await custom);
+        // 未指定资产目录时返回合法空 Protobuf；工作区读取成功后才允许保存资产。
+        if (path === "/api/sprites") return new Response(new Uint8Array(), { headers: { "Content-Type": "application/x-protobuf" } });
         if (/^\/works\/[^/]+$/.test(path) && options?.method === "DELETE") {
           remove(path.split("/")[2]!);
           return new Response(null, { status: 204 });

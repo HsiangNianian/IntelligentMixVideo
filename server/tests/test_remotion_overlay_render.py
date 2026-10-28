@@ -1897,11 +1897,13 @@ def test_real_multi_line_text_reveals_lines_and_clears_together(tmp_path: Path) 
 class FitRenderer:
     """排版预检 worker 的替身：只有不超过 `capacity` 的字号才放得下，并记录每次请求。"""
 
-    def __init__(self, capacity: int | None, shift: dict | None = None, shift_text: str | None = None) -> None:
-        """capacity 为能完整显示文字的最大字号；None 表示连最小字号也放不下；shift 是答案里附带的平移，给出 shift_text 时只附在该文字的条目上。"""
+    def __init__(self, capacity: int | None, shift: dict | None = None, shift_text: str | None = None, grow_shift: int | None = None) -> None:
+        """capacity 为能完整显示文字的最大字号；None 表示连最小字号也放不下；shift 是答案里附带的平移，给出 shift_text 时只附在该文字的条目上；
+        grow_shift 是字幕换行后远离另一语言的移动（向下为正、向上为负），只附在带 grow 的条目上。"""
         self.capacity = capacity
         self.shift = shift
         self.shift_text = shift_text
+        self.grow_shift = grow_shift
         self.settings = SimpleNamespace(render_timeout_seconds=180)
         self.requests: list[dict] = []
         self.limits: list[tuple] = []
@@ -1925,7 +1927,10 @@ class FitRenderer:
                     answers.append({"index": item["index"], "fits": False, "size": item["min"]})
                 else:
                     moved = self.shift and self.shift_text in (None, item["text"])
-                    answers.append({"index": item["index"], "fits": True, "size": min(wanted, self.capacity), **({"shift": self.shift} if moved else {})})
+                    dropped = self.grow_shift if self.grow_shift and item.get("grow") else None
+                    if item.get("grow") == "up" and dropped:
+                        dropped = -dropped
+                    answers.append({"index": item["index"], "fits": True, "size": min(wanted, self.capacity), **({"shift": self.shift} if moved else {}), **({"grow_shift": dropped} if dropped else {})})
             fits.append(answers)
         return {"fits": fits}
 
@@ -2059,10 +2064,12 @@ def titled(text: str, *, sprite_id: str = "t", duration: float | None = None, fo
     return OverlayPlacement.model_validate({"spriteId": sprite_id, "start": 0, **({"duration": duration} if duration else {}), "editor": {"remotion": remotion}})
 
 
-def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[OverlayPlacement], seconds: float, *, minimum: int = 24):
+def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[OverlayPlacement], seconds: float, *, minimum: int = 24, one_line: bool = False, grow: str = "", return_answers: bool = False):
     """用真实沙箱和浏览器对这些摆放做排版预检，返回预检后的渲染计划。
 
     codes 是各字效的源码（Sprite ID 到源码；只给一份源码时就是字效 t），内容区域都是整块画布。
+    one_line、grow 给视频合成的英文字幕、字幕轨加上单行要求与换行后的展开方向（"down" 英文、"up" 中文），与合成标记实例的方式相同。
+    return_answers 为 True 时同时返回 worker 的答案（含最终字号与实测行数），供测试检查单行适配是否真的保持一行。
     """
     configured = {
         name: Path(value)
@@ -2091,8 +2098,13 @@ def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[O
         ],
     ) for sprite_id, code in ({"t": codes} if isinstance(codes, str) else codes).items()}
     overlay = plan_overlay(placements, published, seconds, 120)
-    asyncio.run(overlay_render.fit_texts(Renderer(settings), overlay, published, tmp_path / "fit"))
-    return overlay
+    for instance in overlay.instances:
+        if one_line:
+            instance["one_line"] = True
+        if grow:
+            instance["grow"] = grow
+    answers = asyncio.run(overlay_render.fit_texts(Renderer(settings), overlay, published, tmp_path / "fit"))
+    return (overlay, answers) if return_answers else overlay
 
 
 # 两段文字都保留排版框，第二段的不透明度由外层特效控制；首段可见，用来复现透明部分被误判为缺字。
@@ -2150,6 +2162,59 @@ def test_real_browser_fits_a_long_title_into_the_fixed_box(tmp_path: Path) -> No
     assert failure.value.code == "text_too_long"
 
 
+# 场景：视频合成的英文字幕过长时，排版预检把单行字效缩到仍能在一行里完整显示的最大字号；不要求单行时保持原字号，
+# 缩到最小字号仍换行时也保留整段放得下的字号，不因此失败。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_shrinks_an_english_subtitle_to_one_line(tmp_path: Path) -> None:
+    """宽 972 的框里长英文在 128 字号换成两三行；要求单行时缩到一行放得下的更小字号，不要求时仍是 128。"""
+    code = FIXED_BOX.replace("WRAP", '"normal"').replace("height: 360", "height: 700")
+    text = "detectors spinning round and round"
+    one, one_answers = fit_for_real(tmp_path / "one", code, [titled(text, font_size=128)], 1.0, one_line=True, return_answers=True)
+    wrapped, wrapped_answers = fit_for_real(tmp_path / "wrapped", code, [titled(text, font_size=128)], 1.0, return_answers=True)
+    assert wrapped.instances[0]["config"]["fontSize"] == 128
+    assert 24 <= one.instances[0]["config"]["fontSize"] < 128
+    assert one_answers[0][0]["lines"] == 1
+    assert wrapped_answers[0][0]["lines"] > 1
+
+
+# 场景：字幕轨的单行字效即使缩到最小字号也放不下一行时，靠近另一语言的一行留在原单行的位置，多出的行朝远离另一语言
+# 的方向展开：顶部对齐的英文首行本来就在单行位置，不再下移；中文末行要上移整段多出的高度；垂直居中的文字仍各移一半。
+CENTERED_BOX = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 400, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, wordBreak: "break-all", whiteSpace: "normal", color: "#fff" }}>{props.text}</div>
+    </AbsoluteFill>
+  );
+}
+"""
+
+
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_grows_a_wrapped_subtitle_away_from_the_other_language(tmp_path: Path) -> None:
+    """顶部对齐的五行为例：英文向下不移动，中文向上移过整段多出的高度；居中的文字仍只移一半；没有 grow 的不移动。"""
+    code = FIXED_BOX.replace("WRAP", '"normal"').replace("width: 972", "width: 400").replace("height: 360", "height: 1200")
+    text = "detectors spinning round and round and round and round"
+    down = fit_for_real(tmp_path / "down", code, [titled(text, font_size=60)], 1.0, one_line=True, grow="down")
+    up = fit_for_real(tmp_path / "up", code, [titled(text, font_size=60)], 1.0, grow="up")
+    stayed = fit_for_real(tmp_path / "stayed", code, [titled(text, font_size=60)], 1.0)
+    centered_down = fit_for_real(tmp_path / "centered-down", CENTERED_BOX, [titled(text, font_size=60)], 1.0, one_line=True, grow="down")
+    centered_up = fit_for_real(tmp_path / "centered-up", CENTERED_BOX, [titled(text, font_size=60)], 1.0, grow="up")
+    rotated = fit_for_real(tmp_path / "rotated", code, [titled(text, font_size=60, rotation=30)], 1.0, grow="up")
+    assert down.instances[0]["config"]["fontSize"] == 60 and up.instances[0]["config"]["fontSize"] == 60
+    # Top-aligned: the first line already sits where a single line would, and the last line moves up by the whole extra height.
+    assert down.instances[0]["host"]["transform"] == {}
+    # Centred: both directions move by half the extra height, so the top-aligned last line moves twice as far.
+    assert centered_down.instances[0]["host"]["transform"]["y"] > 960
+    assert centered_up.instances[0]["host"]["transform"]["y"] < 960
+    assert up.instances[0]["host"]["transform"]["y"] < 960
+    assert abs(up.instances[0]["host"]["transform"]["y"] - 960) > abs(centered_up.instances[0]["host"]["transform"]["y"] - 960) * 1.5
+    # A rotated subtitle keeps its original layout instead of moving the nearest line sideways.
+    assert rotated.instances[0]["host"]["transform"] == {"rotation": 30}
+    assert stayed.instances[0]["host"]["transform"] == {}
+
+
 # 场景：单 Sprite 渲染的字幕：相同内容只测一次并共用结果；定格的切片只在定格帧上量，按自身长度播放的切片量首、尾和中间帧；
 # 一个 Sprite 只启动一次浏览器运行，缩小结果写回所有相同内容的实例。
 def test_sprite_render_fits_each_distinct_cue_in_one_browser_run(tmp_path) -> None:
@@ -2184,6 +2249,33 @@ def test_fit_mounts_each_content_at_the_length_it_plays(tmp_path) -> None:
     [request] = renderer.requests
     [sprite] = request["sprites"]
     assert [(item["text"], item["length"]) for item in sprite["fit"]] == [("短标题", 30), ("长一点的标题", 90)]
+
+
+# 场景：相同文字的摆放只差单行与展开方向要求时分别测量：视频合成的英文字幕要求单行、字幕轨换行时朝远离另一语言的方向展开，
+# 其余（含中文）按放得下即可，答案各自写回自己的实例。
+def test_fit_measures_a_one_line_text_separately(tmp_path) -> None:
+    """两个相同的英文标题摆放，只有一个带 `one_line` 与 `grow`：worker 收到两个条目，答案各自写回自己的实例。"""
+    renderer = FitRenderer(capacity=240)
+    overlay = plan_overlay([titled("English title"), titled("English title")], {"t": T}, 3.0, 120)
+    overlay.instances[0]["one_line"] = True
+    overlay.instances[0]["grow"] = "down"
+    asyncio.run(overlay_render.fit_texts(renderer, overlay, {"t": T}, tmp_path / "fit"))
+    [request] = renderer.requests
+    [sprite] = request["sprites"]
+    assert [(item["index"], item["one_line"], item["grow"]) for item in sprite["fit"]] == [(0, True, "down"), (1, False, "")]
+
+
+# 场景：字幕文字换行时 worker 返回远离另一语言的移动（+下 / -上），只移动带 grow 的摆放（内容区域中心 960），其他摆放不移动。
+def test_fit_moves_a_wrapped_subtitle_away_from_the_other_language(tmp_path) -> None:
+    """三个相同的字幕摆放：grow=down 的宿主 y 从 960 增到 1010，grow=up 的减到 910，没有 grow 的保持原样。"""
+    renderer = FitRenderer(capacity=240, grow_shift=50)
+    overlay = plan_overlay([titled("字幕"), titled("字幕"), titled("字幕")], {"t": T}, 3.0, 120)
+    overlay.instances[0]["grow"] = "down"
+    overlay.instances[1]["grow"] = "up"
+    asyncio.run(overlay_render.fit_texts(renderer, overlay, {"t": T}, tmp_path / "fit"))
+    assert overlay.instances[0]["host"]["transform"] == {"y": 960 + 50}
+    assert overlay.instances[1]["host"]["transform"] == {"y": 960 - 50}
+    assert overlay.instances[2]["host"]["transform"] == {}
 
 
 # 场景：相同文字的摆放只差宿主变换（放大、移到边缘并旋转）时分别测量，每份带自己的变换和 Sprite 的内容区域；

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 from pathlib import Path
 from typing import Any, NamedTuple
 from uuid import uuid4
@@ -50,6 +51,18 @@ MAX_RENDER_SECONDS = 120
 # 字效（标题、字幕）显示不足这个时长时不播出入场，定格在预览长度的中间帧（见 sprite_render）：出入场通常共需
 # 0.6～1.3 秒，更短的字幕几乎看不到完整画面，还会闪烁。所以字效从不按更短的长度播放。
 STATIC_TEXT_SECONDS = 1.5
+
+
+class FrameCapture(NamedTuple):
+    """Still frames of a validated mount for the Agent to look at: the ``frames`` to capture, the canvas ``box`` to cut
+    them to at ``scale``, and the ``directory`` that receives them as `frame-<n>.png` once every check has passed;
+    ``parameters`` are mounted over the configured values for them (such as sample keywords)."""
+
+    frames: list[int]
+    box: dict[str, float]
+    scale: float
+    directory: Path
+    parameters: dict[str, Any] | None = None
 
 
 class FitSprite(NamedTuple):
@@ -128,7 +141,7 @@ def _check_status(value: Any) -> str:
 
 
 def _valid_size(value: Any) -> bool:
-    """A fit answer's optional `keyword_size` is absent or a finite number."""
+    """A fit answer's optional numeric field (`keyword_size`, `grow_shift`) is absent or a finite number."""
     return value is None or (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value))
 
 
@@ -224,6 +237,7 @@ class ToolValidator:
 
     async def validate_render(
         self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
+        capture: FrameCapture | None = None,
     ) -> RenderValidationReport:
         """Run fixed-canvas default/configured mounts and each independent behavior script.
 
@@ -233,7 +247,8 @@ class ToolValidator:
         ``render_lengths`` check when the component throws. With ``text_fit`` (text effects) it fills the ``text``
         parameter to its ``maxLength`` and fails the ``text_fit`` check when that text is clipped, leaves the canvas or
         is too small to read. Only the generation path asks for these: a user's own parameter edits are never blocked
-        by them.
+        by them. With ``capture`` the same mount also captures still frames into ``capture.directory`` when every
+        check passes; a failed report captures none.
         """
         if request.duration_frames > 216000:
             raise ValueError("duration_frames exceeds the validation resource limit")
@@ -277,11 +292,17 @@ class ToolValidator:
         }
         if lengths:
             payload_request["lengths"] = lengths
+        if capture:
+            payload_request["capture"] = {"frames": capture.frames, "box": capture.box, "scale": capture.scale, "parameters": capture.parameters or {}}
         (directory / "request.json").write_text(json.dumps(payload_request), encoding="utf-8")
         try:
             payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs")
         except (OSError, RuntimeError, TimeoutError) as exc:
             raise ValidationUnavailable(str(exc)) from exc
+        if capture and (directory / "frames").is_dir():
+            capture.directory.mkdir(parents=True, exist_ok=True)
+            for frame in (directory / "frames").glob("frame-*.png"):
+                shutil.move(frame, capture.directory / frame.name)
         raw_checks = payload.get("checks")
         if not isinstance(raw_checks, list):
             raise ValidationUnavailable("Render validation worker returned no checks")
@@ -337,11 +358,15 @@ class ToolValidator:
         browser run under one deadline. Each item carries complete ``values`` (including the
         text and the requested size), the ``text`` to look for, the name of the size parameter (``size_key``), its
         ``min``, the ``frames`` to measure at the ``length`` its Sprite plays and the host ``transform`` that places it
-        inside ``box`` on the canvas. The answer is one list per Sprite with ``{index, fits, size[, keyword_size][, shift]}``
-        per item: ``size`` is the requested size when the text already fits, otherwise the largest smaller whole size
-        that does, and ``keyword_size`` is then the proportionally smaller ``keywordSize`` when the values set one.
+        inside ``box`` on the canvas. The answer is one list per Sprite with
+        ``{index, fits, size, lines[, keyword_size][, shift][, grow_shift]}`` per item: ``size`` is the requested size when
+        the text already fits, otherwise the largest smaller whole size that does, and ``lines`` is the number of visual
+        lines that size shows (diagnostics; the host enforces ``one_line``). ``keyword_size`` is the proportionally
+        smaller ``keywordSize`` when the values set one.
         When even ``min`` leaves the text outside the window the video shows, ``shift`` ``{x, y}`` is the shortest
         move of the placement, in canvas pixels, that brings it back in; ``fits`` is false when not even that helps.
+        ``grow_shift`` is a signed downward (+) or upward (-) move of a subtitle text that wrapped, so the extra lines
+        grow away from the other language's subtitle.
         A worker that cannot answer is an infrastructure failure, never a pass.
         """
         try:
@@ -372,7 +397,7 @@ class ToolValidator:
         if not isinstance(fits, list) or len(fits) != len(sprites) or not all(
             isinstance(answers, list)
             and [answer.get("index") for answer in answers if isinstance(answer, dict)] == [item["index"] for item in sprite.items]
-            and all(isinstance(answer.get("fits"), bool) and isinstance(answer.get("size"), (int, float)) and _valid_shift(answer.get("shift")) and _valid_size(answer.get("keyword_size")) for answer in answers)
+            and all(isinstance(answer.get("fits"), bool) and isinstance(answer.get("size"), (int, float)) and _valid_shift(answer.get("shift")) and _valid_size(answer.get("keyword_size")) and _valid_size(answer.get("grow_shift")) for answer in answers)
             for answers, sprite in zip(fits, sprites)
         ):
             raise ValidationUnavailable("Text fit worker returned an incomplete report")

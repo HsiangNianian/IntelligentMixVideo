@@ -1,6 +1,9 @@
 /** 模板配置和初始草稿；对象保存时间规则，预览媒体由工作区独立持有。 */
 import type { ParameterValue } from "@/components/ParameterControl";
 import type { ClipTransform } from "@/features/sprites/parameters";
+import type { FrameMask } from "./frameMask";
+import type { SplitScreen } from "./splitScreen";
+import type { AvatarEffects } from "./avatarEffects";
 
 /** IMS Transition 与 DLTransition 的默认持续时间，单位为秒。 */
 export const defaultTransitionDuration = 1;
@@ -134,6 +137,9 @@ export interface Draft {
   transition_duration_seconds: number;
   transition_mode?: "sequence" | "random";
   transition_enabled?: boolean;
+  frame_mask?: FrameMask;
+  split_screen?: SplitScreen;
+  avatar_effects?: AvatarEffects;
   tracks: EffectTrack[];
   /** Remotion 片段不进入 IMS 效果与 SDK 预览，按分类占用文字对象、视频交界处或特效名额，随模板一并保存。 */
   clips: RemotionClip[];
@@ -245,6 +251,9 @@ export function toDraft(template: Template): Draft {
     transition_duration_seconds: template.transition_duration_seconds,
     transition_mode: template.transition_mode ?? "sequence",
     transition_enabled: template.transition_enabled ?? true,
+    ...(template.frame_mask ? { frame_mask: structuredClone(template.frame_mask) } : {}),
+    ...(template.split_screen ? { split_screen: structuredClone(template.split_screen) } : {}),
+    ...(template.avatar_effects ? { avatar_effects: { ...template.avatar_effects } } : {}),
     tracks: structuredClone(template.tracks).map((track) => track.target === "transition" ? { ...track, duration: template.transition_duration_seconds } : track),
     clips: structuredClone(template.clips),
   };

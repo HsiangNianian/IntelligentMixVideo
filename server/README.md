@@ -55,21 +55,32 @@ PORT=8010 uv run --locked server
 | POST | `/template` | 接收 `SaveTemplateRequest`；无 `template_id` 创建，携带 ID 完整更新，返回 `SaveTemplateResponse` |
 | GET | `/template/{template_id}` | 返回 `GetTemplateResponse` |
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
+| GET | `/template/preview-mask` | 几何圆角蒙版 MP4，供 SDK 实时预览；不访问用户媒体或数据库 |
 
 GET 与 POST 成功响应默认使用 `application/json`，采用 Protobuf JSON 映射：字段为 camelCase（如 `templateId`、`createdAt`、`effectIds`），时间为 UTC RFC 3339 字符串；列表为 `{"templates":[...]}`，空库为 `{"templates":[]}`，详情和保存为 `{"template":{...}}`，轨道保留 `template.tracks.tracks` 结构。空数组、空映射和非 optional 标量默认值保留，未设置的 optional 字段省略。POST 请求仍使用 `application/x-protobuf`，JSON 请求返回 415，损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422；错误响应使用 JSON，删除成功仍为 204 空响应。为兼容旧客户端，单一 `Accept: application/x-protobuf` 仍返回 Protobuf 二进制；其他请求（含省略 Accept、`*/*` 或 `application/json`）默认返回 JSON，成功响应带 `Vary: Accept`。新客户端按响应 `Content-Type` 解析 JSON 或旧服务端的 Protobuf 二进制，JSON 解析忽略未知字段；仅响应格式迁移不要求两端同时升级。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
 
 列表返回逐条校验的 `TemplateSummary`，包含名称、ID、更新时间、有效模板的标题/字幕及对象数量，无效记录通过 `validationError` 说明原因。无效记录的详情读取返回 409，删除仍按 ID 执行，不影响同库有效模板。保存必须包含中文标题和中文字幕各一个；双语模板另有对应的英文对象。列表消息与转场字段需要客户端、服务端一起升级；已有记录不自动转换。
 
-`SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
+同屏配置通过 `SaveTemplateRequest.split_screen` 保存，JSON 响应为 `splitScreen`：包含 `enabled`、`layout`、`backgroundColor`、`material`、`avatar`、`subtitle`、`subtitleEn`。`layout` 为 `split`（默认，分区双窗口）、`overlay`（完整素材叠人物）、`circle`（完整素材叠自动圆形头像）；旧客户端省略新 `layout` 重存时保留原值。`overlay` / `circle` 的素材直接用完整画布 Contain 加模糊填充，忽略但保留原素材窗口配置；人物位置用窗口左上角 X/Y 和宽高的画布百分比，无左右角/边距预设、无自动字幕避让。人物叠加等比放入原视频框，圆形头像截取检测到的头部正方形，再用 `mask_circle` 放入窗口内的最大正圆；两种叠加布局均无矩形装饰。`split` 保留原有窗口 Contain/Cover、圆角/内边框（1080×1920 基准像素）和底色。旧模板缺省关闭，旧客户端更新时省略整个同屏字段保留已有配置，关闭用 `enabled=false`。三种布局都仅在标准合成命中素材时生效，未命中时使用带原背景的全屏数字人，不抠像、不裁圆；纯素材模式忽略配置。进出同屏及同屏内均不使用转场。
+
+圆角预览资源接收 `width`、`height`（源尺寸，2～32768）、`box_width`（2～1080）、`box_height`（2～1920）、`radius`（大于 0 且不超过窗口短边一半）、`seconds`（正整数持续秒数）。在工作线程用 Pillow/FFmpeg 编码单帧 MP4，最多缓存 32 份，缺编码器返回 503。云合成另用 ffprobe 探测实际尺寸、IMS 原生蒙版与 ZOS 透明边框，不重编码用户源视频。SDK 预览保留实时花字和滤镜。
+
+数字人效果独立通过 `SaveTemplateRequest.avatar_effects` 保存，JSON 为 `avatarEffects`：`openingEnabled` 默认 false，`openingDuration` 默认 2 秒（0.1～300），`circleScale` 默认 1.6（1～3，脸框留量），`feather` 默认 0.02（0～0.2），`removeBackground` 默认 false。省略整个字段时，旧客户端重存保留已有设置；显式关闭不清除参数。位置尺寸继续使用 `splitScreen.avatar`，相对整张画布、按原视频矩形框定位。
+
+标准合成开启开场，或选择圆形头像且存在匹配素材时，FFmpeg 按显示方向和像素宽高比抽取片头区间最多 8 帧，`opencv-python-headless==4.12.0.88` 与随包 YuNet 在线程中定位固定圆（限制在源画面内，不逐帧跟踪）；模型位于 `video_composition/models/`，无需运行时下载；来源与完整许可声明见本文末尾。两种圆形效果共用检测，成功定位或明确无脸结果持久化为任务 `avatar_opening`；恢复复用。只启用头像时检测结果的 `duration=0`，不上传黑底、不隐藏素材。无脸跳过开场；圆形头像无脸时回退直接切换：命中区间只显示完整素材，其余显示原数字人，字幕用普通位置。读取/检测/上传故障仍以 `avatar_opening_failed` 失败。有效开场以黑底与 `mask_circle` 覆盖原业务视频，不拆素材、不补时、不重启源时间，字幕沿用普通位置；结束恢复对应区间布局。仅非圆形的实际同屏且开启抠像时使用 `AI_RealMatting`，忽略数字人圆角和边框，保留分区素材装饰；不支持的地域以 `avatar_matting_region_unsupported` 失败（目前仅北京、上海、杭州）。编辑器切换到人物叠加时默认开启去背景，可用同一个开关保留原背景，不另列小窗画中画模式；切到分区或圆形时关闭抠像。圆形头像始终保留圆内背景，忽略旧抠像开关。纯素材模式不检测、不抠像。SDK 只展示配置和布局，头像圆形以居中裁切示意，真实头部位置和边缘以成片为准。
+
+`SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置（省略的蒙版、同屏和数字人效果字段除外）。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
+
+上下纯色蒙版单独保存在模板级 `frame_mask`（Protobuf JSON 为 `frameMask`），含 `top`、`bottom`，各自必须提供 `enabled`、`height`（画布高度百分比，有限数 0～50）与 `color`（`#RRGGBB`）。新建省略不启用；旧客户端更新省略该字段时保留原配置，显式关闭两栏即可停用。使用蒙版需升级两端，无新增表或接口。合成按任务快照生成全画布透明 PNG，两栏像素高为 `floor(height * percent / 100 + 0.5)`；在线程池生成并经现有 ZOS 上传/公开读取校验，保存 `frame_mask_url` 供任务恢复复用。两栏全关或像素高度为零不上传；上传失败不提交 IMS。图片通过 `VideoTracks` 的 `Type=Image` 全程叠在主体视频上，后续 Remotion、全局效果和文字仍在其上方，不改视频构图或文字内容。对象路径为 `imv/video_composition/<taskId>-mask.png`，操练场使用 `imv/playground/`。
 
 顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成调用切片时传入请求 `title`，标题局部样式仅作用于返回的 `title_keyword` 首次出现的位置；返回值缺失或为空时保留标题原文，不回退模板 `titleKeyword` 或标题前两个字。旧快照缺少标题词时不高亮；无声模式通过仅标题提词取得关键词；模板预览仍沿用原规则。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
 
-独立对象通过 `tracks` 保存，普通对象包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。标题、字幕、VFX 最多各一个，滤镜可多个；字幕固定 `seconds`、0、null。其他普通对象支持 `seconds`、`percent` 起点，百分比小于 100，`duration` 为正秒数或 `null`（持续到结束）。转场使用唯一的 `transition_boundary` 列表序号（1～100），IMS 转场禁止设置 `start`、`start_mode`。IMS 与 Remotion 共用列表和统一时长 `transition_duration_seconds`。`transition_enabled` 为布尔值，默认 true；false 时保留候选，IMS 与 Remotion 成片均不应用转场。`transition_mode=sequence` 在所有素材连接处按列表循环，`random` 按任务 ID 与连接位置从尚未选中的候选中选择，每项最多一次，候选用完后其余连接位置不应用转场，重试结果一致；每个连接处只选一个效果。编辑预览开启转场且存在候选时应用于两个连接位置，只有一个候选时两处共用，有多个候选时随机选择不重复。未携带 `transition_mode` 的已有模板保持指定连接位置的行为，编辑保存后使用列表规则。转场时长最多为相邻素材各自长度的一半，短于 0.1 秒时跳过。模板不保存预览视频信息。`resolve_template` 的 `sequence` 模式累计扣除重叠，`fixed` 保留素材时间和音频总长。普通对象超出结束时截短，动画按有效帧数缩短，帧数不足时失败。标题使用请求文字，字幕按文案切片显示。
+独立对象通过 `tracks` 保存，普通对象包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。标题、字幕、VFX 最多各一个，滤镜可多个；字幕固定 `seconds`、0、null。其他普通对象支持 `seconds`、`percent` 起点，百分比小于 100，`duration` 为正秒数或 `null`（持续到结束）。转场使用唯一的 `transition_boundary` 列表序号（1～100），IMS 转场禁止设置 `start`、`start_mode`。IMS 与 Remotion 共用候选列表；`transition_duration_seconds` 统一 IMS 时长，Remotion 保留自己的时长。`transition_enabled` 为布尔值，默认 true；false 时保留候选，IMS 与 Remotion 成片均不应用转场。`transition_mode=sequence` 在选中的切镜处按列表循环，`random` 按任务 ID 与切镜位置从完整候选列表选择，允许连续重复且不限使用次数，重试结果一致；每个切镜只选一个效果。编辑预览开启转场且存在候选时应用于两个连接位置，只有一个候选时两处共用，有多个候选时随机也允许重复。未携带 `transition_mode` 的已有模板在新任务中按顺序循环。转场时长最多为相邻素材各自长度的一半，短于 0.1 秒时跳过。Remotion 显式摆放时长优先，发布预览长度不是业务时长上限；客户端目录 `seconds` 也由同一画布的预览帧数与帧率换算。客户端新增摆放已写入显式时长；历史空值仍采用默认值，资产覆盖更新预览长度会影响之后新任务的默认值，已受理任务使用固定快照。模板不保存预览视频信息。新任务以含口播关键词的字幕事件起点为锚点，严格寻找前后最近切镜，排除同刻切镜并去重；例如切镜 2／5／8 秒、关键词 5 秒出现时选 2／8 秒。有词混剪仅找数字人↔素材，纯素材找素材↔素材；整片无口播关键词时回退全部切镜，标题词及英文译文不计入。首尾只有一侧切镜则只用一侧，最近切镜过短时跳过、不改选更远处，且不推进顺序候选。新受理任务将 `keyword_transitions=true` 保存到已有任务 JSON；缺少此标识的旧任务继续原策略（包含随机不放回及旧模板固定位置），以匹配已有叠加产物，已提交 IMS 的任务不重新组装。`resolve_template` 的 `sequence` 模式累计扣除重叠，`fixed` 保留素材时间和音频总长。普通对象超出结束时截短，动画按有效帧数缩短，帧数不足时失败。标题使用请求文字，字幕按文案切片显示。
 创建和更新在写入前强制检查标题、底部字幕各一个，缺少任意一个返回 422，已有记录保持不变。同一文字角色的循环动画与入场、出场互斥。模板允许空效果列表，最多 500 个不同效果 ID。
 
 Remotion 片段也保存在 `tracks` 里：`target` 为 `remotion`，`sprite_id` 引用已发布的 Sprite；`id` 仍是模板内唯一的摆放 ID，所以同一个 Sprite 可以摆放多次。
-`start_mode` 只能是 `seconds`，`duration` 为 `null`（取 Sprite 自身时长）或正秒数；`editor` 只能设置 `remotion`（这次摆放的参数覆盖 `parameters` 与宿主变换 `transform`，没有时响应里为 `{}`），IMS 对象不能设置它；其他对象不能带 `sprite_id`。保存时引用的 Sprite 都必须已在 `remotion_sprites` 发布，且画布宽、高、帧率一致（叠加渲染要把它们叠成同一个视频），每个片段的覆盖须指向可编辑参数、类型与默认值相同、在声明范围内且合并后满足发布 Schema，变换只能设置该分类允许的字段（滤镜与转场只有 `opacity`）并在范围内，否则返回 422。
+`start_mode` 只能是 `seconds`，`duration` 为 `null`（以发布预览长度 `canvas.preview_frames / canvas.fps` 为默认值）或正秒数；`editor` 只能设置 `remotion`（这次摆放的参数覆盖 `parameters` 与宿主变换 `transform`，没有时响应里为 `{}`），IMS 对象不能设置它；其他对象不能带 `sprite_id`。保存时引用的 Sprite 都必须已在 `remotion_sprites` 发布，且画布宽、高、帧率一致（叠加渲染要把它们叠成同一个视频），每个片段的覆盖须指向可编辑参数、类型与默认值相同、在声明范围内且合并后满足发布 Schema，变换只能设置该分类允许的字段（滤镜与转场只有 `opacity`）并在范围内，否则返回 422。
 Sprite 分为字效（TEXT）、滤镜（FILTER_OVERLAY）与转场和视频特效（VIDEO_OVERLAY、TRANSITION_OVERLAY），都是不读取底片像素的透明叠加层；分类、必备参数与发布时的边界抽样见 `src/server/remotion_templates/README.md`。
 片段与 IMS 对象共用 100 条上限，也不产生 `effect_ids`。视频合成的 IMS 时间线跳过这些轨道，不为它们生成任何文字或效果；层级为它们在 `tracks` 中的先后（先者在下）。
 
@@ -166,7 +177,7 @@ Remotion 新私有诊断也保存到任务的 `errors/`：异常链为 `remotion
 
 - `src/server/database.py`：`DatabaseSettings` 自动加载并校验环境配置，启动时创建缺失数据库，管理 MySQL 连接池。
 - `src/server/template/`：模板模块，与用户示例目录 `sub_api/` 平级。
-- `src/server/template/router.py`：四个模板接口，向 `app.py` 注册 APIRouter。
+- `src/server/template/router.py`：模板读写及几何预览资源接口，向 `app.py` 注册 APIRouter。
 - `src/server/template/schema.py`：请求、响应、数值范围与效果组合校验。
 - `src/server/template/store.py`：建表、查询和事务写入。
 - `src/server/segmentation/`：独立切片函数、`IMV_` 模型配置与 `router.py` 切片路由。
@@ -219,12 +230,14 @@ result = segment({
 **请求与返回**：`script`、`asr_result`、`title` 都可省略或为 null。
 
 - 有 ASR：必须有有效 `script`，使用第一音轨的词级时间（毫秒）。返回 `segments`（保留标点的原文、秒制时间、分组、关键词）、`warnings` 和 `trace`；传了 `title` 时另返回 `title_keyword`。
+- `max_segment_chars`：每段（字幕一行）最多字数，正整数，独立调用默认 8，不计标点和空白；非法值返回 422。视频合成只按本单模板自动计算 `max(1, 最小单行全角字容量 - 2)` 并传入。只按模板中文字幕对象估算：居中位置到较近画布边缘的两倍宽度，除以正文与关键词较大字号后向下取整（云端字体/花字按全角字一 em 估算）；Remotion 字效替代或叠加字幕时同样按该对象估算，不在浏览器里实测，实际放不下时由成片排版预检缩小字号。结果随任务保存，恢复沿用；仅标题、无字幕和操练场封存切片不重新计算。真实关键词、译文及超长受保护串仍经原有成片排版预检。
 - 只有 `title`：只调用一次模型，返回 `{"title_keyword":"关键词"}`，不校验内容、不纠错，缺失或非字符串按空字符串处理。
-- 可选 `config` 只用于本次调用：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120（切片单次最多取 30 秒），`llm_max_retries` 默认 1（0～3，只用于翻译）；Python 中传 `segment(payload, config=ClientSettings(...))`。`allow_insecure_llm_http` 由服务端决定，错误响应不回显输入。
+- 可选 `config` 只用于本次调用：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120（切片单次最多取 30 秒），`llm_max_retries` 默认 1（0～3，只用于翻译），`llm_disable_thinking` 默认 false；Python 中传 `segment(payload, config=ClientSettings(...))`。`allow_insecure_llm_http` 由服务端决定，错误响应不回显输入。
+- `IMV_LLM_DISABLE_THINKING=true`（或 `config.llm_disable_thinking`）时，切分、提词与翻译请求附带 `thinking={"type":"disabled"}`。DeepSeek 等默认开启思考的模型应开启它，否则单次切分可能超过 30 秒；不支持该扩展字段的服务保持 false，此时不发送该字段。
 
-**模型调用**：使用 `response_format.type=json_object`，先选切点，再提关键词。提词输入为带 `segment_id`、`text` 的片段，模型返回 `{"keywords":{"1":"医院","3":"CT"}}`，只列有关键词的 ID；代码按 ID 填回，缺失、不在对应原文中连续出现或超过 12 字的词置空。`title_keyword` 须在标题中连续出现且最多 12 字。JSON、结构、ID 或标题词不合法（含回复缺少 `choices`/`message`/`content`）时，把上次回复与错误反馈给模型重试（空回复只反馈错误），切分共 2 次、提词共 3 次，耗尽返回 502。单次请求最多 30 秒并关闭 SDK 网络重试；HTTP 与合成共用 90 秒软预算（不含排队、ASR 和翻译），在调用前后检查，耗尽返回 504，无法打断进行中的请求。次数、超时与预算是模块内具名常量。
+**模型调用**：使用 `response_format.type=json_object`，先对超长片段做语义切分，再按最终片段提关键词。提词输入为带 `segment_id`、`text` 的片段，模型返回 `{"keywords":{"1":"医院","3":"CT"}}`，只列有关键词的 ID；代码按 ID 填回，缺失、不在对应原文中连续出现或超过 12 字的词置空。`title_keyword` 须在标题中连续出现且最多 12 字。提词 JSON、结构、ID 或标题词不合法（含回复缺少 `choices`/`message`/`content`）时，把上次回复与错误反馈给模型重试（空回复只反馈错误），共 3 次，耗尽返回 502。单次请求最多 30 秒并关闭 SDK 网络重试；HTTP 与合成共用 90 秒软预算（不含排队、ASR 和翻译），在调用前后检查，耗尽返回 504，无法打断进行中的请求。次数、超时、并发与预算是模块内具名常量。
 
-**切分规则**：模型只能在中文标点处、两侧至少 2 秒的候选边界上选切点；之后代码把超过 8 个有效字（不计标点和空白）的片段继续切开，切点优先两侧至少 2 字，再按标点、结巴词边界、中点。`OpenAI`、`3.14%`、`1,299` 这类英文和数字串不拆开；`70，80，90后`、顿号枚举、`第1、2、3名`、`等2，3天` 这类数字列表整体保留，普通逗号两侧的数字（如 `99，3件`）不合并。关键词只留在完整包含它的子段上。字幕去标点由下游合成负责，保留问号和数字小数点。
+**切分规则**：先在句读标点（`，。！？、；：…` 及对应半角）、换行和中文之间的空白处切开，标点和空白留在前一段；引号、括号、书名号不是切点，英文单词之间的空格也不切。`OpenAI`、`3.14%`、`1,299` 这类英文和数字串，以及 `70，80，90后`、顿号枚举、`第1、2、3名`、`等2，3天` 这类数字列表内部不切，普通逗号两侧的数字（如 `99，3件`）照常切开；ASR 增删修复块内部也不切。超过 `max_segment_chars` 的片段去掉首尾标点后交给模型，多段并行：代码按 `ceil(字数/上限)` 算出段数写进提示（提示改编自 [VideoLingo](https://github.com/Huanshere/VideoLingo) 的 `get_split_prompt`），模型用 `[br]` 给出两种切法并自选。合格的切法须至少两段、去掉 `[br]` 后汉字字母数字与原文逐字相同（标点和空白可增删，按原文补回）、切点不在受保护串或修复块内部；合格切法中依次优先非首段不以单独助词（结巴首词为 的、了、着、过、吗、呢 等）开头、各段都不超过上限、模型的选择，有段落超限的切法照常采用，助词开头的只在最后一轮作后备。仍超长的段落下一轮重新计算段数继续切，最多 3 轮（重试在提示末尾追加空格）；单次请求最多要求 10 段，超过时只要求大致均分、下一轮再按上限切；上限不足 3 字时提示不再要求每段至少 3 字。每次切片最多发出 200 个切分请求。之后仍超长或没轮到请求的片段完整保留，`warnings` 返回 `segment_over_max_chars`，代码不硬切。整段受保护的超长串不请求模型、不告警。切分请求的网络错误与预算超时同提词一样返回 502/504。关键词在最终片段上提取。字幕去标点由下游合成负责，保留问号和数字小数点。
 
 **英文翻译**：`translate(result, title=None)` 一次模型调用把切片结果译成英文（双语视频合成在切片后调用），只读服务端配置。返回副本，片段增加 `text_en`、`keyword_en`，传入 `title` 时增加 `title_en`、`title_keyword_en`；英文关键词复用中文校验但不限长度（片段词不在译文中置空，标题词不在英文标题中报错）。段数、类型不符或译文为空时直接报错，不重试。双语模板以文字对象的 `language=en` 区分，`enabled=false` 的英文对象不翻译、不渲染；英文字幕与展示关键词沿用中文字幕去标点规则（另保留英文词内撇号和空格换行），译文不进入素材匹配。翻译失败以 `translation_failed` 结束任务，中断后不自动重放，译文随任务快照恢复并写入 `segmentation.json`。
 
@@ -277,3 +290,35 @@ HTTP 请求与轮询等待均为异步，不阻塞事件循环。等待预算必
 视频合成支持同一 `styleId` 下的 Remotion 动态字效；新 `text_target` 槽位沿用上游的 IMS 文字替代规则，旧独立用途快照继续兼容。保存接口接受仅有 `editor.remotion.businessTarget=title/subtitle` 的旧字效轨道，替换资产仍保留 IMS 与 Remotion 共存，不自动迁移为新槽位。使用方式、资产字段声明、旧资产适配、时长限制和联调清单见 [Remotion 接入说明](../docs/remotion-video-composition.md)。
 
 合成侧计划、时长适配打包、渲染或上传失败会在 `server/.log/video_composition/<task_id>/errors/` 私有保留 `remotion-worker.log` 与异常链 `remotion-error.log`（含子进程 stderr），临时视频和编译产物仍清理；公开错误保持稳定摘要，执行日志记录根因的异常类型、代码位置、错误码及详细日志相对路径，排障时按 `timeline.json` 的 `error_log[].error.detail_log_path` 读取私有日志。
+
+## YuNet 模型与第三方许可
+
+人脸定位随包使用 OpenCV Zoo 的 `face_detection_yunet_2023mar.onnx`，匹配运行库 `opencv-python-headless==4.12.0.88`；模型仅用于定位，人物抠像交给 IMS。
+
+- 来源：[OpenCV Zoo / YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)。
+- SHA-256：`8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4`。
+- 以下 MIT 版权和许可声明随模型保留；本 README 同时作为服务端发行包的项目说明。
+
+```text
+MIT License
+
+Copyright (c) 2020 Shiqi Yu <shiqi.yu@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

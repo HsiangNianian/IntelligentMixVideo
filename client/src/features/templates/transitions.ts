@@ -14,11 +14,10 @@ export function previewTransitions(draft: Draft, random: readonly [number, numbe
   const targets = new Map<string, string>();
   const tracks = draft.tracks.filter((track) => track.target !== "transition");
   const clips = draft.clips.filter((clip) => clip.transition_boundary === undefined);
-  if (draft.transition_enabled !== false && items.length) {
-    const single = items.length === 1;
+  if (!draft.split_screen?.enabled && draft.transition_enabled !== false && items.length) {
     for (let index = 0; index < 2; index += 1) {
-      const position = draft.transition_mode === "random" ? Math.floor(random[index] * items.length) : 0;
-      const item = single ? items[0] : items.splice(position, 1)[0];
+      const position = draft.transition_mode === "random" ? Math.floor(random[index] * items.length) : index % items.length;
+      const item = items[position];
       const id = targets.has(item.id) ? `${item.id}:preview:${index + 1}` : item.id;
       targets.set(id, item.id);
       if ("editor" in item) tracks.push({ ...item, id, transition_boundary: index + 1, duration: draft.transition_duration_seconds });
