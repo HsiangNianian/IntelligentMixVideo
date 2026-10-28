@@ -584,6 +584,91 @@ def finished(client, task_id, headers=None):
     pytest.fail(f"任务未在测试预算内结束：{data}")
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("scenario", ["fresh", "resume", "resume-before-save", "upload-failed", "disabled"])
+async def test_frame_mask_task_snapshot_and_recovery(upstreams, composition_case, composition_runtime, monkeypatch, scenario):
+    """真实 PNG 与任务恢复：URL 落库前中断允许同 key 覆盖，落库后复用，上传失败不提交 IMS。"""
+    from threading import get_ident
+    from PIL import Image
+    from server.template import store as templates
+    from server.template.schema import TemplateSave
+    from server.video_composition import frame_mask
+
+    store.initialize_schema()
+    template = composition_case["template"]
+    mask = {"top": {"enabled": scenario != "disabled", "height": 18.4, "color": "#112233"},
+            "bottom": {"enabled": False, "height": 16.6, "color": "#445566"}}
+    templates.save_template(TemplateSave.model_validate({
+        **{key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}, "frame_mask": mask,
+    }))
+    calls = []
+    loop_thread = get_ident()
+    url = "https://media.test/frame-mask.png"
+
+    def upload(files, settings, timeout):
+        """只隔离外部存储；PNG 生成与线程调度使用生产实现。"""
+        assert get_ident() != loop_thread
+        assert settings.zos_bucket == "archives" and timeout > 0
+        path, key, mime = files[0]
+        with Image.open(path) as image:
+            assert image.size == (1080, 1920)
+            assert image.getpixel((0, 352)) == (17, 34, 51, 255)
+            assert image.getpixel((0, 353)) == (0, 0, 0, 0)
+        calls.append((key, path.read_bytes()))
+        assert mime == "image/png"
+        if scenario == "upload-failed":
+            raise ValueError("测试上传失败")
+        return [url]
+
+    monkeypatch.setattr(frame_mask, "upload_public", upload)
+    request = CompositionRequest.model_validate({
+        "styleId": template["template_id"], "processRules": {"videoDuration": 8},
+        "materials": [{"fileUrl": f"https://media.test/{index}.jpg", "type": "image"} for index in range(3)],
+    })
+    record = await composition_runtime.accept(request, "http://testserver")
+    if scenario in ("resume", "resume-before-save"):
+        job = service.Job(composition_runtime, record, composition_runtime.settings)
+        await job.prepare()
+        if scenario == "resume":
+            await job.save("assembling", frame_mask_url=url)
+        else:
+            advance = store.advance
+
+            def interrupt_before_url_save(record, stage, **data):
+                """上传已返回成功，在 URL 事务写入前中断，不进入普通业务失败处理。"""
+                if "frame_mask_url" in data:
+                    raise asyncio.CancelledError
+                return advance(record, stage, **data)
+
+            with monkeypatch.context() as interrupted:
+                interrupted.setattr(store, "advance", interrupt_before_url_save)
+                with pytest.raises(asyncio.CancelledError):
+                    await job.assemble()
+            assert len(calls) == 1 and upstreams["submits"] == []
+        record = store.get(record["task_id"])
+        if scenario == "resume-before-save":
+            assert record["stage"] == "assembling" and record["status"] == "processing"
+            assert "frame_mask_url" not in record["data"]
+    await composition_runtime._execute(record)
+    saved = store.get(record["task_id"])
+    assert saved["data"]["template"]["frame_mask"] == mask
+    assert len(calls) == (2 if scenario == "resume-before-save" else int(scenario in ("fresh", "upload-failed")))
+    if scenario == "resume-before-save":
+        assert calls[0] == calls[1]  # 恢复覆盖同 key、相同 PNG 字节，不另建对象。
+        assert calls[0][0] == f"imv/video_composition/{record['task_id']}-mask.png"
+    if scenario == "upload-failed":
+        assert saved["status"] == "failed"
+        assert upstreams["submits"] == []
+    else:
+        assert saved["status"] == "succeeded", saved["data"].get("error")
+        assert saved["data"]["frame_mask_url"] == (None if scenario == "disabled" else url)
+        assert len(upstreams["submits"]) == 1
+        tracks = json.loads(upstreams["submits"][0]["timeline"])["VideoTracks"]
+        assert len(tracks) == (1 if scenario == "disabled" else 2)
+        if scenario != "disabled":
+            assert tracks[1]["VideoTrackClips"][0]["MediaURL"] == url
+
+
 @pytest.mark.parametrize("mode,title_on,subtitle_on", [
     ("standard", True, True), ("standard", False, False), ("standard", True, False),
     ("materials_voice", False, True), ("materials_silent", True, True),

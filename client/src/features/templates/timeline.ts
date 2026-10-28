@@ -17,6 +17,7 @@ import { trackLabel, trackLayers, type ResolvedTimeline } from "./tracks";
 import { previewVideos } from "./media";
 import type { ClipSlot } from "./clips";
 import { previewFont } from "./fonts";
+import { frameMaskImage, frameMaskRects } from "./frameMask";
 import { previewRect, borderSvg, previewMaterial, previewMaskUrl } from "./splitScreen";
 
 /** 预览轨道保留源素材范围，缩略图采样使用源时间，游标使用预览时间。 */
@@ -51,10 +52,16 @@ export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (O
       };
     }),
   }))];
+  if (timeline.frameMask) rows.push({ id: "frame-mask", actions: [{
+    id: "frame-mask", targetId: "frame-mask", effectId: "frame-mask",
+    start: 0, end: timeline.duration, movable: false, flexible: false,
+    label: "上下蒙版", effectName: frameMaskRects(timeline.frameMask, timeline.FECanvas.Height).length ? "上下蒙版" : "上下蒙版（未显示）",
+    url: "", sourceIn: 0, sourceOut: 0,
+  }] });
   const effects = rows.filter((row) => row.actions[0]?.effectId !== "video");
   const videos = rows.filter((row) => row.actions[0]?.effectId === "video").flatMap((row) => row.actions);
   const videoRows = videos.map((clip) => ({ id: clip.id, actions: [clip] }));
-  return groupTransitionRows([...effects.sort((a, b) => trackLayers[a.actions[0].effectId as EffectTarget] - trackLayers[b.actions[0].effectId as EffectTarget]), ...videoRows]);
+  return groupTransitionRows([...effects, ...videoRows]);
 }
 
 /** 全部可见转场共用一行，每个条目保留独立的选中 ID。 */
@@ -62,7 +69,8 @@ function groupTransitionRows(rows: (Omit<TimelineRow, "actions"> & { actions: Pr
   const actions = rows.filter((row) => row.actions[0]?.effectId === "transition").flatMap((row) => row.actions);
   const result = rows.filter((row) => row.id !== "transitions" && row.actions[0]?.effectId !== "transition");
   result.push({ id: "transitions", actions: actions.sort((a, b) => a.start - b.start) });
-  const layer = (row: (typeof rows)[number]) => row.id === "transitions" ? trackLayers.transition : row.actions[0]?.effectId === "video" ? Infinity : trackLayers[row.actions[0]?.effectId as EffectTarget] ?? 99;
+  // 蒙版固定在文字/特效行下、视频行上；转场仍沿用原来的共用行。
+  const layer = (row: (typeof rows)[number]) => row.id === "transitions" ? trackLayers.transition : row.id === "frame-mask" ? 100 : row.actions[0]?.effectId === "video" ? Infinity : trackLayers[row.actions[0]?.effectId as EffectTarget] ?? 99;
   return result.sort((a, b) => layer(a) - layer(b));
 }
 
@@ -117,11 +125,7 @@ export function mergeSpriteRows(rows: ReturnType<typeof buildPreviewRows>, clips
     if (home) home.actions.push(action);
     else result.push({ id: `row-${clip.id}`, actions: [action] });
   }
-  const layer = (row: (typeof result)[number]) => {
-    const effect = row.actions[0]?.effectId;
-    return effect === "video" ? Infinity : effect === "remotion" ? 99 : trackLayers[effect as EffectTarget];
-  };
-  return groupTransitionRows(result.sort((a, b) => layer(a) - layer(b)));
+  return groupTransitionRows(result);
 }
 
 /** 每秒约取一张源素材缩略图，使用区间中心，避免在片段结束边界采样。 */
@@ -332,11 +336,12 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
       label: trackLabel(track, draft.tracks), effectName, url: "", sourceIn: 0, sourceOut: 0,
     }] });
   }
-  return { ...timeline, VideoTracks: layout ? splitTracks : timeline.VideoTracks as { VideoTrackClips: PreviewVideo[] }[], previewVideoTracks, EffectTracks, previewRows, notices, transitions };
+  return { ...timeline, VideoTracks: layout ? splitTracks : timeline.VideoTracks as { VideoTrackClips: PreviewVideo[] }[], previewVideoTracks, EffectTracks, previewRows, notices, transitions, frameMask: draft.frame_mask, duration: resolvedTimeline.duration };
 }
 
 /** SDK 将专用轨道追加到视频之后；统一传入从下到上的图层，保证文字位于滤镜和 VFX 上方。 */
 export function playerTimeline(timeline: ReturnType<typeof buildTimeline>, transitionFrames: ReadonlyMap<string, string> = new Map()) {
+  const mask = frameMaskImage(timeline.frameMask, timeline.FECanvas.Width, timeline.FECanvas.Height);
   const videos = timeline.VideoTracks[0].VideoTrackClips;
   const transitionTracks = timeline.transitions.map(({ boundary, start, end, effect }) => ({
     VideoTrackClips: [videos[boundary - 1], videos[boundary]].map((video, index) => {
@@ -356,6 +361,10 @@ export function playerTimeline(timeline: ReturnType<typeof buildTimeline>, trans
     VideoTracks: [
       ...timeline.VideoTracks.map((row) => ({ VideoTrackClips: row.VideoTrackClips.map(({ source: _source, ...clip }) => clip) })),
       ...transitionTracks,
+      ...(mask ? [{ VideoTrackClips: [{ Type: "Image", MediaURL: mask, TimelineIn: 0, TimelineOut: timeline.duration,
+        // SDK 5.2.2 将小于 2 的图片尺寸按画布比例换算；1 精确铺满，0.9999 会在右侧和底部留下黑边。
+        // IMS 服务端仍使用实际像素宽高，不能把这里的 SDK 比例原样发给云端。
+        Duration: timeline.duration, X: 0, Y: 0, Width: 1, Height: 1, AdaptMode: "Fill" }] }] : []),
       ...[...timeline.EffectTracks].reverse().map((row) => ({ Type: "Effect", VideoTrackClips: row.EffectTrackItems })),
       ...[...timeline.SubtitleTracks].reverse().map((row) => ({ Type: "Subtitle", VideoTrackClips: row.SubtitleTrackClips })),
     ],

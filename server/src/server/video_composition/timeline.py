@@ -73,6 +73,7 @@ def build_timeline(
     duration_ms: int | float, *, width: int, height: int, fps: int,
     material_durations: list[float] | None = None, title_keyword: str = "", transition_seed: str = "",
     title_en: str | None = None, title_keyword_en: str = "",
+    frame_mask_url: str | None = None,
     split_assets: dict | None = None, avatar_opening: dict | None = None,
     use_keyword_transitions: bool = False, remotion_assets: dict | None = None,
 ) -> tuple[dict, list[str]]:
@@ -248,6 +249,14 @@ def build_timeline(
             if clip["TimelineOut"] < duration:
                 clip["TimelineOut"] = round(clip["TimelineOut"] - 0.0001, 4)
     timeline["VideoTracks"].extend(overlay_tracks)
+    if template.frame_mask and any(bar.enabled and floor(height * bar.height / 100 + 0.5) > 0 for bar in (template.frame_mask.top, template.frame_mask.bottom)):
+        if not frame_mask_url:
+            raise ValueError("上下蒙版图片尚未准备完成")
+        # 蒙版覆盖同屏、数字人开场等视频层；全局效果、Remotion 与文字仍在其上。
+        timeline["VideoTracks"].append({"VideoTrackClips": [{
+            "Type": "Image", "MediaURL": frame_mask_url, "TimelineIn": 0, "TimelineOut": duration,
+            "Duration": duration, "X": 0, "Y": 0, "Width": width, "Height": height, "AdaptMode": "Fill",
+        }]})
     effects = []
     # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验；
     # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。

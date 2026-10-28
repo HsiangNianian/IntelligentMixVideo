@@ -270,8 +270,26 @@ class AvatarEffects(_message.Message):
     remove_background: bool
     def __init__(self, opening_enabled: _Optional[bool] = ..., opening_duration: _Optional[float] = ..., circle_scale: _Optional[float] = ..., feather: _Optional[float] = ..., remove_background: _Optional[bool] = ...) -> None: ...
 
+class FrameMaskBar(_message.Message):
+    __slots__ = ("enabled", "height", "color")
+    ENABLED_FIELD_NUMBER: _ClassVar[int]
+    HEIGHT_FIELD_NUMBER: _ClassVar[int]
+    COLOR_FIELD_NUMBER: _ClassVar[int]
+    enabled: bool
+    height: float
+    color: str
+    def __init__(self, enabled: _Optional[bool] = ..., height: _Optional[float] = ..., color: _Optional[str] = ...) -> None: ...
+
+class FrameMask(_message.Message):
+    __slots__ = ("top", "bottom")
+    TOP_FIELD_NUMBER: _ClassVar[int]
+    BOTTOM_FIELD_NUMBER: _ClassVar[int]
+    top: FrameMaskBar
+    bottom: FrameMaskBar
+    def __init__(self, top: _Optional[_Union[FrameMaskBar, _Mapping]] = ..., bottom: _Optional[_Union[FrameMaskBar, _Mapping]] = ...) -> None: ...
+
 class SaveTemplateRequest(_message.Message):
-    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "transition_mode", "transition_enabled", "split_screen", "avatar_effects")
+    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "transition_mode", "transition_enabled", "split_screen", "avatar_effects", "frame_mask")
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     EFFECT_IDS_FIELD_NUMBER: _ClassVar[int]
@@ -282,6 +300,7 @@ class SaveTemplateRequest(_message.Message):
     TRANSITION_ENABLED_FIELD_NUMBER: _ClassVar[int]
     SPLIT_SCREEN_FIELD_NUMBER: _ClassVar[int]
     AVATAR_EFFECTS_FIELD_NUMBER: _ClassVar[int]
+    FRAME_MASK_FIELD_NUMBER: _ClassVar[int]
     name: str
     description: str
     effect_ids: _containers.RepeatedScalarFieldContainer[str]
@@ -292,10 +311,11 @@ class SaveTemplateRequest(_message.Message):
     transition_enabled: bool
     split_screen: SplitScreen
     avatar_effects: AvatarEffects
-    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ...) -> None: ...
+    frame_mask: FrameMask
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ..., frame_mask: _Optional[_Union[FrameMask, _Mapping]] = ...) -> None: ...
 
 class TemplateRecord(_message.Message):
-    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "effects", "created_at", "updated_at", "transition_mode", "transition_enabled", "split_screen", "avatar_effects")
+    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "effects", "created_at", "updated_at", "transition_mode", "transition_enabled", "split_screen", "avatar_effects", "frame_mask")
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     EFFECT_IDS_FIELD_NUMBER: _ClassVar[int]
@@ -309,6 +329,7 @@ class TemplateRecord(_message.Message):
     TRANSITION_ENABLED_FIELD_NUMBER: _ClassVar[int]
     SPLIT_SCREEN_FIELD_NUMBER: _ClassVar[int]
     AVATAR_EFFECTS_FIELD_NUMBER: _ClassVar[int]
+    FRAME_MASK_FIELD_NUMBER: _ClassVar[int]
     name: str
     description: str
     effect_ids: _containers.RepeatedScalarFieldContainer[str]
@@ -322,7 +343,8 @@ class TemplateRecord(_message.Message):
     transition_enabled: bool
     split_screen: SplitScreen
     avatar_effects: AvatarEffects
-    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., effects: _Optional[_Iterable[_Union[EffectAsset, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ...) -> None: ...
+    frame_mask: FrameMask
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., effects: _Optional[_Iterable[_Union[EffectAsset, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ..., frame_mask: _Optional[_Union[FrameMask, _Mapping]] = ...) -> None: ...
 
 class TemplateSummary(_message.Message):
     __slots__ = ("template_id", "name", "description", "created_at", "updated_at", "title", "subtitle", "track_count", "validation_error")

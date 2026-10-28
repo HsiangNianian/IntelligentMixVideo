@@ -105,7 +105,7 @@ def error_message(details: dict) -> str:
 # 七个模块文件即持久化契约；未执行的模块保留四个空数组。
 MODULES = ("request", "template", "asr", "segmentation", "matching", "timeline", "zos")
 GROUPS = {
-    "template": "template", "remotion_snapshot": "template", "remotion_render": "timeline",
+    "template": "template", "remotion_snapshot": "template", "remotion_render": "timeline", "frame_mask_upload": "timeline",
     "asr": "asr", "segmentation": "segmentation", "translation": "segmentation",
     "matching": "matching", "match_submit": "matching", "match_query": "matching",
     "assembling": "timeline", "material_probe": "timeline", "split_screen": "timeline", "avatar_opening": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",

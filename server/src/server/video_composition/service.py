@@ -24,6 +24,7 @@ from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, MatchedSegment, PlaygroundRequest, PositiveSeconds, Segment, TaskResponse
 from .settings import ClientSettings, Settings, ZosSettings
 from .timeline import build_timeline, validate_segments
+from .frame_mask import upload_mask
 from . import avatar, split_screen
 
 logger = logging.getLogger(__name__)
@@ -574,6 +575,15 @@ class Job:
         """组装只读业务快照，提交前持久化完整请求、稳定 ClientToken 和总截止时间。"""
         data = self.record["data"]
         request = CompositionRequest.from_snapshot(data["request"])
+        # 上传成功但 URL 尚未落库时若进程中断，恢复会按固定任务 key 幂等覆盖同一份蒙版。
+        # 允许重复上传这张小 PNG；URL 已落库时直接复用。
+        if data["template"].get("frame_mask") and "frame_mask_url" not in data:
+            mask_url = await self.runtime.step(self.record, "frame_mask_upload", lambda: self.runtime.sync(
+                upload_mask, data["template"]["frame_mask"], data["output"]["width"], data["output"]["height"],
+                self.record["task_id"], ZosSettings(), self.settings.composition_http_timeout_seconds, zos.object_prefix(data),
+            ), {"frame_mask": data["template"]["frame_mask"]})
+            await self.save("assembling", frame_mask_url=mask_url)
+            data = self.record["data"]
         if request.composition_mode != "standard" and "material_durations" not in data:
             durations = await self.runtime.step(self.record, "material_probe", lambda: media.material_durations(
                 request.materials, data["duration_ms"] / 1000, self.settings.composition_http_timeout_seconds,
@@ -581,6 +591,7 @@ class Job:
             await self.save("assembling", material_durations=durations)
             data = self.record["data"]
         inputs = dict(request=data["request"], template=data["template"], transition_seed=self.record["task_id"], segments=data.get("segmentation", {}).get("segments", []),
+                      frame_mask_url=data.get("frame_mask_url"),
                       use_keyword_transitions=data.get("keyword_transitions", False),
                       remotion_assets=(data.get("remotion") or {}).get("assets", {}),
                       title_keyword=data.get("segmentation", {}).get("title_keyword", ""),

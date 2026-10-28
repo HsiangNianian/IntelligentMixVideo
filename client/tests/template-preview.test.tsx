@@ -7,6 +7,7 @@ import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TemplatePreview } from "@/features/templates/TemplatePreview";
 import { newDraft, type Draft } from "@/features/templates/model";
+import { newFrameMask } from "@/features/templates/frameMask";
 import { CAN_PLAY_TIMEOUT_MS, readCatalog, STALL_TIMEOUT_MS, type PlayerEvent } from "@/features/templates/sdk";
 import { addTrack, previewContext, resolveTemplate } from "@/features/templates/tracks";
 import { sampleMedia } from "./fixtures";
@@ -71,6 +72,28 @@ async function mountWithSdk(draft: Draft, extra: Partial<Parameters<typeof Templ
 
 /** 时间轴各行的对象类型。 */
 const rowObjects = () => [...screen.getByLabelText("时间轴轨道标签").querySelectorAll("[data-object]")].map((label) => label.getAttribute("data-object"));
+
+test("只修改蒙版也刷新 SDK，失败降级保留相同几何，关闭即移除", async () => {
+  spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ fillRect() {}, fillStyle: "" } as unknown as CanvasRenderingContext2D);
+  spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,mask");
+  const draft = newDraft();
+  const stable = props(draft);
+  const { view, player } = await mountWithSdk(draft, { resolved: stable.resolved });
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  const mask = newFrameMask();
+  view.rerender(<TemplatePreview {...stable} draft={{ ...draft, frame_mask: mask }} />);
+  await waitFor(() => expect(player.setTimeline).toHaveBeenCalledTimes(2));
+  expect(screen.queryByLabelText("上栏蒙版预览")).toBeNull();
+  await act(async () => player.failTimeline(new Error("SDK 出错")));
+  expect(screen.getByLabelText("上栏蒙版预览").style.height).toBe(`${353 / 1920 * 100}%`);
+  expect(screen.getByLabelText("下栏蒙版预览").style.top).toBe(`${1601 / 1920 * 100}%`);
+  view.rerender(<TemplatePreview {...stable} draft={{ ...draft, frame_mask: {
+    top: { ...mask.top, enabled: false }, bottom: { ...mask.bottom, enabled: false },
+  } }} />);
+  expect(screen.queryByLabelText("上栏蒙版预览")).toBeNull();
+  expect(screen.queryByLabelText("下栏蒙版预览")).toBeNull();
+});
 
 // 回归：SDK 的动态媒体路径忽略 Timeline 蒙版字段，须从媒体回调一起交给原视频节点；不降级花字和滤镜。
 test("同屏圆角从 SDK 媒体回调返回，直角视频保留原地址", async () => {

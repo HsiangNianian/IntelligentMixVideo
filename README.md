@@ -21,6 +21,7 @@
 IntelligentMixVideo connects desktop template editing, server-side media processing, and cloud video rendering. Create reusable visual templates, then use the server APIs to combine scripts, narration, and video assets into finished videos.
 
 - **Visual template editing**: Add decorative text, speech bubbles, filters, visual effects, transitions, and text animations. Adjust text, font size, position, and effect parameters.
+- **Top and bottom color bars**: Select the mask tab to add full-width bars with separate switches, heights, and colors. They cover the video for its full duration while existing text and effects remain above them; preview and cloud composition use the same geometry.
 - **Preview and timeline**: Preview template effects, set object start times in seconds or as a percentage of the video duration, and choose a fixed duration or let an object run to the end of the video.
 - **Media and avatar together**: Choose separate windows, an avatar over full-canvas material, or an automatically located circular head. Overlay layouts keep the complete material with blurred padding. Position the avatar with canvas X/Y and size; only matched material intervals use the layout, while gaps retain the original full-screen avatar. See the [template API documentation](server/README.md#模板接口).
 - **Cloud template library**: Templates are saved to MySQL through the server and shared by everyone connected to it.

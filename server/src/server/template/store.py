@@ -187,7 +187,7 @@ def save_template(data: TemplateSave) -> Template:
                 if existing is None:
                     raise HTTPException(404, "模板不存在")
                 # 旧客户端省略新配置时保留；开关的显式 false 仍正常保存。
-                for field in ("split_screen", "avatar_effects"):
+                for field in ("frame_mask", "split_screen", "avatar_effects"):
                     if field not in data.model_fields_set and field in existing.configuration:
                         configuration[field] = existing.configuration[field]
                 if data.split_screen is not None and "layout" not in data.split_screen.model_fields_set:

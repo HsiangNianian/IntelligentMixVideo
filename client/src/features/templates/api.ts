@@ -16,6 +16,7 @@ import {
 import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
 import { validateTemplateTracks } from "./tracks";
 import { BOUND_TEXT_PARAMETERS, validateClipSlots } from "./clips";
+import { validateFrameMask, type FrameMask } from "./frameMask";
 import { defaultSplitScreen, validateSplitScreen, type SplitScreen } from "./splitScreen";
 import { defaultAvatarEffects, validateAvatarEffects, type AvatarEffects } from "./avatarEffects";
 
@@ -33,6 +34,10 @@ function toTemplate(record: TemplateRecord): Template {
     transition_duration_seconds: record.transitionDurationSeconds,
     transition_mode: record.transitionMode as Draft["transition_mode"],
     transition_enabled: record.transitionEnabled ?? true,
+    ...(record.frameMask ? { frame_mask: validateFrameMask({
+      top: { enabled: record.frameMask.top?.enabled, height: record.frameMask.top?.height, color: record.frameMask.top?.color },
+      bottom: { enabled: record.frameMask.bottom?.enabled, height: record.frameMask.bottom?.height, color: record.frameMask.bottom?.color },
+    } as FrameMask) } : {}),
     ...(record.avatarEffects ? { avatar_effects: (() => {
       const value = { ...defaultAvatarEffects(), ...toJson(AvatarEffectsSchema, record.avatarEffects) as Partial<AvatarEffects> };
       validateAvatarEffects(value);
@@ -213,6 +218,7 @@ export async function saveTemplate(draft: Draft, id?: string): Promise<Template>
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
   validateTemplateTracks(draft.tracks);
   validateClipSlots(draft);
+  if (draft.frame_mask) validateFrameMask(draft.frame_mask);
   if (draft.split_screen) validateSplitScreen(draft.split_screen);
   if (draft.avatar_effects) validateAvatarEffects(draft.avatar_effects);
   for (const target of ["title", "subtitle"])
@@ -226,6 +232,7 @@ export async function saveTemplate(draft: Draft, id?: string): Promise<Template>
     transitionDurationSeconds: draft.transition_duration_seconds,
     transitionMode: draft.transition_mode ?? "sequence",
     transitionEnabled: draft.transition_enabled ?? true,
+    frameMask: draft.frame_mask,
     splitScreen: draft.split_screen,
     avatarEffects: draft.avatar_effects,
     tracks: {
