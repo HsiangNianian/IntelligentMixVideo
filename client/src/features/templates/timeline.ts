@@ -17,6 +17,7 @@ import { trackLabel, trackLayers, type ResolvedTimeline } from "./tracks";
 import { previewVideos } from "./media";
 import type { ClipSlot } from "./clips";
 import { previewFont } from "./fonts";
+import { previewRect, borderSvg, previewMaterial, previewMaskUrl } from "./splitScreen";
 
 /** 预览轨道保留源素材范围，缩略图采样使用源时间，游标使用预览时间。 */
 export interface PreviewClip extends TimelineAction {
@@ -32,7 +33,7 @@ export interface PreviewClip extends TimelineAction {
 
 /** 轨道从 buildTimeline 的结果派生（预览按当前草稿生成，不等 SDK 载入）；每个视频独立成行，效果按图层排列。 */
 export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] {
-  const rows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [...timeline.previewRows, ...timeline.VideoTracks.map((track, trackIndex) => ({
+  const rows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [...timeline.previewRows, ...timeline.previewVideoTracks.map((track, trackIndex) => ({
     id: `video-${trackIndex}`,
     actions: track.VideoTrackClips.map((clip) => {
       return {
@@ -134,6 +135,8 @@ export function thumbnailTimes(clip: Pick<PreviewClip, "sourceIn" | "sourceOut">
 
 /** SDK 效果允许混合文字、数值参数；仅从可信目录和经过范围校验的配置生成。 */
 type Effect = Record<string, string | number>;
+/** SDK 视频轨兼容图片装饰；业务时间轴另取原来的三个示例片段。 */
+interface PreviewVideo { MaskVideoURL?: string; source?: number; Type: string; MediaURL: string; In?: number; Out?: number; Duration?: number; TimelineIn: number; TimelineOut: number; X?: number; Y?: number; Width: number; Height: number; AdaptMode: string; Effects: Effect[] }
 
 /**
  * 模板预览的画布：固定为成片的 1080×1920（服务端 composition_width/height 的默认值），与 AI 资产画布一致，
@@ -227,6 +230,8 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
       FontSize: size,
       FontColor: "#FFFFFF",
       Outline: 0,
+      // 与合成端相同的有界换行；SDK 未指定文字宽度时会把居中坐标导出为 NaN。
+      ...(role !== "bubble" ? { AdaptMode: "AutoWrap", TextWidth: 1 } : {}),
       ...effect(role === "bubble" ? "bubble" : `${role}Flower`),
       ...motion,
       ...(role === "bubble" ? { Width: 0.5 } : {}),
@@ -244,7 +249,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
 }
 
 /** 母版、文字和全画面效果从同一份实例数据生成，SDK 自动转换后端 Timeline 格式。 */
-export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: PreviewMedia, resolvedTimeline: ResolvedTimeline, order = [0, 1, 2]) {
+export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: PreviewMedia, resolvedTimeline: ResolvedTimeline, order = [0, 1, 2], avatarSource = 0) {
   const previewRows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [];
   const EffectTracks: { EffectTrackItems: Effect[] }[] = [];
   const transitions: { boundary: number; start: number; end: number; effect: Effect }[] = [];
@@ -263,11 +268,40 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
     SubtitleTracks: [] as { SubtitleTrackClips: NonNullable<ReturnType<typeof buildTrackContent>["text"]>[] }[],
     AudioTracks: [], AspectRatio: `${canvas.Width}:${canvas.Height}`, FECanvas: canvas,
   };
+  const previewVideoTracks = timeline.VideoTracks;
+  const layout = draft.split_screen?.enabled ? draft.split_screen : undefined;
+  const splitTracks: { VideoTrackClips: PreviewVideo[] }[] = [];
+  if (layout) {
+    const bg = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920"><path fill="${layout.backgroundColor}" d="M0 0h1080v1920H0z"/></svg>`)}`;
+    if (layout.layout === "split") splitTracks.push({ VideoTrackClips: [{ Type: "Image", MediaURL: bg, Duration: resolvedTimeline.duration, TimelineIn: 0, TimelineOut: resolvedTimeline.duration, Width: 0.9999, Height: 0.9999, AdaptMode: "Fill", Effects: [] }] });
+    for (const role of ["material", "avatar"] as const) {
+      const clips: PreviewVideo[] = [], borders: PreviewVideo[] = [];
+      for (const range of ranges) {
+        const video = sources[role === "avatar" ? avatarSource : previewMaterial(range.source, avatarSource)];
+        const rect = previewRect(layout, role, video);
+        const fullMaterial = role === "material" && layout.layout !== "split";
+        const geometry = { X: rect.x / 1080, Y: rect.y / 1920, Width: Math.min(rect.width / 1080, 0.9999), Height: Math.min(rect.height / 1920, 0.9999), AdaptMode: fullMaterial ? "Contain" : "Cover" };
+        const effects: Effect[] = [{ Type: "Volume", Gain: 0 }, ...(fullMaterial ? letterbox(video) : [])];
+        // 短示例在预览内循环；正式合成的数字人始终使用口播绝对源时间。
+        let at = range.start;
+        while (at < range.end - 1e-8) {
+          let offset = role === "avatar" ? at % video.duration : (at - range.start) % video.duration;
+          if (video.duration - offset < 1e-7) offset = 0;
+          const end = Math.min(range.end, at + video.duration - offset);
+          clips.push({ ...(rect.radius ? { MaskVideoURL: previewMaskUrl(rect, video) } : {}), Type: "Video", MediaURL: video.url, In: offset, Out: offset + end - at, TimelineIn: at, TimelineOut: end, ...geometry, Effects: effects });
+          at = end;
+        }
+        if (rect.border) borders.push({ Type: "Image", MediaURL: borderSvg(rect, layout[role].borderColor), Duration: range.end - range.start, TimelineIn: range.start, TimelineOut: range.end, ...geometry, Effects: [] });
+      }
+      splitTracks.push({ VideoTrackClips: clips });
+      if (borders.length) splitTracks.push({ VideoTrackClips: borders });
+    }
+  }
   const seen = new Set<string>();
   // 改由 Remotion 字效显示的文字仍保留时间轴行，但不交给 SDK 渲染。
   const replaced = remotionTexts(draft);
   for (const source of [...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target])) {
-    if (source.enabled === false) continue;
+    if (source.enabled === false || (layout && source.target === "transition")) continue;
     const applied = resolvedTimeline.tracks[source.id];
     if (!applied) throw new Error("对象缺少时间计算结果");
     const track = { ...source, ...applied };
@@ -276,7 +310,8 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
     const resolved = buildTrackContent(track.editor, catalog, track.target, track.language);
     if (track.end <= track.start) continue;
     if (isTextTarget(track.target)) {
-      const text = resolved.text;
+      const point = layout && track.target === "subtitle" ? layout[track.language === "en" ? "subtitleEn" : "subtitle"] : undefined;
+      const text = resolved.text && point ? { ...resolved.text, X: Math.min(point.x / 100, 0.9999), Y: Math.min(point.y / 100, 0.9999) } : resolved.text;
       if (!text?.Content.trim()) throw new Error("文字轨道内容不能为空");
       if (!replaced.has(textKey(track.target, track.language))) timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
     } else if (track.target === "transition") {
@@ -297,7 +332,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
       label: trackLabel(track, draft.tracks), effectName, url: "", sourceIn: 0, sourceOut: 0,
     }] });
   }
-  return { ...timeline, EffectTracks, previewRows, notices, transitions };
+  return { ...timeline, VideoTracks: layout ? splitTracks : timeline.VideoTracks as { VideoTrackClips: PreviewVideo[] }[], previewVideoTracks, EffectTracks, previewRows, notices, transitions };
 }
 
 /** SDK 将专用轨道追加到视频之后；统一传入从下到上的图层，保证文字位于滤镜和 VFX 上方。 */

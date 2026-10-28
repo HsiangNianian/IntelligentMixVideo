@@ -27,7 +27,7 @@ test("普通与转场轨道保留实际时间范围", () => {
   expect(rows[4].actions[0]).toMatchObject({ start: 10, end: 20, sourceIn: 0, sourceOut: 10 });
   expect(rows[5].actions[0]).toMatchObject({ start: 20, end: 30, sourceIn: 0, sourceOut: 10 });
   expect(new Set(rows.flatMap((row) => row.actions.map((action) => action.id))).size).toBe(6);
-  expect(buildPreviewRows({ ...buildTimeline(draft, catalog), VideoTracks: [] })).toEqual(rows.slice(0, 3));
+  expect(buildPreviewRows({ ...buildTimeline(draft, catalog), previewVideoTracks: [] })).toEqual(rows.slice(0, 3));
 });
 
 // 添加与移除转场时三个来源始终各占独立轨道，片段禁止移动与调整长度。

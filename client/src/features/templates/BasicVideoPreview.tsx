@@ -3,6 +3,8 @@
  * 不渲染 IMS 文字、转场、滤镜和 VFX，播放时逐帧把全局时间回报给 AI 资产叠加层与时间轴。
  */
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
+import { SplitScreenPreview, type SplitPreviewHandle } from "./SplitScreenPreview";
+import type { SplitScreen } from "./splitScreen";
 import { previewVideos } from "./media";
 import type { PreviewMedia } from "./model";
 import type { ResolvedTimeline } from "./tracks";
@@ -19,11 +21,13 @@ export function clipAt(clips: ResolvedTimeline["clips"], time: number) {
  * 基础播放器只依赖已读取的媒体与解析后的片段区间，不创建 SDK 或请求授权。
  * 每段一个预加载的静音视频（与 IMS 预览一样不出声），换段时切换显示而不重新加载；每段只播到解析出的段长。
  */
-export function BasicVideoPreview({ ref, media, resolved, order, onTime, onReady, onError, onPlayingChange, onEnd }: {
+export function BasicVideoPreview({ ref, media, resolved, order, layout, avatarSource = 0, onTime, onReady, onError, onPlayingChange, onEnd }: {
   ref: Ref<PlaybackHandle>;
   media: PreviewMedia;
   resolved: ResolvedTimeline;
   order: number[];
+  layout?: SplitScreen;
+  avatarSource?: number;
   /** 播放时每帧回报一次，定位与换段时立即回报。 */
   onTime: (time: number) => void;
   onReady: () => void;
@@ -31,6 +35,7 @@ export function BasicVideoPreview({ ref, media, resolved, order, onTime, onReady
   onPlayingChange: (playing: boolean) => void;
   onEnd: () => void;
 }) {
+  const split = useRef<SplitPreviewHandle>(null);
   const sources = useMemo(() => previewVideos(media), [media]);
   const videos = useRef<(HTMLVideoElement | null)[]>([]);
   const callbacks = useRef({ onTime, onReady, onError, onPlayingChange, onEnd });
@@ -55,6 +60,7 @@ export function BasicVideoPreview({ ref, media, resolved, order, onTime, onReady
     setActive(index);
     const element = videos.current[index];
     if (element) element.currentTime = offset;
+    split.current?.sync(timeline.current.clips[index].start + offset, offset, state.current.playing);
   };
 
   /** 停止逐帧回报并暂停当前视频；notify 时通知主控件已暂停。 */
@@ -64,11 +70,13 @@ export function BasicVideoPreview({ ref, media, resolved, order, onTime, onReady
     videos.current[state.current.index]?.pause();
     if (state.current.playing && notify) callbacks.current.onPlayingChange(false);
     state.current.playing = false;
+    split.current?.sync(position(), videos.current[state.current.index]?.currentTime ?? 0, false);
   };
 
   /** 播放当前段；浏览器拒绝播放（如自动播放限制）时回到暂停状态。 */
   const resume = () => {
     const index = state.current.index;
+    split.current?.sync(position(), videos.current[index]?.currentTime ?? 0, true);
     void videos.current[index]?.play().catch(() => {
       if (state.current.playing && state.current.index === index) stop(true);
     });
@@ -93,6 +101,7 @@ export function BasicVideoPreview({ ref, media, resolved, order, onTime, onReady
       resume();
       callbacks.current.onTime(clips[state.current.index].start);
     } else callbacks.current.onTime(clip.start + element.currentTime);
+    split.current?.sync(position(), videos.current[state.current.index]?.currentTime ?? 0, true);
     state.current.frame = requestAnimationFrame(tick);
   };
 
@@ -126,9 +135,11 @@ export function BasicVideoPreview({ ref, media, resolved, order, onTime, onReady
     stop(true);
     show(0, 0);
     callbacks.current.onTime(0);
-  }, [media, order, resolved]);
+  }, [media, order, resolved, layout, avatarSource]);
 
   useEffect(() => () => stop(false), []);
+
+  useEffect(() => { split.current?.sync(position(), videos.current[state.current.index]?.currentTime ?? 0, state.current.playing); }, [active, avatarSource]);
 
   return <>{resolved.clips.map((_, index) => {
     const source = sources[order[index]];
@@ -136,12 +147,12 @@ export function BasicVideoPreview({ ref, media, resolved, order, onTime, onReady
     const shown = index === active;
     return <video key={index} ref={(element) => { videos.current[index] = element; }} src={source.url}
       aria-label={shown ? "基础视频预览" : undefined} aria-hidden={shown ? undefined : true} muted playsInline preload="auto"
-      className={`absolute inset-0 size-full bg-black object-contain ${shown ? "" : "invisible"}`}
+      className={`absolute inset-0 size-full bg-black object-contain ${shown && !layout?.enabled ? "" : "invisible"}`}
       onLoadedMetadata={index === 0 ? () => callbacks.current.onReady() : undefined}
       onError={() => {
         // 媒体错误后不能继续用逐帧回调假装播放；先停下当前片段并同步主控件状态，再交给父组件显示失败。
         if (state.current.playing) stop(true);
         callbacks.current.onError();
       }} />;
-  })}</>;
+  })}{layout?.enabled && <SplitScreenPreview ref={split} layout={layout} media={media} source={order[active]} avatar={avatarSource} onError={onError} />}</>;
 }

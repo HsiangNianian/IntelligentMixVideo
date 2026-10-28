@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file imv/template/v1/template.proto.
  */
 export const file_imv_template_v1_template: GenFile = /*@__PURE__*/
-  fileDesc("Ch5pbXYvdGVtcGxhdGUvdjEvdGVtcGxhdGUucHJvdG8SD2ltdi50ZW1wbGF0ZS52MSLWAQoLRWZmZWN0QXNzZXQSCgoCaWQYASABKAkSEAoIY2F0ZWdvcnkYAiABKAkSDAoEbmFtZRgDIAEoCRIRCgllZmZlY3RfaWQYBCABKAkSQAoKcGFyYW1ldGVycxgFIAMoCzIsLmltdi50ZW1wbGF0ZS52MS5FZmZlY3RBc3NldC5QYXJhbWV0ZXJzRW50cnkSEwoLcHJldmlld191cmwYBiABKAkaMQoPUGFyYW1ldGVyc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiJAoSUmVtb3Rpb25TdHJpbmdMaXN0Eg4KBnZhbHVlcxgBIAMoCSLoAQoZUmVtb3Rpb25QYXJhbWV0ZXJPdmVycmlkZRILCgNrZXkYASABKAkSGQoMc3RyaW5nX3ZhbHVlGAIgASgJSACIAQESGQoMbnVtYmVyX3ZhbHVlGAMgASgBSAGIAQESFwoKYm9vbF92YWx1ZRgEIAEoCEgCiAEBEj4KEXN0cmluZ19saXN0X3ZhbHVlGAUgASgLMiMuaW12LnRlbXBsYXRlLnYxLlJlbW90aW9uU3RyaW5nTGlzdEIPCg1fc3RyaW5nX3ZhbHVlQg8KDV9udW1iZXJfdmFsdWVCDQoLX2Jvb2xfdmFsdWUiowEKEVJlbW90aW9uVHJhbnNmb3JtEg4KAXgYASABKAFIAIgBARIOCgF5GAIgASgBSAGIAQESEgoFc2NhbGUYAyABKAFIAogBARIVCghyb3RhdGlvbhgEIAEoAUgDiAEBEhQKB29wYWNpdHkYBSABKAFIBIgBAUIECgJfeEIECgJfeUIICgZfc2NhbGVCCwoJX3JvdGF0aW9uQgoKCF9vcGFjaXR5Ir4BChNSZW1vdGlvblRyYWNrRWRpdG9yEj4KCnBhcmFtZXRlcnMYASADKAsyKi5pbXYudGVtcGxhdGUudjEuUmVtb3Rpb25QYXJhbWV0ZXJPdmVycmlkZRI1Cgl0cmFuc2Zvcm0YAiABKAsyIi5pbXYudGVtcGxhdGUudjEuUmVtb3Rpb25UcmFuc2Zvcm0SHAoPYnVzaW5lc3NfdGFyZ2V0GAMgASgJSACIAQFCEgoQX2J1c2luZXNzX3RhcmdldCKnDwoURWZmZWN0VGVtcGxhdGVFZGl0b3ISEgoFdGl0bGUYASABKAlIAIgBARIVCghzdWJ0aXRsZRgCIAEoCUgBiAEBEhgKC2J1YmJsZV90ZXh0GAMgASgJSAKIAQESFwoKdGl0bGVfc2l6ZRgEIAEoBUgDiAEBEhoKDXN1YnRpdGxlX3NpemUYBSABKAVIBIgBARIYCgtidWJibGVfc2l6ZRgGIAEoBUgFiAEBEhQKB3RpdGxlX3gYByABKAFIBogBARIUCgd0aXRsZV95GAggASgBSAeIAQESFwoKc3VidGl0bGVfeBgJIAEoAUgIiAEBEhcKCnN1YnRpdGxlX3kYCiABKAFICYgBARIVCghidWJibGVfeBgLIAEoAUgKiAEBEhUKCGJ1YmJsZV95GAwgASgBSAuIAQESGQoMdGl0bGVfZmxvd2VyGA0gASgJSAyIAQESHAoPc3VidGl0bGVfZmxvd2VyGA4gASgJSA2IAQESEwoGYnViYmxlGA8gASgJSA6IAQESEwoGZmlsdGVyGBAgASgJSA+IAQESEAoDdmZ4GBEgASgJSBCIAQESFwoKdHJhbnNpdGlvbhgSIAEoCUgRiAEBEhUKCHRpdGxlX2luGBMgASgJSBKIAQESFgoJdGl0bGVfb3V0GBQgASgJSBOIAQESFwoKdGl0bGVfbG9vcBgVIAEoCUgUiAEBEhgKC3N1YnRpdGxlX2luGBYgASgJSBWIAQESGQoMc3VidGl0bGVfb3V0GBcgASgJSBaIAQESGgoNc3VidGl0bGVfbG9vcBgYIAEoCUgXiAEBEhYKCWJ1YmJsZV9pbhgZIAEoCUgYiAEBEhcKCmJ1YmJsZV9vdXQYGiABKAlIGYgBARIYCgtidWJibGVfbG9vcBgbIAEoCUgaiAEBEh4KEXRpdGxlX2luX2R1cmF0aW9uGBwgASgBSBuIAQESHwoSdGl0bGVfb3V0X2R1cmF0aW9uGB0gASgBSByIAQESIQoUc3VidGl0bGVfaW5fZHVyYXRpb24YHiABKAFIHYgBARIiChVzdWJ0aXRsZV9vdXRfZHVyYXRpb24YHyABKAFIHogBARIfChJidWJibGVfaW5fZHVyYXRpb24YICABKAFIH4gBARIgChNidWJibGVfb3V0X2R1cmF0aW9uGCEgASgBSCCIAQESHQoVc3VidGl0bGVfa2V5d29yZF9ib2xkGCIgASgIEh8KF3N1YnRpdGxlX2tleXdvcmRfaXRhbGljGCMgASgIEiIKGnN1YnRpdGxlX2tleXdvcmRfdW5kZXJsaW5lGCQgASgIEiIKGnN1YnRpdGxlX2tleXdvcmRfc3RyaWtlb3V0GCUgASgIEh4KFnN1YnRpdGxlX2tleXdvcmRfY29sb3IYJiABKAkSFQoNdGl0bGVfa2V5d29yZBgnIAEoCRIaChJ0aXRsZV9rZXl3b3JkX2JvbGQYKCABKAgSHAoUdGl0bGVfa2V5d29yZF9pdGFsaWMYKSABKAgSHwoXdGl0bGVfa2V5d29yZF91bmRlcmxpbmUYKiABKAgSHwoXdGl0bGVfa2V5d29yZF9zdHJpa2VvdXQYKyABKAgSGwoTdGl0bGVfa2V5d29yZF9jb2xvchgsIAEoCRIaChJ0aXRsZV9rZXl3b3JkX3NpemUYLSABKAUSHQoVc3VidGl0bGVfa2V5d29yZF9zaXplGC4gASgFEjYKCHJlbW90aW9uGC8gASgLMiQuaW12LnRlbXBsYXRlLnYxLlJlbW90aW9uVHJhY2tFZGl0b3ISFwoKdGl0bGVfZm9udBgwIAEoCUghiAEBEhoKDXN1YnRpdGxlX2ZvbnQYMSABKAlIIogBAUIICgZfdGl0bGVCCwoJX3N1YnRpdGxlQg4KDF9idWJibGVfdGV4dEINCgtfdGl0bGVfc2l6ZUIQCg5fc3VidGl0bGVfc2l6ZUIOCgxfYnViYmxlX3NpemVCCgoIX3RpdGxlX3hCCgoIX3RpdGxlX3lCDQoLX3N1YnRpdGxlX3hCDQoLX3N1YnRpdGxlX3lCCwoJX2J1YmJsZV94QgsKCV9idWJibGVfeUIPCg1fdGl0bGVfZmxvd2VyQhIKEF9zdWJ0aXRsZV9mbG93ZXJCCQoHX2J1YmJsZUIJCgdfZmlsdGVyQgYKBF92ZnhCDQoLX3RyYW5zaXRpb25CCwoJX3RpdGxlX2luQgwKCl90aXRsZV9vdXRCDQoLX3RpdGxlX2xvb3BCDgoMX3N1YnRpdGxlX2luQg8KDV9zdWJ0aXRsZV9vdXRCEAoOX3N1YnRpdGxlX2xvb3BCDAoKX2J1YmJsZV9pbkINCgtfYnViYmxlX291dEIOCgxfYnViYmxlX2xvb3BCFAoSX3RpdGxlX2luX2R1cmF0aW9uQhUKE190aXRsZV9vdXRfZHVyYXRpb25CFwoVX3N1YnRpdGxlX2luX2R1cmF0aW9uQhgKFl9zdWJ0aXRsZV9vdXRfZHVyYXRpb25CFQoTX2J1YmJsZV9pbl9kdXJhdGlvbkIWChRfYnViYmxlX291dF9kdXJhdGlvbkINCgtfdGl0bGVfZm9udEIQCg5fc3VidGl0bGVfZm9udCLzAgoLRWZmZWN0VHJhY2sSCgoCaWQYASABKAkSDgoGdGFyZ2V0GAIgASgJEhIKCnN0YXJ0X21vZGUYAyABKAkSEgoFc3RhcnQYBCABKAFIAIgBARIVCghkdXJhdGlvbhgFIAEoAUgBiAEBEjUKBmVkaXRvchgGIAEoCzIlLmltdi50ZW1wbGF0ZS52MS5FZmZlY3RUZW1wbGF0ZUVkaXRvchIRCglzcHJpdGVfaWQYByABKAkSIAoTdHJhbnNpdGlvbl9ib3VuZGFyeRgIIAEoDUgCiAEBEhgKC3RleHRfdGFyZ2V0GAkgASgJSAOIAQESFQoIbGFuZ3VhZ2UYCiABKAlIBIgBARIUCgdlbmFibGVkGAsgASgISAWIAQFCCAoGX3N0YXJ0QgsKCV9kdXJhdGlvbkIWChRfdHJhbnNpdGlvbl9ib3VuZGFyeUIOCgxfdGV4dF90YXJnZXRCCwoJX2xhbmd1YWdlQgoKCF9lbmFibGVkIjkKCVRyYWNrTGlzdBIsCgZ0cmFja3MYASADKAsyHC5pbXYudGVtcGxhdGUudjEuRWZmZWN0VHJhY2si6wIKE1NhdmVUZW1wbGF0ZVJlcXVlc3QSDAoEbmFtZRgBIAEoCRIYCgtkZXNjcmlwdGlvbhgCIAEoCUgAiAEBEhIKCmVmZmVjdF9pZHMYAyADKAkSKAobdHJhbnNpdGlvbl9kdXJhdGlvbl9zZWNvbmRzGAQgASgBSAGIAQESKgoGdHJhY2tzGAUgASgLMhouaW12LnRlbXBsYXRlLnYxLlRyYWNrTGlzdBIYCgt0ZW1wbGF0ZV9pZBgGIAEoCUgCiAEBEhwKD3RyYW5zaXRpb25fbW9kZRgHIAEoCUgDiAEBEh8KEnRyYW5zaXRpb25fZW5hYmxlZBgIIAEoCEgEiAEBQg4KDF9kZXNjcmlwdGlvbkIeChxfdHJhbnNpdGlvbl9kdXJhdGlvbl9zZWNvbmRzQg4KDF90ZW1wbGF0ZV9pZEISChBfdHJhbnNpdGlvbl9tb2RlQhUKE190cmFuc2l0aW9uX2VuYWJsZWQipgMKDlRlbXBsYXRlUmVjb3JkEgwKBG5hbWUYASABKAkSEwoLZGVzY3JpcHRpb24YAiABKAkSEgoKZWZmZWN0X2lkcxgDIAMoCRIjCht0cmFuc2l0aW9uX2R1cmF0aW9uX3NlY29uZHMYBCABKAESKgoGdHJhY2tzGAUgASgLMhouaW12LnRlbXBsYXRlLnYxLlRyYWNrTGlzdBITCgt0ZW1wbGF0ZV9pZBgGIAEoCRItCgdlZmZlY3RzGAcgAygLMhwuaW12LnRlbXBsYXRlLnYxLkVmZmVjdEFzc2V0Ei4KCmNyZWF0ZWRfYXQYCCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnVwZGF0ZWRfYXQYCSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhwKD3RyYW5zaXRpb25fbW9kZRgKIAEoCUgAiAEBEh8KEnRyYW5zaXRpb25fZW5hYmxlZBgLIAEoCEgBiAEBQhIKEF90cmFuc2l0aW9uX21vZGVCFQoTX3RyYW5zaXRpb25fZW5hYmxlZCKOAgoPVGVtcGxhdGVTdW1tYXJ5EhMKC3RlbXBsYXRlX2lkGAEgASgJEgwKBG5hbWUYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSLgoKY3JlYXRlZF9hdBgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLgoKdXBkYXRlZF9hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASDQoFdGl0bGUYBiABKAkSEAoIc3VidGl0bGUYByABKAkSGAoLdHJhY2tfY291bnQYCCABKA1IAIgBARIYChB2YWxpZGF0aW9uX2Vycm9yGAkgASgJQg4KDF90cmFja19jb3VudCJMChVMaXN0VGVtcGxhdGVzUmVzcG9uc2USMwoJdGVtcGxhdGVzGAEgAygLMiAuaW12LnRlbXBsYXRlLnYxLlRlbXBsYXRlU3VtbWFyeSJIChNHZXRUZW1wbGF0ZVJlc3BvbnNlEjEKCHRlbXBsYXRlGAEgASgLMh8uaW12LnRlbXBsYXRlLnYxLlRlbXBsYXRlUmVjb3JkIkkKFFNhdmVUZW1wbGF0ZVJlc3BvbnNlEjEKCHRlbXBsYXRlGAEgASgLMh8uaW12LnRlbXBsYXRlLnYxLlRlbXBsYXRlUmVjb3JkYgZwcm90bzM", [file_google_protobuf_timestamp]);
+  fileDesc("Ch5pbXYvdGVtcGxhdGUvdjEvdGVtcGxhdGUucHJvdG8SD2ltdi50ZW1wbGF0ZS52MSLWAQoLRWZmZWN0QXNzZXQSCgoCaWQYASABKAkSEAoIY2F0ZWdvcnkYAiABKAkSDAoEbmFtZRgDIAEoCRIRCgllZmZlY3RfaWQYBCABKAkSQAoKcGFyYW1ldGVycxgFIAMoCzIsLmltdi50ZW1wbGF0ZS52MS5FZmZlY3RBc3NldC5QYXJhbWV0ZXJzRW50cnkSEwoLcHJldmlld191cmwYBiABKAkaMQoPUGFyYW1ldGVyc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiJAoSUmVtb3Rpb25TdHJpbmdMaXN0Eg4KBnZhbHVlcxgBIAMoCSLoAQoZUmVtb3Rpb25QYXJhbWV0ZXJPdmVycmlkZRILCgNrZXkYASABKAkSGQoMc3RyaW5nX3ZhbHVlGAIgASgJSACIAQESGQoMbnVtYmVyX3ZhbHVlGAMgASgBSAGIAQESFwoKYm9vbF92YWx1ZRgEIAEoCEgCiAEBEj4KEXN0cmluZ19saXN0X3ZhbHVlGAUgASgLMiMuaW12LnRlbXBsYXRlLnYxLlJlbW90aW9uU3RyaW5nTGlzdEIPCg1fc3RyaW5nX3ZhbHVlQg8KDV9udW1iZXJfdmFsdWVCDQoLX2Jvb2xfdmFsdWUiowEKEVJlbW90aW9uVHJhbnNmb3JtEg4KAXgYASABKAFIAIgBARIOCgF5GAIgASgBSAGIAQESEgoFc2NhbGUYAyABKAFIAogBARIVCghyb3RhdGlvbhgEIAEoAUgDiAEBEhQKB29wYWNpdHkYBSABKAFIBIgBAUIECgJfeEIECgJfeUIICgZfc2NhbGVCCwoJX3JvdGF0aW9uQgoKCF9vcGFjaXR5Ir4BChNSZW1vdGlvblRyYWNrRWRpdG9yEj4KCnBhcmFtZXRlcnMYASADKAsyKi5pbXYudGVtcGxhdGUudjEuUmVtb3Rpb25QYXJhbWV0ZXJPdmVycmlkZRI1Cgl0cmFuc2Zvcm0YAiABKAsyIi5pbXYudGVtcGxhdGUudjEuUmVtb3Rpb25UcmFuc2Zvcm0SHAoPYnVzaW5lc3NfdGFyZ2V0GAMgASgJSACIAQFCEgoQX2J1c2luZXNzX3RhcmdldCKnDwoURWZmZWN0VGVtcGxhdGVFZGl0b3ISEgoFdGl0bGUYASABKAlIAIgBARIVCghzdWJ0aXRsZRgCIAEoCUgBiAEBEhgKC2J1YmJsZV90ZXh0GAMgASgJSAKIAQESFwoKdGl0bGVfc2l6ZRgEIAEoBUgDiAEBEhoKDXN1YnRpdGxlX3NpemUYBSABKAVIBIgBARIYCgtidWJibGVfc2l6ZRgGIAEoBUgFiAEBEhQKB3RpdGxlX3gYByABKAFIBogBARIUCgd0aXRsZV95GAggASgBSAeIAQESFwoKc3VidGl0bGVfeBgJIAEoAUgIiAEBEhcKCnN1YnRpdGxlX3kYCiABKAFICYgBARIVCghidWJibGVfeBgLIAEoAUgKiAEBEhUKCGJ1YmJsZV95GAwgASgBSAuIAQESGQoMdGl0bGVfZmxvd2VyGA0gASgJSAyIAQESHAoPc3VidGl0bGVfZmxvd2VyGA4gASgJSA2IAQESEwoGYnViYmxlGA8gASgJSA6IAQESEwoGZmlsdGVyGBAgASgJSA+IAQESEAoDdmZ4GBEgASgJSBCIAQESFwoKdHJhbnNpdGlvbhgSIAEoCUgRiAEBEhUKCHRpdGxlX2luGBMgASgJSBKIAQESFgoJdGl0bGVfb3V0GBQgASgJSBOIAQESFwoKdGl0bGVfbG9vcBgVIAEoCUgUiAEBEhgKC3N1YnRpdGxlX2luGBYgASgJSBWIAQESGQoMc3VidGl0bGVfb3V0GBcgASgJSBaIAQESGgoNc3VidGl0bGVfbG9vcBgYIAEoCUgXiAEBEhYKCWJ1YmJsZV9pbhgZIAEoCUgYiAEBEhcKCmJ1YmJsZV9vdXQYGiABKAlIGYgBARIYCgtidWJibGVfbG9vcBgbIAEoCUgaiAEBEh4KEXRpdGxlX2luX2R1cmF0aW9uGBwgASgBSBuIAQESHwoSdGl0bGVfb3V0X2R1cmF0aW9uGB0gASgBSByIAQESIQoUc3VidGl0bGVfaW5fZHVyYXRpb24YHiABKAFIHYgBARIiChVzdWJ0aXRsZV9vdXRfZHVyYXRpb24YHyABKAFIHogBARIfChJidWJibGVfaW5fZHVyYXRpb24YICABKAFIH4gBARIgChNidWJibGVfb3V0X2R1cmF0aW9uGCEgASgBSCCIAQESHQoVc3VidGl0bGVfa2V5d29yZF9ib2xkGCIgASgIEh8KF3N1YnRpdGxlX2tleXdvcmRfaXRhbGljGCMgASgIEiIKGnN1YnRpdGxlX2tleXdvcmRfdW5kZXJsaW5lGCQgASgIEiIKGnN1YnRpdGxlX2tleXdvcmRfc3RyaWtlb3V0GCUgASgIEh4KFnN1YnRpdGxlX2tleXdvcmRfY29sb3IYJiABKAkSFQoNdGl0bGVfa2V5d29yZBgnIAEoCRIaChJ0aXRsZV9rZXl3b3JkX2JvbGQYKCABKAgSHAoUdGl0bGVfa2V5d29yZF9pdGFsaWMYKSABKAgSHwoXdGl0bGVfa2V5d29yZF91bmRlcmxpbmUYKiABKAgSHwoXdGl0bGVfa2V5d29yZF9zdHJpa2VvdXQYKyABKAgSGwoTdGl0bGVfa2V5d29yZF9jb2xvchgsIAEoCRIaChJ0aXRsZV9rZXl3b3JkX3NpemUYLSABKAUSHQoVc3VidGl0bGVfa2V5d29yZF9zaXplGC4gASgFEjYKCHJlbW90aW9uGC8gASgLMiQuaW12LnRlbXBsYXRlLnYxLlJlbW90aW9uVHJhY2tFZGl0b3ISFwoKdGl0bGVfZm9udBgwIAEoCUghiAEBEhoKDXN1YnRpdGxlX2ZvbnQYMSABKAlIIogBAUIICgZfdGl0bGVCCwoJX3N1YnRpdGxlQg4KDF9idWJibGVfdGV4dEINCgtfdGl0bGVfc2l6ZUIQCg5fc3VidGl0bGVfc2l6ZUIOCgxfYnViYmxlX3NpemVCCgoIX3RpdGxlX3hCCgoIX3RpdGxlX3lCDQoLX3N1YnRpdGxlX3hCDQoLX3N1YnRpdGxlX3lCCwoJX2J1YmJsZV94QgsKCV9idWJibGVfeUIPCg1fdGl0bGVfZmxvd2VyQhIKEF9zdWJ0aXRsZV9mbG93ZXJCCQoHX2J1YmJsZUIJCgdfZmlsdGVyQgYKBF92ZnhCDQoLX3RyYW5zaXRpb25CCwoJX3RpdGxlX2luQgwKCl90aXRsZV9vdXRCDQoLX3RpdGxlX2xvb3BCDgoMX3N1YnRpdGxlX2luQg8KDV9zdWJ0aXRsZV9vdXRCEAoOX3N1YnRpdGxlX2xvb3BCDAoKX2J1YmJsZV9pbkINCgtfYnViYmxlX291dEIOCgxfYnViYmxlX2xvb3BCFAoSX3RpdGxlX2luX2R1cmF0aW9uQhUKE190aXRsZV9vdXRfZHVyYXRpb25CFwoVX3N1YnRpdGxlX2luX2R1cmF0aW9uQhgKFl9zdWJ0aXRsZV9vdXRfZHVyYXRpb25CFQoTX2J1YmJsZV9pbl9kdXJhdGlvbkIWChRfYnViYmxlX291dF9kdXJhdGlvbkINCgtfdGl0bGVfZm9udEIQCg5fc3VidGl0bGVfZm9udCLzAgoLRWZmZWN0VHJhY2sSCgoCaWQYASABKAkSDgoGdGFyZ2V0GAIgASgJEhIKCnN0YXJ0X21vZGUYAyABKAkSEgoFc3RhcnQYBCABKAFIAIgBARIVCghkdXJhdGlvbhgFIAEoAUgBiAEBEjUKBmVkaXRvchgGIAEoCzIlLmltdi50ZW1wbGF0ZS52MS5FZmZlY3RUZW1wbGF0ZUVkaXRvchIRCglzcHJpdGVfaWQYByABKAkSIAoTdHJhbnNpdGlvbl9ib3VuZGFyeRgIIAEoDUgCiAEBEhgKC3RleHRfdGFyZ2V0GAkgASgJSAOIAQESFQoIbGFuZ3VhZ2UYCiABKAlIBIgBARIUCgdlbmFibGVkGAsgASgISAWIAQFCCAoGX3N0YXJ0QgsKCV9kdXJhdGlvbkIWChRfdHJhbnNpdGlvbl9ib3VuZGFyeUIOCgxfdGV4dF90YXJnZXRCCwoJX2xhbmd1YWdlQgoKCF9lbmFibGVkIjkKCVRyYWNrTGlzdBIsCgZ0cmFja3MYASADKAsyHC5pbXYudGVtcGxhdGUudjEuRWZmZWN0VHJhY2siOQoLU2NyZWVuUG9pbnQSDgoBeBgBIAEoAUgAiAEBEg4KAXkYAiABKAFIAYgBAUIECgJfeEIECgJfeSKKAgoMU2NyZWVuV2luZG93Eg4KAXgYASABKAFIAIgBARIOCgF5GAIgASgBSAGIAQESEgoFd2lkdGgYAyABKAFIAogBARITCgZoZWlnaHQYBCABKAFIA4gBARIQCgNmaXQYBSABKAlIBIgBARITCgZyYWRpdXMYBiABKAFIBYgBARIZCgxib3JkZXJfd2lkdGgYByABKAFIBogBARIZCgxib3JkZXJfY29sb3IYCCABKAlIB4gBAUIECgJfeEIECgJfeUIICgZfd2lkdGhCCQoHX2hlaWdodEIGCgRfZml0QgkKB19yYWRpdXNCDwoNX2JvcmRlcl93aWR0aEIPCg1fYm9yZGVyX2NvbG9yIsYCCgtTcGxpdFNjcmVlbhIUCgdlbmFibGVkGAEgASgISACIAQESHQoQYmFja2dyb3VuZF9jb2xvchgCIAEoCUgBiAEBEi8KCG1hdGVyaWFsGAMgASgLMh0uaW12LnRlbXBsYXRlLnYxLlNjcmVlbldpbmRvdxItCgZhdmF0YXIYBCABKAsyHS5pbXYudGVtcGxhdGUudjEuU2NyZWVuV2luZG93Ei4KCHN1YnRpdGxlGAUgASgLMhwuaW12LnRlbXBsYXRlLnYxLlNjcmVlblBvaW50EjEKC3N1YnRpdGxlX2VuGAYgASgLMhwuaW12LnRlbXBsYXRlLnYxLlNjcmVlblBvaW50EhMKBmxheW91dBgHIAEoCUgCiAEBQgoKCF9lbmFibGVkQhMKEV9iYWNrZ3JvdW5kX2NvbG9yQgkKB19sYXlvdXQi+QEKDUF2YXRhckVmZmVjdHMSHAoPb3BlbmluZ19lbmFibGVkGAEgASgISACIAQESHQoQb3BlbmluZ19kdXJhdGlvbhgCIAEoAUgBiAEBEhkKDGNpcmNsZV9zY2FsZRgDIAEoAUgCiAEBEhQKB2ZlYXRoZXIYBCABKAFIA4gBARIeChFyZW1vdmVfYmFja2dyb3VuZBgFIAEoCEgEiAEBQhIKEF9vcGVuaW5nX2VuYWJsZWRCEwoRX29wZW5pbmdfZHVyYXRpb25CDwoNX2NpcmNsZV9zY2FsZUIKCghfZmVhdGhlckIUChJfcmVtb3ZlX2JhY2tncm91bmQi1wMKE1NhdmVUZW1wbGF0ZVJlcXVlc3QSDAoEbmFtZRgBIAEoCRIYCgtkZXNjcmlwdGlvbhgCIAEoCUgAiAEBEhIKCmVmZmVjdF9pZHMYAyADKAkSKAobdHJhbnNpdGlvbl9kdXJhdGlvbl9zZWNvbmRzGAQgASgBSAGIAQESKgoGdHJhY2tzGAUgASgLMhouaW12LnRlbXBsYXRlLnYxLlRyYWNrTGlzdBIYCgt0ZW1wbGF0ZV9pZBgGIAEoCUgCiAEBEhwKD3RyYW5zaXRpb25fbW9kZRgHIAEoCUgDiAEBEh8KEnRyYW5zaXRpb25fZW5hYmxlZBgIIAEoCEgEiAEBEjIKDHNwbGl0X3NjcmVlbhgJIAEoCzIcLmltdi50ZW1wbGF0ZS52MS5TcGxpdFNjcmVlbhI2Cg5hdmF0YXJfZWZmZWN0cxgKIAEoCzIeLmltdi50ZW1wbGF0ZS52MS5BdmF0YXJFZmZlY3RzQg4KDF9kZXNjcmlwdGlvbkIeChxfdHJhbnNpdGlvbl9kdXJhdGlvbl9zZWNvbmRzQg4KDF90ZW1wbGF0ZV9pZEISChBfdHJhbnNpdGlvbl9tb2RlQhUKE190cmFuc2l0aW9uX2VuYWJsZWQikgQKDlRlbXBsYXRlUmVjb3JkEgwKBG5hbWUYASABKAkSEwoLZGVzY3JpcHRpb24YAiABKAkSEgoKZWZmZWN0X2lkcxgDIAMoCRIjCht0cmFuc2l0aW9uX2R1cmF0aW9uX3NlY29uZHMYBCABKAESKgoGdHJhY2tzGAUgASgLMhouaW12LnRlbXBsYXRlLnYxLlRyYWNrTGlzdBITCgt0ZW1wbGF0ZV9pZBgGIAEoCRItCgdlZmZlY3RzGAcgAygLMhwuaW12LnRlbXBsYXRlLnYxLkVmZmVjdEFzc2V0Ei4KCmNyZWF0ZWRfYXQYCCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnVwZGF0ZWRfYXQYCSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhwKD3RyYW5zaXRpb25fbW9kZRgKIAEoCUgAiAEBEh8KEnRyYW5zaXRpb25fZW5hYmxlZBgLIAEoCEgBiAEBEjIKDHNwbGl0X3NjcmVlbhgMIAEoCzIcLmltdi50ZW1wbGF0ZS52MS5TcGxpdFNjcmVlbhI2Cg5hdmF0YXJfZWZmZWN0cxgNIAEoCzIeLmltdi50ZW1wbGF0ZS52MS5BdmF0YXJFZmZlY3RzQhIKEF90cmFuc2l0aW9uX21vZGVCFQoTX3RyYW5zaXRpb25fZW5hYmxlZCKOAgoPVGVtcGxhdGVTdW1tYXJ5EhMKC3RlbXBsYXRlX2lkGAEgASgJEgwKBG5hbWUYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSLgoKY3JlYXRlZF9hdBgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLgoKdXBkYXRlZF9hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASDQoFdGl0bGUYBiABKAkSEAoIc3VidGl0bGUYByABKAkSGAoLdHJhY2tfY291bnQYCCABKA1IAIgBARIYChB2YWxpZGF0aW9uX2Vycm9yGAkgASgJQg4KDF90cmFja19jb3VudCJMChVMaXN0VGVtcGxhdGVzUmVzcG9uc2USMwoJdGVtcGxhdGVzGAEgAygLMiAuaW12LnRlbXBsYXRlLnYxLlRlbXBsYXRlU3VtbWFyeSJIChNHZXRUZW1wbGF0ZVJlc3BvbnNlEjEKCHRlbXBsYXRlGAEgASgLMh8uaW12LnRlbXBsYXRlLnYxLlRlbXBsYXRlUmVjb3JkIkkKFFNhdmVUZW1wbGF0ZVJlc3BvbnNlEjEKCHRlbXBsYXRlGAEgASgLMh8uaW12LnRlbXBsYXRlLnYxLlRlbXBsYXRlUmVjb3JkYgZwcm90bzM", [file_google_protobuf_timestamp]);
 
 /**
  * 服务端保存的效果信息。
@@ -701,6 +701,174 @@ export const TrackListSchema: GenMessage<TrackList> = /*@__PURE__*/
   messageDesc(file_imv_template_v1_template, 7);
 
 /**
+ * 同屏字幕位置，画布百分比；横向居中、纵向为顶部。
+ *
+ * @generated from message imv.template.v1.ScreenPoint
+ */
+export type ScreenPoint = Message<"imv.template.v1.ScreenPoint"> & {
+  /**
+   * @generated from field: optional double x = 1;
+   */
+  x?: number | undefined;
+
+  /**
+   * @generated from field: optional double y = 2;
+   */
+  y?: number | undefined;
+};
+
+/**
+ * Describes the message imv.template.v1.ScreenPoint.
+ * Use `create(ScreenPointSchema)` to create a new message.
+ */
+export const ScreenPointSchema: GenMessage<ScreenPoint> = /*@__PURE__*/
+  messageDesc(file_imv_template_v1_template, 8);
+
+/**
+ * 同屏窗口；位置和尺寸是画布百分比，圆角及内边框是 1080×1920 基准像素。
+ *
+ * @generated from message imv.template.v1.ScreenWindow
+ */
+export type ScreenWindow = Message<"imv.template.v1.ScreenWindow"> & {
+  /**
+   * @generated from field: optional double x = 1;
+   */
+  x?: number | undefined;
+
+  /**
+   * @generated from field: optional double y = 2;
+   */
+  y?: number | undefined;
+
+  /**
+   * @generated from field: optional double width = 3;
+   */
+  width?: number | undefined;
+
+  /**
+   * @generated from field: optional double height = 4;
+   */
+  height?: number | undefined;
+
+  /**
+   * @generated from field: optional string fit = 5;
+   */
+  fit?: string | undefined;
+
+  /**
+   * @generated from field: optional double radius = 6;
+   */
+  radius?: number | undefined;
+
+  /**
+   * @generated from field: optional double border_width = 7;
+   */
+  borderWidth?: number | undefined;
+
+  /**
+   * @generated from field: optional string border_color = 8;
+   */
+  borderColor?: string | undefined;
+};
+
+/**
+ * Describes the message imv.template.v1.ScreenWindow.
+ * Use `create(ScreenWindowSchema)` to create a new message.
+ */
+export const ScreenWindowSchema: GenMessage<ScreenWindow> = /*@__PURE__*/
+  messageDesc(file_imv_template_v1_template, 9);
+
+/**
+ * 模板同屏设置；数字人源由合成请求提供，不保存本机预览视频角色。
+ *
+ * @generated from message imv.template.v1.SplitScreen
+ */
+export type SplitScreen = Message<"imv.template.v1.SplitScreen"> & {
+  /**
+   * @generated from field: optional bool enabled = 1;
+   */
+  enabled?: boolean | undefined;
+
+  /**
+   * @generated from field: optional string background_color = 2;
+   */
+  backgroundColor?: string | undefined;
+
+  /**
+   * @generated from field: imv.template.v1.ScreenWindow material = 3;
+   */
+  material?: ScreenWindow | undefined;
+
+  /**
+   * @generated from field: imv.template.v1.ScreenWindow avatar = 4;
+   */
+  avatar?: ScreenWindow | undefined;
+
+  /**
+   * @generated from field: imv.template.v1.ScreenPoint subtitle = 5;
+   */
+  subtitle?: ScreenPoint | undefined;
+
+  /**
+   * @generated from field: imv.template.v1.ScreenPoint subtitle_en = 6;
+   */
+  subtitleEn?: ScreenPoint | undefined;
+
+  /**
+   * split 分区同屏、overlay 全屏素材叠人物、circle 全屏素材叠圆形头像；省略沿用 split。
+   *
+   * @generated from field: optional string layout = 7;
+   */
+  layout?: string | undefined;
+};
+
+/**
+ * Describes the message imv.template.v1.SplitScreen.
+ * Use `create(SplitScreenSchema)` to create a new message.
+ */
+export const SplitScreenSchema: GenMessage<SplitScreen> = /*@__PURE__*/
+  messageDesc(file_imv_template_v1_template, 10);
+
+/**
+ * 数字人开场与抠像；具体头部坐标由每次合成自动检测。
+ *
+ * @generated from message imv.template.v1.AvatarEffects
+ */
+export type AvatarEffects = Message<"imv.template.v1.AvatarEffects"> & {
+  /**
+   * @generated from field: optional bool opening_enabled = 1;
+   */
+  openingEnabled?: boolean | undefined;
+
+  /**
+   * @generated from field: optional double opening_duration = 2;
+   */
+  openingDuration?: number | undefined;
+
+  /**
+   * @generated from field: optional double circle_scale = 3;
+   */
+  circleScale?: number | undefined;
+
+  /**
+   * @generated from field: optional double feather = 4;
+   */
+  feather?: number | undefined;
+
+  /**
+   * @generated from field: optional bool remove_background = 5;
+   */
+  removeBackground?: boolean | undefined;
+};
+
+/**
+ * Describes the message imv.template.v1.AvatarEffects.
+ * Use `create(AvatarEffectsSchema)` to create a new message.
+ */
+export const AvatarEffectsSchema: GenMessage<AvatarEffects> = /*@__PURE__*/
+  messageDesc(file_imv_template_v1_template, 11);
+
+/**
  * 创建或完整更新模板；提供 template_id 时更新。
  *
  * @generated from message imv.template.v1.SaveTemplateRequest
@@ -761,6 +929,20 @@ export type SaveTemplateRequest = Message<"imv.template.v1.SaveTemplateRequest">
    * @generated from field: optional bool transition_enabled = 8;
    */
   transitionEnabled?: boolean | undefined;
+
+  /**
+   * 未携带时保留已存同屏配置，显式 enabled=false 表示关闭。
+   *
+   * @generated from field: imv.template.v1.SplitScreen split_screen = 9;
+   */
+  splitScreen?: SplitScreen | undefined;
+
+  /**
+   * 未携带时保留原配置；关闭开场或抠像须显式传入 false。
+   *
+   * @generated from field: imv.template.v1.AvatarEffects avatar_effects = 10;
+   */
+  avatarEffects?: AvatarEffects | undefined;
 };
 
 /**
@@ -768,7 +950,7 @@ export type SaveTemplateRequest = Message<"imv.template.v1.SaveTemplateRequest">
  * Use `create(SaveTemplateRequestSchema)` to create a new message.
  */
 export const SaveTemplateRequestSchema: GenMessage<SaveTemplateRequest> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 8);
+  messageDesc(file_imv_template_v1_template, 12);
 
 /**
  * 已保存的模板及效果快照。
@@ -852,6 +1034,18 @@ export type TemplateRecord = Message<"imv.template.v1.TemplateRecord"> & {
    * @generated from field: optional bool transition_enabled = 11;
    */
   transitionEnabled?: boolean | undefined;
+
+  /**
+   * 缺省为未启用同屏的已有模板。
+   *
+   * @generated from field: imv.template.v1.SplitScreen split_screen = 12;
+   */
+  splitScreen?: SplitScreen | undefined;
+
+  /**
+   * @generated from field: imv.template.v1.AvatarEffects avatar_effects = 13;
+   */
+  avatarEffects?: AvatarEffects | undefined;
 };
 
 /**
@@ -859,7 +1053,7 @@ export type TemplateRecord = Message<"imv.template.v1.TemplateRecord"> & {
  * Use `create(TemplateRecordSchema)` to create a new message.
  */
 export const TemplateRecordSchema: GenMessage<TemplateRecord> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 9);
+  messageDesc(file_imv_template_v1_template, 13);
 
 /**
  * 模板列表只返回摘要；无效记录保留标识与原因，不能用于预览和合成。
@@ -918,7 +1112,7 @@ export type TemplateSummary = Message<"imv.template.v1.TemplateSummary"> & {
  * Use `create(TemplateSummarySchema)` to create a new message.
  */
 export const TemplateSummarySchema: GenMessage<TemplateSummary> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 10);
+  messageDesc(file_imv_template_v1_template, 14);
 
 /**
  * 模板列表及单个模板的响应。
@@ -939,7 +1133,7 @@ export type ListTemplatesResponse = Message<"imv.template.v1.ListTemplatesRespon
  * Use `create(ListTemplatesResponseSchema)` to create a new message.
  */
 export const ListTemplatesResponseSchema: GenMessage<ListTemplatesResponse> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 11);
+  messageDesc(file_imv_template_v1_template, 15);
 
 /**
  * @generated from message imv.template.v1.GetTemplateResponse
@@ -958,7 +1152,7 @@ export type GetTemplateResponse = Message<"imv.template.v1.GetTemplateResponse">
  * Use `create(GetTemplateResponseSchema)` to create a new message.
  */
 export const GetTemplateResponseSchema: GenMessage<GetTemplateResponse> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 12);
+  messageDesc(file_imv_template_v1_template, 16);
 
 /**
  * @generated from message imv.template.v1.SaveTemplateResponse
@@ -977,4 +1171,4 @@ export type SaveTemplateResponse = Message<"imv.template.v1.SaveTemplateResponse
  * Use `create(SaveTemplateResponseSchema)` to create a new message.
  */
 export const SaveTemplateResponseSchema: GenMessage<SaveTemplateResponse> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 13);
+  messageDesc(file_imv_template_v1_template, 17);

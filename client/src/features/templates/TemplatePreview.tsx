@@ -47,6 +47,9 @@ function TimelineMark() {
 
 /** 每次修改全量更新时间线并回到开头；串行处理，快速修改只应用最新草稿。 */
 export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMedia, onMediaChange, videoInputKey, onCatalog, selectedId, selectionTargets, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder }: Props) {
+  const [avatarSource, setAvatarSource] = useState(0);
+  const latestAvatar = useRef(avatarSource);
+  latestAvatar.current = avatarSource;
   const duration = resolved?.duration ?? 0;
   // 改由 Remotion 字效显示的文字变化时，SDK 需要重新应用时间线以隐藏或恢复 IMS 文字。
   const replacedTexts = [...remotionTexts(draft)].sort().join();
@@ -75,13 +78,13 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const { rows, notices } = useMemo((): { rows: ReturnType<typeof buildPreviewRows>; notices: string[] } => {
     if (!media || !resolved) return { rows: [], notices: [] };
     try {
-      const timeline = buildTimeline(draft, catalog, media, resolved, videoOrder);
+      const timeline = buildTimeline(draft, catalog, media, resolved, videoOrder, avatarSource);
       return { rows: buildPreviewRows(timeline), notices: timeline.notices };
     } catch {
       // 生成失败时 SDK 应用同一份时间线也会失败，原因在那里提示与记录。
       return { rows: [], notices: [] };
     }
-  }, [draft, catalog, media, resolved, videoOrder]);
+  }, [draft, catalog, media, resolved, videoOrder, avatarSource]);
   const timelineRows = useMemo(() => mergeSpriteRows(rows, sprites).map((row) => ({ ...row,
     actions: row.actions.map((clip) => ({ ...clip, targetId: clip.targetId ? selectionTargets?.get(clip.targetId) ?? clip.targetId : undefined })),
   })), [rows, sprites, selectionTargets]);
@@ -161,6 +164,9 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let frame: HTMLIFrameElement | undefined;
     const controller = new AbortController();
     const transitionFrames = new Map<string, string>();
+    let appliedLayout: Draft["split_screen"];
+    let previewMasks = new Map<string, { url: string; maskUrl: string }>();
+    let appliedAvatar: number | undefined;
     let appliedTracks: Draft["tracks"] | undefined;
     let appliedMedia: PreviewMedia | undefined;
     let appliedOrder: number[] | undefined;
@@ -287,7 +293,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           const currentResolved = latestResolved.current;
           if (!currentMedia || !currentResolved) { instance.pause(); return; }
           const applyStarted = performance.now();
-          const timeline = buildTimeline(currentDraft, latestCatalog.current, currentMedia, currentResolved, currentOrder);
+          const timeline = buildTimeline(currentDraft, latestCatalog.current, currentMedia, currentResolved, currentOrder, latestAvatar.current);
           if (disposed) return;
           instance.pause();
           instance.aspectRatio = timeline.AspectRatio;
@@ -298,6 +304,15 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           clearTimeout(applyTimer);
           applyTimer = setTimeout(() => switchToBasicVideo(`${CAN_PLAY_TIMEOUT_MS / 1000} 秒内没有载入时间线`), CAN_PLAY_TIMEOUT_MS);
           const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames);
+          previewMasks = new Map();
+          for (const row of playback.VideoTracks) for (const clip of row.VideoTrackClips) {
+            if (!("MaskVideoURL" in clip) || typeof clip.MaskVideoURL !== "string" || typeof clip.MediaURL !== "string") continue;
+            // SDK 缓存媒体回调：把几何放进本次素材 ID，修改圆角或角色后才能重新读取蒙版。
+            const id = `${clip.MediaURL}#imv-mask=${encodeURIComponent(clip.MaskVideoURL)}`;
+            previewMasks.set(id, { url: clip.MediaURL, maskUrl: clip.MaskVideoURL });
+            clip.MediaURL = id;
+            delete clip.MaskVideoURL;
+          }
           if (disposed || basicRequested) return;
           const framesReady = performance.now();
           canPlayController = new AbortController();
@@ -311,6 +326,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           if (diagnosticsEnabled() && applyFinished - applyStarted > 1500)
             debugLog("模板预览", `应用时间线用时 ${((applyFinished - applyStarted) / 1000).toFixed(1)} 秒（生成时间线与转场画面 ${((framesReady - applyStarted) / 1000).toFixed(1)} 秒，播放器载入 ${((applyFinished - framesReady) / 1000).toFixed(1)} 秒）`, "警告");
           if (!disposed && applied === revision) {
+            appliedLayout = currentDraft.split_screen;
+            appliedAvatar = latestAvatar.current;
             appliedTracks = currentDraft.tracks;
             appliedMedia = currentMedia;
             appliedOrder = currentOrder;
@@ -343,7 +360,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     apply.current = () => {
       if (basicRequested) return;
       // 初始化已应用相同输入时，延迟通知无需再次重置播放位置。
-      if (appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current && appliedResolved === latestResolved.current) return;
+      if (appliedLayout === latest.current.split_screen && appliedAvatar === latestAvatar.current && appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current && appliedResolved === latestResolved.current) return;
       revision++;
       void update();
     };
@@ -410,14 +427,19 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           aspectRatio: `${PREVIEW_CANVAS.width}:${PREVIEW_CANVAS.height}`,
           // SDK 按 16:9 的包围区域计算场景尺寸；竖屏画布受高度限制，按高度给出即得到 1080×1920。
           maxCanvasConfig: { height: PREVIEW_CANVAS.height },
-          getMediaInfo: async (id, _type, _origin, url) => url || id,
+          // 动态媒体回调必须同时返回蒙版；5.2.2 在此路径不会读取片段上的 MaskVideoURL。
+          getMediaInfo: async (id, _type, _origin, url) => {
+            const source = url || id;
+            return previewMasks.get(source) ?? source;
+          },
           getTimelineMaterials: async (materials) =>
             materials.map((item) => {
               if (typeof item.mediaId === "string" && item.mediaId.startsWith("data:image/"))
                 return { ...item, image: { src: item.mediaId } };
-              const video = sources.find((source) => source.url === item.mediaId);
+              const sourceUrl = previewMasks.get(String(item.mediaId))?.url ?? item.mediaId;
+              const video = sources.find((source) => source.url === sourceUrl);
               if (!video) throw new Error("预览素材缺少真实媒体信息");
-              return { ...item, video: { duration: video.duration } };
+              return { ...item, video: { duration: video.duration, width: video.width, height: video.height } };
             }),
         });
         // SDK 在初始化 Promise 中应用场景尺寸，等待该过程后设置 Timeline。
@@ -529,13 +551,13 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   useEffect(() => {
     const timer = window.setTimeout(() => apply.current?.(), 250);
     return () => window.clearTimeout(timer);
-  }, [draft.tracks, media, videoOrder, resolved, replacedTexts]);
+  }, [draft.tracks, draft.split_screen, avatarSource, media, videoOrder, resolved, replacedTexts]);
 
   // 修改模板、视频或排列后回到开头并暂停（IMS 播放器随后重新应用时间线），各画面来源一致。
   useEffect(() => {
     activePlayback().pause();
     clock.seek(0);
-  }, [media, videoOrder, resolved]);
+  }, [media, videoOrder, resolved, draft.split_screen, avatarSource]);
 
   // 换画面来源（IMS 就绪或开始应用修改、切换基础视频、基础视频可以播放）时交接：新来源从当前位置接着走，
   // 原来在播放就接着播放，AI 资产与时间轴不跳回开头，播放也不因 IMS 就绪或降级中断。
@@ -552,11 +574,12 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   return <section aria-label="实时预览" className="flex min-h-full min-w-0 flex-col">
     <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
       <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[13px] font-semibold">实时预览</h2></div><div className="flex items-center gap-2"><span className="rounded-md border px-2 py-1 text-[11px] tabular-nums text-muted-foreground">{PREVIEW_CANVAS.width} × {PREVIEW_CANVAS.height}</span><Hint label="刷新预览"><Button type="button" variant="ghost" size="icon-xs" aria-label="刷新预览" onClick={() => setAttempt((value) => value + 1)} className="rounded-[5px] p-0"><RotateCw className="size-3" aria-hidden="true" /></Button></Hint></div></div>
+      {draft.split_screen?.enabled && <label className="mb-3 flex flex-wrap items-center gap-2 text-xs">数字人预览来源<select aria-label="数字人预览来源" value={avatarSource} onChange={(event) => setAvatarSource(Number(event.target.value))} className="rounded-md border bg-background px-2 py-1">{[0, 1, 2].map((index) => <option key={index} value={index}>视频 {index + 1}</option>)}</select><span className="text-muted-foreground">布局示例，短视频循环播放{draft.split_screen.layout === "circle" ? "；圆形居中示意，成片自动定位头部" : ""}</span></label>}
       <div ref={stage} className="template-preview-canvas relative mx-auto w-full overflow-hidden rounded-lg bg-black" style={{ aspectRatio: `${PREVIEW_CANVAS.width} / ${PREVIEW_CANVAS.height}`, maxWidth: `${48 * PREVIEW_CANVAS.width / PREVIEW_CANVAS.height}dvh`, "--preview-ratio": PREVIEW_CANVAS.width / PREVIEW_CANVAS.height } as CSSProperties} aria-label="模板视频预览">
         {/* 播放器与叠加层共用一个按画布比例排布的画面框：全屏时画布撑满屏幕，画面框仍按视频比例居中，字效与选择框随画面缩放而不是按整个屏幕排布。 */}
         <div className="template-preview-frame absolute inset-0 overflow-hidden">
           <div ref={container} className={`template-preview-player absolute inset-0 size-full ${basicFallback ? "invisible" : ""}`} />
-          {basicFallback && media && resolved && <BasicVideoPreview ref={basic} media={media} resolved={resolved} order={videoOrder}
+          {basicFallback && media && resolved && <BasicVideoPreview ref={basic} media={media} resolved={resolved} order={videoOrder} layout={draft.split_screen} avatarSource={avatarSource}
             onTime={(value) => { if (source === "basic") showTime(value); }}
             onReady={() => { setBasicReady(true); setStatus("基础视频已就绪，点击播放查看效果"); }}
             onPlayingChange={(value) => { if (source !== "basic") return; changePlaying(value); setStatus(value ? "正在播放预览…" : "预览已暂停"); }}
@@ -566,9 +589,10 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             const interval = resolved?.tracks[item.id];
             if (!interval || time < interval.start || time >= interval.end) return null;
             const role = item.target as "title" | "subtitle";
+            const point = draft.split_screen?.enabled && role === "subtitle" ? draft.split_screen[item.language === "en" ? "subtitleEn" : "subtitle"] : { x: item.editor[`${role}X`], y: item.editor[`${role}Y`] };
             return <button key={item.id} type="button" aria-label={`选择${item.language === "en" ? "英文" : "中文"}${role === "title" ? "标题" : "字幕"}`} aria-pressed={selectedId === item.id}
               className={`absolute -translate-x-1/2 rounded-sm border border-dashed hover:border-primary focus-visible:ring-2 focus-visible:ring-ring ${selectedId === item.id ? "border-primary" : "border-transparent"}`}
-              style={{ left: `${item.editor[`${role}X`]}%`, top: `${item.editor[`${role}Y`]}%`, width: "90%", height: `${item.editor[`${role}Size`] * 1.5 / PREVIEW_CANVAS.height * 100}%`, minHeight: 12 }}
+              style={{ left: `${point.x}%`, top: `${point.y}%`, width: "90%", height: `${item.editor[`${role}Size`] * 1.5 / PREVIEW_CANVAS.height * 100}%`, minHeight: 12 }}
               onClick={() => onSelect(item.id)} />;
           })}
           {sprites.length > 0 && <SpriteOverlay ref={overlay} clips={sprites} stageAspect={PREVIEW_CANVAS.width / PREVIEW_CANVAS.height} initialTime={time} selectedId={selectedId} onMove={onSpriteMove} onSelect={onSelect} />}

@@ -22,7 +22,9 @@ IntelligentMixVideo connects desktop template editing, server-side media process
 
 - **Visual template editing**: Add decorative text, speech bubbles, filters, visual effects, transitions, and text animations. Adjust text, font size, position, and effect parameters.
 - **Preview and timeline**: Preview template effects, set object start times in seconds or as a percentage of the video duration, and choose a fixed duration or let an object run to the end of the video.
+- **Media and avatar together**: Choose separate windows, an avatar over full-canvas material, or an automatically located circular head. Overlay layouts keep the complete material with blurred padding. Position the avatar with canvas X/Y and size; only matched material intervals use the layout, while gaps retain the original full-screen avatar. See the [template API documentation](server/README.md#模板接口).
 - **Cloud template library**: Templates are saved to MySQL through the server and shared by everyone connected to it.
+- **Avatar opening and background removal**: Automatically locate a fixed head circle for a timed opening, then restore the original material timeline. Optional IMS matting removes the avatar background during shared-screen intervals. The editor configures the layout; final effects are verified in cloud output. See the [template API documentation](server/README.md#模板接口).
 - **Text and audio processing**: ASR transcription, text segmentation, and keyword processing provide data for subtitles and composition timelines. Titles and subtitles can each enable Chinese–English text with independent styles; composition translates the actual content and synchronizes both languages. Disabled English settings are retained for reuse and omitted from output.
 - **Asynchronous video composition**: Depending on the inputs, use the standard digital avatar workflow or compose media assets with or without narration. Retrieve results through task queries and callbacks.
 - **Remotion text effects**: Generate effects with an agent, preview successful versions, and save them as assets for cloud templates.
@@ -460,6 +462,8 @@ Standard local installers are written to `client/src-tauri/target/release/bundle
 | Manual run | Validate project runs checks, Build client creates standard packages, and Debug client creates packages with a bundled backend |
 
 The regular entry point is [validation.yml](.github/workflows/validation.yml), and builds reuse [client-build.yml](.github/workflows/client-build.yml). The aggregate PR check is named `CI result`. Branch protection should require it and pre-commit.ci rather than individual platform jobs that may be skipped based on changed paths.
+
+Release preflight explicitly installs the Python version selected by `setup-uv` before checking the uv lockfile offline; selecting a version alone does not install the interpreter.
 
 When Validate project runs manually, `integration-tests` is enabled by default and uses temporary MySQL and an isolated rendering environment. Regular push / PR runs do not start these heavier tests. Reports and artifacts are retained for 14 days. Enable `build-installers` to create installers in the same run. Set `api-url` for the standard package API URL; leaving it empty defaults to `http://localhost:20070`.
 

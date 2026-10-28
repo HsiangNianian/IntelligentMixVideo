@@ -11,6 +11,8 @@
 - `client/src/` 存放 React 前端；`client/src-tauri/` 存放 Rust 桌面入口、Tauri 配置和图标。
 - `server/` 使用 Python + FastAPI + MySQL，提供模板持久化 API 与 `POST /segmentations` 文案切片接口，首页与用户路由仍为示例、尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
 - 模板模块位于 `server/src/server/template/`，与用户示例目录 `sub_api/` 平级；路由、配置校验、数据库存储与效果目录均放在该模块内。
+- 数字人效果独立保存为模板 `avatar_effects`（Protobuf/JSON 为 `avatarEffects`），默认关闭，旧客户端省略重存保留。开场和圆形头像共用 FFmpeg 按显示方向/SAR 抽最多 8 帧、随包 OpenCV YuNet 定位的固定圆；任务 `avatar_opening` 保存定位或明确无脸，恢复复用。仅头像时 `duration=0`、不上传黑底；无脸跳过开场，头像回退有素材时只显示素材、无素材时显示原数字人，字幕普通位置；读取/检测故障仍报错。有效开场以黑底与 IMS `mask_circle` 覆盖前 T 秒，不拆素材或改变源进度，文字用普通位置；之后恢复对应区间布局，Remotion 只切可见范围、不改时钟。`splitScreen.layout` 默认 `split`（原分区窗口），新增 `overlay`（全屏完整素材叠人物）与 `circle`（全屏完整素材叠自动圆形头像），旧客户端缺失 layout 重存保留。后两者素材 Contain+模糊填充、不裁剪、不用素材装饰，人物 X/Y/宽高相对画布；圆头像通过 Crop 截头部正方形、mask_circle 放入窗口内最大正圆，保留圆内背景，不抠像。仅非圆形且实际同屏的数字人可用 IMS `AI_RealMatting`（北京/上海/杭州）；人物叠加默认开启，可关掉保留背景，无独立画中画选项，叠加无矩形装饰。三种布局都只在 standard 命中素材时生效，无素材恢复完整原数字人；字幕由模板手动摆放。SDK 仅配置和布局示意，圆头像预览居中裁切；纯素材忽略所有数字人效果。模型位于 `video_composition/models/`，部署随 wheel；来源、版本与完整第三方许可声明见 `server/README.md`。
+- 素材与数字人同屏配置保存为模板 `split_screen`（Protobuf/JSON 为 `splitScreen`），旧模板缺省关闭、旧客户端省略更新字段时保留；两窗口独立位置、尺寸、Contain/Cover、圆角、内边框和底色，数字人在上。仅 standard 命中区间同屏，其他区间全屏数字人，纯素材忽略；两窗口静音、保持原配音，数字人源时间连续，同屏停用两类转场。中英文字幕独立同屏位置，Remotion 跨界只切可见区间与宿主位置、不重置动画时钟。云端复用 ffprobe/Pillow/ZOS 准备几何图片，用 IMS mask_rec 圆角；SDK 5.2.2 通过媒体回调 `{url, maskUrl}` 及带几何的缓存键预览，`GET /template/preview-mask` 在线程池生成单帧 MP4（需 FFmpeg，32 项内存缓存，不接收用户视频）。SDK 图像装饰转 PNG，字体换行与合成保持一致；基础预览共用几何。配置与预览接口见 `server/README.md` 的模板接口章节。
 - `POST /segmentations`（细节见 `server/README.md`）：`title`、`script`、`asr_result` 均可省略或为 null，`max_segment_chars` 为每段最多字数（正整数，默认 8，不计标点空白；视频合成只按模板自动计算）。有 ASR 时须有有效文案，模型以 `json_object` 先对超长片段语义切分、再按最终片段 ID 返回关键词映射，代码按 ID 填回，缺失、不在原文或超过 12 字的词置空；非 null 标题在提词调用里同时返回 `title_keyword`（标题内连续原文、最多 12 字）。提词 JSON、结构、ID、标题词不合法或回复为空时，把原回复（空回复不回填）与错误反馈给模型，共尝试 3 次，耗尽返回 502；只有标题时只调用一次、不纠错、不校验内容，缺失或非字符串按空串。单次请求最多 30 秒，共用 90 秒软预算，关闭 SDK 重试。`IMV_LLM_DISABLE_THINKING=true`（`config.llm_disable_thinking`）时切分、提词与翻译请求附带 `thinking=disabled`，默认不发送；DeepSeek 等默认开启思考的模型须开启。
 - 切分先在句读标点、换行与中文之间的空白处切开（引号括号不切，标点留在前段），不再按 2 秒合并短句；英文字母数字串、有限的数字列表模式与 ASR 修复块内部不切，普通逗号两侧的数字（如 `99，3件`）照常切开。超过上限的片段按 VideoLingo 的做法交给模型：代码算出 `ceil(字数/上限)` 段写进提示，模型用 `[br]` 给两种切法并自选，并行请求；代码只采用合格切法（至少两段、汉字字母数字与原文逐字相同、切点不在受保护串或修复块内），依次优先非首段不以单独助词开头、各段不超过上限、模型的选择，助词开头只在最后一轮作后备；单次最多要求 10 段（超过时只要求均分），上限不足 3 字时提示不要求每段至少 3 字，每次切片最多 200 个切分请求；仍超长的段落最多共 3 轮继续切，之后完整保留并返回 `segment_over_max_chars` 警告，代码不硬切；整段受保护的超长串不请求模型。关键词在最终片段上提取；下游字幕去标点但保留问号和数字小数点。
 - 切片日志：INFO 只记摘要，完整回复与成功 trace 脱敏后记 DEBUG；最终失败记脱敏详情，提词失败的 `keyword_response` 由视频合成写入任务 `segmentation.json` 与 `errors/*.log`，不回显到接口。
@@ -240,6 +242,7 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 
 涉及 CI、原生代码或两端版本清单/锁文件时，Release preflight 检查全部工作流、运行调度与发布脚本测试，
 校验两端源码版本一致，并通过临时副本验证版本同步、Bun 冻结安装、Cargo 和 uv 锁文件。
+Release preflight 在离线锁文件检查前用 `uv python install "$UV_PYTHON"` 安装所选解释器；`setup-uv` 的 `python-version` 只设置版本选择，不保证解释器已安装。
 服务端 job 使用 Python 3.12 和 uv 缓存，并在 pytest 前配置 Node 24、仓库指定的 Bun 和服务端 Remotion 冻结依赖，保证普通合成测试的 esbuild 打包与导入边界检查可运行；不因此启用真实浏览器或媒体集成测试。`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
 在 Validate project 上手动运行会执行全部检查（原生检查模式）；需要安装包时手动运行 Build client。
 

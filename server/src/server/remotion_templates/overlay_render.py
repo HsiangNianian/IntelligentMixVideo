@@ -275,8 +275,8 @@ def _fit_frames(instance: dict, end: int) -> tuple[list[int], int]:
     if hold:
         return [hold["frame"]], hold["length"]
     length = instance["duration_frames"]
-    shown = max(1, min(length, end - instance["start_frame"]))
-    first = min(shown - 1, instance.get("reveal_frame", 0))
+    shown = max(1, min(length, end - instance["start_frame"], instance.get("visible_end_frame", end) - instance["start_frame"]))
+    first = min(shown - 1, max(instance.get("reveal_frame", 0), instance.get("visible_start_frame", instance["start_frame"]) - instance["start_frame"]))
     return sorted({first + math.floor((shown - 1 - first) * ratio) for ratio in (0, 0.25, 0.5, 0.75, 1)}), length
 
 

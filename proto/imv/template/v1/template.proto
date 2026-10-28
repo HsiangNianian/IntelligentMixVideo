@@ -204,6 +204,45 @@ message TrackList {
   repeated EffectTrack tracks = 1;
 }
 
+// 同屏字幕位置，画布百分比；横向居中、纵向为顶部。
+message ScreenPoint {
+  optional double x = 1;
+  optional double y = 2;
+}
+
+// 同屏窗口；位置和尺寸是画布百分比，圆角及内边框是 1080×1920 基准像素。
+message ScreenWindow {
+  optional double x = 1;
+  optional double y = 2;
+  optional double width = 3;
+  optional double height = 4;
+  optional string fit = 5;
+  optional double radius = 6;
+  optional double border_width = 7;
+  optional string border_color = 8;
+}
+
+// 模板同屏设置；数字人源由合成请求提供，不保存本机预览视频角色。
+message SplitScreen {
+  optional bool enabled = 1;
+  optional string background_color = 2;
+  ScreenWindow material = 3;
+  ScreenWindow avatar = 4;
+  ScreenPoint subtitle = 5;
+  ScreenPoint subtitle_en = 6;
+  // split 分区同屏、overlay 全屏素材叠人物、circle 全屏素材叠圆形头像；省略沿用 split。
+  optional string layout = 7;
+}
+
+// 数字人开场与抠像；具体头部坐标由每次合成自动检测。
+message AvatarEffects {
+  optional bool opening_enabled = 1;
+  optional double opening_duration = 2;
+  optional double circle_scale = 3;
+  optional double feather = 4;
+  optional bool remove_background = 5;
+}
+
 // 创建或完整更新模板；提供 template_id 时更新。
 message SaveTemplateRequest {
   // 模板名称，去除首尾空白后必须有内容。
@@ -222,6 +261,10 @@ message SaveTemplateRequest {
   optional string transition_mode = 7;
   // 是否使用转场；省略时沿用开启状态，关闭时保留候选列表。
   optional bool transition_enabled = 8;
+  // 未携带时保留已存同屏配置，显式 enabled=false 表示关闭。
+  SplitScreen split_screen = 9;
+  // 未携带时保留原配置；关闭开场或抠像须显式传入 false。
+  AvatarEffects avatar_effects = 10;
 }
 
 // 已保存的模板及效果快照。
@@ -248,6 +291,9 @@ message TemplateRecord {
   optional string transition_mode = 10;
   // 是否使用转场；省略时沿用开启状态。
   optional bool transition_enabled = 11;
+  // 缺省为未启用同屏的已有模板。
+  SplitScreen split_screen = 12;
+  AvatarEffects avatar_effects = 13;
 }
 
 // 模板列表只返回摘要；无效记录保留标识与原因，不能用于预览和合成。

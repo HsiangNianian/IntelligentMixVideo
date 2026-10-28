@@ -1,8 +1,11 @@
 # 模板 API：接收 Protobuf 保存请求，默认返回 JSON，兼容旧客户端明确请求的 Protobuf 响应。
 
 from uuid import UUID
+from typing import Annotated
+import logging
+import subprocess
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from generated.imv.template.v1 import template_pb2 as pb
@@ -13,8 +16,9 @@ from starlette.concurrency import run_in_threadpool
 
 from . import store
 from .schema import Template, TemplateSave
+from .preview_mask import PreviewMask, mask_video
 
-# 静态集合路径和 UUID 详情路径组成约定的四个接口，无效果目录接口。
+# 静态预览资源必须放在 UUID 详情路径之前，无效果目录接口。
 router = APIRouter(prefix="/template", tags=["模板管理"])
 PROTOBUF_MEDIA_TYPE = "application/x-protobuf"
 # 保存请求仍使用二进制，成功响应默认 JSON，并保留旧客户端的二进制格式。
@@ -84,6 +88,17 @@ async def save_template(request: Request) -> Response:
         request, pb.SaveTemplateResponse(template=_template_message(result)),
         status_code=200 if validated.template_id else 201,
     )
+
+
+@router.get("/preview-mask", response_class=Response)
+def preview_mask(params: Annotated[PreviewMask, Query()]) -> Response:
+    """在线程池里生成 SDK 的圆角蒙版；只接受有界几何，不访问用户视频或数据库。"""
+    try:
+        content = mask_video(**params.model_dump())
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.getLogger(__name__).exception("Preview mask encoding failed")
+        raise HTTPException(status_code=503, detail="圆角预览蒙版生成失败，请检查服务端 FFmpeg 后重试") from exc
+    return Response(content, media_type="video/mp4", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.get("/{template_id}", response_class=JSONResponse, responses={200: {"content": RESPONSE_CONTENT}})

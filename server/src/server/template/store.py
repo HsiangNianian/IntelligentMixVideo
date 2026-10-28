@@ -181,11 +181,17 @@ def save_template(data: TemplateSave) -> Template:
             now = datetime.now(UTC).replace(tzinfo=None)
             values = {"name": data.name, "configuration": configuration, "updated_at": now}
             if data.template_id:
-                existing = connection.execute(select(templates.c.template_id).where(
+                existing = connection.execute(select(templates.c.configuration).where(
                     templates.c.template_id == template_id,
                 ).with_for_update()).first()
                 if existing is None:
                     raise HTTPException(404, "模板不存在")
+                # 旧客户端省略新配置时保留；开关的显式 false 仍正常保存。
+                for field in ("split_screen", "avatar_effects"):
+                    if field not in data.model_fields_set and field in existing.configuration:
+                        configuration[field] = existing.configuration[field]
+                if data.split_screen is not None and "layout" not in data.split_screen.model_fields_set:
+                    configuration["split_screen"]["layout"] = existing.configuration.get("split_screen", {}).get("layout", "split")
                 connection.execute(templates.update().where(
                     templates.c.template_id == template_id,
                 ).values(**values))

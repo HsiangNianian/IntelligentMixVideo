@@ -14,7 +14,7 @@ export function previewTransitions(draft: Draft, random: readonly [number, numbe
   const targets = new Map<string, string>();
   const tracks = draft.tracks.filter((track) => track.target !== "transition");
   const clips = draft.clips.filter((clip) => clip.transition_boundary === undefined);
-  if (draft.transition_enabled !== false && items.length) {
+  if (!draft.split_screen?.enabled && draft.transition_enabled !== false && items.length) {
     for (let index = 0; index < 2; index += 1) {
       const position = draft.transition_mode === "random" ? Math.floor(random[index] * items.length) : index % items.length;
       const item = items[position];
