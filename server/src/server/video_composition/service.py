@@ -570,6 +570,8 @@ class Job:
         """组装只读业务快照，提交前持久化完整请求、稳定 ClientToken 和总截止时间。"""
         data = self.record["data"]
         request = CompositionRequest.from_snapshot(data["request"])
+        # 上传成功但 URL 尚未落库时若进程中断，恢复会按固定任务 key 幂等覆盖同一份蒙版。
+        # 允许重复上传这张小 PNG；URL 已落库时直接复用。
         if data["template"].get("frame_mask") and "frame_mask_url" not in data:
             mask_url = await self.runtime.step(self.record, "frame_mask_upload", lambda: self.runtime.sync(
                 upload_mask, data["template"]["frame_mask"], data["output"]["width"], data["output"]["height"],
