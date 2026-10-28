@@ -24,6 +24,9 @@ jieba.setLogLevel(logging.WARNING)
 
 SPLIT_MAX_PASSES = 3
 SPLIT_CONCURRENCY = 8
+# 单次切分请求最多要求的段数与每次切片的切分请求总数，限制极小上限或超长文案带来的模型工作量。
+SPLIT_MAX_PARTS = 10
+SPLIT_MAX_CALLS = 200
 KEYWORD_MAX_ATTEMPTS = 3
 MODEL_TIMEOUT_SECONDS = 30
 SEGMENTATION_BUDGET_SECONDS = 90
@@ -147,19 +150,24 @@ def _core(text: str) -> str:
     return "".join(c for c in text if not c.isspace() and c not in PUNCTUATION)
 
 
-def _split_prompt(text: str, num_parts: int, max_chars: int) -> str:
+def _split_prompt(text: str, num_parts: int, max_chars: int | None) -> str:
     """超长片段的语义切分提示：段数由代码算出，模型给出两种切法并自选。
 
+    max_chars 为 None 表示段数已按 SPLIT_MAX_PARTS 截断、这一轮放不进上限，只要求大致均分，
+    超限的段落留待下一轮；上限不足 3 字时不再要求每段至少 3 字，避免与上限矛盾。
     结构与要求改编自 VideoLingo（Apache-2.0）core/prompts.py 的 get_split_prompt，计数单位改为中文字符。
     """
+    size = (f"each no more than **{max_chars}** Chinese characters" if max_chars is not None
+            else "of roughly equal length")
+    minimum = " (minimum 3 characters each)" if max_chars is None or max_chars >= 3 else ""
     return f"""## Role
 You are a professional Netflix subtitle splitter in Chinese.
 
 ## Task
-Split the given subtitle text into **{num_parts}** parts, each no more than **{max_chars}** Chinese characters (punctuation and spaces are not counted).
+Split the given subtitle text into **{num_parts}** parts, {size} (punctuation and spaces are not counted).
 
 1. Maintain sentence meaning coherence according to Netflix subtitle standards
-2. MOST IMPORTANT: Keep parts roughly equal in length (minimum 3 characters each)
+2. MOST IMPORTANT: Keep parts roughly equal in length{minimum}
 3. Split at natural points like punctuation marks or conjunctions
 4. If provided text is repeated words, simply split at the middle of the repeated words.
 
@@ -182,17 +190,18 @@ Split the given subtitle text into **{num_parts}** parts, each no more than **{m
 "choice": "1 or 2"}}"""
 
 
-def _pick_split(output: dict, text: str, blocked: set[int], final: bool) -> list[int] | None:
-    """按模型选择的先后取第一种合格切法，返回各段计数字符数；都不合格返回 None，交给下一轮重新请求。
+def _pick_split(output: dict, text: str, blocked: set[int], max_chars: int, final: bool) -> list[int] | None:
+    """从模型的两种切法里取最好的合格切法，返回各段计数字符数；都不合格返回 None，交给下一轮重新请求。
 
     合格：至少两段、去掉 [br] 后计数字符与原文逐字相同（标点和空白可增删）、切点不落在 blocked
-    （受保护串或修复块内部，按段内计数位置）。除第一段外以单独助词开头的切法只作后备，仅在最后一轮
-    （final）没有更好的切法时接受。代码不改写原文，也不自行切分。
+    （受保护串或修复块内部，按段内计数位置）。合格切法依次优先：非首段不以单独助词开头、各段都不超过
+    max_chars、模型的选择；有段落超限的切法照常采用，超限段落由下一轮继续切；助词开头的切法只在
+    最后一轮（final）作后备。代码不改写原文，也不自行切分。
     """
     original = _core(text)
     keys = ("split2", "split1") if "2" in str(output.get("choice", "")) else ("split1", "split2")
-    reserve = None
-    for key in keys:
+    candidates = []
+    for order, key in enumerate(keys):
         value = output.get(key)
         if not isinstance(value, str):
             continue
@@ -200,11 +209,10 @@ def _pick_split(output: dict, text: str, blocked: set[int], final: bool) -> list
         lengths = [len(part) for part in parts]
         if len(parts) < 2 or "".join(parts) != original or blocked & set(accumulate(lengths[:-1])):
             continue
-        if any(next(iter(jieba.cut(part)), "") in PARTICLES for part in parts[1:]):
-            reserve = reserve or lengths
-            continue
-        return lengths
-    return reserve if final else None
+        particle = any(next(iter(jieba.cut(part)), "") in PARTICLES for part in parts[1:])
+        if final or not particle:
+            candidates.append(((particle, max(lengths) > max_chars, order), lengths))
+    return min(candidates)[1] if candidates else None
 
 
 def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics: dict | None = None) -> dict:
@@ -240,7 +248,8 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     请求为 {script, asr_result, max_segment_chars}，读取 fun-asr transcripts 第一音轨，词时间为 begin_time/end_time 毫秒。
     替换/增删代价均为 1；波前搜索保留最远位置，平局依次优先替换、文案多字、
     ASR 多字。先在句读标点、换行与中文之间的空白处切开，超过 max_segment_chars（默认 8，不计标点空白）
-    的片段交给模型按语义切分，最多 SPLIT_MAX_PASSES 轮，仍超长则完整保留并给出 warning，不在代码里硬切；
+    的片段交给模型按语义切分（单次最多 SPLIT_MAX_PARTS 段，每次切片最多 SPLIT_MAX_CALLS 个请求），
+    最多 SPLIT_MAX_PASSES 轮，仍超长则完整保留并给出 warning，不在代码里硬切；
     模型另按最终片段提关键词，时间投射和关键词校验由代码完成。
     显式 config 仅用于当前调用；省略时读取 server/.env 与 IMV_ 环境变量，SDK 在返回前关闭。
     返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
@@ -479,17 +488,21 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         return b - a > segment_max_length and any(cut not in forbidden for cut in range(a + 1, b))
 
     def split_piece(client, span: tuple[int, int], attempt: int) -> list[int] | None:
-        """请求模型把一个超长片段切成 ceil(字数/上限) 段，返回各段计数字符数；不合格返回 None 留待下一轮。
+        """请求模型把一个超长片段切成 ceil(字数/上限) 段（最多 SPLIT_MAX_PARTS 段），返回各段计数字符数；
+        不合格返回 None 留待下一轮。
 
-        发送的文本去掉首尾标点；SDK 异常与预算超时原样传播，与提词阶段一致。
+        段数被截断时只要求大致均分，仍超限的段落下一轮继续切。发送的文本去掉首尾标点；
+        SDK 异常与预算超时原样传播，与提词阶段一致。
         """
         a, b = span
         text = script[offsets[a]:offsets[b - 1] + 1]
-        num_parts = math.ceil((b - a) / segment_max_length)
+        needed = math.ceil((b - a) / segment_max_length)
+        num_parts = min(needed, SPLIT_MAX_PARTS)
+        prompt = _split_prompt(text, num_parts, segment_max_length if needed == num_parts else None)
         response = client.chat.completions.create(
             model=model, temperature=0.2, response_format={"type": "json_object"}, timeout=request_timeout(),
             # 沿用 VideoLingo：重试时在提示末尾追加空格，使请求与上一轮不同。
-            messages=[{"role": "user", "content": _split_prompt(text, num_parts, segment_max_length) + " " * attempt}],
+            messages=[{"role": "user", "content": prompt + " " * attempt}],
             **_thinking(config),
         )
         raw = _response_content(response)
@@ -501,7 +514,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         except RuntimeError:
             output = {}
         blocked = {cut - a for cut in range(a + 1, b) if cut in forbidden}
-        lengths = _pick_split(output, text, blocked, attempt == SPLIT_MAX_PASSES - 1)
+        lengths = _pick_split(output, text, blocked, segment_max_length, attempt == SPLIT_MAX_PASSES - 1)
         trace["split_requests"].append(
             {"text": text, "num_parts": num_parts, "pass": attempt + 1, "accepted": lengths is not None})
         return lengths
@@ -521,14 +534,17 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     segments, rejected = [], 0
     with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
         # 超长片段并行请求，仍超长的段落下一轮继续切；模型切出的段落只按校验结果采用，代码不硬切。
+        # 每次切片最多发出 SPLIT_MAX_CALLS 个切分请求，用完后其余超长片段完整保留并告警。
         diagnostics["stage"] = "split"
         started = perf_counter()
+        calls_left = SPLIT_MAX_CALLS
         try:
             with ThreadPoolExecutor(max_workers=SPLIT_CONCURRENCY) as pool:
                 for attempt in range(SPLIT_MAX_PASSES):
-                    todo = [k for k, span in enumerate(spans) if over_limit(span)]
+                    todo = [k for k, span in enumerate(spans) if over_limit(span)][:calls_left]
                     if not todo:
                         break
+                    calls_left -= len(todo)
                     futures = [pool.submit(split_piece, client, spans[k], attempt) for k in todo]
                     # 从后往前替换，前面片段的下标不受影响。
                     for k, future in reversed(list(zip(todo, futures))):

@@ -47,7 +47,7 @@ def grouped_payload(script, groups, step=200):
 
 
 SPLIT_REQUEST = re.compile(
-    r"into \*\*(\d+)\*\* parts, each no more than \*\*(\d+)\*\*.*?<split_this_sentence>\n(.*)\n</split_this_sentence>",
+    r"into \*\*(\d+)\*\* parts(?:, each no more than \*\*(\d+)\*\*)?.*?<split_this_sentence>\n(.*)\n</split_this_sentence>",
     re.S,
 )
 
@@ -59,12 +59,12 @@ def reply_with(data):
 
 
 def split_request(kwargs):
-    """从切分请求读出 (段数, 每行上限, 待切原文)；提词等其他请求返回 None。"""
+    """从切分请求读出 (段数, 每行上限, 待切原文)；段数被截断时提示不声明上限，读作 None；提词等其他请求返回 None。"""
     messages = kwargs["messages"]
     if len(messages) != 1:
         return None
     parts, limit, text = SPLIT_REQUEST.search(messages[0]["content"]).groups()
-    return int(parts), int(limit), text
+    return int(parts), limit and int(limit), text
 
 
 def split_requests(model):
@@ -121,10 +121,12 @@ def model(monkeypatch):
     client = MagicMock()
 
     def respond(**kwargs):
-        """切分请求按上限依次截断；提词请求每段取前两字，带标题时另取标题前两字；特殊模型结果在各用例中设置。"""
+        """切分请求按上限（未声明上限时按段数均分）依次截断；提词请求每段取前两字，带标题时另取标题前两字；
+        特殊模型结果在各用例中设置。"""
         if request := split_request(kwargs):
-            _, limit, text = request
-            return reply_with(splits(greedy_split(text, limit)))
+            parts, limit, text = request
+            size = limit or math.ceil(len(segmentation._core(text)) / parts)
+            return reply_with(splits(greedy_split(text, size)))
         content = json.loads(kwargs["messages"][1]["content"])
         segments = content["segments"] if isinstance(content, dict) else content
         data = {"keywords": {str(s["segment_id"]): s["text"][:2] for s in segments}}
@@ -230,7 +232,10 @@ def test_requested_segment_limit(model, client, limit):
     assert "".join(part["text"] for part in parts) == script
     assert all(len(part["text"]) <= limit for part in parts)
     assert parts[0]["start_time"] == 0 and parts[-1]["end_time"] == 4.8
-    assert split_requests(model) == ([(math.ceil(24 / limit), limit, script)] if limit < 24 else [])
+    needed = math.ceil(24 / limit)
+    # 第一轮只有整段一个请求；超过 10 段时只要求 10 段、不声明上限，其余下一轮再切。
+    expected = (min(needed, 10), limit if needed <= 10 else None, script)
+    assert split_requests(model)[:1] == ([expected] if limit < 24 else [])
 
 
 @pytest.mark.parametrize("limit", [0, -1, True, 2.5, "8", None])
@@ -384,6 +389,51 @@ def test_overlong_parts_are_split_again(model):
         "甲乙丙丁戊己", "庚辛壬癸子丑", "寅卯辰巳午未申酉。", second[:8], second[8:16], second[16:] + "。"]
     assert result["warnings"] == []
     assert sorted(split_requests(model)) == sorted([(3, 8, first), (3, 8, second), (2, 8, "甲乙丙丁戊己庚辛壬癸子丑")])
+
+
+def test_split_within_limit_is_preferred_over_model_choice(model):
+    """模型选中的切法有段落超限、另一种切法合规时采用合规切法，不再多请求一轮。"""
+    answer_splits(model, {"甲乙丙丁戊己庚辛壬癸": splits("甲[br]乙丙丁戊己庚辛壬癸", "甲乙丙丁戊[br]己庚辛壬癸")})
+    result = segment(payload("甲乙丙丁戊己庚辛壬癸。"))
+    assert [s["text"] for s in result["segments"]] == ["甲乙丙丁戊", "己庚辛壬癸。"]
+    assert result["warnings"] == []
+    assert len(split_requests(model)) == 1
+
+
+@pytest.mark.parametrize("limit,minimum", [(1, False), (2, False), (3, True), (8, True)])
+def test_split_prompt_minimum_never_exceeds_limit(model, limit, minimum):
+    """上限为 1、2 字时提示不再要求每段至少 3 字，避免与上限矛盾；上限够时保留该要求。"""
+    script = "甲乙丙丁戊己庚辛壬癸"
+    result = segment({**payload(script + "。"), "max_segment_chars": limit})
+    prompt = next(call.kwargs["messages"][0]["content"] for call in model[1].chat.completions.create.call_args_list
+                  if split_request(call.kwargs))
+    assert f"each no more than **{limit}** Chinese characters" in prompt
+    assert ("minimum 3 characters each" in prompt) is minimum
+    assert all(len(segmentation._core(s["text"])) <= limit for s in result["segments"])
+    assert result["warnings"] == []
+
+
+def test_split_request_asks_for_at_most_ten_parts(model):
+    """极小上限下单次请求最多要求 10 段且不声明这一轮放不进的上限，各段下一轮再按上限切。"""
+    script = "甲" * 40
+    result = segment({**payload(script), "max_segment_chars": 2})
+    first = next(call.kwargs["messages"][0]["content"] for call in model[1].chat.completions.create.call_args_list
+                 if split_request(call.kwargs))
+    assert "into **10** parts, of roughly equal length" in first and "no more than" not in first
+    assert sorted(split_requests(model)) == sorted([(10, None, script)] + [(2, 2, "甲" * 4)] * 10)
+    assert [len(s["text"]) for s in result["segments"]] == [2] * 20
+    assert result["warnings"] == []
+
+
+def test_split_requests_stop_at_the_per_segmentation_cap(model, monkeypatch):
+    """切分请求总数用完后不再请求，其余超长片段完整保留并告警。"""
+    monkeypatch.setattr(segmentation, "SPLIT_MAX_CALLS", 2)
+    pieces = ["甲乙丙丁戊己庚辛壬", "子丑寅卯辰巳午未申", "天地玄黄宇宙洪荒日"]
+    result = segment(payload("。".join(pieces) + "。"))
+    assert sorted(request[2] for request in split_requests(model)) == sorted(pieces[:2])
+    assert result["segments"][-1]["text"] == pieces[2] + "。"
+    assert [w["code"] for w in result["warnings"]] == ["segment_over_max_chars"]
+    assert result["warnings"][0]["message"].startswith("1 个片段")
 
 
 def test_model_split_keeps_asr_groups(model):
@@ -1086,15 +1136,18 @@ def test_extra_fields_and_first_track(model, client):
 
 
 def test_text_exceeding_former_length_limit(model):
-    """超过原 20000 字符和词数上限的同文时间轴仍输出完整文本与时间。"""
+    """超过原 20000 字符和词数上限、没有标点的同文时间轴仍输出完整文本与时间；每轮最多切 10 段，
+    三轮共 1 + 10 + 100 次请求切出 1000 段后停止，仍超长的段落完整保留并告警，不因耗尽预算而失败。"""
     script = "甲" * 20001
     result = segment(payload(script, step=1))
     assert "".join(s["text"] for s in result["segments"]) == script
     assert result["trace"]["matched_chars"] == len(script)
     assert result["segments"][0]["start_time"] == 0
     assert result["segments"][-1]["end_time"] == 20.001
-    assert all(1 <= len(s["text"]) <= 8 for s in result["segments"])
-    assert model[1].chat.completions.create.call_count == 2
+    assert len(result["segments"]) == 1000
+    assert [w["code"] for w in result["warnings"]] == ["segment_over_max_chars"]
+    assert len(split_requests(model)) == 111
+    assert model[1].chat.completions.create.call_count == 112
 
 
 @pytest.mark.parametrize("times", [
