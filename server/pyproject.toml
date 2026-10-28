@@ -1,6 +1,6 @@
 [project]
 name = "imv-server"
-version = "0.9.16"
+version = "0.9.17"
 description = "IntelligentMixVideo Server End"
 readme = "README.md"
 authors = [
