@@ -537,7 +537,7 @@ class ReviewFrame(ContractModel):
 
 class SpriteReview(ContractModel):
     """保存后供 Agent 对照要求查看的几帧（灰底合成、按内容区域裁切），以及之后还有几次回看。默认没有关键词的字效按示例关键词
-    （优先文字块的 preview_keywords，未指定时退回文字开头，与字效工作区预览相同）截取，keywords 列出它们。"""
+    （优先文字块的 preview_keywords，与字效工作区预览相同；未指定时退回默认文字首个非空行开头至多两个字，与排版检查 text_fit 的挂载相同）截取，keywords 列出它们。"""
 
     frames: list[ReviewFrame]
     rounds_left: NonNegativeInteger
