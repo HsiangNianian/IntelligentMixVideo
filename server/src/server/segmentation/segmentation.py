@@ -1,10 +1,13 @@
-"""文案切片与标题提词：无 ASR 时仅提取标题词，其余完成字符对齐、切分与时间投射；
+"""文案切片与标题提词：无 ASR 时仅提取标题词，其余完成字符对齐、按标点切分、超长片段交模型语义切分与时间投射；
 另提供独立的 translate，把切片结果一次性译成英文并校验英文关键词。"""
 
 import bisect
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from itertools import accumulate
 import json
 import logging
+import math
 import re
 from time import perf_counter
 import unicodedata
@@ -19,7 +22,11 @@ from .settings import ClientSettings, Settings
 
 jieba.setLogLevel(logging.WARNING)
 
-BOUNDARY_MAX_ATTEMPTS = 2
+SPLIT_MAX_PASSES = 3
+SPLIT_CONCURRENCY = 8
+# 单次切分请求最多要求的段数与每次切片的切分请求总数，限制极小上限或超长文案带来的模型工作量。
+SPLIT_MAX_PARTS = 10
+SPLIT_MAX_CALLS = 200
 KEYWORD_MAX_ATTEMPTS = 3
 MODEL_TIMEOUT_SECONDS = 30
 SEGMENTATION_BUDGET_SECONDS = 90
@@ -27,6 +34,12 @@ SEGMENTATION_BUDGET_SECONDS = 90
 # 对齐忽略常见中英文标点；字幕过滤集合供下游合成使用，切片原文保留标点。
 PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.．!?;:\"'()<>[]{}~`")
 SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
+# 句读标点、换行及中文之间的空白是切点；引号、括号、书名号不切，字幕显示时由下游去掉。
+SPLIT_PUNCTUATION = set("，。！？、；：…,.．!?;:")
+CJK = re.compile("[㐀-鿿豈-﫿]")
+# 语义切分的非首行不能以单独的助词开头；按结巴首词判断，「的确」「了解」等词不受影响。
+PARTICLES = set("的地得了着过吗呢吧啊")
+SPLIT_MARK = re.compile(r"\[br\]|<br\s*/?>", re.IGNORECASE)
 
 
 def segmentation_error(exc: Exception) -> tuple[str, int]:
@@ -127,6 +140,81 @@ def _check_title_keyword(keyword, title: str, max_length: int | None, field: str
     return keyword
 
 
+def _thinking(config: Settings) -> dict:
+    """模型服务支持 thinking 扩展字段且已开启 llm_disable_thinking 时关闭思考，未开启时不发送该字段。"""
+    return {"extra_body": {"thinking": {"type": "disabled"}}} if config.llm_disable_thinking else {}
+
+
+def _core(text: str) -> str:
+    """只保留计数字符（去掉空白与标点），字数上限与切分校验都按它计算。"""
+    return "".join(c for c in text if not c.isspace() and c not in PUNCTUATION)
+
+
+def _split_prompt(text: str, num_parts: int, max_chars: int | None) -> str:
+    """超长片段的语义切分提示：段数由代码算出，模型给出两种切法并自选。
+
+    max_chars 为 None 表示段数已按 SPLIT_MAX_PARTS 截断、这一轮放不进上限，只要求大致均分，
+    超限的段落留待下一轮；上限不足 3 字时不再要求每段至少 3 字，避免与上限矛盾。
+    结构与要求改编自 VideoLingo（Apache-2.0）core/prompts.py 的 get_split_prompt，计数单位改为中文字符。
+    """
+    size = (f"each no more than **{max_chars}** Chinese characters" if max_chars is not None
+            else "of roughly equal length")
+    minimum = " (minimum 3 characters each)" if max_chars is None or max_chars >= 3 else ""
+    return f"""## Role
+You are a professional Netflix subtitle splitter in Chinese.
+
+## Task
+Split the given subtitle text into **{num_parts}** parts, {size} (punctuation and spaces are not counted).
+
+1. Maintain sentence meaning coherence according to Netflix subtitle standards
+2. MOST IMPORTANT: Keep parts roughly equal in length{minimum}
+3. Split at natural points like punctuation marks or conjunctions
+4. If provided text is repeated words, simply split at the middle of the repeated words.
+
+## Steps
+1. Analyze the sentence structure, complexity, and key splitting challenges
+2. Generate two alternative splitting approaches with [br] tags at split positions
+3. Compare both approaches highlighting their strengths and weaknesses
+4. Choose the best splitting approach
+
+## Given Text
+<split_this_sentence>
+{text}
+</split_this_sentence>
+
+## Output in only JSON format and no other text
+{{"analysis": "Brief description of sentence structure, complexity, and key splitting challenges",
+"split1": "First splitting approach with [br] tags at split positions",
+"split2": "Alternative splitting approach with [br] tags at split positions",
+"assess": "Comparison of both approaches",
+"choice": "1 or 2"}}"""
+
+
+def _pick_split(output: dict, text: str, blocked: set[int], max_chars: int, final: bool) -> list[int] | None:
+    """从模型的两种切法里取最好的合格切法，返回各段计数字符数；都不合格返回 None，交给下一轮重新请求。
+
+    合格：至少两段、去掉 [br] 后计数字符与原文逐字相同（标点和空白可增删）、切点不落在 blocked
+    （受保护串或修复块内部，按段内计数位置）。合格切法依次优先：非首段不以单独助词开头、各段都不超过
+    max_chars、模型的选择；有段落超限的切法照常采用，超限段落由下一轮继续切；助词开头的切法只在
+    最后一轮（final）作后备。代码不改写原文，也不自行切分。
+    """
+    original = _core(text)
+    keys = ("split2", "split1") if "2" in str(output.get("choice", "")) else ("split1", "split2")
+    candidates = []
+    for order, key in enumerate(keys):
+        value = output.get(key)
+        if not isinstance(value, str):
+            continue
+        parts = [part for part in map(_core, SPLIT_MARK.split(value)) if part]
+        lengths = [len(part) for part in parts]
+        if len(parts) < 2 or "".join(parts) != original or blocked & set(accumulate(lengths[:-1])):
+            continue
+        particle = any(next(iter(jieba.cut(part)), "") in PARTICLES for part in parts[1:])
+        if final or not particle:
+            candidates.append(((particle, max(lengths) > max_chars, order), lengths))
+    return min(candidates)[1] if candidates else None
+
+
 def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics: dict | None = None) -> dict:
     """HTTP 与合成任务共用入口：记录阶段诊断，保留返回值和原异常，不记录凭据。"""
     diagnostics = {} if diagnostics is None else diagnostics
@@ -157,9 +245,12 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
 def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict) -> dict:
     """用正确文案和 ASR 词级时间生成片段；不调用 TTS/ASR，不降级模型失败。
 
-    请求为 {script, asr_result}，读取 fun-asr transcripts 第一音轨，词时间为 begin_time/end_time 毫秒。
+    请求为 {script, asr_result, max_segment_chars}，读取 fun-asr transcripts 第一音轨，词时间为 begin_time/end_time 毫秒。
     替换/增删代价均为 1；波前搜索保留最远位置，平局依次优先替换、文案多字、
-    ASR 多字。模型只返回分句切点和关键词，超长片段按安全边界切分，时间投射和关键词校验由代码完成。
+    ASR 多字。先在句读标点、换行与中文之间的空白处切开，超过 max_segment_chars（默认 8，不计标点空白）
+    的片段交给模型按语义切分（单次最多 SPLIT_MAX_PARTS 段，每次切片最多 SPLIT_MAX_CALLS 个请求），
+    最多 SPLIT_MAX_PASSES 轮，仍超长则完整保留并给出 warning，不在代码里硬切；
+    模型另按最终片段提关键词，时间投射和关键词校验由代码完成。
     显式 config 仅用于当前调用；省略时读取 server/.env 与 IMV_ 环境变量，SDK 在返回前关闭。
     返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
     warnings 和 trace；原文保留标点，字幕去标点由下游合成处理。
@@ -172,6 +263,9 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     trace = diagnostics["trace"]
     logger = logging.getLogger("uvicorn.error")
     title = payload.get("title")
+    segment_max_length = payload.get("max_segment_chars", 8)
+    if type(segment_max_length) is not int or segment_max_length < 1:
+        raise ValueError("max_segment_chars 必须是大于零的整数。")
     title_only = payload.get("asr_result") is None and title is not None
     if not title_only:
         # HTTP 类型校验由路由负责；有 ASR 时仍须有效文案，标点不参与对齐。
@@ -206,6 +300,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 timeout=request_timeout(),
                 messages=[{"role": "system", "content": '从标题中提取一个关键词，只返回 JSON：{"title_keyword":"关键词"}，无合适词时返回空字符串。'},
                           {"role": "user", "content": title}],
+                **_thinking(config),
             )
         raw = _response_content(response)
         diagnostics["model_response"] = raw
@@ -241,8 +336,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     if not timeline:
         raise ValueError("ASR 缺少有效发音字符。")
 
-    # 首次候选至少 2 秒；二次切分复用对齐字符计数，标点和空白不占长度。
-    minimum, keyword_max_length, segment_max_length = 2000, 12, 8
+    keyword_max_length = 12
     diagnostics["stage"] = "alignment"
     # 先剥离相同前后缀，仅对中间差异搜索并回溯。
     prefix = suffix = 0
@@ -355,9 +449,9 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         repair_ranges.append((indices[0], indices[-1] + 1))
     trace["repair_block_count"] = len(repair_ranges)
 
-    # 两次切分共用词串保护，数字后紧跟三位数字的半角逗号视为千分位；
+    # 词串保护：数字后紧跟三位数字的半角逗号视为千分位；
     # 逗号列表须有共享后缀或明确约数语境，避免把“99，3件”连成一串。
-    diagnostics["stage"] = "candidate_filter"
+    diagnostics["stage"] = "punctuation_split"
     offsets = [c[0] for c in chars]
     protected = set()
     number = r"\d+(?:[.．]\d+)?"
@@ -375,214 +469,198 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     forbidden = protected.copy()
     for begin, end in repair_ranges:
         forbidden.update(range(begin + 1, end))
-    # 首次只使用中文标点候选；无候选或全文不足 2 秒时保持整段，超长片段随后二次切分。
-    # 从左到右保留切点，两侧均留足 2 秒；过滤只隐藏边界，不删除原文。
-    # offset 是原文中标点后的字符位置；多个限制同时命中时记录首个过滤原因。
-    candidate_edges, filtered_boundaries = [0], []
-    for clause in re.finditer(r"[^，。！？；：、…]*[，。！？；：、…]+|[^，。！？；：、…]+$", script):
-        cut = bisect.bisect_left(offsets, clause.end())
-        if not 0 < cut < len(chars):
-            continue
-        if cut in forbidden:
-            reason = "protected_or_repaired"
-        elif ends[cut - 1] - starts[candidate_edges[-1]] < minimum:
-            reason = "min_duration_before"
-        elif ends[-1] - starts[cut] < minimum:
-            reason = "min_duration_after"
-        else:
-            candidate_edges.append(cut)
-            continue
-        filtered_boundaries.append({"offset": clause.end(), "reason": reason})
-    candidate_edges.append(len(chars))
-    text_edges = [0, *[offsets[i] for i in candidate_edges[1:-1]], len(script)]
-    listing = [
-        {"id": i, "text": script[a:b]}
-        for i, (a, b) in enumerate(zip(text_edges, text_edges[1:]), 1)
-    ]
-    trace.update(candidate_clauses=listing, filtered_boundaries=filtered_boundaries,
-                 selected_boundaries_after=[], keyword_candidates={}, model_elapsed_ms={})
-    segments, rejected = [], 0
-    # 模型依次选切点、提关键词；超长片段随后由代码按安全边界切分。
-    with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
-        for stage in ("boundaries", "keywords"):
-            diagnostics["stage"] = stage
-            diagnostics["model_response"] = None
-            if stage == "boundaries":
-                prompt = (
-                    '将口播文案切成短句画面，只返回 JSON：{"boundaries_after":[1,3]}。'
-                    "数组须列全所有选中的分句编号，升序、不重复，从1开始且不含最后一句；不是只选几个代表性切点。"
-                    "在已有分句边界允许的范围内，每段字数上限为10字（不计标点和空白），不设字数下限，不为凑字数合并。"
-                    "逐个检查相邻分句，结合主谓宾、状语、补语、定语、并列句和从句，优先保留语义及信息点完整。"
-                    "时间节点、条件说明、动作完成、对象说明、结果出现等独立信息点优先单独成段，同一话题或连续卖点也分别判断。"
-                    "仅语法不完整、必须依赖相邻句且合并后不超过10字时才合并；已有超长分句保留前后边界，不再合并。"
-                    "只用已有分句边界，不生成句内切点；无法在候选边界内满足字数上限时保留原分句。"
-                    "候选已按至少2秒和受保护词串过滤，选定后不再合并或拆分；不输出文本、时间、group_id或level。"
-                    "输入是标准文案，不是待纠错的ASR文本；不改写、不删字或标点。自检编号范围和顺序；只输出纯JSON，无Markdown或解释。"
-                )
-                content = listing
-            elif stage == "keywords":
-                prompt = (
-                    '为短视频素材召回提取关键词，只返回 JSON 对象。'
-                    "全篇关键词总数不限，逐段判断是否有值得检索画面的具体对象，无合适对象时省略该编号，不凑词。"
-                    f"每段最多1个词，每词最多{keyword_max_length}字；"
-                    "优先选择本段核心的具体名词或名词短语，如产品、动物、人物、食材、部位、工具、场景。"
-                    "保留有助于区分画面的必要修饰语，例如原文连续出现的‘散养的土鸡’；‘蛋清’‘蛋黄’也适合召回。"
-                    "不要只提取‘散养’‘新鲜’‘饱满’等动作或属性，也不要选‘囤一点’等营销引导。"
-                    "同一对象在不同片段中可重复选择，不为全篇去重而遗漏该段核心对象。"
-                    "keywords 为片段编号到关键词的对象，键必须是输入 segment_id 的十进制字符串，值为单个关键词字符串。"
-                    "只返回有关键词的编号，无关键词的片段可省略；不能改编号或把其他片段的词填到该编号。"
-                    "逐项确认词在该段内连续出现，保留大小写和全半角，不改写、跨标点拼接或借用其他段的词。"
-                    "自检编号、词长和原文匹配。只输出纯JSON，无Markdown或解释。"
-                )
-                content = [{"segment_id": s["segment_id"], "text": s["text"]} for s in segments]
-                keyword_ids = {str(s["segment_id"]) for s in segments}
-                example = {"keywords": {"1": "原文关键词"}}
-                if title is not None:
-                    content = {"title": title, "segments": content}
-                    example["title_keyword"] = "标题关键词"
-                    prompt += (
-                        '本次输入为含 title 和 segments 的对象，keywords 只对应 segments。'
-                        '另从 title 按上述提词规则选一个关键词，返回同级 title_keyword 字符串，'
-                        '必须在标题中连续出现；标题为空或无合适关键词时返回空字符串。'
-                    )
-                prompt += 'JSON 格式示例（全部无关键词时 keywords 返回空对象）：' + json.dumps(example, ensure_ascii=False)
-            messages = [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
-            ]
-            started = perf_counter()
-            max_attempts = BOUNDARY_MAX_ATTEMPTS if stage == "boundaries" else KEYWORD_MAX_ATTEMPTS
-            try:
-                for attempt in range(max_attempts):
-                    response = client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        temperature=0.2,
-                        response_format={"type": "json_object"},
-                        timeout=request_timeout(),
-                    )
-                    raw = _response_content(response)
-                    diagnostics["model_response"] = raw
-                    logger.info("切片模型调用 stage=%s attempt=%s", stage, attempt + 1)
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug("切片模型输出 stage=%s attempt=%s content=%r", stage, attempt + 1, sanitize(raw))
-                    if stage == "keywords":
-                        diagnostics["keyword_response"] = {
-                            "expected_segment_count": len(segments), "response": raw,
-                        }
-                    request_timeout()
-                    try:
-                        output = _json_output(response)
-                        if stage == "boundaries":
-                            ids = output.get("boundaries_after")
-                            if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
-                                raise RuntimeError("模型 boundaries_after 必须为有效分句编号数组，不含最后一句。")
-                        else:
-                            if title is not None:
-                                title_keyword = _check_title_keyword(
-                                    output.get("title_keyword"), title, keyword_max_length, "title_keyword")
-                            keywords = output.get("keywords")
-                            diagnostics["keyword_response"].update(
-                                keywords_type=type(keywords).__name__,
-                                keyword_group_count=len(keywords) if isinstance(keywords, (dict, list)) else None,
-                            )
-                            if (
-                                not isinstance(keywords, dict)
-                                or any(key not in keyword_ids or not isinstance(word, str) for key, word in keywords.items())
-                            ):
-                                raise RuntimeError(
-                                    f"模型 keywords 必须为片段编号到字符串的对象，编号须为 1～{len(segments)} 的十进制字符串，"
-                                    "不能带前导零；无关键词可省略该编号。")
-                        break
-                    except RuntimeError as exc:
-                        if attempt == max_attempts - 1:
-                            raise
-                        # 部分兼容端点拒绝空 assistant 内容，空回复只追加纠错说明。
-                        previous = [{"role": "assistant", "content": raw}] if isinstance(raw, str) and raw.strip() else []
-                        messages = [*messages, *previous,
-                                    {"role": "user", "content": f"上次结果校验失败：{exc} 请修正并重新返回完整 JSON 对象。"}]
-                        logger.warning("切片结果纠错 stage=%s retry=%s error=%s", stage, attempt + 1, sanitize(str(exc)))
-            finally:
-                trace["model_elapsed_ms"][stage] = round((perf_counter() - started) * 1000, 1)
-            if stage == "boundaries":
-                trace["selected_boundaries_after"] = sorted(set(ids))
-                edges = [0, *[candidate_edges[n] for n in trace["selected_boundaries_after"]], len(chars)]
-                spans = list(zip(edges, edges[1:]))
-                # 段落按其首字归属 ASR 句：句内序号从 1 递增，total 为该句的最终段数。
-                # 跨句片段整体计入起始句，使同句编号连续且不因归属再切分文本。
-                sentence_of_char = [None] * len(chars)
-                for _, i, j in ops:
-                    if i is not None and j is not None:
-                        sentence_of_char[i] = timeline_sentences[j]
-                attribution, fallback_sentence = [], None
-                for value in sentence_of_char:
-                    fallback_sentence = value if value is not None else fallback_sentence
-                    attribution.append(fallback_sentence)
-                first_sentence = next((s for s in attribution if s is not None), 0)
-                attribution = [first_sentence if s is None else s for s in attribution]
-                for index, (a, b) in enumerate(spans, 1):
-                    begin = 0 if a == 0 else offsets[a]
-                    end = len(script) if b == len(chars) else offsets[b]
-                    segments.append(
-                        {
-                            "segment_id": index,
-                            "text": script[begin:end],
-                            "start_time_ms": round(starts[a]),
-                            "end_time_ms": round(ends[b - 1]),
-                            "keyword": "",
-                            "level": 1,
-                        }
-                    )
-            elif stage == "keywords":
-                trace["keyword_candidates"] = keywords
-                for item in segments:
-                    key = str(item["segment_id"])
-                    candidates = [keywords[key]] if key in keywords else []
-                    item["keyword"] = _pick_keyword(item["text"], candidates, keyword_max_length)
-                    rejected += len(candidates) - bool(item["keyword"])
-                    # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。
-                    item["level"] = 2 if item["keyword"] else 1
+    # 先在句读标点、换行或中文之间的空白处切开；受保护串与修复块内部不切，标点和空白留在前段。
+    edges = [0]
+    for cut in range(1, len(chars)):
+        gap = script[offsets[cut - 1] + 1:offsets[cut]]
+        if gap and cut not in forbidden and (
+            any(char in SPLIT_PUNCTUATION or char == "\n" for char in gap)
+            or (gap.isspace() and CJK.match(script[offsets[cut - 1]]) and CJK.match(script[offsets[cut]]))
+        ):
+            edges.append(cut)
+    edges.append(len(chars))
+    spans = list(zip(edges, edges[1:]))
+    trace.update(punctuation_piece_count=len(spans), split_requests=[], keyword_candidates={}, model_elapsed_ms={})
 
-    # 先避免单字子段，再优先标点、结巴词边界及中点；英文数字仅在整串超长时放宽上限。
-    # 标点留在前段，关键词仅继承到完整包含首次出现位置的子段；沿用既有字符时间，不重新对齐。
-    diagnostics["stage"] = "secondary_split"
-    word_edges = {bisect.bisect_left(offsets, end) for _, _, end in jieba.tokenize(script)} if any(
-        b - a > segment_max_length for a, b in spans
-    ) else set()
-    punctuation_edges = {i for i in range(1, len(chars)) if any(
-        char in PUNCTUATION for char in script[offsets[i - 1] + 1:offsets[i]]
-    )}
-    refined, refined_groups = [], []
-    for item, (a, b) in zip(segments, spans):
-        origin = 0 if a == 0 else offsets[a]
-        keyword = item["keyword"]
-        keyword_start = origin + item["text"].find(keyword) if keyword else -1
-        pending = [(a, b)]
-        while pending:
-            a, b = pending.pop()
-            if b - a > segment_max_length:
-                cuts = [cut for cut in range(a + 1, b) if cut not in protected]
-                if cuts:
-                    middle = min(cuts, key=lambda cut: (
-                        min(cut - a, b - cut) < 2,
-                        cut not in punctuation_edges, cut not in word_edges, abs(2 * cut - a - b), cut,
-                    ))
-                    pending.extend([(middle, b), (a, middle)])
-                    continue
+    def over_limit(span: tuple[int, int]) -> bool:
+        """超过上限且内部还有可切位置的片段交给模型；整段受保护的长串（如长英文数字串）保持完整。"""
+        a, b = span
+        return b - a > segment_max_length and any(cut not in forbidden for cut in range(a + 1, b))
+
+    def split_piece(client, span: tuple[int, int], attempt: int) -> list[int] | None:
+        """请求模型把一个超长片段切成 ceil(字数/上限) 段（最多 SPLIT_MAX_PARTS 段），返回各段计数字符数；
+        不合格返回 None 留待下一轮。
+
+        段数被截断时只要求大致均分，仍超限的段落下一轮继续切。发送的文本去掉首尾标点；
+        SDK 异常与预算超时原样传播，与提词阶段一致。
+        """
+        a, b = span
+        text = script[offsets[a]:offsets[b - 1] + 1]
+        needed = math.ceil((b - a) / segment_max_length)
+        num_parts = min(needed, SPLIT_MAX_PARTS)
+        prompt = _split_prompt(text, num_parts, segment_max_length if needed == num_parts else None)
+        response = client.chat.completions.create(
+            model=model, temperature=0.2, response_format={"type": "json_object"}, timeout=request_timeout(),
+            # 沿用 VideoLingo：重试时在提示末尾追加空格，使请求与上一轮不同。
+            messages=[{"role": "user", "content": prompt + " " * attempt}],
+            **_thinking(config),
+        )
+        raw = _response_content(response)
+        logger.info("切片模型调用 stage=split pass=%s", attempt + 1)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("切片模型输出 stage=split pass=%s content=%r", attempt + 1, sanitize(raw))
+        try:
+            output = _json_output(response)
+        except RuntimeError:
+            output = {}
+        blocked = {cut - a for cut in range(a + 1, b) if cut in forbidden}
+        lengths = _pick_split(output, text, blocked, segment_max_length, attempt == SPLIT_MAX_PASSES - 1)
+        trace["split_requests"].append(
+            {"text": text, "num_parts": num_parts, "pass": attempt + 1, "accepted": lengths is not None})
+        return lengths
+
+    # 段落按其首字归属 ASR 句：句内序号从 1 递增，total 为该句的最终段数。
+    # 跨句片段整体计入起始句，使同句编号连续且不因归属再切分文本。
+    sentence_of_char = [None] * len(chars)
+    for _, i, j in ops:
+        if i is not None and j is not None:
+            sentence_of_char[i] = timeline_sentences[j]
+    attribution, fallback_sentence = [], None
+    for value in sentence_of_char:
+        fallback_sentence = value if value is not None else fallback_sentence
+        attribution.append(fallback_sentence)
+    first_sentence = next((s for s in attribution if s is not None), 0)
+    attribution = [first_sentence if s is None else s for s in attribution]
+    segments, rejected = [], 0
+    with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
+        # 超长片段并行请求，仍超长的段落下一轮继续切；模型切出的段落只按校验结果采用，代码不硬切。
+        # 每次切片最多发出 SPLIT_MAX_CALLS 个切分请求，用完后其余超长片段完整保留并告警。
+        diagnostics["stage"] = "split"
+        started = perf_counter()
+        calls_left = SPLIT_MAX_CALLS
+        try:
+            with ThreadPoolExecutor(max_workers=SPLIT_CONCURRENCY) as pool:
+                for attempt in range(SPLIT_MAX_PASSES):
+                    todo = [k for k, span in enumerate(spans) if over_limit(span)][:calls_left]
+                    if not todo:
+                        break
+                    calls_left -= len(todo)
+                    futures = [pool.submit(split_piece, client, spans[k], attempt) for k in todo]
+                    # 从后往前替换，前面片段的下标不受影响。
+                    for k, future in reversed(list(zip(todo, futures))):
+                        if lengths := future.result():
+                            cuts = list(accumulate(lengths, initial=spans[k][0]))
+                            spans[k:k + 1] = list(zip(cuts, cuts[1:]))
+        finally:
+            if trace["split_requests"]:
+                trace["model_elapsed_ms"]["split"] = round((perf_counter() - started) * 1000, 1)
+        remaining = [script[offsets[a]:offsets[b - 1] + 1] for a, b in spans if over_limit((a, b))]
+        trace["over_limit_pieces"] = remaining
+        if remaining:
+            warnings.append({"code": "segment_over_max_chars",
+                             "message": f"{len(remaining)} 个片段无法在每行 {segment_max_length} 字内按语义切开，已完整保留。"})
+        for index, (a, b) in enumerate(spans, 1):
             begin = 0 if a == 0 else offsets[a]
             end = len(script) if b == len(chars) else offsets[b]
-            inherited = keyword if begin <= keyword_start and keyword_start + len(keyword) <= end else ""
-            refined.append({**item, "text": script[begin:end], "keyword": inherited,
-                            "level": 2 if inherited else 1,
-                            "start_time_ms": round(starts[a]), "end_time_ms": round(ends[b - 1])})
-            refined_groups.append(attribution[a])
-    segments, span_groups = refined, refined_groups
+            segments.append({
+                "segment_id": index, "text": script[begin:end],
+                "start_time_ms": round(starts[a]), "end_time_ms": round(ends[b - 1]), "keyword": "", "level": 1,
+            })
+        trace["segment_texts"] = [item["text"] for item in segments]
 
-    # 按最终片段重编序号与 ASR 句内分组，二次切分不重新提取关键词。
+        # 按最终片段提关键词，与标题共用一次调用；纠错时回填原回复与错误。
+        diagnostics["stage"] = "keywords"
+        diagnostics["model_response"] = None
+        prompt = (
+            '为短视频素材召回提取关键词，只返回 JSON 对象。'
+            "全篇关键词总数不限，逐段判断是否有值得检索画面的具体对象，无合适对象时省略该编号，不凑词。"
+            f"每段最多1个词，每词最多{keyword_max_length}字；"
+            "优先选择本段核心的具体名词或名词短语，如产品、动物、人物、食材、部位、工具、场景。"
+            "保留有助于区分画面的必要修饰语，例如原文连续出现的‘散养的土鸡’；‘蛋清’‘蛋黄’也适合召回。"
+            "不要只提取‘散养’‘新鲜’‘饱满’等动作或属性，也不要选‘囤一点’等营销引导。"
+            "同一对象在不同片段中可重复选择，不为全篇去重而遗漏该段核心对象。"
+            "keywords 为片段编号到关键词的对象，键必须是输入 segment_id 的十进制字符串，值为单个关键词字符串。"
+            "只返回有关键词的编号，无关键词的片段可省略；不能改编号或把其他片段的词填到该编号。"
+            "逐项确认词在该段内连续出现，保留大小写和全半角，不改写、跨标点拼接或借用其他段的词。"
+            "自检编号、词长和原文匹配。只输出纯JSON，无Markdown或解释。"
+        )
+        content = [{"segment_id": s["segment_id"], "text": s["text"]} for s in segments]
+        keyword_ids = {str(s["segment_id"]) for s in segments}
+        example = {"keywords": {"1": "原文关键词"}}
+        if title is not None:
+            content = {"title": title, "segments": content}
+            example["title_keyword"] = "标题关键词"
+            prompt += (
+                '本次输入为含 title 和 segments 的对象，keywords 只对应 segments。'
+                '另从 title 按上述提词规则选一个关键词，返回同级 title_keyword 字符串，'
+                '必须在标题中连续出现；标题为空或无合适关键词时返回空字符串。'
+            )
+        prompt += 'JSON 格式示例（全部无关键词时 keywords 返回空对象）：' + json.dumps(example, ensure_ascii=False)
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
+        ]
+        started = perf_counter()
+        try:
+            for attempt in range(KEYWORD_MAX_ATTEMPTS):
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    response_format={"type": "json_object"},
+                    timeout=request_timeout(),
+                    **_thinking(config),
+                )
+                raw = _response_content(response)
+                diagnostics["model_response"] = raw
+                logger.info("切片模型调用 stage=keywords attempt=%s", attempt + 1)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("切片模型输出 stage=keywords attempt=%s content=%r", attempt + 1, sanitize(raw))
+                diagnostics["keyword_response"] = {"expected_segment_count": len(segments), "response": raw}
+                request_timeout()
+                try:
+                    output = _json_output(response)
+                    if title is not None:
+                        title_keyword = _check_title_keyword(
+                            output.get("title_keyword"), title, keyword_max_length, "title_keyword")
+                    keywords = output.get("keywords")
+                    diagnostics["keyword_response"].update(
+                        keywords_type=type(keywords).__name__,
+                        keyword_group_count=len(keywords) if isinstance(keywords, (dict, list)) else None,
+                    )
+                    if (
+                        not isinstance(keywords, dict)
+                        or any(key not in keyword_ids or not isinstance(word, str) for key, word in keywords.items())
+                    ):
+                        raise RuntimeError(
+                            f"模型 keywords 必须为片段编号到字符串的对象，编号须为 1～{len(segments)} 的十进制字符串，"
+                            "不能带前导零；无关键词可省略该编号。")
+                    break
+                except RuntimeError as exc:
+                    if attempt == KEYWORD_MAX_ATTEMPTS - 1:
+                        raise
+                    # 部分兼容端点拒绝空 assistant 内容，空回复只追加纠错说明。
+                    previous = [{"role": "assistant", "content": raw}] if isinstance(raw, str) and raw.strip() else []
+                    messages = [*messages, *previous,
+                                {"role": "user", "content": f"上次结果校验失败：{exc} 请修正并重新返回完整 JSON 对象。"}]
+                    logger.warning("切片结果纠错 stage=keywords retry=%s error=%s", attempt + 1, sanitize(str(exc)))
+        finally:
+            trace["model_elapsed_ms"]["keywords"] = round((perf_counter() - started) * 1000, 1)
+    trace["keyword_candidates"] = keywords
+    for item in segments:
+        key = str(item["segment_id"])
+        candidates = [keywords[key]] if key in keywords else []
+        item["keyword"] = _pick_keyword(item["text"], candidates, keyword_max_length)
+        rejected += len(candidates) - bool(item["keyword"])
+        # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。
+        item["level"] = 2 if item["keyword"] else 1
+
+    # 按最终片段计算 ASR 句内分组。
+    span_groups = [attribution[a] for a, _ in spans]
     group_totals, group_seen = Counter(span_groups), Counter()
-    for index, (item, group) in enumerate(zip(segments, span_groups), 1):
+    for item, group in zip(segments, span_groups):
         group_seen[group] += 1
-        item.update(segment_id=index, group_id=[group_seen[group], group_totals[group]])
+        item["group_id"] = [group_seen[group], group_totals[group]]
     # 保留原始停顿，检查文本覆盖和输出时间。
     diagnostics["stage"] = "output_validation"
     trace.update(segment_count=len(segments), keyword_rejected_count=rejected)
@@ -648,6 +726,7 @@ def translate(result: dict, *, title: str | None = None) -> dict:
             model=config.llm_model, temperature=0.2, response_format={"type": "json_object"},
             messages=[{"role": "system", "content": prompt},
                       {"role": "user", "content": json.dumps(content, ensure_ascii=False)}],
+            **_thinking(config),
         )
     output = _json_output(response)
     items = output.get("segments")

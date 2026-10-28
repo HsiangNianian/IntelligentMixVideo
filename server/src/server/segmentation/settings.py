@@ -19,6 +19,11 @@ class ClientSettings(BaseModel):
     llm_model: str = Field(title="模型名称", pattern=r"\S")
     llm_timeout_seconds: float = Field(title="请求超时（秒）", default=120, gt=0, allow_inf_nan=False)
     llm_max_retries: int = Field(title="重试次数", default=1, ge=0, le=3)
+    llm_disable_thinking: bool = Field(
+        title="关闭思考模式", default=False,
+        description="仅在模型服务支持 thinking 扩展字段（如 DeepSeek）时开启：请求附带 thinking=disabled，"
+                    "避免切分等待长推理；关闭时不发送该字段，采用服务默认行为。",
+    )
 
 
 class Settings(ClientSettings, CommonSettings):
