@@ -41,7 +41,7 @@ bun run tauri dev
 Keep components focused and clean up timers and subscriptions on unmount.
 Follow existing formatting and keep TypeScript strict checks passing.
 Use Tailwind CSS 4 and shadcn/ui for frontend styling and shared UI. Follow the
-page/component/UI boundaries in [AGENTS.md](AGENTS.md). Keep changes minimal:
+page/component/UI boundaries in [client/AGENTS.md](client/AGENTS.md). Keep changes minimal:
 no unused code, empty scaffolding, or speculative abstractions. Maintained source
 files require a header explaining their contents and execution flow; document
 modules, classes, components, functions, meaningful objects, and complex logic

@@ -457,7 +457,7 @@ buf generate
 
 手动运行 Validate project 时，`integration-tests` 默认开启，在临时 MySQL 与隔离渲染环境中执行集成测试；普通 push / PR 不启动这组重型测试。报告和产物保留 14 天。可通过 `build-installers` 同时构建安装包，`api-url` 指定普通包的 API 地址，留空默认 `http://localhost:20070`。
 
-客户端或 CI 改动的具体调度、依赖锁文件校验、四平台原生检查及集成环境，见[客户端构建 CI 约定](AGENTS.md#客户端构建-ci)。
+客户端或 CI 改动的具体调度、依赖锁文件校验、四平台原生检查及集成环境，见[客户端构建 CI 约定](.github/AGENTS.md#客户端构建-ci)。
 
 </details>
 
@@ -474,7 +474,7 @@ Debug 包携带完整服务端、Python、uv、私有 MySQL、Node、Bun、Remot
 | Windows | `%APPDATA%/com.intelligentmixvideo.client/backend/` |
 | macOS | `~/Library/Application Support/com.intelligentmixvideo.client/backend/` |
 
-其中包含私有数据库、配置和 `server.log`，Remotion 数据位于相应 `remotion/` 目录。首次从无密钥示例创建配置，已有配置与数据不会被覆盖；安装包不会携带开发机 `.env` 或数据库。运行时缓存位置和测试边界见[构建约定](AGENTS.md#客户端构建-ci)。
+其中包含私有数据库、配置和 `server.log`，Remotion 数据位于相应 `remotion/` 目录。首次从无密钥示例创建配置，已有配置与数据不会被覆盖；安装包不会携带开发机 `.env` 或数据库。运行时缓存位置和测试边界见[构建约定](.github/AGENTS.md#客户端构建-ci)。
 
 Unix 数据库使用私有 socket；Windows 使用随机密码与动态回环端口，不依赖宿主 MySQL。macOS 按 Apple Silicon、Intel 分别构建；Windows 使用 x64 原生运行时。
 
@@ -513,7 +513,7 @@ git push origin v0.6.0
 
 变更记录由工作流按 Conventional Commits 自动生成。发布使用内置 `GITHUB_TOKEN`，需要相应写权限；失败可以重跑，草稿可补齐附件，已公开版本不会被重跑覆盖。不得移动已发布 tag。
 
-版本同步、并发发布和恢复细节见[正式版本约定](AGENTS.md#正式版本与-tag-发版)及[Release 与 CHANGELOG 约定](AGENTS.md#github-release-与-changelog)。
+版本同步、并发发布和恢复细节见[正式版本约定](.github/AGENTS.md#正式版本与-tag-发版)及[Release 与 CHANGELOG 约定](.github/AGENTS.md#github-release-与-changelog)。
 
 </details>
 
