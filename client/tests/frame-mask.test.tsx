@@ -71,6 +71,50 @@ test("旧模板默认无蒙版，选择后编辑、保存、重读及关闭保�
   expect(writes.at(-1)?.frameMask?.top).toMatchObject({ enabled: false, height: 21.7, color: "#123456" });
 });
 
+// 纯色只显示一个颜色；开启渐变才显示附加参数，切换和云端重读都保留两栏独立样式。
+test("渐变参数按填充方式显示，编辑保存重读后切回纯色仍保留", async () => {
+  let stored = { ...savedTemplate(), frame_mask: newFrameMask() };
+  fetchMock.mockImplementation((async (_url, init) => {
+    if (init?.method === "POST") {
+      const request = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as Uint8Array));
+      stored = { ...stored, frame_mask: request.frameMask as FrameMask };
+    }
+    return jsonTemplateResponse(stored, init?.method === "POST" ? "save" : "get");
+  }) as typeof fetch);
+  const selection = { templateId: stored.template_id };
+  const view = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
+  await screen.findByLabelText("模板名称");
+  fireEvent.click(screen.getByRole("button", { name: "编辑上下蒙版对象" }));
+  expect(screen.getByLabelText("上栏颜色")).toBeTruthy();
+  expect(screen.queryByLabelText("上栏结束色")).toBeNull();
+  expect(screen.queryByLabelText("上栏渐变范围")).toBeNull();
+  fireEvent.click(screen.getByRole("radio", { name: "上栏渐变" }));
+  fireEvent.change(screen.getByLabelText("上栏起始色"), { target: { value: "#123456" } });
+  fireEvent.change(screen.getByLabelText("上栏结束色"), { target: { value: "#abcdef" } });
+  fireEvent.click(screen.getByRole("radio", { name: "上栏上到下" }));
+  fireEvent.change(screen.getByLabelText("上栏渐变范围"), { target: { value: "50" } });
+  expect(screen.queryByLabelText("下栏结束色")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
+  await screen.findByText("已保存");
+  expect(stored.frame_mask.top).toMatchObject({ color: "#123456", gradient: { enabled: true, endColor: "#abcdef", direction: "down", range: 50 } });
+  expect(stored.frame_mask.bottom.gradient).toBeUndefined();
+  view.unmount();
+  render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
+  await screen.findByLabelText("模板名称");
+  fireEvent.click(screen.getByRole("button", { name: "编辑上下蒙版对象" }));
+  expect(screen.getByLabelText<HTMLInputElement>("上栏结束色").value).toBe("#abcdef");
+  expect(screen.getByLabelText<HTMLInputElement>("上栏渐变范围").value).toBe("50");
+  fireEvent.click(screen.getByRole("radio", { name: "上栏纯色" }));
+  expect(screen.getByLabelText<HTMLInputElement>("上栏颜色").value).toBe("#123456");
+  expect(screen.queryByLabelText("上栏结束色")).toBeNull();
+  expect(screen.queryByLabelText("上栏渐变方向")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
+  await screen.findByText("已保存");
+  expect(stored.frame_mask.top.gradient).toMatchObject({ enabled: false, endColor: "#abcdef", direction: "down", range: 50 });
+  fireEvent.click(screen.getByRole("radio", { name: "上栏渐变" }));
+  expect(screen.getByLabelText<HTMLInputElement>("上栏渐变范围").value).toBe("50");
+});
+
 // 外部输入只在通信边界校验，不能把透明结束色、未知方向或无效范围带入预览。
 test.each([{ endColor: "#11223300" }, { direction: "left" }, { range: 0 }, { range: 101 }, { range: 1.5 }, { range: NaN }, { enabled: undefined }])("拒绝非法渐变参数 %j", (change) => {
   const mask = newFrameMask();

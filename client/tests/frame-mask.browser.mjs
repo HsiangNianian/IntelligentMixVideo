@@ -16,6 +16,7 @@ const html = `<!doctype html><html><body><div id="root"></div><script type="modu
 import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {TemplatePreview} from '/src/features/templates/TemplatePreview.tsx';
+import {FrameMaskPanel} from '/src/features/templates/FrameMaskPanel.tsx';
 import {newDraft} from '/src/features/templates/model.ts';
 import {newFrameMask,frameMaskImage} from '/src/features/templates/frameMask.ts';
 import {previewContext,resolveTemplate} from '/src/features/templates/tracks.ts';
@@ -26,9 +27,9 @@ draft.tracks[0].editor.title='蒙版上的标题';
 draft.tracks[0].editor.titleY=10;
 const media=Array.from({length:3},()=>({url:location.origin+'/node_modules/.cache/frame-mask-tests/video.mp4',duration:10,width:180,height:320}));
 const resolved=resolveTemplate(draft,previewContext(media));
-window.mount=(mask)=>root.render(React.createElement('div',{className:'template-workspace'},React.createElement(TemplatePreview,{
+window.mount=(mask)=>root.render(React.createElement('div',{className:'template-workspace flex'},React.createElement('div',{className:'flex-1'},React.createElement(TemplatePreview,{
  draft:{...draft,frame_mask:mask},media,resolved,videoInputKey:'mask',onMediaChange:()=>{},onCatalog:()=>{}
-})));
+})),mask&&React.createElement('aside',{className:'w-80'},React.createElement(FrameMaskPanel,{mask,onChange:window.mount,onRemove:()=>window.mount(undefined),onClose:()=>{}}))));
 window.mask=newFrameMask();
 window.checkPixels=async(cases)=>{
  for(const item of cases){
@@ -60,14 +61,14 @@ window.checkGradientPixels=async(cases)=>{
   }
  }
 };
-window.pixels=()=>{
+window.pixels=(rows=[10,352,353,1000,1600,1601,1910])=>{
  const frame=document.querySelector('iframe[title="模板预览播放器"]');
  const canvases=[...frame.contentDocument.querySelectorAll('canvas')];
  const canvas=document.createElement('canvas');canvas.width=1080;canvas.height=1920;
  const ctx=canvas.getContext('2d');
  for(const layer of canvases)ctx.drawImage(layer,0,0,1080,1920);
  // 检查精确栏高边界及原视频内部；原视频已有的边缘缩放不属于蒙版，四角满铺另由 edgePixels 检查。
- return [10,352,353,1000,1600,1601,1910].map(y=>[...ctx.getImageData(10,y,1,1).data]);
+ return rows.map(y=>[...ctx.getImageData(10,y,1,1).data]);
 };
 window.edgePixels=()=>{
  const doc=document.querySelector('iframe[title="模板预览播放器"]').contentDocument;
@@ -118,6 +119,18 @@ try {
   // 保持素材和时间对象不变，只改蒙版；无需刷新整个播放器。
   await page.evaluate(() => window.mount({ ...window.mask, top: { ...window.mask.top, color: "#aa2244" } }));
   await page.waitForFunction(() => String(window.pixels()[0]) === "170,34,68,255");
+  // 从真实参数面板开启反向渐变，观察颜色、方向与范围更新。
+  await page.getByRole("radio", { name: "上栏渐变", exact: true }).click();
+  await page.getByRole("radio", { name: "下栏渐变", exact: true }).click();
+  await page.waitForFunction(() => String(window.pixels([0,352,1601,1919])) === "7,16,31,255,170,34,68,255,14,44,66,255,7,16,31,255");
+  await page.getByLabel("上栏渐变范围", { exact: true }).fill("50");
+  await page.waitForFunction(() => String(window.pixels([0,176,264,352])) === "7,16,31,255,7,16,31,255,89,25,50,255,170,34,68,255");
+  await page.getByRole("radio", { name: "上栏上到下", exact: true }).click();
+  await page.waitForFunction(() => String(window.pixels([0,88,176,352])) === "170,34,68,255,89,25,50,255,7,16,31,255,7,16,31,255");
+  await page.screenshot({ path: resolve(cache, "gradient.png") });
+  await page.getByRole("radio", { name: "上栏纯色", exact: true }).click();
+  assert.equal(await page.getByLabel("上栏结束色", { exact: true }).count(), 0);
+  await page.waitForFunction(() => window.pixels([0,176,352]).every(pixel => String(pixel) === "170,34,68,255"));
   await page.evaluate(() => window.mount({
     top: { ...window.mask.top, enabled: false }, bottom: { ...window.mask.bottom, enabled: false },
   }));
@@ -132,7 +145,7 @@ try {
   await page.waitForFunction(() => window.pixels().every(pixel => pixel[1] > pixel[0] + 50));
   assert.equal(await page.getByRole("button", { name: "编辑蒙版轨道", exact: true }).count(), 0);
   await page.screenshot({ path: resolve(cache, "removed.png") });
-  console.log("通过：共享案例 PNG 像素、真实 SDK 上下蒙版、透明中部、修改颜色、停用与移除后的视频恢复。");
+  console.log("通过：共享纯色/渐变 PNG 像素、真实 SDK 面板切换/方向/范围、透明中部、停用与移除。");
 } catch (error) {
   if (page) {
     console.error((await page.locator("body").innerText()).slice(0, 1200));
