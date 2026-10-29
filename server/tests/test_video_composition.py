@@ -358,6 +358,46 @@ async def test_recovery_reuses_saved_capacity(upstreams, composition_case, compo
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("capacity", [8, 0, None])
+async def test_remotion_capacity_precedes_paid_steps(upstreams, composition_case, composition_runtime, monkeypatch, capacity):
+    """实测容量保存并传给切片；一字放不下或测量故障时 ASR/模型均不调用，隐藏 IMS 字号不回退。"""
+    from google.protobuf.json_format import MessageToDict
+    from server.video_composition.errors import CompositionError
+    from .conftest import SPRITE_ID, published_sprite
+
+    async def environment(data):
+        """本例只检查编排顺序，不启动真实运行时。"""
+
+    async def measured(task_id, data, placements):
+        """模拟真实尺寸测量成功、零容量或浏览器故障。"""
+        assert upstreams["asr_calls"] == upstreams["segment_calls"] == 0
+        if capacity is None:
+            raise CompositionError("subtitle_capacity_unavailable", "Remotion 字幕尺寸测量失败，请检查字效或稍后重试", "template")
+        return [capacity]
+
+    monkeypatch.setattr(service.remotion, "require_environment", environment)
+    monkeypatch.setattr(service.subtitle_capacity, "remotion_capacities", measured)
+    store.initialize_schema()
+    record = await composition_runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
+    record = store.advance(record, "template", template=composition_case["template"], remotion={
+        "placements": [{"sprite_id": SPRITE_ID, "text_target": "subtitle"}],
+        "assets": {SPRITE_ID: MessageToDict(published_sprite(), preserving_proto_field_name=True)},
+    })
+    job = service.Job(composition_runtime, record, composition_runtime.settings)
+    if capacity:
+        await job.prepare()
+        assert upstreams["max_segment_chars"] == 6
+        assert store.get(record["task_id"])["data"]["max_segment_chars"] == 6
+    else:
+        with pytest.raises(CompositionError) as failure:
+            await job.prepare()
+        assert failure.value.error["code"] == ("subtitle_capacity_too_small" if capacity == 0 else "subtitle_capacity_unavailable")
+        assert failure.value.error["stage"] == "template"
+        assert upstreams["asr_calls"] == upstreams["segment_calls"] == 0
+        assert "max_segment_chars" not in store.get(record["task_id"])["data"]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("stage", ["queued", "template", "assembling"])
 async def test_avatar_recovery_keeps_omitted_materials(upstreams, composition_case, composition_runtime, stage):
     """从数据库恢复缺省字段的任务仍跳过匹配，已保存的切片不重复调用 ASR 或切片。"""

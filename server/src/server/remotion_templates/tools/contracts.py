@@ -6,9 +6,11 @@ from uuid import UUID
 
 from pydantic import (
     BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, StrictFloat,
-    StrictInt, StrictStr, StringConstraints,
+    StrictInt, StrictStr, StringConstraints, model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
+
+from ..builtin_effects import EffectBuiltin
 
 # 显式严格类型也用于递归 JSON，避免参数中的值被隐式转换。
 Integer = Annotated[StrictInt, Field(ge=-(2**53 - 1), le=2**53 - 1)]
@@ -94,7 +96,7 @@ class ComponentDefinition(ContractModel):
 # effect 包住文字块的某个位置画入场、出场或持续特效。不填的是自由组件（滤镜、特效，以及更早按固定框组合的字效）。
 PresetRole = Literal["text", "keyword", "effect"]
 # 宿主传给各角色 Preset 的 prop：它们不属于 Preset 自己的参数，不能写进 parameter_schema。effect 收到被包住的内容 children、
-# 显现进度 progress（0 还没出现，1 完全显示）与宿主的外层元素 Box（它按位置决定块级或行内）。
+# 进度 progress（enter/exit 的 0 为隐藏、1 为完整显示；cue 的 0 为初态、1 为终态）与宿主的外层元素 Box（块级或行内）。
 # text Preset 可以画宿主排好的这一栏 children（关键词命中已由宿主包好，逐字特效时每个字是一个单元），也可以按 segments 自己画；
 # 只有前者能用逐字位置。keyword Preset 同样可以画宿主交来的这个命中的各个字 children（逐字特效时每个字是一个单元），
 # 只画 text 的旧写法没有关键词逐字位置。effect 另收 index、count：逐字位置是这个字在本栏该位置的序号与字数，各栏时是栏序号与栏数，其余为 0 与 1。
@@ -334,13 +336,15 @@ class PresetInstance(ContractModel):
 
 
 class ResolvedPresetInstance(ContractModel):
-    """解析来源后保留的完整快照和有效参数。"""
+    """解析来源后保留的完整快照和有效参数；宿主内置特效（builtin）没有 Preset 源码。"""
 
     instance_id: NonEmptyString
     preset: PresetDraft
     parameters: JsonObject
     layout: InstanceLayout
     timing: InstanceTiming
+    # 文字块里由宿主自己画的内置特效（fade、glow…）；有它时 preset 只是占位，不参与打包。
+    builtin: Omittable[EffectBuiltin]
 
 
 # 效果分类：text 为字效，filter_overlay 为滤镜，video_overlay 与 transition_overlay 合为转场与视频特效。
@@ -405,11 +409,13 @@ EffectTitle = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_
 
 
 class TextEffect(ContractModel):
-    """文字块的一个特效：画它的 effect 角色 Preset 及其样式参数、中文名称、类型，以及作用位置、时长与开关（配置的默认值）；
-    名称、类型、位置与时长省略时取 Preset 记下的默认用法。"""
+    """文字块的一个特效：一个 effect 角色 Preset（source）或宿主内置特效（builtin）其一，加样式参数、中文名称、类型，
+    以及作用位置、时长与开关（配置的默认值）；名称、类型、位置与时长省略时取 Preset 的 usage 或内置特效的默认值。"""
 
     instance_id: NonEmptyString
-    source: PresetSource
+    source: Omittable[PresetSource]
+    # 宿主内置特效的名字（fade、rise、pop、slide*、blur、glow、breathing）：只写名字，宿主自己画，不必写 Preset。
+    builtin: Omittable[EffectBuiltin]
     parameters: Omittable[JsonObject]
     title: Omittable[EffectTitle]
     slot: Omittable[EffectSlot]
@@ -423,6 +429,13 @@ class TextEffect(ContractModel):
     stagger: Omittable[Annotated[FiniteNumber, Field(ge=0, le=1)]]
     # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
     enabled: Omittable[StrictBool]
+
+    @model_validator(mode="after")
+    def one_source(self):
+        """An effect is drawn by exactly one of an effect Preset (source) or a host built-in (builtin)."""
+        if (self.source is None) == (self.builtin is None):
+            raise ValueError("give exactly one of source (an effect Preset) or builtin (a host built-in effect such as fade)")
+        return self
 
 
 class TextComposition(ContractModel):
@@ -448,11 +461,13 @@ class TextComposition(ContractModel):
 
 
 class TextBlockEffect(ContractModel):
-    """组合后记录的一个特效：实例、中文名称与类型；位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
+    """组合后记录的一个特效：实例、中文名称与类型；内置特效另记 builtin。位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
 
     instance_id: NonEmptyString
     title: EffectTitle
     slot: EffectSlot
+    # 宿主内置特效的名字；有它时编辑据此还原 builtin，而不是引用 base_* 草稿。
+    builtin: Omittable[EffectBuiltin]
 
 
 class TextBlock(ContractModel):
@@ -528,7 +543,7 @@ class SpriteCreateInput(ContractModel):
 
 
 class ReviewFrame(ContractModel):
-    """回看的一帧：它是下一轮附带的第几张图片（参考图在前）、在 Sprite 里的帧号，以及这一帧应当显示什么。"""
+    """回看的一帧：下一轮图片序号（参考图在前）、Sprite 帧号与采样时机；标签不代表视觉结论。"""
 
     image: PositiveInteger
     frame: NonNegativeInteger
@@ -537,7 +552,7 @@ class ReviewFrame(ContractModel):
 
 class SpriteReview(ContractModel):
     """保存后供 Agent 对照要求查看的几帧（灰底合成、按内容区域裁切），以及之后还有几次回看。默认没有关键词的字效按示例关键词
-    （默认文字首个非空行开头至多两个字，与字效工作区预览相同）截取，keywords 列出它们。"""
+    （优先文字块的 preview_keywords，与字效工作区预览相同；未指定时退回默认文字首个非空行开头至多两个字，与排版检查 text_fit 的挂载相同）截取，keywords 列出它们。"""
 
     frames: list[ReviewFrame]
     rounds_left: NonNegativeInteger

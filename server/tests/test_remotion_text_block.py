@@ -201,6 +201,42 @@ def two_tiers(tier: str, glow: str | None, fade: str | None = None, **text) -> S
     return SpriteComposeInput.model_validate({"description": "双栏标题", "kind": "text", "text": block, "parameters": bindings})
 
 
+@needs_bundler
+def test_a_text_block_can_name_host_built_in_effects(tmp_path):
+    """收缩创作面：模型只写特效名字（builtin fade/glow），宿主出组件，不必存 effect Preset；组合源码引用 __BUILTINS，
+    效果配置参数仍由宿主生成，文字块记下 builtin 以便编辑还原。"""
+    current = session(tmp_path)
+    tier = asyncio.run(current.execute("preset.create", preset("text", TIER_CODE, "color"), available()))["preset"]["preset_id"]
+    block = {
+        "layout": {"x": 90, "y": 700, "width": 900, "height": 400}, "text": "今日灵感", "font_size": 96,
+        "tiers": [{"instance_id": "tier", "source": {"kind": "stored", "preset_id": tier}, "parameters": {"color": "#FFFFFF"},
+                   "font_family": "Noto Sans CJK SC", "font_weight": 700}],
+        "effects": [
+            {"instance_id": "fadeIn", "builtin": "fade", "title": "淡入", "slot": "enter", "target": "block"},
+            {"instance_id": "fadeOut", "builtin": "fade", "title": "淡出", "slot": "exit", "target": "block"},
+            {"instance_id": "glow", "builtin": "glow", "title": "发光", "slot": "loop", "target": "block"},
+        ],
+        "duration_frames": 90,
+    }
+    bindings = [
+        {"name": "color", "title": "颜色", "targets": [{"instance_id": "tier", "parameter": "color"}]},
+        {"name": "glowColor", "title": "发光颜色", "targets": [{"instance_id": "glow", "parameter": "color"}]},
+        {"name": "glowLight", "title": "发光强度", "targets": [{"instance_id": "glow", "parameter": "intensity"}]},
+    ]
+    request = SpriteComposeInput.model_validate({"description": "内置淡入淡出", "kind": "text", "text": block, "parameters": bindings})
+    composed = asyncio.run(current.execute("sprite.compose", request, available()))
+    draft = current.sprite_draft(composed["draft_id"])
+    assert 'Preset: __BUILTINS["fade"]' in draft.code and 'Preset: __BUILTINS["glow"]' in draft.code
+    effects = {item["instance_id"]: item for item in draft.model_dump(mode="json")["text"]["effects"]}
+    assert effects["fadeIn"]["builtin"] == "fade" and effects["glow"]["slot"] == "loop"
+    # The effect{k} configuration parameters still come from the host; a loop has no length.
+    assert {"effect1", "effect1Target", "effect1Seconds", "effect3", "effect3Target"} <= set(draft.default_parameters)
+    assert "effect3Seconds" not in draft.default_parameters
+    # A built-in carries tunable style props, bindable like a Preset's.
+    assert draft.default_parameters["glowColor"] == "#FFFFFF" and draft.default_parameters["glowLight"] == 10
+    assert {"glowColor", "glowLight"} <= set(draft.parameter_schema["properties"])
+
+
 def test_the_host_owns_a_text_blocks_configuration():
     """单栏暴露 fontFamily/fontWeight，双栏暴露每栏的字体、字重与字号比例以及栏间距、行起点；都带文字、字号与七个关闭的关键词参数，
     有关键词 Preset 时另有默认开启的 keywordEffect；名称、Schema 与中文标题由宿主固定，字体枚举是字体库。"""
@@ -364,7 +400,7 @@ def test_a_text_block_wraps_its_positions_in_effect_presets(tmp_path, monkeypatc
         host = {item.name for item in sprite.bindings if item.targets[0].instance_id == TEXT_BLOCK_ID}
         assert {"effect1", "effect1Target", "effect1Seconds", "effect2Seconds", "effect3Target", "effect4", "effect4Target"} <= host and "effect4Seconds" not in host
         assert (sprite.default_parameters["effect2Seconds"], sprite.default_parameters["effect3Target"], sprite.default_parameters["shineColor"]) == (0.4, "keyword", "#FFD54A")
-        assert [item.model_dump() for item in sprite.text.effects] == [{"instance_id": item["instance_id"], "title": item["title"], "slot": item["slot"]} for item in EFFECTS]
+        assert [{k: item.model_dump()[k] for k in ("instance_id", "title", "slot")} for item in sprite.text.effects] == [{"instance_id": item["instance_id"], "title": item["title"], "slot": item["slot"]} for item in EFFECTS]
         assert sprite.text.still is True and 'at: ["keyword"], inline: true' in sprite.code and 'at: ["tiers", "line2"]' in sprite.code and "__Hold" in sprite.code
         assert category_problems("text", sprite.parameter_schema, {item.name for item in sprite.bindings}, sprite.default_parameters) == []
         checked = recording(current)
@@ -548,20 +584,24 @@ def test_two_tiers_stack_or_overlap(tmp_path, monkeypatch):
 
 
 @needs_bundler
-def test_a_new_works_text_block_needs_an_entrance_and_an_exit(tmp_path, monkeypatch):
-    """审计复现（作品 afb7aeb1）：新作品复用了自带动画的旧 text Preset，被静止检查拒绝后 Agent 删掉动画、也没加特效，保存出一个完全不动的字效。
-    现在新作品的文字块至少要有一个入场与一个出场特效；要静止文字时保留它们并关掉开关。编辑更早的字效（没有 still 标记）不要求特效，
-    它的各栏也不被定格。"""
+def test_a_new_works_text_block_keeps_only_the_requested_effects(tmp_path, monkeypatch):
+    """回归（PR #283 评审）：宿主曾给没写入场或出场的新作品文字块自动补内置 fade 入场与出场，违反以用户需求为准。
+    现在文字块只有列出的特效：没写特效就没有特效与特效配置、文字全程静止；只写入场就不补出场；显式关掉的特效保持关闭；
+    编辑更早的字效（没有 still 标记）也不定格各栏。"""
     monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
 
     async def run():
-        """Compose without effects, with only an entrance, with switched-off fades, and in an edit of an older text effect."""
+        """Compose without effects, with only an entrance, with explicit switched-off fades, and in an edit of an older text effect."""
         current = session(tmp_path / "new")
         tier, glow, fade = await stored(current)
-        for effects, missing in (([], "no enter and no exit effect"), (fades(fade)[:1], "no exit effect")):
-            with pytest.raises(ToolFault) as refused:
-                await current.execute("sprite.compose", two_tiers(tier, glow, effects=effects), available())
-            assert refused.value.error.field == "/text/effects" and missing in refused.value.error.message and "enabled false" in refused.value.error.message
+        bare = await current.execute("sprite.compose", two_tiers(tier, glow), available())
+        block = current.sprite_drafts[bare["draft_id"]]
+        assert block.text.effects == [] and "effect1" not in block.default_parameters
+        assert '__BUILTINS["fade"]' not in block.code
+        # Only the entrance is given, so the block has no exit.
+        half = await current.execute("sprite.compose", two_tiers(tier, glow, effects=fades(fade)[:1]), available())
+        assert [item.slot for item in current.sprite_drafts[half["draft_id"]].text.effects] == ["enter"]
+        # Explicit fades keep their switches off.
         still = await current.execute("sprite.compose", two_tiers(tier, glow, effects=fades(fade, enabled=False)), available())
         assert {name: current.sprite_drafts[still["draft_id"]].default_parameters[name] for name in ("effect1", "effect2")} == {"effect1": False, "effect2": False}
         legacy = SimpleNamespace(text=SimpleNamespace(still=None), instances=[])
@@ -766,8 +806,8 @@ def test_an_effect_entry_takes_what_it_leaves_out_from_its_presets_usage(tmp_pat
 
 
 def test_review_frames_follow_the_sprites_own_timing():
-    """回看帧按 Sprite 自己的时序取：字效为中间帧（完整显示）、最长入场的一半、下栏出现前、下栏出现时特效的一半、最长出场的一半，
-    关掉的特效不算，至多四帧、按时间排；其他分类取 1/4、1/2、3/4 处。"""
+    """回看优先保留下栏切换前、中、后、出场与末帧，其次每个入场一帧，最后才是泛用的中间帧（切换帧已说明停留状态）；
+    至多六帧且标签不宣称视觉通过。"""
     from server.remotion_templates.tools.session import review_frames
 
     effects = [SimpleNamespace(slot=slot, title=title) for slot, title in (("enter", "淡入"), ("cue", "劈开"), ("exit", "淡出"), ("enter", "上浮"))]
@@ -775,15 +815,40 @@ def test_review_frames_follow_the_sprites_own_timing():
     defaults = {"effect1": True, "effect1Seconds": 0.5, "effect2": True, "effect2Seconds": 1 / 3, "effect3": True, "effect3Seconds": 0.5,
                 "effect4": False, "effect4Seconds": 3, "lineStartFrames": [0, 60]}
     sprite = SimpleNamespace(composition=SimpleNamespace(duration_frames=90, fps=30), text=text, default_parameters=defaults)
-    assert review_frames(sprite) == [(7, "half way into the entrance 淡入"), (44, "shown in full (middle frame)"),
-                                     (59, "just before the lower tier appears"), (65, "half way into the effects played when the lower tier appears")]
+    # 切换与出场占满六帧时，让位的是中间帧而不是入场：作品的入场曾整帧不见。
+    assert review_frames(sprite) == [(7, "half way into the entrance 淡入"), (59, "just before the lower tier appears"),
+                                     (65, "half way into the effects played when the lower tier appears"),
+                                     (70, "end of the effects played when the lower tier appears"),
+                                     (82, "half way out of the exit"), (89, "last frame of the preview")]
     # Entrances one after another each get a frame, so their order shows.
     staggered = SimpleNamespace(composition=SimpleNamespace(duration_frames=150, fps=30), default_parameters={
         "effect1": True, "effect1Seconds": 1, "effect2": True, "effect2Seconds": 0.2, "effect2Delay": 1},
         text=SimpleNamespace(effects=[SimpleNamespace(slot="enter", title="打字"), SimpleNamespace(slot="enter", title="显现")], layout=None))
-    assert review_frames(staggered) == [(15, "half way into the entrance 打字"), (33, "half way into the entrance 显现"), (74, "shown in full (middle frame)")]
+    assert review_frames(staggered) == [(15, "half way into the entrance 打字"), (33, "half way into the entrance 显现"),
+                                        (74, "middle of the preview"), (149, "last frame of the preview")]
     other = SimpleNamespace(composition=SimpleNamespace(duration_frames=90, fps=30), text=None, default_parameters={})
     assert [frame for frame, _ in review_frames(other)] == [22, 44, 66]
+
+
+def test_review_frames_preserve_the_failed_examples_exit_and_use_tier_clocks():
+    """作品 ba6d769e 的两个入场曾占满四帧、遗漏退场；另核对下栏实际起点、剩余长度和 JS 半帧取整，以及跨栏入场在标签上写明是哪一栏。"""
+    from server.remotion_templates.tools.session import review_frames
+
+    sprite = SimpleNamespace(composition=SimpleNamespace(duration_frames=150, fps=30), text=SimpleNamespace(effects=[
+        SimpleNamespace(slot="enter", title="淡入"), SimpleNamespace(slot="enter", title="横向裁切"), SimpleNamespace(slot="exit", title="淡出")]),
+        default_parameters={"effect1Seconds": 0.3, "effect1Target": "block", "effect2Seconds": 1.1, "effect2Target": "tiers",
+                            "effect3Seconds": 0.5, "effect3Target": "block", "lineStartFrames": [0, 8]})
+    assert review_frames(sprite) == [(4, "half way into the entrance 淡入"), (7, "just before the lower tier appears"),
+                                     (16, "half way into the entrance 横向裁切 (upper tier)"), (74, "middle of the preview"),
+                                     (142, "half way out of the exit"), (149, "last frame of the preview")]
+    sprite.composition.duration_frames = 90
+    sprite.text.effects = [SimpleNamespace(slot="enter", title="下栏入场"), SimpleNamespace(slot="cue", title="切换")]
+    sprite.default_parameters = {"effect1Seconds": 3, "effect1Target": "line2", "effect2Seconds": 0.15,
+                                 "effect2Target": "line2", "lineStartFrames": [0, 60]}
+    assert review_frames(sprite) == [(44, "middle of the preview"), (59, "just before the lower tier appears"),
+                                     (62, "half way into the effects played when the lower tier appears"),
+                                     (65, "end of the effects played when the lower tier appears"),
+                                     (67, "half way into the entrance 下栏入场 (lower tier)"), (89, "last frame of the preview")]
 
 
 @needs_bundler
@@ -804,6 +869,7 @@ def test_a_saved_sprite_comes_back_as_frames_for_two_reviews(tmp_path, monkeypat
             capture = options.get("capture")
             if capture:
                 assert capture.parameters == {"keywords": ["判断"]}
+                assert options["text_fit_parameters"] == {}
                 capture.directory.mkdir(parents=True)
                 for frame in capture.frames:
                     (capture.directory / f"frame-{frame}.png").write_bytes(b"png")
@@ -814,11 +880,13 @@ def test_a_saved_sprite_comes_back_as_frames_for_two_reviews(tmp_path, monkeypat
         composed = await current.execute("sprite.compose", two_tiers(tier, glow, fade), available())
         receipts = [await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available()) for _ in range(3)]
         first = receipts[0]["review"]
-        assert [item["image"] for item in first["frames"]] == [2, 3, 4, 5] and first["rounds_left"] == 1
+        assert [item["image"] for item in first["frames"]] == [2, 3, 4, 5, 6, 7] and first["rounds_left"] == 1
         # The defaults have no keywords, so the frames show the workspace preview's sample one.
         assert first["keywords"] == ["判断"]
         assert [(item["frame"], item["label"]) for item in first["frames"]] == [
-            (7, "half way into the entrance 淡入"), (11, "just before the lower tier appears"), (14, "shown in full (middle frame)"), (22, "half way out of the exit")]
+            (7, "half way into the entrance 淡入 (upper tier)"), (11, "just before the lower tier appears"),
+            (14, "middle of the preview"), (16, "half way into the entrance 淡入 (lower tier)"),
+            (22, "half way out of the exit"), (29, "last frame of the preview")]
         assert receipts[1]["review"]["rounds_left"] == 0 and "review" not in receipts[2]
         assert current.review_frames == []
         # Frames show the saved Sprite only: composing anew takes them away until the next save.
@@ -960,15 +1028,50 @@ def test_the_executor_draws_a_tiers_look_on_its_block():
     assert "so the whole line inherits it" in EXECUTOR_RULES
 
 
-def test_text_and_keywords_are_preview_samples_never_questions():
-    """审计复现（作品 58be1abc、e208020e）：请求「关键词以打字机的样式出现，然后再显示整体的非关键字」时，Outer 直接追问用户文案、
-    关键词与语言；另一次 Executor 把快照里为空的 step_inputs 当成没收到用户需求，报 needs_input 去问。字效的文字与关键词由模板每次
-    渲染时传入，生成只需要预览用的示例文字，规则写明这一点，并说明需求在 user_intent 里。"""
+def test_text_and_keywords_are_preview_samples_not_the_thing_to_ask_about():
+    """审计复现（作品 58be1abc、e208020e）：Outer 追问用户文案、关键词与语言；Executor 把空的 step_inputs 当成没收到需求、报 needs_input 去问。
+    字效的文字与关键词由模板每次渲染时传入，生成只需要预览用的示例文字；规则要说明这一点，并说明需求在 user_intent 里。
+    重构后允许为真正的歧义提问，但这些由模板注入的内容仍不应成为问题。"""
     from server.remotion_templates.agent import EXECUTOR_RULES, OUTER_RULES
 
-    assert "A text effect's words and keywords are never missing" in OUTER_RULES and "ask is refused" in OUTER_RULES
-    assert "its default text and keywords are only the preview sample" in EXECUTOR_RULES and "Never ask the user" in EXECUTOR_RULES
+    assert "are injected by templates on each render" in OUTER_RULES
+    assert "do not ask about those unless the user clearly wants a specific wording chosen now" in OUTER_RULES
+    assert "its default text and keywords are only the preview sample" in EXECUTOR_RULES
     assert "The request is user_intent, in the host handoff and at the top of the snapshot" in EXECUTOR_RULES
+
+
+def test_the_executor_recognizes_the_words_a_request_singles_out():
+    """指令回归：用户点名某个词要单独变色或单独动效时，Executor 会把效果画到普通文字上，或改用默认文字的开头字当示例关键词，
+    回看帧因此对不上要求。规则要求认出任意被点名的原文片段、多个选区分别保留，写进 text.preview_keywords，并说明示例词与位置不能写死在
+    Preset 里（真实文字与关键词每次渲染由总线传入）。只校验规则措辞，不代表模型识别准确。"""
+    from server.remotion_templates.agent import EXECUTOR_RULES
+
+    assert "use that exact substring of the sample text in text.preview_keywords" in EXECUTOR_RULES
+    assert "one to five words of the default text, each at most twelve characters" in EXECUTOR_RULES
+    assert "arbitrary user-selected words, not a fixed vocabulary or the opening characters" in EXECUTOR_RULES
+    assert "keep multiple explicitly selected words separate" in EXECUTOR_RULES
+    assert "The real text and keywords come from the bus on every render" in EXECUTOR_RULES
+    assert "never hard-code the sample word, its character indices or its position" in EXECUTOR_RULES
+    assert "leave the keyword options at their defaults: the six off and keywords empty" in EXECUTOR_RULES
+    assert "chars, block, tiers or line1/line2 targets also affect ordinary text" in EXECUTOR_RULES
+
+
+def test_the_review_keyword_description_matches_the_sampler():
+    """文档回归：回看帧与字效工作区预览优先文字块的 preview_keywords，未指定时才退回开头两字，而排版检查 text_fit 仍以开头两字挂载；
+    契约文档、SpriteReview 与 AGENTS.md 须说法一致，不能只改一处又留下相反的旧描述。"""
+    from server.remotion_templates.tools.contracts import SpriteReview
+
+    root = Path(__file__).parents[2]
+    document = (root / "docs/remotion-agent-tool-contracts.md").read_text(encoding="utf-8")
+    server_agents = (root / "server/src/server/remotion_templates/AGENTS.md").read_text(encoding="utf-8")
+    client_agents = (root / "client/src/features/remotion_templates/AGENTS.md").read_text(encoding="utf-8")
+    assert "优先文字块的 preview_keywords" in SpriteReview.__doc__
+    assert "优先文字块的 `preview_keywords`" in document
+    assert "排版检查 `text_fit` 的关键词挂载不看 `preview_keywords`" in document
+    assert "默认文字首个非空行开头至多两个字，与字效工作区预览、排版检查的关键词挂载相同" not in document
+    assert "字效生成按需求区分基础文字外观与关键词外观" in server_agents
+    assert "优先以文字块标出的 `preview_keywords`" in client_agents
+    assert "以当前文字的同样位置为示例关键词" not in client_agents
 
 
 def test_the_executor_knows_what_hides_a_gradient_fill_and_how_to_order_parts():
