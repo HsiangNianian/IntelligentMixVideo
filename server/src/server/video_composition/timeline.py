@@ -76,6 +76,7 @@ def build_timeline(
     frame_mask_url: str | None = None,
     split_assets: dict | None = None, avatar_opening: dict | None = None,
     use_keyword_transitions: bool = False, remotion_assets: dict | None = None,
+    use_transition_spacing: bool = False,
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
     request = CompositionRequest.from_snapshot(request)
@@ -266,7 +267,8 @@ def build_timeline(
         tracks = [track for track in tracks if track.target != "transition"]
     elif use_keyword_transitions or template.transition_mode is not None:
         selected = keyword_transitions(template.model_dump(mode="json"), clips, source, matches,
-                                       standard=standard, fps=fps, seed=transition_seed, assets=remotion_assets or {}) \
+                                       standard=standard, fps=fps, seed=transition_seed, assets=remotion_assets or {},
+                                       duration=duration if use_transition_spacing else None) \
             if use_keyword_transitions else select_transitions(
                 [track.model_dump(mode="json") for track in template.tracks],
                 len(clips) - 1, template.transition_mode, transition_seed)
