@@ -262,9 +262,9 @@ glyph and a longer line goes faster. A line stays one run of text otherwise. Onl
 effect there is refused with the fix. Every effect Preset also receives `index` and `count`: the unit within its tier
 at `chars`, the tier at `tiers`/`line1`/`line2`, 0 of 1 elsewhere, so a loop can offset its motion per glyph. The text block of a new work records `still`: the host then holds
 each tier Preset on the middle frame of the frames the tier plays (`compose.mjs` `__Hold`), so motion of its own
-never plays and a stored animated text Preset is reused as it is, look kept; when such a block names no enter or no
-exit effect, compose adds a built-in `fade` for the missing slot (on by default, switchable in the editor; kept with
-`enabled: false` for still text), so a block never ends up without motion. Common
+never plays and a stored animated text Preset is reused as it is, look kept. A block has only the effects the request
+or the reference asks for: the host adds no default entrance, exit or other effect, so a block without effects shows its
+text still for its whole length. Common
 entrances, exits and loops are host built-ins: a `text.effects` entry names `builtin` (`fade`, `rise`, `pop`,
 `slideLeft`/`slideRight`/`slideUp`/`slideDown`, `blur`, `glow`, `breathing`; `builtin_effects.py`) instead of a
 `source`, and the generated code draws it with `compose.mjs` `__BUILTINS`, so no effect Preset is written for it; an

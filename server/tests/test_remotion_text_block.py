@@ -584,10 +584,10 @@ def test_two_tiers_stack_or_overlap(tmp_path, monkeypatch):
 
 
 @needs_bundler
-def test_a_new_works_text_block_gets_a_built_in_fade_in_and_out(tmp_path, monkeypatch):
-    """审计复现（作品 afb7aeb1）：新作品曾保存出完全不动、还复用自带动画旧 Preset 的字效。收缩创作面后，模型不必再写入场/出场：
-    新作品文字块没写时宿主补一个内置 fade 入场与出场（effect1/effect2，默认开启，可在编辑器关掉）；已有一个时只补缺的那个；
-    编辑更早的字效（没有 still 标记）不补、也不定格各栏。"""
+def test_a_new_works_text_block_keeps_only_the_requested_effects(tmp_path, monkeypatch):
+    """回归（PR #283 评审）：宿主曾给没写入场或出场的新作品文字块自动补内置 fade 入场与出场，违反以用户需求为准。
+    现在文字块只有列出的特效：没写特效就没有特效与特效配置、文字全程静止；只写入场就不补出场；显式关掉的特效保持关闭；
+    编辑更早的字效（没有 still 标记）也不定格各栏。"""
     monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
 
     async def run():
@@ -596,13 +596,12 @@ def test_a_new_works_text_block_gets_a_built_in_fade_in_and_out(tmp_path, monkey
         tier, glow, fade = await stored(current)
         bare = await current.execute("sprite.compose", two_tiers(tier, glow), available())
         block = current.sprite_drafts[bare["draft_id"]]
-        assert [(item.instance_id, item.builtin, item.slot) for item in block.text.effects] == [("fadeIn", "fade", "enter"), ("fadeOut", "fade", "exit")]
-        assert block.default_parameters["effect1"] is True and block.default_parameters["effect2"] is True
-        assert 'Preset: __BUILTINS["fade"]' in block.code
-        # Only the entrance is given, so only the missing exit is added.
+        assert block.text.effects == [] and "effect1" not in block.default_parameters
+        assert '__BUILTINS["fade"]' not in block.code
+        # Only the entrance is given, so the block has no exit.
         half = await current.execute("sprite.compose", two_tiers(tier, glow, effects=fades(fade)[:1]), available())
-        assert [item.slot for item in current.sprite_drafts[half["draft_id"]].text.effects] == ["enter", "exit"]
-        # Explicit fades keep their switches off rather than being replaced by the defaults.
+        assert [item.slot for item in current.sprite_drafts[half["draft_id"]].text.effects] == ["enter"]
+        # Explicit fades keep their switches off.
         still = await current.execute("sprite.compose", two_tiers(tier, glow, effects=fades(fade, enabled=False)), available())
         assert {name: current.sprite_drafts[still["draft_id"]].default_parameters[name] for name in ("effect1", "effect2")} == {"effect1": False, "effect2": False}
         legacy = SimpleNamespace(text=SimpleNamespace(still=None), instances=[])
