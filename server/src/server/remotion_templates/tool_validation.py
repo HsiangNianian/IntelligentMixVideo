@@ -370,6 +370,7 @@ class ToolValidator:
         move of the placement, in canvas pixels, that brings it back in; ``fits`` is false when not even that helps.
         ``grow_shift`` is a signed downward (+) or upward (-) move of a subtitle text that wrapped, so the extra lines
         grow away from the other language's subtitle.
+        Failed items include ``problems`` with the measured reasons for private render diagnostics.
         A worker that cannot answer is an infrastructure failure, never a pass.
         """
         try:

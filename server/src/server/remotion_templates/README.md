@@ -781,7 +781,12 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   `visibility: visible` counts toward completeness even when its own or an ancestor's opacity is at most 0.01,
   so making one tier transparent does not produce `text_too_long`. Only painted text contributes clipping,
   size and placement measurements; missing text, `display: none` and `visibility: hidden` are still excluded.
-  Generation's `text_fit` check continues to require visible text. Text that already fits keeps its `fontSize`; otherwise the
+  Completeness walks the element's text nodes in reading order: each node continues the run where the previous one
+  stopped, or holds the whole remaining text itself. A keyword's glow, outline or echo copy repeating a fragment
+  inside a sentence therefore is no longer taken for a gap, and `aria-hidden` makes no difference either way. Text
+  that is cut, reordered or missing characters still fails, and every painted copy still participates in size,
+  clipping and position measurements. Generation uses the same completeness rule, and its `text_fit` check continues
+  to require visible text. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum but never below 24 (smaller lines count as unreadable), at which it is shown in full
   (binary search; the size is logged, the template and the sealed source are untouched). An English title or subtitle of a
   video composition is marked `one_line`: its effect is laid out for one line, and a wrapped translation would reach into the
@@ -798,13 +803,18 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Chinese subtitle is only marked `up` while an English subtitle is enabled; without one it keeps the original centred
   growth. A `keywordSize` above 0 is
   an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's
-  proportion to the text instead of crowding the smaller text. If at the minimum the text
+  proportion to the text instead of crowding the smaller text. If the minimum makes a keyword or the Preset's
+  own smaller text unreadable while the requested size is readable, the host first finds the lowest readable
+  size by measuring the actual text, then searches for the largest size that fits. A too-small keyword at the
+  minimum therefore cannot reject an intermediate size that fits. If at that readable minimum the text
   still leaves the canvas only because of where it is placed (a long title whose centre sits near the top edge), the
   host moves this render's copy of the placement by the shortest distance that brings it back inside (the shift is
   logged; the saved placement is untouched, and the horizontal position changes only when the text overhangs the
   side). Text that is clipped, too small, or wider or taller than the canvas even then fails the task with
   `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
-  tell the user to shorten it, instead of publishing a clipped title. Other Sprites skip the pass, and a fit sandbox
+  tell the user to shorten it, instead of publishing a clipped title. The private exception chain records the
+  Sprite ID, instance, text length, measured font size, sampled frames and failure reasons; it does not include
+  the text itself. Other Sprites skip the pass, and a fit sandbox
   that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
   text or cue (a held text is measured on its frozen frame), and a video composition (`video_composition/remotion.py`)
   on its titles and subtitles: it measures the code it renders (the timing wrapper of a fixed-clock asset) on the
