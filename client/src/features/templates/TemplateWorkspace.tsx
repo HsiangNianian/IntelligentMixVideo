@@ -284,7 +284,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     try {
       // Remotion 字效保存文字区间，转场保留自身时长，与 IMS 对象在同一次请求里保存。
       const saveDraft = preview.timeline ? timeClips(savingDraft, preview.timeline, "save") : savingDraft;
-      const saved = await api.saveTemplate(setTransitionDuration(saveDraft, savingDraft.transition_duration_seconds), current?.template_id);
+      const saved = await api.saveTemplate(
+        setTransitionDuration(saveDraft, savingDraft.transition_duration_seconds), current?.template_id, !!current?.frame_mask,
+      );
       if (!mounted.current) return;
       const next = toDraft(saved);
       setCurrent(saved);

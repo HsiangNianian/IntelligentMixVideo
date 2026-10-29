@@ -1,7 +1,7 @@
 /** 蒙版保存边界、面板与图层顺序；整数像素案例与后端生成 PNG 共用。 */
 import { expect, spyOn, test } from "bun:test";
 import { fromBinary } from "@bufbuild/protobuf";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SaveTemplateRequestSchema, type SaveTemplateRequest } from "@/generated/imv/template/v1/template_pb";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { PreviewTimeline } from "@/features/templates/PreviewTimeline";
@@ -39,12 +39,10 @@ test("旧模板默认无蒙版，选择后编辑、保存、重读及关闭保�
   const view = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
   await screen.findByLabelText("模板名称");
   expect(screen.queryByLabelText("上下蒙版设置")).toBeNull();
-  // 草稿没有蒙版时发送空消息，明确保持无蒙版状态。
+  // 原本无蒙版的普通保存继续省略字段，不要求旧服务端支持明确删除。
   fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
   await screen.findByText("已保存");
-  expect(writes[0].frameMask).toBeDefined();
-  expect(writes[0].frameMask?.top).toBeUndefined();
-  expect(writes[0].frameMask?.bottom).toBeUndefined();
+  expect(writes[0].frameMask).toBeUndefined();
   fireEvent.click(screen.getByRole("tab", { name: "蒙版" }));
   fireEvent.click(screen.getByRole("button", { name: "选择上下蒙版" }));
   expect(screen.getByRole("switch", { name: "启用上栏" }).getAttribute("aria-checked")).toBe("true");
@@ -119,6 +117,64 @@ test("移除蒙版后保存重读不恢复，关闭设置不会移除", async ()
   fireEvent.click(screen.getByRole("tab", { name: "蒙版" }));
   fireEvent.click(screen.getByRole("button", { name: "选择上下蒙版" }));
   expect(screen.getByLabelText<HTMLInputElement>("上栏高度").value).toBe("18.4");
+});
+
+// 旧服务端拒绝空蒙版消息；新建和已有模板临时添加再移除，都不应影响普通保存。
+test.each([false, true])("原本无蒙版的模板临时添加后移除仍兼容旧服务端（已有模板：%s）", async (existing) => {
+  const stored = savedTemplate();
+  const writes: SaveTemplateRequest[] = [];
+  fetchMock.mockImplementation((async (_url, init) => {
+    if (init?.method !== "POST") return jsonTemplateResponse(stored, "get");
+    const request = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as Uint8Array));
+    writes.push(request);
+    if (request.frameMask && (!request.frameMask.top || !request.frameMask.bottom))
+      return Response.json({ detail: "旧服务端要求完整蒙版配置" }, { status: 422 });
+    return jsonTemplateResponse(stored, "save", existing ? 200 : 201);
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={existing ? { templateId: stored.template_id } : { templateId: null, name: stored.name, description: "" }} onHome={() => {}} />);
+  await screen.findByLabelText("模板名称");
+  fireEvent.click(screen.getByRole("tab", { name: "蒙版" }));
+  fireEvent.click(screen.getByRole("button", { name: "选择上下蒙版" }));
+  fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
+  fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
+  await waitFor(() => expect(writes).toHaveLength(1));
+  expect(writes[0].frameMask).toBeUndefined();
+  expect(writes[0].templateId).toBe(existing ? stored.template_id : undefined);
+  await screen.findByText("已保存");
+});
+
+// 保存失败不推进基线；重试仍明确删除，成功后的普通保存不继续发送空消息。
+test("删除蒙版保存失败后可重试，成功后更新保存基线", async () => {
+  let stored = { ...savedTemplate(), frame_mask: newFrameMask() as FrameMask | undefined };
+  const writes: SaveTemplateRequest[] = [];
+  fetchMock.mockImplementation((async (_url, init) => {
+    if (init?.method !== "POST") return jsonTemplateResponse(stored, "get");
+    const request = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as Uint8Array));
+    writes.push(request);
+    if (writes.length === 1) return Response.json({ detail: "临时保存失败" }, { status: 503 });
+    if (request.frameMask) stored = { ...stored, frame_mask: request.frameMask.top ? request.frameMask as FrameMask : undefined };
+    return jsonTemplateResponse(stored, "save");
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={{ templateId: stored.template_id }} onHome={() => {}} />);
+  await screen.findByLabelText("模板名称");
+  fireEvent.click(within(screen.getByRole("region", { name: "已添加特效" })).getByRole("button", { name: "编辑上下蒙版" }));
+  fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
+  fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
+  await screen.findByText("临时保存失败");
+  expect(stored.frame_mask).toBeDefined();
+  expect(screen.queryByRole("button", { name: "编辑上下蒙版" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
+  await screen.findByText("已保存");
+  expect(writes).toHaveLength(2);
+  for (const request of writes) {
+    expect(request.frameMask).toBeDefined();
+    expect(request.frameMask?.top).toBeUndefined();
+    expect(request.frameMask?.bottom).toBeUndefined();
+  }
+  expect(stored.frame_mask).toBeUndefined();
+  fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
+  await waitFor(() => expect(writes).toHaveLength(3));
+  expect(writes[2].frameMask).toBeUndefined();
 });
 
 test("蒙版覆盖视频和转场补帧，位于滤镜、特效和文字下面且贯穿全片", () => {
