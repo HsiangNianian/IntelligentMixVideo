@@ -192,6 +192,12 @@ def save_template(data: TemplateSave) -> Template:
                         configuration[field] = existing.configuration[field]
                 if data.split_screen is not None and "layout" not in data.split_screen.model_fields_set:
                     configuration["split_screen"]["layout"] = existing.configuration.get("split_screen", {}).get("layout", "split")
+                # 纯色版客户端仍会发送上下栏，但不认识 gradient；仅显式开关覆盖已有渐变。
+                if data.frame_mask is not None:
+                    for edge in ("top", "bottom"):
+                        old_bar = existing.configuration.get("frame_mask", {}).get(edge, {})
+                        if "gradient" not in getattr(data.frame_mask, edge).model_fields_set and "gradient" in old_bar:
+                            configuration["frame_mask"][edge]["gradient"] = old_bar["gradient"]
                 connection.execute(templates.update().where(
                     templates.c.template_id == template_id,
                 ).values(**values))

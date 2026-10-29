@@ -48,6 +48,40 @@ def test_mask_roundtrip_and_legacy_update(client, template_payload, mask):
     assert {field: saved[field] for field in settings} == settings
 
 
+def test_gradient_roundtrip_and_legacy_bar_update(client, template_payload, mask):
+    """上下渐变独立保存；旧客户端重存纯色栏不丢新字段，显式切回纯色保留参数。"""
+    plain = deepcopy(mask)
+    mask["top"]["gradient"] = {"enabled": True, "endColor": "#aabbcc", "direction": "up", "range": 50}
+    mask["bottom"]["gradient"] = {"enabled": True, "endColor": "#001122", "direction": "down", "range": 100}
+    created = post_template(client, {**template_payload, "frame_mask": mask})
+    assert created.status_code == 201, created.text
+    template_id = saved_template(created)["template_id"]
+    assert detail_template(client.get(f"/template/{template_id}"))["frame_mask"] == mask
+    assert created.json()["template"]["frameMask"]["top"]["gradient"]["endColor"] == "#aabbcc"
+    payload = {**template_payload, "template_id": template_id}
+    updated = post_template(client, {**payload, "frame_mask": plain})
+    assert updated.status_code == 200, updated.text
+    assert saved_template(updated)["frame_mask"] == mask
+    mask["top"]["gradient"]["enabled"] = False
+    disabled = post_template(client, {**payload, "frame_mask": mask})
+    assert disabled.status_code == 200, disabled.text
+    assert saved_template(disabled)["frame_mask"] == mask
+    removed = post_template(client, {**payload, "frame_mask": {}})
+    assert removed.status_code == 200 and "frame_mask" not in saved_template(removed)
+
+
+@pytest.mark.parametrize("field,value", [("direction", "left"), ("endColor", "#11223300"), ("range", 0), ("range", 101), ("enabled", None)])
+def test_invalid_gradient_keeps_saved_template(client, template_payload, mask, field, value):
+    """渐变字段非法或缺少必填开关返回 422，已有模板不变。"""
+    original = saved_template(post_template(client, {**template_payload, "frame_mask": mask}))
+    gradient = {"enabled": True, "endColor": "#aabbcc", "direction": "up", "range": 50}
+    gradient[field] = value
+    mask["top"]["gradient"] = gradient
+    result = post_template(client, {**template_payload, "template_id": original["template_id"], "frame_mask": mask})
+    assert result.status_code == 422
+    assert detail_template(client.get(f"/template/{original['template_id']}"))["frame_mask"] == original["frame_mask"]
+
+
 def test_empty_mask_removes_saved_configuration(client, template_payload, composition_case, mask):
     """明确空消息移除已保存蒙版，省略字段仍保留；移除后详情与合成均无蒙版。"""
     baseline, _ = build_timeline(**composition_case)
