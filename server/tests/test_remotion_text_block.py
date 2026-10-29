@@ -218,7 +218,11 @@ def test_a_text_block_can_name_host_built_in_effects(tmp_path):
         ],
         "duration_frames": 90,
     }
-    bindings = [{"name": "color", "title": "颜色", "targets": [{"instance_id": "tier", "parameter": "color"}]}]
+    bindings = [
+        {"name": "color", "title": "颜色", "targets": [{"instance_id": "tier", "parameter": "color"}]},
+        {"name": "glowColor", "title": "发光颜色", "targets": [{"instance_id": "glow", "parameter": "color"}]},
+        {"name": "glowLight", "title": "发光强度", "targets": [{"instance_id": "glow", "parameter": "intensity"}]},
+    ]
     request = SpriteComposeInput.model_validate({"description": "内置淡入淡出", "kind": "text", "text": block, "parameters": bindings})
     composed = asyncio.run(current.execute("sprite.compose", request, available()))
     draft = current.sprite_draft(composed["draft_id"])
@@ -228,6 +232,9 @@ def test_a_text_block_can_name_host_built_in_effects(tmp_path):
     # The effect{k} configuration parameters still come from the host; a loop has no length.
     assert {"effect1", "effect1Target", "effect1Seconds", "effect3", "effect3Target"} <= set(draft.default_parameters)
     assert "effect3Seconds" not in draft.default_parameters
+    # A built-in carries tunable style props, bindable like a Preset's.
+    assert draft.default_parameters["glowColor"] == "#FFFFFF" and draft.default_parameters["glowLight"] == 10
+    assert {"glowColor", "glowLight"} <= set(draft.parameter_schema["properties"])
 
 
 def test_the_host_owns_a_text_blocks_configuration():

@@ -1068,11 +1068,18 @@ class ToolSession:
             if role == "text" and slot.font_family not in fonts:
                 raise ToolFault("INVALID_ARGUMENT", f"font_family {slot.font_family!r} is not in the font library: {fonts}", field=f"{field}/font_family")
             if role == "effect" and getattr(slot, "builtin", None) is not None:
-                # A host built-in effect carries no Preset source; compose.mjs draws it from its name.
-                stub = {"description": f"内置特效 {slot.builtin}", "code": "", "role": "effect",
-                        "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}
-                resolved.append({"instance_id": slot.instance_id, "preset": stub, "builtin": slot.builtin, "parameters": {}, "layout": layout, "timing": timing})
-                summaries.append(InstanceSummary(instance_id=slot.instance_id, parameter_names=[], layout=layout, timing=timing))
+                # A host built-in draws itself; its style props are schema'd like a Preset's so they can be bound and edited.
+                spec = BUILTINS[slot.builtin]
+                schema = {"type": "object", "properties": dict(spec["schema"]), "additionalProperties": False}
+                defaults = dict(spec["defaults"])
+                try:
+                    builtin_parameters = merge_parameters(defaults, slot.parameters or {})
+                    validate_parameters(schema, builtin_parameters)
+                except Exception as exc:
+                    raise ToolFault("INVALID_ARGUMENT", f"Invalid parameters for built-in {slot.builtin}: {str(exc)[:300]}", field=f"{field}/parameters") from exc
+                stub = {"description": f"内置特效 {slot.builtin}", "code": "", "role": "effect", "parameter_schema": schema, "default_parameters": defaults}
+                resolved.append({"instance_id": slot.instance_id, "preset": stub, "builtin": slot.builtin, "parameters": builtin_parameters, "layout": layout, "timing": timing})
+                summaries.append(InstanceSummary(instance_id=slot.instance_id, parameter_names=_parameter_names(schema), layout=layout, timing=timing))
                 continue
             preset, origin, parameters = await self._resolve(slot.instance_id, slot.source, slot.parameters, field)
             if preset.get("role") != role:

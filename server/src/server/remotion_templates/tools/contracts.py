@@ -435,8 +435,6 @@ class TextEffect(ContractModel):
         """An effect is drawn by exactly one of an effect Preset (source) or a host built-in (builtin)."""
         if (self.source is None) == (self.builtin is None):
             raise ValueError("give exactly one of source (an effect Preset) or builtin (a host built-in effect such as fade)")
-        if self.builtin is not None and self.parameters:
-            raise ValueError("a built-in effect has no style parameters to bind; drop parameters")
         return self
 
 
