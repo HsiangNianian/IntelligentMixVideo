@@ -226,12 +226,20 @@ def test_spacing_keeps_close_endpoints_without_middle(transition_case):
     assert [time for time, _, _ in applied_transitions(build_timeline(**case)[0])] == [2, 5]
 
 
-def test_spacing_does_not_replace_short_nearest_side(transition_case):
-    """最近一侧过短时不改选另一侧，即使另一侧可承载转场；单词不产生中间候选。"""
+@pytest.mark.parametrize("durations,anchors,expected", [
+    ([2, 0.1, 3, 4.9], [3], []),
+    ([2, 0.1, 17.9, 10, 10, 10], [3, 21, 31, 41], [20, 30, 40]),
+], ids=["single-keyword", "short-first-endpoint"])
+def test_spacing_does_not_replace_short_nearest_side(transition_case, durations, anchors, expected):
+    """最近一侧过短不替换；单词无中间候选，另一个首尾可用时中间合格点仍可入选。"""
     case = transition_case
-    case.update(material_durations=[2, 0.1, 3, 4.9], use_transition_spacing=True)
-    case["segments"][0].update(start_time=3, end_time=3.5)
-    assert applied_transitions(build_timeline(**case)[0]) == []
+    case.update(duration_ms=round(sum(durations) * 1000), material_durations=durations, use_transition_spacing=True)
+    case["request"]["materials"] = [{"fileUrl": f"https://media.test/{i}.mp4", "type": "video"}
+                                    for i in range(len(durations))]
+    source = case["segments"][0]
+    case["segments"] = [{**source, "segment_id": i + 1, "start_time": start, "end_time": start + 0.25,
+                         "group_id": [i + 1, len(anchors)]} for i, start in enumerate(anchors)]
+    assert [time for time, _, _ in applied_transitions(build_timeline(**case)[0])] == expected
 
 
 def test_spacing_random_middle_is_bounded_stable_and_ordered(spacing_case):
