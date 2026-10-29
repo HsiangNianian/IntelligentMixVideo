@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import type { FrameMask } from "./frameMask";
-import { RemoveObjectButton } from "./EffectAssets";
+import { RemoveObjectButton } from "./RemoveObjectButton";
 
 /** 蒙版页签只列出实际可用的类型，重复选择保留当前参数。 */
 export function FrameMaskCard({ mask, onSelect }: { mask?: FrameMask; onSelect: () => void }) {

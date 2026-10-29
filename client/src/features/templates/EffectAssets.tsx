@@ -87,11 +87,6 @@ export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTe
   );
 }
 
-/** 参数面板共用的对象删除入口；先修改草稿，再关闭当前设置。 */
-export function RemoveObjectButton({ onRemove, onClose }: { onRemove: () => void; onClose: () => void }) {
-  return <Button type="button" variant="outline" className="template-inspector-remove w-full" onClick={() => { onRemove(); onClose(); }}>移除当前画面对象</Button>;
-}
-
 /** 从保存字段派生对象列表；蒙版也作为画面对象展示，继续使用模板级配置保存。 */
 export function AppliedEffects({ draft, catalog, resolved, selected, onSelect }: {
   draft: Draft; catalog: EffectAsset[]; resolved?: import("./tracks").ResolvedTimeline; selected: string | null; onSelect: (target: string) => void;

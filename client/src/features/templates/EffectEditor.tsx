@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Hint } from "@/components/Hint";
 import { EffectCombobox } from "./EffectCombobox";
-import { RemoveObjectButton } from "./EffectAssets";
+import { RemoveObjectButton } from "./RemoveObjectButton";
 import { TemplateFontPicker } from "./TemplateFontPicker";
 import {
   effectGroups,
