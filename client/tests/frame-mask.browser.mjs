@@ -119,11 +119,15 @@ try {
   // 保持素材和时间对象不变，只改蒙版；无需刷新整个播放器。
   await page.evaluate(() => window.mount({ ...window.mask, top: { ...window.mask.top, color: "#aa2244" } }));
   await page.waitForFunction(() => String(window.pixels()[0]) === "170,34,68,255");
-  // 从真实参数面板开启反向渐变，观察颜色、方向与范围更新。
+  // 从真实参数面板开启反向渐变，颜色、方向与范围改动均暂停回零后自动刷新。
   await page.getByRole("radio", { name: "上栏渐变", exact: true }).click();
   await page.getByRole("radio", { name: "下栏渐变", exact: true }).click();
   await page.waitForFunction(() => String(window.pixels([0,352,1601,1919])) === "7,16,31,255,170,34,68,255,14,44,66,255,7,16,31,255");
+  await page.getByRole("button", { name: "播放", exact: true }).click();
+  await page.waitForFunction(() => Number(document.querySelector('input[aria-label="预览进度"]').value) >= 1);
   await page.getByLabel("上栏渐变范围", { exact: true }).fill("50");
+  await page.waitForFunction(() => Number(document.querySelector('input[aria-label="预览进度"]').value) === 0);
+  assert.equal(await page.getByRole("button", { name: "暂停", exact: true }).count(), 0);
   await page.waitForFunction(() => String(window.pixels([0,176,264,352])) === "7,16,31,255,7,16,31,255,89,25,50,255,170,34,68,255");
   await page.getByRole("radio", { name: "上栏上到下", exact: true }).click();
   await page.waitForFunction(() => String(window.pixels([0,88,176,352])) === "170,34,68,255,89,25,50,255,7,16,31,255,7,16,31,255");
@@ -145,7 +149,25 @@ try {
   await page.waitForFunction(() => window.pixels().every(pixel => pixel[1] > pixel[0] + 50));
   assert.equal(await page.getByRole("button", { name: "编辑蒙版轨道", exact: true }).count(), 0);
   await page.screenshot({ path: resolve(cache, "removed.png") });
-  console.log("通过：共享纯色/渐变 PNG 像素、真实 SDK 面板切换/方向/范围、透明中部、停用与移除。");
+  // SDK 不可用时，基础视频上的蒙版仍使用同一生成器和完整分辨率。
+  await page.route("**/video-editing-websdk/**", route => route.abort());
+  await page.goto(`http://localhost:${server.httpServer.address().port}/__frame_mask`);
+  await page.waitForFunction(() => window.mount);
+  await page.evaluate(() => window.mount({
+    top: { ...window.mask.top, gradient: { enabled: true, endColor: "#07101F", direction: "up", range: 100 } },
+    bottom: { ...window.mask.bottom, enabled: false },
+  }));
+  const fallback = page.getByAltText("上下蒙版预览", { exact: true });
+  await fallback.waitFor();
+  const fallbackPixels = await fallback.evaluate(async image => {
+    await image.decode();
+    const canvas = document.createElement("canvas"); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+    const ctx = canvas.getContext("2d"); ctx.drawImage(image, 0, 0);
+    return [0,176,352,353,1919].map(y => [...ctx.getImageData(0,y,1,1).data]);
+  });
+  assert.deepEqual(fallbackPixels, [[7,16,31,255],[11,30,49,255],[14,44,66,255],[0,0,0,0],[0,0,0,0]]);
+  await page.screenshot({ path: resolve(cache, "fallback.png") });
+  console.log("通过：共享纯色/渐变 PNG 像素、真实 SDK 面板切换/方向/范围、暂停回零、降级预览、透明中部、停用与移除。");
 } catch (error) {
   if (page) {
     console.error((await page.locator("body").innerText()).slice(0, 1200));

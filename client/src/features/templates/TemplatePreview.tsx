@@ -4,7 +4,7 @@
  * 播放按钮、进度条、时间轴、文字选择框与 AI 资产都只跟随这个位置，不等 IMS。卸载时清理订阅和异步任务。
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { frameMaskRects } from "./frameMask";
+import { frameMaskImage } from "./frameMask";
 import { Maximize2, Pause, Play, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
@@ -94,6 +94,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [basicFallback, setBasicFallback] = useState(false);
+  const fallbackMask = useMemo(() => basicFallback ? frameMaskImage(draft.frame_mask, PREVIEW_CANVAS.width, PREVIEW_CANVAS.height) : undefined, [basicFallback, draft.frame_mask]);
   const [basicReady, setBasicReady] = useState(false);
   // 切换基础视频的原因，显示在预览下方说明里。
   const [fallbackReason, setFallbackReason] = useState("");
@@ -558,7 +559,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
 
   // 修改模板、视频或排列后回到开头并暂停（IMS 播放器随后重新应用时间线），各画面来源一致。
   useEffect(() => {
-    activePlayback().pause();
+    // 同时定位画面来源，避免延迟刷新前的旧 SDK 帧把已回零的游标拉回原位置。
+    activePlayback().seek(0);
     clock.seek(0);
   }, [media, videoOrder, resolved, draft.frame_mask, draft.split_screen, avatarSource]);
 
@@ -588,8 +590,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             onPlayingChange={(value) => { if (source !== "basic") return; changePlaying(value); setStatus(value ? "正在播放预览…" : "预览已暂停"); }}
             onError={() => { setFailed(true); setStatus("基础视频预览加载失败，请检查视频编码与跨域访问配置后重试。"); }}
             onEnd={() => { if (source !== "basic") return; changePlaying(false); setStatus("预览结束，点击播放可重播"); }} />}
-          {basicFallback && frameMaskRects(draft.frame_mask, PREVIEW_CANVAS.height).map((rect) => <div key={rect.edge} aria-label={`${rect.edge === "top" ? "上" : "下"}栏蒙版预览`}
-            className="pointer-events-none absolute inset-x-0" style={{ top: `${rect.y / PREVIEW_CANVAS.height * 100}%`, height: `${rect.height / PREVIEW_CANVAS.height * 100}%`, background: rect.color }} />)}
+          {fallbackMask && <img alt="上下蒙版预览" src={fallbackMask} className="pointer-events-none absolute inset-0 size-full" />}
           {controlsReady && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
             const interval = resolved?.tracks[item.id];
             if (!interval || time < interval.start || time >= interval.end) return null;
