@@ -3,7 +3,7 @@
  * source-policy/type checks and drives a fixed Remotion Player through a small
  * page bridge; it never encodes media or invokes a visual reviewer. On request,
  * once every check has passed, it captures a few still frames for the Agent to
- * look at (`captureFrames`).
+ * look at (`captureFrames`), or measures full-width subtitle capacity before segmentation.
  */
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -552,10 +552,26 @@ function textFitProblems(page, needle, placement, collectLines = false) {
     // Components may split the text into words or glyphs and drop the spaces between them.
     const compact = (value) => value.replace(/\s+/g, "");
     const wanted = compact(needle);
+    /**
+     * Whether the text nodes, in document order, still show all of `wanted`: each node continues the run where the
+     * last one stopped, or holds the whole remaining text itself. A keyword's glow, outline or echo copy repeats a
+     * fragment inside the line ("prefix keyword keyword suffix"), so joining every node would hide the complete line;
+     * this rule still fails text that is cut, reordered or missing characters.
+     */
+    const covers = (parts) => {
+      let at = 0;
+      for (const part of parts) {
+        if (at === wanted.length) return true;
+        if (wanted.startsWith(part, at)) at += part.length;
+        else if (part.includes(wanted.slice(at))) return true;
+      }
+      return at === wanted.length;
+    };
     const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
     const problems = new Set();
-    let joined = "";
+    const parts = []; // each text node's text, in document order, for the completeness check below
     let area = 0;
+    let readable = true;
     let extent = null; // canvas rectangle of all shown text after the transform
     // The visual text lines: rectangles whose vertical ranges overlap belong to the same line, so the pieces of a line
     // split into keyword spans still count once. A text block laid out for one line that wraps is then two lines.
@@ -573,7 +589,9 @@ function textFitProblems(page, needle, placement, collectLines = false) {
       if (!lines.length) continue;
       // Opacity can deliberately hide a tier without removing any text from its layout. Count it for render
       // preflight, but do not let its invisible boxes affect the full-size frames, clipping, or placement shift.
-      joined += shown;
+      // Completeness reads these nodes in order (`covers`); every painted copy keeps its own boxes for clipping,
+      // size and placement below, so a decorative copy that overflows still fails.
+      parts.push(shown);
       if (!isPainted) continue;
       const bounds = {
         left: Math.min(...lines.map((rect) => rect.left)), right: Math.max(...lines.map((rect) => rect.right)),
@@ -598,7 +616,10 @@ function textFitProblems(page, needle, placement, collectLines = false) {
         });
       }
       const smallest = Math.min(...lines.map((rect) => rect.height));
-      if (smallest < minLine) problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
+      if (smallest < minLine) {
+        readable = false;
+        problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
+      }
       const corners = lines.flatMap((rect) => [place(rect.left, rect.top), place(rect.right, rect.top), place(rect.left, rect.bottom), place(rect.right, rect.bottom)]);
       const [left, right] = [Math.min(...corners.map(([x]) => x)), Math.max(...corners.map(([x]) => x))];
       const [top, bottom] = [Math.min(...corners.map(([, y]) => y)), Math.max(...corners.map(([, y]) => y))];
@@ -622,7 +643,7 @@ function textFitProblems(page, needle, placement, collectLines = false) {
       }
     }
     if (!extent) return null;
-    if (!joined.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
+    if (!covers(parts)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
     const ordered = [...rows].sort((first, second) => first.top - second.top);
     /** The canvas centre and rendered text of one visual line, for measuring its single-line position. */
     const describe = (row) => row && {
@@ -630,10 +651,10 @@ function textFitProblems(page, needle, placement, collectLines = false) {
       text: row.segments.sort((first, second) => first.left - second.left).map((segment) => segment.text).join(""),
     };
     return {
-      problems: [...problems], area, extent, view, lines: rows.length,
+      problems: [...problems], readable, area, extent, view, lines: rows.length,
       ...(collectLines ? { first: describe(ordered[0]), last: describe(ordered.at(-1)) } : {}),
     };
-  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, request.mode === "fit", collectLines);
+  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, ["fit", "capacity"].includes(request.mode), collectLines);
 }
 
 /** No host transform: generation checks mount the Sprite over the whole canvas where it was laid out. */
@@ -646,6 +667,8 @@ const UNPLACED = Object.freeze({ cx: 0, cy: 0, x: 0, y: 0, scale: 1, rotation: 0
  * lines): entrance and exit animations show it smaller, scaled down or typed in, and would hide a layout that clips
  * it while it holds. It `fits` when one of those frames has no problem, so a reveal mask or slide-in that moves the
  * full-size text out of view for a few frames is fine; `problems` are those of the full-size frames otherwise.
+ * `readable` is true only when no full-size frame has lines too small to read, so fitting can tell a floor that fails
+ * for being unreadable from one that fails for overflow and need not assume the floor fits.
  * With `placement.nudge` the text leaving the window is no problem and `shift` is the smallest move of the placement
  * (`{x, y}` in canvas pixels, zero when none is needed) that brings the text of the middle one of the problem-free
  * full-size frames back inside it; when that text is larger than the window no move helps and it does not fit.
@@ -660,7 +683,7 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
   for (const frame of frames) {
     await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
     const error = await page.evaluate(() => window.__imvRuntimeError ?? null);
-    if (error) return { error, frame, shown: verdicts.length, full: 0, fits: false, lines: 0, extent: null, first: null, last: null, problems: [] };
+    if (error) return { error, frame, shown: verdicts.length, full: 0, fits: false, readable: false, lines: 0, extent: null, first: null, last: null, problems: [] };
     const verdict = await textFitProblems(page, needle, placement, collectLines);
     if (verdict) verdicts.push({ ...verdict, frame });
   }
@@ -679,7 +702,10 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
   // The anchor line and its text come from a frame without problems, so an entrance or exit offset cannot move it.
   const middle = (clean.length ? clean : full)[Math.floor(((clean.length ? clean : full).length - 1) / 2)] ?? null;
   return {
+    // Every full-size frame must be readable for the floor to fail only for its size; one tiny frame still needs a bigger size.
+    // No full-size frame at all says nothing about size, so it is not reported as readable.
     error: null, shown: verdicts.length, full: full.length, fits,
+    readable: full.length > 0 && full.every((verdict) => verdict.readable),
     lines: Math.max(0, ...full.map((verdict) => verdict.lines)), extent: middle?.extent ?? null,
     first: middle?.first ?? null, last: middle?.last ?? null, frame: middle?.frame ?? null, shift,
     problems: fits ? [] : [...new Set(full.flatMap((verdict) => verdict.problems))],
@@ -694,6 +720,8 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
  * its full size has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered.
  * A multi-line text (a `lineStartFrames` parameter of N items) is filled with N lines that share maxLength, and both
  * samples show every line from the first frame; its default lines must also pass `lineSyncProblem` and `lineJumpProblem`.
+ * The host's composed still text instead patches `text_fit_parameters` (its cue wrappers off, so a tier can leave as
+ * another arrives), and then must pass `cueHoldProblem`: a cue at its start state may never hide the tier it waits with.
  * An effect with a `keywords` parameter is also mounted with a hit in its default text: the hit, and any keyword effect
  * drawn on it, must not throw or keep the default text from showing in full, and in a text block the hit must keep
  * its tier's look (`keywordLookProblem`). The default text must also keep the fill it is painted with
@@ -720,7 +748,10 @@ async function textFitCheck(page) {
   const lines = request.parameter_schema?.properties?.lineStartFrames?.maxItems;
   const multi = Number.isInteger(lines) && lines > 1;
   // Every line is shown from frame 0, so the measurement sees the complete text.
-  const allLines = multi ? { lineStartFrames: Array(lines).fill(0) } : {};
+  // Only the host supplies this patch for composed still text. A cue may intentionally remove a tier;
+  // enter/exit and loop effects stay on so an inverted or permanently hidden transition still fails.
+  const layout = request.text_fit_parameters ?? {};
+  const allLines = { ...layout, ...(multi ? { lineStartFrames: Array(lines).fill(0) } : {}) };
   // The N lines share maxLength with their N - 1 line breaks: the first lines take one more character each when it
   // does not divide evenly, so the joined sample is exactly maxLength long.
   const characters = multi ? Math.max(lines, length - (lines - 1)) : length;
@@ -758,8 +789,18 @@ async function textFitCheck(page) {
     const covered = await coveredFillProblem(page, allLines);
     if (covered) return { name: "text_fit", status: "failed", message: covered };
     const defaultLines = shortText.split("\n");
-    const sync = multi && defaultLines.length === lines ? (await lineSyncProblem(page, defaultLines)) ?? (await lineJumpProblem(page, defaultLines)) : null;
+    // The host's composed tiers can have independent effects. Legacy components must still prove shared timing;
+    // every component must keep the earlier tier in place when a later tier appears.
+    const sync = multi && defaultLines.length === lines
+      ? (request.text_fit_parameters === undefined ? await lineSyncProblem(page, defaultLines) : null)
+        ?? (await lineJumpProblem(page, defaultLines, layout)) : null;
     if (sync) return { name: "text_fit", status: "failed", message: sync };
+    // The patch switches the cue wrappers off for the layout measurement, so the hold they run over is measured with
+    // every effect on: a cue that is already transformed at progress 0 would hide its tier for the whole hold. Only the
+    // first line waits the whole hold, so a text that opens with an empty line has no tier to measure here.
+    const hold = multi && defaultLines.length === lines && request.text_fit_parameters !== undefined && defaultLines[0].trim()
+      ? await cueHoldProblem(page, defaultLines[0]) : null;
+    if (hold) return { name: "text_fit", status: "failed", message: hold };
     // Templates pass keywords at render time, so the keyword hit (and any keyword effect drawn on it) must keep the text
     // whole: up to two characters opening the first non-empty default line are a hit every text effect can show
     // (the workspace preview shows the same sample keyword).
@@ -954,6 +995,38 @@ async function lineSyncProblem(page, lines) {
 const LINE_JUMP_TOLERANCE = 6;
 
 /**
+ * A cue effect runs from its own start state at progress 0 to its final state at 1, which may remove the text, so an
+ * inverted cue (transformed at 0, intact at 1) hides its tier for the whole hold: the same mistake an exit cannot make.
+ * The host's layout measurement switches cue wrappers off (`text_fit_parameters`), so this mounts the default lines
+ * with the lower tier starting on the last frame, which keeps every cue at its start, and requires the first line to
+ * still show in full around the middle of the preview, where entrances have finished and the exit has not started
+ * (a looping effect may blink on that exact frame, so its two neighbours are accepted as well). Returns the failure
+ * message, or null.
+ */
+async function cueHoldProblem(page, line) {
+  const last = request.composition.duration_frames - 1;
+  const middle = Math.floor(last / 2);
+  await page.evaluate((values) => window.__imvTool.setParameters(values), { lineStartFrames: [0, last] });
+  try {
+    for (const frame of [middle, middle - 2, middle + 2]) {
+      if (frame < 0 || frame > last) continue;
+      await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+      if (await page.evaluate(() => window.__imvRuntimeError ?? null)) return null; // the fit measurement reports it
+      const verdict = await textFitProblems(page, line, UNPLACED);
+      if (verdict && !verdict.problems.length) return null;
+    }
+    return `With the lower tier starting on the last frame, so a cue effect stays at its start for the whole hold, the first line `
+      + `"${line}" of the default text is not shown in full around frame ${middle}. `
+      + "A cue runs from its start state at progress 0 to its final state at 1 and may remove text only as it rises: it must not hide "
+      + "its tier while that tier waits. Draw the removal in the cue's final state; an effect that is already transformed at progress 0 "
+      + "belongs to an exit.";
+  } finally {
+    await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
+    await page.evaluate(() => window.__imvTool.setFrame(0));
+  }
+}
+
+/**
  * The lines of a multi-line text appear one by one, and an appearing line must not push the lines already shown:
  * a layout that only adds a line when it starts (not rendered before, in a centred column) makes every earlier line
  * jump in that frame. The default `lines` are started evenly over the preview (line i at i/(N+1) of it, after the
@@ -961,11 +1034,11 @@ const LINE_JUMP_TOLERANCE = 6;
  * more than it moved in the frame before plus `LINE_JUMP_TOLERANCE` (or a tenth of its height). Returns the failure
  * message, or null.
  */
-async function lineJumpProblem(page, lines) {
+async function lineJumpProblem(page, lines, layout = {}) {
   const step = Math.floor(request.composition.duration_frames / (lines.length + 1));
   if (step < 3) return null;
   const starts = lines.map((_, index) => index * step);
-  await page.evaluate((values) => window.__imvTool.setParameters(values), { lineStartFrames: starts });
+  await page.evaluate((values) => window.__imvTool.setParameters(values), { ...layout, lineStartFrames: starts });
   try {
     for (let index = 1; index < lines.length; index++) {
       const boxes = [];
@@ -1019,7 +1092,8 @@ function valuesAtSize(item, size) {
  * `length` its Sprite plays in the render (which it reads as `durationInFrames`) and measured where its host
  * `transform` puts it on the canvas. The requested size is tried first, so text that already fits is untouched;
  * a component that throws, or never renders the text, is left alone (the render reports its own failure). Sizes are
- * assumed to fit monotonically, so a binary search. When even the floor leaves the text outside the window the video
+ * searched above the smallest actually readable size, so a small keyword cannot make the floor look too large.
+ * When even that floor leaves the text outside the window the video
  * shows (a long title placed at the top edge), the placement is moved the shortest way back inside at `min`:
  * the answer's `shift` is that move in canvas pixels. `fits: false` means the text is too long even for that. When the
  * size is lowered the answer also carries the matching `keyword_size` (see `valuesAtSize`).
@@ -1076,7 +1150,7 @@ async function fitTexts(page, loadError, sprite) {
     };
     const requested = item.values[item.size_key];
     // Never below what is readable, and never above what was asked for.
-    const floor = Math.min(requested, Math.max(item.min, readableFontSize(item.values)));
+    let floor = Math.min(requested, Math.max(item.min, readableFontSize(item.values)));
     // Turning this off when the text cannot be one line makes `accepts` check the wrapped fit instead.
     let oneLine = item.one_line === true;
     const accepts = (measured) => usable(measured) && (!oneLine || measured.lines <= 1);
@@ -1084,7 +1158,20 @@ async function fitTexts(page, loadError, sprite) {
     const atRequested = await measureSize(requested);
     let ok = accepts(atRequested);
     if (!ok) {
-      const atFloor = floor < requested ? await measureSize(floor) : atRequested;
+      let atFloor = floor < requested ? await measureSize(floor) : atRequested;
+      // The declared floor may make a smaller keyword or a Preset's own scaled text unreadable. Fit is then not
+      // monotonic: the floor fails for being too small while the request fails for being too large. First find
+      // the lowest actually readable size; only above it does the usual "smaller fits better" search apply.
+      if (!usable(atFloor) && !atFloor.readable && atRequested.readable) {
+        let low = floor;
+        let high = Math.floor(requested);
+        while (low < high) {
+          const middle = Math.floor((low + high) / 2);
+          if ((await measureSize(middle)).readable) high = middle; else low = middle + 1;
+        }
+        floor = low;
+        atFloor = await measureSize(floor);
+      }
       const floorOK = accepts(atFloor);
       if (oneLine && !floorOK && atRequested.fits) {
         // It cannot be one line at any readable size: keep the text whole, wrapped, at the size asked for.
@@ -1171,16 +1258,56 @@ async function fitTexts(page, loadError, sprite) {
     answers.push({
       index: item.index, fits: ok, size, lines: final.lines, ...(keywordSize !== item.values.keywordSize ? { keyword_size: keywordSize } : {}),
       ...(shift && (shift.x || shift.y) ? { shift } : {}), ...(growShift ? { grow_shift: growShift } : {}),
+      ...(!ok ? { problems: final.problems } : {}),
     });
   }
   return answers;
 }
 
 /**
- * Fit mode: the texts of every text Sprite of one render, measured in one browser under one deadline. Each Sprite's
+ * Measure full-width characters per intended line at the saved size and position. The caller supplies schema-valid
+ * plain/keyword samples; measure both so a larger keyword cannot silently reduce capacity. Binary search assumes
+ * ordinary text layout grows with length, as render preflight does with font size. It samples full-size preview
+ * frames, includes actual font metrics, letter spacing and transforms, and never shrinks or nudges the placement.
+ * These probes precede real text/timing; render preflight remains authoritative for the final subtitles.
+ */
+async function textCapacities(page, loadError, sprite) {
+  if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
+  const canvas = sprite.canvas ?? request.composition;
+  const box = sprite.box ?? { x: 0, y: 0, width: canvas.width, height: canvas.height };
+  const visible = visibleWindow(canvas, request.composition);
+  const answers = [];
+  for (const item of sprite.fit) {
+    const placement = hostPlacement(box, item.transform, visible);
+    /** A sample fits only when every style variant is complete, readable and has no extra wrapped lines. */
+    const fits = async (sample) => {
+      for (const values of sample.values) {
+        await page.evaluate(() => window.__imvTool.reset());
+        await page.evaluate((length) => window.__imvTool.setDuration(length), item.length);
+        await page.evaluate((value) => window.__imvTool.setSample(value, {}), values);
+        const measured = await measureTextFit(page, sample.text, item.frames, placement);
+        if (measured.error || measured.shown === 0) throw new Error("Subtitle capacity probe could not measure rendered text");
+        if (!measured.fits || measured.lines > item.lines) return false;
+      }
+      return true;
+    };
+    let low = 0;
+    let high = item.samples.length;
+    // [0, low) fits and [high, length) does not; zero means even the shortest valid sample cannot fit.
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (await fits(item.samples[middle])) low = middle + 1; else high = middle;
+    }
+    answers.push({ index: item.index, capacity: low ? item.samples[low - 1].chars : 0 });
+  }
+  return answers;
+}
+
+/**
+ * Fit/capacity mode: the texts of every text Sprite, measured in one browser under one deadline. Each Sprite's
  * code as the render runs it (the sealed source, type-checked when it was published, or a video composition's
  * timing wrapper around it) is policy-checked again, bundled into its own host with its own `canvas` size and loaded
- * on the same page in turn. `result.fits` holds one list of answers per Sprite, in request order.
+ * on the same page in turn. The result holds one list of answers per Sprite, in request order.
  */
 async function fitAll() {
   await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`).catch(() => undefined);
@@ -1189,7 +1316,8 @@ async function fitAll() {
   try {
     const opened = await openPage(url);
     browser = opened.browser;
-    result.fits = [];
+    const answers = [];
+    result[request.mode === "capacity" ? "capacities" : "fits"] = answers;
     for (const sprite of request.sprites) {
       sourcePolicy(sprite.code);
       await fs.writeFile(`${root}/Template.tsx`, sprite.code, "utf8");
@@ -1197,9 +1325,10 @@ async function fitAll() {
       const { width, height } = sprite.canvas ?? request.composition;
       await bundleHost({
         defaults: sprite.default_parameters, configured: sprite.default_parameters, parameter_schema: sprite.parameter_schema,
-        composition: { ...request.composition, width, height }, ...(sprite.box ? { box: sprite.box } : {}),
+        composition: { ...request.composition, width, height, ...(sprite.canvas?.fps ? { fps: sprite.canvas.fps } : {}) }, ...(sprite.box ? { box: sprite.box } : {}),
       });
-      result.fits.push(await fitTexts(opened.page, await waitReady(opened.page), sprite));
+      const measure = request.mode === "capacity" ? textCapacities : fitTexts;
+      answers.push(await measure(opened.page, await waitReady(opened.page), sprite));
     }
   } finally {
     if (browser) await browser.close({ silent: true });
@@ -1257,7 +1386,7 @@ async function sampleChecks(page, loadError) {
 }
 
 async function main() {
-  if (request.mode === "fit") return fitAll();
+  if (["fit", "capacity"].includes(request.mode)) return fitAll();
   const valid = await prepareSource();
   if (!valid) { result.passed = false; return; }
   if (request.mode === "code") { result.passed = checks.every((item) => item.status === "passed" || item.status === "pass"); return; }

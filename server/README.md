@@ -2,7 +2,7 @@
 
 Python 3.12+、FastAPI 和 MySQL。模板库在连接此服务的客户端之间共享，不包含登录、用户隔离或旧数据迁移。
 另提供文案切片接口，使用已有 ASR 时间轴与 OpenAI 兼容模型生成带时间和关键词的片段。
-服务端与客户端使用同一项目版本；`pyproject.toml`、`uv.lock` 随发版统一更新并提交，操作见[根目录发版说明](../README.md#tag-发版)。FastAPI 文档版本读取已安装的 `imv-server` 包元数据；更新后通过 `uv run --locked server` 同步安装并重启。
+服务端与客户端使用同一项目版本；`pyproject.toml`、`uv.lock` 随发版统一更新并提交，操作见[根目录发版说明](../README.md#tag-releases)。FastAPI 文档版本读取已安装的 `imv-server` 包元数据；更新后通过 `uv run --locked server` 同步安装并重启。
 
 ## 本地启动
 
@@ -72,11 +72,11 @@ GET 与 POST 成功响应默认使用 `application/json`，采用 Protobuf JSON 
 
 `SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置（省略的蒙版、同屏和数字人效果字段除外）。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
-上下纯色蒙版单独保存在模板级 `frame_mask`（Protobuf JSON 为 `frameMask`），含 `top`、`bottom`，各自必须提供 `enabled`、`height`（画布高度百分比，有限数 0～50）与 `color`（`#RRGGBB`）。新建省略不启用；旧客户端更新省略该字段时保留原配置，显式关闭两栏即可停用。使用蒙版需升级两端，无新增表或接口。合成按任务快照生成全画布透明 PNG，两栏像素高为 `floor(height * percent / 100 + 0.5)`；在线程池生成并经现有 ZOS 上传/公开读取校验，保存 `frame_mask_url` 供任务恢复复用。两栏全关或像素高度为零不上传；上传失败不提交 IMS。图片通过 `VideoTracks` 的 `Type=Image` 全程叠在主体视频上，后续 Remotion、全局效果和文字仍在其上方，不改视频构图或文字内容。对象路径为 `imv/video_composition/<taskId>-mask.png`，操练场使用 `imv/playground/`。
+上下纯色蒙版单独保存在模板级 `frame_mask`（Protobuf JSON 为 `frameMask`），含 `top`、`bottom`，各自必须提供 `enabled`、`height`（画布高度百分比，有限数 0～50）与 `color`（`#RRGGBB`）。新建省略不启用；旧客户端更新省略该字段时保留原配置，显式关闭两栏仅停用并保留参数；保存请求携带空的 `frame_mask` 消息（无 `top`/`bottom`）明确移除配置，之后详情不再返回此字段。新客户端仅在保存基线已有蒙版、当前草稿已移除时发送空消息；原本无蒙版的普通保存仍省略字段、兼容旧服务端，移除功能需同步升级两端。使用蒙版需升级两端，无新增表或接口。合成按任务快照生成全画布透明 PNG，两栏像素高为 `floor(height * percent / 100 + 0.5)`；在线程池生成并经现有 ZOS 上传/公开读取校验，保存 `frame_mask_url` 供任务恢复复用。两栏全关或像素高度为零不上传；上传失败不提交 IMS。图片通过 `VideoTracks` 的 `Type=Image` 全程叠在主体视频上，后续 Remotion、全局效果和文字仍在其上方，不改视频构图或文字内容。对象路径为 `imv/video_composition/<taskId>-mask.png`，操练场使用 `imv/playground/`。
 
 顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成调用切片时传入请求 `title`，标题局部样式仅作用于返回的 `title_keyword` 首次出现的位置；返回值缺失或为空时保留标题原文，不回退模板 `titleKeyword` 或标题前两个字。旧快照缺少标题词时不高亮；无声模式通过仅标题提词取得关键词；模板预览仍沿用原规则。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
 
-独立对象通过 `tracks` 保存，普通对象包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。标题、字幕、VFX 最多各一个，滤镜可多个；字幕固定 `seconds`、0、null。其他普通对象支持 `seconds`、`percent` 起点，百分比小于 100，`duration` 为正秒数或 `null`（持续到结束）。转场使用唯一的 `transition_boundary` 列表序号（1～100），IMS 转场禁止设置 `start`、`start_mode`。IMS 与 Remotion 共用候选列表；`transition_duration_seconds` 统一 IMS 时长，Remotion 保留自己的时长。`transition_enabled` 为布尔值，默认 true；false 时保留候选，IMS 与 Remotion 成片均不应用转场。`transition_mode=sequence` 在选中的切镜处按列表循环，`random` 按任务 ID 与切镜位置从完整候选列表选择，允许连续重复且不限使用次数，重试结果一致；每个切镜只选一个效果。编辑预览开启转场且存在候选时应用于两个连接位置，只有一个候选时两处共用，有多个候选时随机也允许重复。未携带 `transition_mode` 的已有模板在新任务中按顺序循环。转场时长最多为相邻素材各自长度的一半，短于 0.1 秒时跳过。Remotion 显式摆放时长优先，发布预览长度不是业务时长上限；客户端目录 `seconds` 也由同一画布的预览帧数与帧率换算。客户端新增摆放已写入显式时长；历史空值仍采用默认值，资产覆盖更新预览长度会影响之后新任务的默认值，已受理任务使用固定快照。模板不保存预览视频信息。新任务以含口播关键词的字幕事件起点为锚点，严格寻找前后最近切镜，排除同刻切镜并去重；例如切镜 2／5／8 秒、关键词 5 秒出现时选 2／8 秒。有词混剪仅找数字人↔素材，纯素材找素材↔素材；整片无口播关键词时回退全部切镜，标题词及英文译文不计入。首尾只有一侧切镜则只用一侧，最近切镜过短时跳过、不改选更远处，且不推进顺序候选。新受理任务将 `keyword_transitions=true` 保存到已有任务 JSON；缺少此标识的旧任务继续原策略（包含随机不放回及旧模板固定位置），以匹配已有叠加产物，已提交 IMS 的任务不重新组装。`resolve_template` 的 `sequence` 模式累计扣除重叠，`fixed` 保留素材时间和音频总长。普通对象超出结束时截短，动画按有效帧数缩短，帧数不足时失败。标题使用请求文字，字幕按文案切片显示。
+独立对象通过 `tracks` 保存，普通对象包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。标题、字幕每种语言最多各一个，VFX 最多一个，滤镜可多个；字幕固定 `seconds`、0、null。其他普通对象支持 `seconds`、`percent` 起点，百分比小于 100，`duration` 为正秒数或 `null`（持续到结束）。转场使用唯一的 `transition_boundary` 列表序号（1～100），IMS 转场禁止设置 `start`、`start_mode`。IMS 与 Remotion 共用候选列表；`transition_duration_seconds` 统一 IMS 时长，Remotion 保留自己的时长。`transition_enabled` 为布尔值，默认 true；false 时保留候选，IMS 与 Remotion 成片均不应用转场。`transition_mode=sequence` 在选中的切镜处按列表循环，`random` 按任务 ID 与切镜位置从完整候选列表选择，允许连续重复且不限使用次数，重试结果一致；每个切镜只选一个效果。编辑预览未开启同屏布局、开启转场且存在候选时应用于两个连接位置，只有一个候选时两处共用，有多个候选时随机也允许重复。未携带 `transition_mode` 的已有模板在新任务中按顺序循环。转场时长最多为相邻素材各自长度的一半，短于 0.1 秒时跳过。Remotion 显式摆放时长优先，发布预览长度不是业务时长上限；客户端目录 `seconds` 也由同一画布的预览帧数与帧率换算。客户端新增摆放已写入显式时长；历史空值仍采用默认值，资产覆盖更新预览长度会影响之后新任务的默认值，已受理任务使用固定快照。模板不保存预览视频信息。新任务以含口播关键词的字幕事件起点为锚点，严格寻找前后最近切镜，排除同刻切镜并去重；有词混剪仅找数字人↔素材，纯素材找素材↔素材，标题词及英文译文不计入。首末关键词各保留最近一侧（同距选前，只有一侧就用该侧，同一切镜去重）；单个关键词只保留一处。中间仅从首末关键词起点之间的原候选中随机筛选，最小间隔按真实成片总秒数 `T` 计算为 `min(12, max(4, 8 * sqrt(T / 160)))` 秒，比较切镜中心时间；不限制固定总次数、不补造切镜。首尾不足该间隔时仍保留两处，中间不再添加。整片无口播关键词时以全部切镜为候选，使用同一动态间隔随机筛选、不强制首尾。无法承载 0.1 秒转场的短镜头先排除、不占间隔名额；最近切镜过短时直接跳过，不改选更远处。选点由任务 ID 固定随机种子，与模板的效果选择方式独立；选点按时间排序后才按模板顺序／随机分配效果，时长不足时跳过、不推进顺序候选。新受理任务在已有 JSON 同时保存 `keyword_transitions=true`、`transition_spacing=true`；缺少后者的任务保留旧关键词双侧规则（无词时全部切镜），两者均缺少则继续最早策略（包含随机不放回及旧模板固定位置），以匹配已有叠加产物，已提交 IMS 的任务不重新组装。IMS 与 Remotion 共用选点逻辑，不新增模型调用或数据库表。`resolve_template` 的 `sequence` 模式累计扣除重叠，`fixed` 保留素材时间和音频总长。普通对象超出结束时截短，动画按有效帧数缩短，帧数不足时失败。标题使用请求文字，字幕按文案切片显示。
 创建和更新在写入前强制检查标题、底部字幕各一个，缺少任意一个返回 422，已有记录保持不变。同一文字角色的循环动画与入场、出场互斥。模板允许空效果列表，最多 500 个不同效果 ID。
 
 Remotion 片段也保存在 `tracks` 里：`target` 为 `remotion`，`sprite_id` 引用已发布的 Sprite；`id` 仍是模板内唯一的摆放 ID，所以同一个 Sprite 可以摆放多次。
@@ -199,7 +199,7 @@ uv build --out-dir dist
 
 测试统一放在 `tests/`，使用 pytest；`conftest.py` 管理客户端夹具，
 `test_api.py` 覆盖路由契约、边界和错误请求，`test_entrypoint.py` 覆盖两种启动入口。
-每个新 feature 都必须补齐正常、异常及适用边界的测试脚本，详细规则见根目录 AGENTS.md。
+每个新 feature 都必须补齐正常、异常及适用边界的测试脚本，详细规则见根目录 AGENTS.md 与 server/AGENTS.md。
 
 项目在 `pyproject.toml` 中将官方 PyPI 设为默认索引，与锁文件来源保持一致。
 第三方镜像可能尚未同步所需版本，导致 `uv sync` 和 `uv sync --locked` 报
@@ -230,7 +230,7 @@ result = segment({
 **请求与返回**：`script`、`asr_result`、`title` 都可省略或为 null。
 
 - 有 ASR：必须有有效 `script`，使用第一音轨的词级时间（毫秒）。返回 `segments`（保留标点的原文、秒制时间、分组、关键词）、`warnings` 和 `trace`；传了 `title` 时另返回 `title_keyword`。
-- `max_segment_chars`：每段（字幕一行）最多字数，正整数，独立调用默认 8，不计标点和空白；非法值返回 422。视频合成只按本单模板自动计算 `max(1, 最小单行全角字容量 - 2)` 并传入。只按模板中文字幕对象估算：居中位置到较近画布边缘的两倍宽度，除以正文与关键词较大字号后向下取整（云端字体/花字按全角字一 em 估算）；Remotion 字效替代或叠加字幕时同样按该对象估算，不在浏览器里实测，实际放不下时由成片排版预检缩小字号。结果随任务保存，恢复沿用；仅标题、无字幕和操练场封存切片不重新计算。真实关键词、译文及超长受保护串仍经原有成片排版预检。
+- `max_segment_chars`：每段（字幕一行）最多字数，正整数，独立调用默认 8，不计标点和空白；非法值返回 422。视频合成在 ASR 前按本单模板自动计算 `max(1, 最小单行全角字容量 - 2)` 并传入。IMS 用居中位置到较近画布边缘的两倍宽度除以正文与关键词较大字号（全角字一 em）；Remotion 在共享渲染名额内用隔离浏览器加载封存源码、字体、默认参数和摆放覆盖，测量全角样本在预览时序下的单行容量，计入字距、关键词、分栏、变换及输出画布裁切，不缩字或移动摆放。新槽位接管字幕时隐藏的 IMS 对象不参与；旧 `businessTarget` 共存取两者较小值；没有数字 `fontSize` 的字效也实测。样本受发布正文长度契约限制，不能代替最终真实文案的排版预检。放不下一字以 `subtitle_capacity_too_small`、无法测量以 `subtitle_capacity_unavailable` 在 template 阶段失败，不产生 ASR/模型调用。结果随任务保存，恢复沿用；仅标题、无字幕和操练场封存切片不重新计算。真实关键词、译文及超长受保护串仍经原有成片排版预检。
 - 只有 `title`：只调用一次模型，返回 `{"title_keyword":"关键词"}`，不校验内容、不纠错，缺失或非字符串按空字符串处理。
 - 可选 `config` 只用于本次调用：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120（切片单次最多取 30 秒），`llm_max_retries` 默认 1（0～3，只用于翻译），`llm_disable_thinking` 默认 false；Python 中传 `segment(payload, config=ClientSettings(...))`。`allow_insecure_llm_http` 由服务端决定，错误响应不回显输入。
 - `IMV_LLM_DISABLE_THINKING=true`（或 `config.llm_disable_thinking`）时，切分、提词与翻译请求附带 `thinking={"type":"disabled"}`。DeepSeek 等默认开启思考的模型应开启它，否则单次切分可能超过 30 秒；不支持该扩展字段的服务保持 false，此时不发送该字段。

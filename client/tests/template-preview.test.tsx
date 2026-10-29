@@ -93,6 +93,10 @@ test("只修改蒙版也刷新 SDK，失败降级保留相同几何，关闭即�
   } }} />);
   expect(screen.queryByLabelText("上栏蒙版预览")).toBeNull();
   expect(screen.queryByLabelText("下栏蒙版预览")).toBeNull();
+  expect(rowObjects()).toContain("frame-mask");
+  view.rerender(<TemplatePreview {...stable} draft={draft} />);
+  expect(rowObjects()).not.toContain("frame-mask");
+  expect(screen.queryByLabelText("上栏蒙版预览")).toBeNull();
 });
 
 // 回归：SDK 的动态媒体路径忽略 Timeline 蒙版字段，须从媒体回调一起交给原视频节点；不降级花字和滤镜。

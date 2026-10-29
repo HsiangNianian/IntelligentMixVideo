@@ -214,7 +214,7 @@ function clipEditor(clip: RemotionClip) {
  * 保存要求标题和底部字幕各一个，基础文字允许不选择效果。
  * 片段在线路上是 `remotion` 轨道，排在 IMS 对象之后，与模板在同一次请求里原子保存。
  */
-export async function saveTemplate(draft: Draft, id?: string): Promise<Template> {
+export async function saveTemplate(draft: Draft, id?: string, baselineHadMask = false): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
   validateTemplateTracks(draft.tracks);
   validateClipSlots(draft);
@@ -232,7 +232,8 @@ export async function saveTemplate(draft: Draft, id?: string): Promise<Template>
     transitionDurationSeconds: draft.transition_duration_seconds,
     transitionMode: draft.transition_mode ?? "sequence",
     transitionEnabled: draft.transition_enabled ?? true,
-    frameMask: draft.frame_mask,
+    // 只有保存基线带蒙版、当前草稿已移除时才发送空消息；普通无蒙版保存仍兼容旧服务端。
+    frameMask: draft.frame_mask ?? (baselineHadMask ? {} : undefined),
     splitScreen: draft.split_screen,
     avatarEffects: draft.avatar_effects,
     tracks: {

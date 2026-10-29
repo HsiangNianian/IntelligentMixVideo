@@ -74,6 +74,9 @@ async def save_template(request: Request) -> Response:
     except DecodeError as exc:
         raise HTTPException(status_code=400, detail="Protobuf 请求内容无效") from exc
     data = MessageToDict(message, preserving_proto_field_name=True)
+    # 空蒙版消息表示明确移除；省略字段仍由存储层保留旧客户端的已有配置。
+    if data.get("frame_mask") == {}:
+        data["frame_mask"] = None
     if "tracks" in data:
         data["tracks"] = data["tracks"].get("tracks", [])
         for track in data["tracks"]:

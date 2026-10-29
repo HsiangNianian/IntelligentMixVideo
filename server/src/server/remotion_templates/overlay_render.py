@@ -378,7 +378,10 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
     for (group, keys, distinct), fits in zip(measured, answers):
         for key, item, fit in zip(keys, distinct, fits):
             if not fit["fits"]:
-                raise OverlayError("text_too_long", "文字过长：缩到最小字号仍无法完整显示，请缩短文字")
+                # Keep the measured cause in the private exception log; the bus still gets the stable message.
+                detail = {"sprite_id": group[0], "instance": item["index"], "text_length": len(item["text"]),
+                          "font_size": fit["size"], "frames": item["frames"], "problems": fit.get("problems", [])}
+                raise OverlayError("text_too_long", "文字过长：缩到最小字号仍无法完整显示，请缩短文字") from ValueError(json.dumps(detail, ensure_ascii=False))
             if fit["size"] != item["values"]["fontSize"]:
                 logger.info("叠加渲染 Sprite %s 的文字（%d 字）字号 %s 缩小为 %s", group[0], len(item["text"]), item["values"]["fontSize"], fit["size"])
                 for index in members[(group, key)]:

@@ -477,7 +477,7 @@ class Job:
         # 恢复时同样复核：叠加渲染环境缺失要在 ASR 与切片模型产生成本前失败。
         await remotion.require_environment(self.record["data"])
         if request.text and request.composition_mode != "materials_silent" and "max_segment_chars" not in self.record["data"]:
-            limit = subtitle_capacity.calculate(self.record["task_id"], self.record["data"])
+            limit = await subtitle_capacity.calculate(self.record["task_id"], self.record["data"])
             await self.save("template", max_segment_chars=limit)
         if request.composition_mode == "materials_silent":
             prepared = dict(template=template,
@@ -593,6 +593,7 @@ class Job:
         inputs = dict(request=data["request"], template=data["template"], transition_seed=self.record["task_id"], segments=data.get("segmentation", {}).get("segments", []),
                       frame_mask_url=data.get("frame_mask_url"),
                       use_keyword_transitions=data.get("keyword_transitions", False),
+                      use_transition_spacing=data.get("transition_spacing", False),
                       remotion_assets=(data.get("remotion") or {}).get("assets", {}),
                       title_keyword=data.get("segmentation", {}).get("title_keyword", ""),
                       title_en=data.get("segmentation", {}).get("title_en"),

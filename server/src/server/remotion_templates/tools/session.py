@@ -39,6 +39,7 @@ from .contracts import (
     SpriteReview,
 )
 from ..categories import EFFECT_PARAMETER, EFFECT_TARGETS, FIXED_TITLES, GLYPH_TARGETS, agent_message, category_problems, parameter_problems
+from ..builtin_effects import BUILTINS
 from ..fonts import FontStore, open_font_schema
 from .catalog_store import CatalogStore
 from .registry import ToolFault
@@ -81,44 +82,72 @@ _REVIEW_SIDE = 720
 
 
 def review_frames(sprite: SpriteDraft) -> list[tuple[int, str]]:
-    """The frames the Agent looks at after saving ``sprite``, each with what it shows, in time order (at most four).
+    """Return at most six observations in priority order: the transition's before, middle and end, the exit and the
+    last frame come first, then one frame per entrance effect, the settled middle frame, and last the same entrance on
+    a further tier. A transition therefore only crowds out frames that add no new evidence.
 
-    A text block is sampled from its own timing in its defaults: the middle frame (shown in full, where a held text is
-    frozen), half way into each enabled entrance (entrances that start later, after their delay, get frames of their
-    own, so their order shows), the frame before the lower tier appears and half way into its longest cue effect, and
-    half way out of its longest exit. Other Sprites are sampled at a quarter, the middle and three quarters of their
-    length. Lengths and delays are clamped as the host clamps them.
+    Labels describe sampling times, not a verdict that text is complete. An effect window is measured in the frames its
+    target tier plays (the span and half-up rounding compose.mjs uses), so a frame labelled half way is half way there.
+    Other Sprites keep their three samples.
     """
     last, fps = sprite.composition.duration_frames - 1, sprite.composition.fps
     if sprite.text is None:
         picks = [(last // 2, "half way"), (last // 4, "a quarter of the way"), (last * 3 // 4, "three quarters of the way")]
     else:
         config = sprite.default_parameters
-        exit_length, cue_offset = 0, None
+        exit_length = 0
+        cues: list[tuple[int, int]] = []
         entrances: dict[int, str] = {}
+        again: dict[int, str] = {}
+        lines = str(config["text"]).split("\n") if "text" in config else None
+        starts = list(config.get("lineStartFrames") or [0])
+        if lines is not None:
+            # Only the tiers that draw text play frames of their own.
+            starts = starts[:len(lines)]
+            if len(starts) > 1 and not lines[1].strip():
+                starts = starts[:1]
+        cue = starts[1] if len(starts) > 1 else None
         for index, effect in enumerate(sprite.text.effects, start=1):
             if effect.slot == "loop" or config.get(f"effect{index}") is False:
                 continue
-            length = max(1, min(round((config.get(f"effect{index}Seconds") or 0.5) * fps), last // 2))
-            delay = min(round((config.get(f"effect{index}Delay") or 0) * fps), max(0, last // 2 - length))
-            if effect.slot == "enter":
-                entrances.setdefault(delay + length // 2, f"half way into the entrance {effect.title}")
-            elif effect.slot == "cue":
-                cue_offset = max(cue_offset or 0, delay + length // 2)
-            else:
-                exit_length = max(exit_length, length)
-        starts = config.get("lineStartFrames") or [0]
-        cue = starts[1] if len(starts) > 1 else None
-        picks = [(last // 2, "shown in full (middle frame)"), *sorted(entrances.items())]
-        if cue:
-            picks.append((cue - 1, "just before the lower tier appears"))
-        if cue is not None and cue_offset is not None:
-            picks.append((cue + cue_offset, "half way into the effects played when the lower tier appears"))
+            target = config.get(f"effect{index}Target", "block")
+            origins = [0] if target == "block" else starts[:1] if target == "line1" else starts[1:2] if target == "line2" else starts
+            for tier, origin in enumerate(origins):
+                if origin > last:
+                    continue
+                # The frames the position plays less one, measured as compose.mjs measures them.
+                span = last - origin
+                length = max(1, min(int((config.get(f"effect{index}Seconds") or 0.5) * fps + 0.5), span // 2))
+                delay = min(int((config.get(f"effect{index}Delay") or 0) * fps + 0.5), max(0, span // 2 - length))
+                if effect.slot == "enter":
+                    where = "" if target == "block" or len(starts) < 2 else " (upper tier)" if origin == starts[0] else " (lower tier)"
+                    (entrances if tier == 0 else again).setdefault(origin + delay + length // 2, f"half way into the entrance {effect.title}{where}")
+                elif effect.slot == "cue" and cue is not None:
+                    cues.append((cue + delay + length // 2, cue + delay + length))
+                elif effect.slot == "exit":
+                    exit_length = max(exit_length, length)
+        picks = [(last, "last frame of the preview")]
         if exit_length:
             picks.append((last - exit_length // 2, "half way out of the exit"))
+        if cue:
+            picks.append((cue - 1, "just before the lower tier appears"))
+        if cues:
+            middle, end = max(cues, key=lambda window: window[1])
+            picks.extend([(middle, "half way into the effects played when the lower tier appears"),
+                          (end, "end of the effects played when the lower tier appears")])
+        # A transition's own before/after frames already show the settled state, so with one the middle frame yields
+        # its place to the entrances; without one it is the only hold evidence and keeps its rank. An entrance repeated
+        # on a further tier is sampled only when nothing more telling is left out.
+        hold = (last // 2, "middle of the preview")
+        if cue is None:
+            picks.append(hold)
+        picks.extend(sorted(entrances.items()))
+        if cue is not None:
+            picks.append(hold)
+        picks.extend(sorted(again.items()))
     chosen: dict[int, str] = {}
     for frame, label in picks:
-        if len(chosen) < 4 and 0 <= frame <= last:
+        if len(chosen) < 6 and 0 <= frame <= last:
             chosen.setdefault(frame, label)
     return sorted(chosen.items())
 
@@ -211,7 +240,8 @@ _HINTS = (
     # A keyword hit drawn without its tier's look is not a layout problem; its message says where the look belongs.
     (lambda item: item.message.startswith("text_fit") and _KEYWORD_LOOK_LOST not in item.message,
      "Lay the text out from its content: wrap it onto several lines inside a bounded width, no fixed-height box with "
-     "overflow hidden; use the fontSize parameter as given (the host shrinks long text at render time) and make sure text up to its maxLength fits at the smallest fontSize."),
+     "overflow hidden; use the fontSize parameter as given (the host shrinks long text at render time) and make sure text up to its maxLength fits at the smallest fontSize. "
+     "If a whole tier is missing, check effect endpoints: enter and exit must show it at progress 1. An effect triggered by another tier appearing uses cue, whose progress rises from 0 to 1."),
     (lambda item: item.source == "contract" and item.field is not None,
      "parameter_schema must be a self-contained object schema with additionalProperties false, and default_parameters "
      "must satisfy it."),
@@ -299,16 +329,19 @@ def _text_block(sprite: SpriteDraft, config: dict) -> dict:
         block["keyword"] = {"instance_id": keyword, "source": {"kind": "draft", "draft_id": f"base_{keyword}"}, "parameters": parameters[keyword]}
     if sprite.text.effects:
         # Effect k's position, length and switch are its configuration parameters, as the user last saved them.
-        block["effects"] = [
-            {
-                "instance_id": item.instance_id, "source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"}, "parameters": parameters[item.instance_id],
-                "title": item.title, "slot": item.slot, "target": config.get(f"effect{index}Target"),
+        def effect(item, index: int) -> dict:
+            """One effect entry: a built-in re-emits its name, a Preset references its base_* draft."""
+            shared = {
+                "instance_id": item.instance_id, "title": item.title, "slot": item.slot, "target": config.get(f"effect{index}Target"),
                 **({"seconds": config.get(f"effect{index}Seconds")} if item.slot != "loop" else {}),
                 **({"delay": config[f"effect{index}Delay"]} if f"effect{index}Delay" in config else {}),
                 **({"stagger": config[f"effect{index}Stagger"]} if f"effect{index}Stagger" in config else {}), "enabled": config.get(f"effect{index}") is not False,
             }
-            for index, item in enumerate(sprite.text.effects, start=1)
-        ]
+            if item.builtin:
+                return {"builtin": item.builtin, **shared}
+            return {"source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"}, "parameters": parameters[item.instance_id], **shared}
+
+        block["effects"] = [effect(item, index) for index, item in enumerate(sprite.text.effects, start=1)]
     return block
 
 
@@ -482,6 +515,9 @@ class ToolSession:
             sources: dict[str, str] = {}
             presets = {}
             for item in sprite.instances:
+                if item.builtin:
+                    # A host built-in effect has no Preset source to draft; the edit re-emits its name instead.
+                    continue
                 draft_id = f"base_{item.instance_id}"
                 same = sources.get(item.preset.code)
                 presets[draft_id] = {"same_code_as": same} if same else item.preset.model_dump(mode="json", exclude_unset=True)
@@ -594,13 +630,13 @@ class ToolSession:
 
     async def validate_render(
         self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
-        capture=None,
+        capture=None, text_fit_parameters: dict[str, bool] | None = None,
     ) -> RenderValidationReport:
         """Run the isolated component behavior runner and cache the exact report.
 
         ``transparency`` adds the canvas-coverage measurement, ``lengths`` a mount at those render lengths (frames),
-        ``text_fit`` the longest-text layout measurement of a text effect and ``capture`` (a `FrameCapture`) still
-        frames for the Agent. The options are only forwarded when asked for, so a validator that predates them keeps working.
+        ``text_fit`` measures the text layout, with the host's optional ``text_fit_parameters`` patch; ``capture``
+        supplies actual animated frames for the Agent. Only requested options are forwarded.
         """
         if self.validator is None:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated behavior validator is unavailable.")
@@ -610,6 +646,7 @@ class ToolSession:
             options = {
                 **({"transparency": True} if transparency else {}), **({"lengths": lengths} if lengths else {}),
                 **({"text_fit": True} if text_fit else {}), **({"capture": capture} if capture else {}),
+                **({"text_fit_parameters": text_fit_parameters} if text_fit and text_fit_parameters is not None else {}),
             }
             report = await self.validator.validate_render(request, **options)
         except ValidationUnavailable as exc:
@@ -755,6 +792,9 @@ class ToolSession:
         # A text-block Preset is checked with its role, so the call site passes the props the host gives it.
         checked: set[str] = set()
         for instance in sprite.instances:
+            if instance.builtin:
+                # A host built-in effect has no Preset source to typecheck; its component is in the generated code.
+                continue
             component = instance.preset
             key = component.model_dump_json(include={"code", "parameter_schema", "default_parameters", "role"})
             if key in checked:
@@ -835,6 +875,11 @@ class ToolSession:
             # frozen at its preview length instead, so its shortest played length is that threshold.
             lengths=render_lengths(sprite.composition.fps, text=sprite.kind == "text"),
             text_fit=sprite.kind == "text",
+            # A cue can intentionally remove one tier as another arrives. Measure layout without that cue, but
+            # keep enter/exit wrappers: they must still show all text at progress 1, rejecting reversed transitions.
+            # Presence of this host-only patch also permits independent tier timing in a host-composed still block.
+            **({"text_fit_parameters": {f"effect{index}": False for index, effect in enumerate(sprite.text.effects, start=1)
+                                        if effect.slot == "cue"}} if sprite.text is not None and sprite.text.still else {}),
             **({"capture": capture} if capture else {}),
         )
         if report.passed:
@@ -995,12 +1040,6 @@ class ToolSession:
             if effect.slot == "loop" and effect.seconds is not None:
                 raise ToolFault("INVALID_ARGUMENT", "A looping effect lasts as long as its position shows: leave seconds out (only enter and exit "
                                 "effects have a length).", field=f"/text/effects/{index}/seconds")
-        # Held tiers only move through effects, so every such text has an entrance and an exit users can switch off.
-        missing = [slot for slot in ("enter", "exit") if self.still_text and not any(effect.slot == slot for effect in block.effects)]
-        if missing:
-            raise ToolFault("INVALID_ARGUMENT", f"The text block has no {' and no '.join(missing)} effect: the host holds its tiers still, so give it at least one enter "
-                            "and one exit effect Preset (role effect), such as a fade with opacity = progress listed as both, or the motion the request or "
-                            "reference shows. For text the user wants still, keep them with enabled false so users can switch them on.", field="/text/effects")
         self._check_length(block.duration_frames, "/text/duration_frames")
         store = FontStore.active
         fonts = store.families() if store is not None else sorted({tier.font_family for tier in block.tiers})
@@ -1024,6 +1063,20 @@ class ToolSession:
             seen.add(slot.instance_id)
             if role == "text" and slot.font_family not in fonts:
                 raise ToolFault("INVALID_ARGUMENT", f"font_family {slot.font_family!r} is not in the font library: {fonts}", field=f"{field}/font_family")
+            if role == "effect" and getattr(slot, "builtin", None) is not None:
+                # A host built-in draws itself; its style props are schema'd like a Preset's so they can be bound and edited.
+                spec = BUILTINS[slot.builtin]
+                schema = {"type": "object", "properties": dict(spec["schema"]), "additionalProperties": False}
+                defaults = dict(spec["defaults"])
+                try:
+                    builtin_parameters = merge_parameters(defaults, slot.parameters or {})
+                    validate_parameters(schema, builtin_parameters)
+                except Exception as exc:
+                    raise ToolFault("INVALID_ARGUMENT", f"Invalid parameters for built-in {slot.builtin}: {str(exc)[:300]}", field=f"{field}/parameters") from exc
+                stub = {"description": f"内置特效 {slot.builtin}", "code": "", "role": "effect", "parameter_schema": schema, "default_parameters": defaults}
+                resolved.append({"instance_id": slot.instance_id, "preset": stub, "builtin": slot.builtin, "parameters": builtin_parameters, "layout": layout, "timing": timing})
+                summaries.append(InstanceSummary(instance_id=slot.instance_id, parameter_names=_parameter_names(schema), layout=layout, timing=timing))
+                continue
             preset, origin, parameters = await self._resolve(slot.instance_id, slot.source, slot.parameters, field)
             if preset.get("role") != role:
                 raise ToolFault("INVALID_ARGUMENT", f"{slot.instance_id} needs a Preset with role {role!r} (written for the text block), "
@@ -1049,13 +1102,27 @@ class ToolSession:
             bindings=[*host, *bindings],
             text={"layout": block.layout.model_dump(mode="json"), "tiers": [tier.instance_id for tier in block.tiers],
                   **({"keyword": block.keyword.instance_id} if block.keyword else {}),
-                  "effects": [{"instance_id": item.instance_id, "title": item.title, "slot": item.slot} for item in block.effects],
+                  "effects": [{"instance_id": item.instance_id, "title": item.title, "slot": item.slot, **({"builtin": item.builtin} if item.builtin else {})} for item in block.effects],
                   **({"preview_keywords": block.preview_keywords} if block.preview_keywords else {}),
                   **({"still": True} if self.still_text else {})},
         ), summaries)
 
     async def _with_usage(self, effect, index: int):
-        """Fill omitted usage fields, including glyph timing only where the effective slot and target support it."""
+        """Fill omitted usage fields, including glyph timing only where the effective slot and target support it.
+
+        A host built-in effect fills them from its own defaults instead of a Preset's usage.
+        """
+        if effect.builtin is not None:
+            defaults = BUILTINS[effect.builtin]
+            filled = {name: defaults[name] for name in ("title", "slot", "target") if getattr(effect, name) is None}
+            slot = effect.slot or defaults["slot"]
+            target = effect.target or defaults["target"]
+            if effect.seconds is None and slot != "loop" and "seconds" in defaults:
+                filled["seconds"] = defaults["seconds"]
+            if effect.stagger is None and slot != "loop" and target in GLYPH_TARGETS:
+                raise ToolFault("INVALID_ARGUMENT", f"{effect.instance_id} is a built-in effect at the {target} glyph position: choose stagger explicitly "
+                                "(0 all glyphs together, 1 one after another).", field=f"/text/effects/{index}/stagger")
+            return effect.model_copy(update=filled) if filled else effect
         missing = [name for name in ("title", "slot", "target") if getattr(effect, name) is None]
         needs_stagger = effect.slot != "loop" and effect.target in GLYPH_TARGETS and effect.stagger is None
         if not missing and not needs_stagger and (effect.seconds is not None or effect.slot == "loop"):

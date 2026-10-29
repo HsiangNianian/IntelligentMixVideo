@@ -26,7 +26,7 @@ import { compactTransitions, previewTransitions, setTransitionDuration, transiti
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
 import { FrameMaskCard, FrameMaskPanel } from "./FrameMaskPanel";
-import { newFrameMask } from "./frameMask";
+import { FRAME_MASK_OBJECT_ID, newFrameMask } from "./frameMask";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
 import { addClip, bindClip, clipSlot, hiddenTextClips, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
@@ -284,7 +284,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     try {
       // Remotion 字效保存文字区间，转场保留自身时长，与 IMS 对象在同一次请求里保存。
       const saveDraft = preview.timeline ? timeClips(savingDraft, preview.timeline, "save") : savingDraft;
-      const saved = await api.saveTemplate(setTransitionDuration(saveDraft, savingDraft.transition_duration_seconds), current?.template_id);
+      const saved = await api.saveTemplate(
+        setTransitionDuration(saveDraft, savingDraft.transition_duration_seconds), current?.template_id, !!current?.frame_mask,
+      );
       if (!mounted.current) return;
       const next = toDraft(saved);
       setCurrent(saved);
@@ -386,7 +388,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                 <div hidden={assetSource !== "ai"}><SpriteCatalog catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} /></div>
                 <div hidden={assetSource !== "masks"}><FrameMaskCard mask={draft.frame_mask} onSelect={() => {
                   if (!draft.frame_mask) editTrack(() => ({ ...draft, frame_mask: newFrameMask() }));
-                  setTarget("frame-mask");
+                  setTarget(FRAME_MASK_OBJECT_ID);
                 }} /></div>
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
@@ -395,8 +397,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
               </main>}
               inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={visibleDraft!} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
                 <SpriteClips clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
-                {target === "frame-mask" && draft.frame_mask && <FrameMaskPanel mask={draft.frame_mask}
-                  onChange={(frame_mask) => editTrack(() => ({ ...draft, frame_mask }))} onClose={() => setTarget(null)} />}
+                {target === FRAME_MASK_OBJECT_ID && draft.frame_mask && <FrameMaskPanel mask={draft.frame_mask}
+                  onChange={(frame_mask) => editTrack(() => ({ ...draft, frame_mask }))}
+                  onRemove={() => editTrack(() => removeTrack(draft, FRAME_MASK_OBJECT_ID))} onClose={() => setTarget(null)} />}
                 <SplitScreenEditor value={draft.split_screen} removeBackground={draft.avatar_effects?.removeBackground} onChange={(split_screen) => editTrack(() => ({ ...draft, split_screen,
                   ...(split_screen.layout !== (draft.split_screen?.layout ?? "split") ? { avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground: split_screen.layout === "overlay" } } : {}),
                 }))} />

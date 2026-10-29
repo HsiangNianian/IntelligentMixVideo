@@ -278,7 +278,7 @@ message SaveTemplateRequest {
   SplitScreen split_screen = 9;
   // 未携带时保留原配置；关闭开场或抠像须显式传入 false。
   AvatarEffects avatar_effects = 10;
-  // 缺省不添加蒙版；更新时省略保留原配置，显式关闭两栏即可停用。
+  // 缺省不添加蒙版；更新时省略保留原配置，空消息移除，关闭两栏仅停用。
   FrameMask frame_mask = 11;
 }
 

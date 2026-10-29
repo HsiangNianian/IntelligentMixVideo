@@ -66,7 +66,7 @@ class FrameCapture(NamedTuple):
 
 
 class FitSprite(NamedTuple):
-    """One text Sprite of a render for `ToolValidator.fit_texts`: the code as rendered, its canvas, content box and items."""
+    """One text Sprite to measure: sealed code, canvas, content box and fit or capacity probe items."""
 
     component: ComponentDefinition
     canvas: dict[str, int]
@@ -237,7 +237,7 @@ class ToolValidator:
 
     async def validate_render(
         self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
-        capture: FrameCapture | None = None,
+        capture: FrameCapture | None = None, text_fit_parameters: dict[str, bool] | None = None,
     ) -> RenderValidationReport:
         """Run fixed-canvas default/configured mounts and each independent behavior script.
 
@@ -248,7 +248,8 @@ class ToolValidator:
         parameter to its ``maxLength`` and fails the ``text_fit`` check when that text is clipped, leaves the canvas or
         is too small to read. Only the generation path asks for these: a user's own parameter edits are never blocked
         by them. With ``capture`` the same mount also captures still frames into ``capture.directory`` when every
-        check passes; a failed report captures none.
+        check passes; a failed report captures none. ``text_fit_parameters`` marks host-composed still text and
+        disables its cue wrappers for layout measurements; it never changes runtime or review frames.
         """
         if request.duration_frames > 216000:
             raise ValueError("duration_frames exceeds the validation resource limit")
@@ -292,6 +293,8 @@ class ToolValidator:
         }
         if lengths:
             payload_request["lengths"] = lengths
+        if text_fit and text_fit_parameters is not None:
+            payload_request["text_fit_parameters"] = text_fit_parameters
         if capture:
             payload_request["capture"] = {"frames": capture.frames, "box": capture.box, "scale": capture.scale, "parameters": capture.parameters or {}}
         (directory / "request.json").write_text(json.dumps(payload_request), encoding="utf-8")
@@ -367,12 +370,52 @@ class ToolValidator:
         move of the placement, in canvas pixels, that brings it back in; ``fits`` is false when not even that helps.
         ``grow_shift`` is a signed downward (+) or upward (-) move of a subtitle text that wrapped, so the extra lines
         grow away from the other language's subtitle.
+        Failed items include ``problems`` with the measured reasons for private render diagnostics.
         A worker that cannot answer is an infrastructure failure, never a pass.
         """
+        payload = await self._measure_texts("fit", sprites, composition, timeout_seconds, cpu_seconds)
+        fits = payload.get("fits")
+        if not isinstance(fits, list) or len(fits) != len(sprites) or not all(
+            isinstance(answers, list)
+            and [answer.get("index") for answer in answers if isinstance(answer, dict)] == [item["index"] for item in sprite.items]
+            and all(isinstance(answer.get("fits"), bool) and isinstance(answer.get("size"), (int, float)) and _valid_shift(answer.get("shift")) and _valid_size(answer.get("keyword_size")) and _valid_size(answer.get("grow_shift")) for answer in answers)
+            for answers, sprite in zip(fits, sprites)
+        ):
+            raise ValidationUnavailable("Text fit worker returned an incomplete report")
+        return fits
+
+    async def text_capacities(
+        self, sprites: list[FitSprite], composition: dict[str, int], *, timeout_seconds: float, cpu_seconds: int,
+    ) -> list[list[dict[str, Any]]]:
+        """Measure the largest full-width sample that fits each placement without shrinking or moving it.
+
+        Items contain ordered ``samples`` with ``chars`` per line, complete ``text`` and plain/keyword ``values``
+        variants, plus ``lines``, ``frames``, ``length`` and ``transform``. Only the sampled preview timing is known
+        before segmentation; final render preflight still checks the actual text and timing. Missing or malformed
+        results fail closed instead of falling back to the hidden IMS subtitle.
+        """
+        payload = await self._measure_texts("capacity", sprites, composition, timeout_seconds, cpu_seconds)
+        capacities = payload.get("capacities")
+        if not isinstance(capacities, list) or len(capacities) != len(sprites) or not all(
+            isinstance(answers, list) and len(answers) == len(sprite.items)
+            and all(isinstance(answer, dict) and answer.get("index") == item["index"]
+                    and type(answer.get("capacity")) is int
+                    and 0 <= answer["capacity"] <= item["samples"][-1]["chars"]
+                    for answer, item in zip(answers, sprite.items))
+            for answers, sprite in zip(capacities, sprites)
+        ):
+            raise ValidationUnavailable("Text capacity worker returned an incomplete report")
+        return capacities
+
+    async def _measure_texts(
+        self, mode: str, sprites: list[FitSprite], composition: dict[str, int],
+        timeout_seconds: float | None, cpu_seconds: int,
+    ) -> dict[str, Any]:
+        """Run fit/capacity probes in one isolated browser under the caller's resource grant and deadline."""
         try:
-            directory = self._attempt("fit-texts")
+            directory = self._attempt(f"{mode}-texts")
             request = {
-                "mode": "fit",
+                "mode": mode,
                 "composition": composition,
                 "sprites": [
                     {
@@ -393,15 +436,9 @@ class ToolValidator:
         for item in payload.get("checks", []) if isinstance(payload, dict) else []:
             if item.get("name") == "runtime" and item.get("status") == "error":
                 raise ValidationUnavailable(str(item.get("message") or "Fit worker runtime error"))
-        fits = payload.get("fits") if isinstance(payload, dict) else None
-        if not isinstance(fits, list) or len(fits) != len(sprites) or not all(
-            isinstance(answers, list)
-            and [answer.get("index") for answer in answers if isinstance(answer, dict)] == [item["index"] for item in sprite.items]
-            and all(isinstance(answer.get("fits"), bool) and isinstance(answer.get("size"), (int, float)) and _valid_shift(answer.get("shift")) and _valid_size(answer.get("keyword_size")) and _valid_size(answer.get("grow_shift")) for answer in answers)
-            for answers, sprite in zip(fits, sprites)
-        ):
-            raise ValidationUnavailable("Text fit worker returned an incomplete report")
-        return fits
+        if not isinstance(payload, dict):
+            raise ValidationUnavailable("Text measurement worker returned an incomplete report")
+        return payload
 
     async def validate_samples(
         self, component: ComponentDefinition, composition: dict[str, int], box: dict[str, float], samples: list[dict[str, Any]],

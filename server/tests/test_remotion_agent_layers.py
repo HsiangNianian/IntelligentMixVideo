@@ -174,6 +174,25 @@ def test_a_delegation_runs_the_host_plan_without_the_plan_model(monkeypatch, tmp
     assert run.stalled_turns == 0
 
 
+def test_outer_can_ask_the_plan_react_to_design_the_steps(monkeypatch, tmp_path):
+    """Outer 用 plan 动作把任务交给 Plan ReAct 设计步骤（不是宿主标准两步）；Plan update_plan 后 Executor 逐步执行并发布。"""
+    plan = {"goal": "自定计划", "steps": [
+        {"id": "think", "goal": "先看参考", "tool_modules": ["tools"], "done_when": "observed"},
+        {"id": "build", "goal": "组合并保存", "tool_modules": ["preset", "sprite"], "done_when": "saved"},
+    ]}
+    run, harness = new_run(monkeypatch, tmp_path, [
+        call("outer-1", "tools_plan_execute", {"action": "plan", "reason": "不是标准两步"}),
+        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan}),
+        call("exec-1", "tools_inspect", {"tool_name": "sprite.create"}),
+        report("exec-2"),
+        call("exec-3", "sprite_create", {"draft_id": "sprite_draft_1"}),
+        report("exec-4"),
+    ])
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
+    assert harness.roles == ["outer", "plan", "executor", "executor", "executor", "executor"]
+    assert [step.id for step in run.state.plan.steps] == ["think", "build"]
+
+
 def test_the_executor_window_offers_the_step_tools_and_report_step_only(monkeypatch, tmp_path):
     """执行层只看到当前步骤模块的工具和 tools_report_step；计划控制不在其中，延后实现的工具也不出现。"""
     run, _ = new_run(monkeypatch, tmp_path, [])
@@ -447,6 +466,20 @@ def test_a_blocked_step_wakes_the_plan_which_can_continue_it(monkeypatch, tmp_pa
     assert harness.roles == ["outer", "executor", "plan"] + ["executor"] * 5
 
 
+def test_a_plan_can_ask_and_the_host_routes_it_to_outer(monkeypatch, tmp_path):
+    """Plan 遇到只有用户能解决的歧义时 ask：宿主把问题交给 Outer，由 Outer 提问，任务以 needs_input 结束。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        report("exec-1", "blocked", "需要用户决定风格"),
+        call("plan-1", "tools_plan_execute", {"action": "ask", "questions": ["要卡通还是写实？"], "reason": "风格未定"}),
+        call("outer-2", "tools_plan_execute", {"action": "ask", "questions": ["要卡通还是写实？"]}),
+    ])
+    result = asyncio.run(run.plan_execute())
+    assert result.questions == ["要卡通还是写实？"]
+    assert harness.roles == ["outer", "executor", "plan", "outer"]
+    assert run.plan_result["status"] == "needs_input"
+
+
 SAVED_THEN_BLOCKED = [
     delegate(),
     call("exec-1", "preset_search", {"preset_id": "preset-1"}),
@@ -506,19 +539,15 @@ def test_a_spent_task_budget_publishes_the_sprite_the_task_saved(monkeypatch, tm
     assert "outer" not in harness.roles[1:]
 
 
-def test_outer_answers_through_the_control_tool_and_never_asks(monkeypatch, tmp_path):
-    """Outer 用 answer 动作回答问题，不需要在文本里手写 JSON；提问（ask）被拒绝并引导先做出 Sprite（用户要求：不要询问，尽可能先做出来再改），
-    文本里的 questions 同样被拒。"""
+def test_outer_answers_and_asks_through_the_control_tool(monkeypatch, tmp_path):
+    """Outer 用 answer 回答问题；用 ask（工具动作或文本 JSON）真正把问题交给用户，任务以 needs_input 结束，模型无需在文本里手写控制。"""
     run, _ = new_run(monkeypatch, tmp_path, [call("outer-1", "tools_plan_execute", {"action": "answer", "answer": "可以制作暖色调滤镜。"})])
     run.session.latest_sprite_id = None  # a new task has saved nothing yet
     assert asyncio.run(run.plan_execute()).answer == "可以制作暖色调滤镜。"
     for asked in (call("outer-1", "tools_plan_execute", {"action": "ask", "questions": ["要多暖？"]}), AssistantMessage(content='{"questions":["要多暖？"]}')):
-        run, harness = new_run(monkeypatch, tmp_path, [asked])
-        feedback = watch_feedback(run, harness)
-        with pytest.raises(ScriptEnd):
-            asyncio.run(run.plan_execute())
-        # The refusal steers the next turn of the same layer.
-        assert "Do not ask the user" in feedback[1][0] and run.layer is Layer.OUTER
+        run, _ = new_run(monkeypatch, tmp_path, [asked])
+        result = asyncio.run(run.plan_execute())
+        assert result.answer is None and result.questions == ["要多暖？"]
 
 
 def test_curly_quoted_protocol_json_is_still_understood(monkeypatch, tmp_path):
@@ -540,17 +569,16 @@ def test_executor_cannot_call_plan_control(monkeypatch, tmp_path):
     assert "TOOL_NOT_FOUND" in json.dumps(run.executor_context.messages()[-1])
 
 
-def test_a_step_never_asks_and_the_executor_gets_the_request(monkeypatch, tmp_path):
-    """审计复现（作品 72a195d7）：Executor 三次说「数据里没有 user_intent」并报 needs_input 去问用户，需求其实在快照深处；Plan 随之停止，
-    Outer 最后用 answer 把需求原文回给用户，任务以「已回答」结束。现在交给 Executor 的交接消息带着需求、快照把 user_intent 放在最前；
-    needs_input 被拒并引导先按合理的选择做出 Sprite；已经委派的任务不能再以普通回答结束。"""
+def test_the_executor_gets_the_request_and_needs_input_routes_to_outer(monkeypatch, tmp_path):
+    """审计复现（作品 72a195d7）：交给 Executor 的交接消息带着需求、快照把 user_intent 放在最前；Executor 报 needs_input 时控制交给 Outer，
+    Outer 据 plan_result 提问、任务以 needs_input 结束；已经委派的任务不能再以普通回答结束。"""
     asked = call("exec-1", "tools_report_step", {"status": "needs_input", "summary": "缺少文案", "questions": ["文字是什么？"]})
-    run, harness = new_run(monkeypatch, tmp_path, [delegate(), asked], intent={"original_request": {"description": "今日灵感 打字机"}, "accepted_base": {"big": True}})
-    feedback = watch_feedback(run, harness)
-    with pytest.raises(ScriptEnd):
-        asyncio.run(run.plan_execute())
-    assert harness.roles == ["outer", "executor", "executor"] and run.layer is Layer.EXECUTOR
-    assert feedback[1] == [] and "Do not ask the user" in feedback[2][0]
+    outer_asks = call("outer-2", "tools_plan_execute", {"action": "ask", "questions": ["文字是什么？"]})
+    run, harness = new_run(monkeypatch, tmp_path, [delegate(), asked, outer_asks], intent={"original_request": {"description": "今日灵感 打字机"}, "accepted_base": {"big": True}})
+    result = asyncio.run(run.plan_execute())
+    assert result.questions == ["文字是什么？"]
+    # Executor needs_input hands control straight to Outer, which asks.
+    assert harness.roles == ["outer", "executor", "outer"]
     handoff = next(item["content"] for item in run.executor_context.messages() if str(item.get("content", "")).startswith("Host handoff"))
     assert "今日灵感 打字机" in handoff and "\"big\"" not in handoff
     data, _ = run.snapshot()

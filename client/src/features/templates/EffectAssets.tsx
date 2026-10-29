@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { defaultEditor, textRoles, type Category, type Draft, type Editor, type EffectAsset, type EffectTrack, type TextRole } from "./model";
 import { assetCategories, assetField, isSelectableAsset, type EffectTarget } from "./effects";
 import { trackLabel, trackLayers } from "./tracks";
+import { FRAME_MASK_OBJECT_ID } from "./frameMask";
 import { AssetBrowser, CoverPlaceholder } from "./AssetBrowser";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 
@@ -20,11 +21,11 @@ function AssetCover({ asset }: { asset: EffectAsset }) {
   );
 }
 
-/** 六类画面对象使用独立图标和颜色，列表与设置栏共享。 */
-export const objectIcons: Record<EffectTarget, LucideIcon> = { title: Heading1, subtitle: Captions, bubble: MessageCircle, filter: SlidersHorizontal, vfx: Sparkles, transition: Shuffle };
+/** 画面对象使用独立图标和颜色，列表与设置栏共享。 */
+export const objectIcons: Record<EffectTarget | "frame-mask", LucideIcon> = { title: Heading1, subtitle: Captions, bubble: MessageCircle, filter: SlidersHorizontal, vfx: Sparkles, transition: Shuffle, "frame-mask": Layers };
 
 /** 对象列表和设置栏展示带类别色块的图标。 */
-export function ObjectIcon({ target }: { target: EffectTarget }) {
+export function ObjectIcon({ target }: { target: keyof typeof objectIcons }) {
   const Icon = objectIcons[target];
   return <span data-object={target} className="template-object-icon flex size-7 shrink-0 items-center justify-center rounded-md" aria-hidden="true"><Icon className="size-3.5" /></span>;
 }
@@ -86,21 +87,25 @@ export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTe
   );
 }
 
-/** 从保存字段派生对象列表；每行显示类型、效果和当前预览区间。 */
+/** 从保存字段派生对象列表；蒙版也作为画面对象展示，继续使用模板级配置保存。 */
 export function AppliedEffects({ draft, catalog, resolved, selected, onSelect }: {
   draft: Draft; catalog: EffectAsset[]; resolved?: import("./tracks").ResolvedTimeline; selected: string | null; onSelect: (target: string) => void;
 }) {
-  return <section aria-label="已添加特效" className="space-y-3 border-b p-4">
-    <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">画面对象</h2><span className="text-[11px] tabular-nums text-muted-foreground">{draft.tracks.length}</span></div>
-    <div className="space-y-0.5">{[...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target] || (a.target === "transition" && b.target === "transition" ? a.transition_boundary! - b.transition_boundary! : 0)).map((track) => {
+  const objects: { id: string; target: keyof typeof objectIcons; label: string; detail: string }[] = [...draft.tracks]
+    .sort((a, b) => trackLayers[a.target] - trackLayers[b.target] || (a.target === "transition" && b.target === "transition" ? a.transition_boundary! - b.transition_boundary! : 0))
+    .map((track) => {
       const effectId = { title: track.editor.titleFlower, subtitle: track.editor.subtitleFlower, bubble: track.editor.bubble, filter: track.editor.filter, vfx: track.editor.vfx, transition: track.editor.transition }[track.target];
       const effect = catalog.find((item) => item.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : "未设置效果");
       const timing = resolved?.tracks[track.id];
       const interval = timing ? timing.end > timing.start ? `${Number(timing.start.toFixed(1))}～${Number(timing.end.toFixed(1))} 秒` : "当前视频未应用" : resolved ? "当前视频未应用" : "等待预览时间";
-      return <Button key={track.id} type="button" variant="ghost" data-object={track.target} className="template-object-row h-auto w-full min-w-0 justify-start gap-2.5 rounded-md px-2 py-2 text-left" aria-pressed={selected === track.id} aria-label={`编辑${trackLabel(track, draft.tracks)}`} onClick={() => onSelect(track.id)}>
-        <ObjectIcon target={track.target} /><span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium leading-5">{trackLabel(track, draft.tracks)}</span><span className="block truncate text-[11px] leading-4 tabular-nums text-muted-foreground">{effect} · {interval}</span></span>
-      </Button>;
-    })}</div>
-    {!draft.tracks.length && <Empty className="border p-5 md:p-5"><EmptyHeader><EmptyMedia variant="icon"><Layers className="size-5" aria-hidden="true" /></EmptyMedia><EmptyTitle className="text-sm">还没有画面对象</EmptyTitle><EmptyDescription className="text-xs">从左侧特效资产选择并添加效果。</EmptyDescription></EmptyHeader></Empty>}
+      return { id: track.id, target: track.target, label: trackLabel(track, draft.tracks), detail: `${effect} · ${interval}` };
+    });
+  if (draft.frame_mask) objects.push({ id: FRAME_MASK_OBJECT_ID, target: "frame-mask", label: "上下蒙版", detail: "上下纯色栏 · 贯穿全片" });
+  return <section aria-label="已添加特效" className="space-y-3 border-b p-4">
+    <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">画面对象</h2><span className="text-[11px] tabular-nums text-muted-foreground">{objects.length}</span></div>
+    <div className="space-y-0.5">{objects.map((object) => <Button key={object.id} type="button" variant="ghost" data-object={object.target} className="template-object-row h-auto w-full min-w-0 justify-start gap-2.5 rounded-md px-2 py-2 text-left" aria-pressed={selected === object.id} aria-label={object.target === "frame-mask" ? "编辑上下蒙版对象" : `编辑${object.label}`} onClick={() => onSelect(object.id)}>
+      <ObjectIcon target={object.target} /><span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium leading-5">{object.label}</span><span className="block truncate text-[11px] leading-4 tabular-nums text-muted-foreground">{object.detail}</span></span>
+    </Button>)}</div>
+    {!objects.length && <Empty className="border p-5 md:p-5"><EmptyHeader><EmptyMedia variant="icon"><Layers className="size-5" aria-hidden="true" /></EmptyMedia><EmptyTitle className="text-sm">还没有画面对象</EmptyTitle><EmptyDescription className="text-xs">从左侧特效资产选择并添加效果。</EmptyDescription></EmptyHeader></Empty>}
   </section>;
 }

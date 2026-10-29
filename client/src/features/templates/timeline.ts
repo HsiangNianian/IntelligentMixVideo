@@ -17,7 +17,7 @@ import { trackLabel, trackLayers, type ResolvedTimeline } from "./tracks";
 import { previewVideos } from "./media";
 import type { ClipSlot } from "./clips";
 import { previewFont } from "./fonts";
-import { frameMaskImage, frameMaskRects } from "./frameMask";
+import { FRAME_MASK_OBJECT_ID, frameMaskImage, frameMaskRects } from "./frameMask";
 import { previewRect, borderSvg, previewMaterial, previewMaskUrl } from "./splitScreen";
 
 /** 预览轨道保留源素材范围，缩略图采样使用源时间，游标使用预览时间。 */
@@ -52,8 +52,8 @@ export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (O
       };
     }),
   }))];
-  if (timeline.frameMask) rows.push({ id: "frame-mask", actions: [{
-    id: "frame-mask", targetId: "frame-mask", effectId: "frame-mask",
+  if (timeline.frameMask) rows.push({ id: FRAME_MASK_OBJECT_ID, actions: [{
+    id: FRAME_MASK_OBJECT_ID, targetId: FRAME_MASK_OBJECT_ID, effectId: "frame-mask",
     start: 0, end: timeline.duration, movable: false, flexible: false,
     label: "上下蒙版", effectName: frameMaskRects(timeline.frameMask, timeline.FECanvas.Height).length ? "上下蒙版" : "上下蒙版（未显示）",
     url: "", sourceIn: 0, sourceOut: 0,
@@ -70,7 +70,7 @@ function groupTransitionRows(rows: (Omit<TimelineRow, "actions"> & { actions: Pr
   const result = rows.filter((row) => row.id !== "transitions" && row.actions[0]?.effectId !== "transition");
   result.push({ id: "transitions", actions: actions.sort((a, b) => a.start - b.start) });
   // 蒙版固定在文字/特效行下、视频行上；转场仍沿用原来的共用行。
-  const layer = (row: (typeof rows)[number]) => row.id === "transitions" ? trackLayers.transition : row.id === "frame-mask" ? 100 : row.actions[0]?.effectId === "video" ? Infinity : trackLayers[row.actions[0]?.effectId as EffectTarget] ?? 99;
+  const layer = (row: (typeof rows)[number]) => row.id === "transitions" ? trackLayers.transition : row.id === FRAME_MASK_OBJECT_ID ? 100 : row.actions[0]?.effectId === "video" ? Infinity : trackLayers[row.actions[0]?.effectId as EffectTarget] ?? 99;
   return result.sort((a, b) => layer(a) - layer(b));
 }
 
