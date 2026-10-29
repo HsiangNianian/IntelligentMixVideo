@@ -107,13 +107,14 @@ try {
   }));
   await page.waitForFunction(() => window.pixels().every(pixel => pixel[1] > pixel[0] + 50));
   await page.screenshot({ path: resolve(cache, "disabled.png") });
+  // 这里只验证预览撤除与时间轴移除；工作区点击删除、保存重读由 frame-mask.test.tsx 覆盖。
   // 重新启用再移除整个配置；视频恢复且时间轴不再保留蒙版行。
   await page.evaluate(() => window.mount(window.mask));
   await page.waitForFunction(() => String(window.pixels()[0]) === "14,44,66,255");
-  assert.equal(await page.getByRole("button", { name: "编辑上下蒙版", exact: true }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "编辑蒙版轨道", exact: true }).count(), 1);
   await page.evaluate(() => window.mount(undefined));
   await page.waitForFunction(() => window.pixels().every(pixel => pixel[1] > pixel[0] + 50));
-  assert.equal(await page.getByRole("button", { name: "编辑上下蒙版", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "编辑蒙版轨道", exact: true }).count(), 0);
   await page.screenshot({ path: resolve(cache, "removed.png") });
   console.log("通过：共享案例 PNG 像素、真实 SDK 上下蒙版、透明中部、修改颜色、停用与移除后的视频恢复。");
 } catch (error) {

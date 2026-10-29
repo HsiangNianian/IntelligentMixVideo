@@ -97,10 +97,10 @@ test("移除蒙版后保存重读不恢复，关闭设置不会移除", async ()
   expect(screen.getByLabelText<HTMLInputElement>("上栏高度").value).toBe("25");
   fireEvent.click(screen.getByRole("button", { name: "关闭蒙版设置" }));
   const objects = screen.getByRole("region", { name: "已添加特效" });
-  fireEvent.click(within(objects).getByRole("button", { name: "编辑上下蒙版" }));
-  expect(within(objects).getByRole("button", { name: "编辑上下蒙版", pressed: true })).toBeTruthy();
+  fireEvent.click(within(objects).getByRole("button", { name: "编辑上下蒙版对象" }));
+  expect(within(objects).getByRole("button", { name: "编辑上下蒙版对象", pressed: true })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
-  expect(within(objects).queryByRole("button", { name: "编辑上下蒙版" })).toBeNull();
+  expect(within(objects).queryByRole("button", { name: "编辑上下蒙版对象" })).toBeNull();
   expect(within(objects).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["编辑顶部标题", "编辑底部字幕"]);
   expect(screen.queryByLabelText("上下蒙版设置")).toBeNull();
   expect(screen.getByText("2 个对象")).toBeTruthy();
@@ -158,12 +158,12 @@ test("删除蒙版保存失败后可重试，成功后更新保存基线", async
   }) as typeof fetch);
   render(<TemplateWorkspace selection={{ templateId: stored.template_id }} onHome={() => {}} />);
   await screen.findByLabelText("模板名称");
-  fireEvent.click(within(screen.getByRole("region", { name: "已添加特效" })).getByRole("button", { name: "编辑上下蒙版" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑上下蒙版对象" }));
   fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
   fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
   await screen.findByText("临时保存失败");
   expect(stored.frame_mask).toBeDefined();
-  expect(screen.queryByRole("button", { name: "编辑上下蒙版" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "编辑上下蒙版对象" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
   await screen.findByText("已保存");
   expect(writes).toHaveLength(2);
@@ -179,7 +179,7 @@ test("删除蒙版保存失败后可重试，成功后更新保存基线", async
 });
 
 // 外部模板合法轨道可以叫 frame-mask；选择、删除和时间轴不得把它与蒙版混为一项。
-test("真实 frame-mask 轨道与蒙版可分别选择删除", () => {
+test("真实 frame-mask 轨道与蒙版可分别选择删除，两个蒙版入口名称可区分", () => {
   const catalog = readCatalog();
   const draft = addTrack(newDraft(), catalog.find(asset => asset.category === "bubble")!, "bubble").draft;
   const bubble = draft.tracks.find(track => track.target === "bubble")!;
@@ -202,8 +202,8 @@ test("真实 frame-mask 轨道与蒙版可分别选择删除", () => {
   const objects = screen.getByRole("region", { name: "已添加特效" });
   expect(within(objects).getAllByRole("button", { pressed: true })).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "编辑气泡字", pressed: true }));
-  fireEvent.click(within(objects).getByRole("button", { name: "编辑上下蒙版" }));
-  fireEvent.click(within(screen.getByRole("group", { name: "视频轨道" })).getByRole("button", { name: "编辑上下蒙版" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑上下蒙版对象" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑蒙版轨道" }));
   expect(selected).toEqual([bubble.id, maskId, maskId]);
 });
 
@@ -251,7 +251,7 @@ test("时间轴显示整段蒙版并按层级排列，关闭后仍可点击配�
   expect(disabledRows.find((row) => row.id === "mask:frame")?.actions[0].effectName).toBe("上下蒙版（未显示）");
   const selected: string[] = [];
   render(<PreviewTimeline ref={null} rows={disabledRows} disabled={false} time={0} duration={30} onSeek={() => {}} onSelect={(id) => selected.push(id)} />);
-  fireEvent.click(screen.getByRole("button", { name: "编辑上下蒙版" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑蒙版轨道" }));
   expect(selected).toEqual(["mask:frame"]);
 });
 
