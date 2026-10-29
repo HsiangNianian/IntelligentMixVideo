@@ -1,4 +1,4 @@
-"""关键词切镜、动态限频、跨渲染器时长及三代任务恢复；执行 uv run --locked pytest tests/test_video_composition_transitions.py。"""
+"""关键词切镜、动态限频、跨渲染器时长及四代任务恢复；执行 uv run --locked pytest tests/test_video_composition_transitions.py。"""
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -37,7 +37,7 @@ def spacing_case(transition_case):
     """160 秒的纯素材时间线：首尾近侧为 16／144 秒，六个中间关键词各有相距四秒的前后候选。"""
     case = transition_case
     durations = [4, 12] + [4] * 32 + [14, 2]
-    case.update(duration_ms=160000, material_durations=durations, use_transition_spacing=True)
+    case.update(duration_ms=160000, material_durations=durations, use_transition_spacing="ordered")
     case["request"]["materials"] = [{"fileUrl": f"https://media.test/{i}.mp4", "type": "video"}
                                     for i in range(len(durations))]
     source = case["segments"][0]
@@ -77,11 +77,11 @@ def test_keyword_nearest_cuts_and_whole_video_fallback(transition_case, anchors,
 
 @pytest.mark.parametrize("spaced", [False, True])
 def test_standard_uses_roles_and_subtitle_event_start(transition_case, spaced):
-    """两种关键词规则均按字幕子句与镜头角色选点；无词动态随机也允许素材间切镜。"""
+    """两种关键词规则均按字幕子句与镜头角色选点；无词时按时间从全部切镜限频。"""
     case = transition_case
     case["transition_seed"] = "b"
     if spaced:
-        case["use_transition_spacing"] = True
+        case["use_transition_spacing"] = "ordered"
     case["request"].update(compositionMode="standard", videoUrl="https://media.test/avatar.mp4")
     first = {**case["segments"][0], "start_time": 1, "end_time": 2,
              "subtitle_parts": [{"text": "丙丁", "start_time": 1, "end_time": 1.5},
@@ -94,7 +94,7 @@ def test_standard_uses_roles_and_subtitle_event_start(transition_case, spaced):
     assert [time for time, _, _ in applied_transitions(timeline)] == ([1] if spaced else [1, 3])
     for item in case["segments"]:
         item["keyword"] = ""
-    assert [time for time, _, _ in applied_transitions(build_timeline(**case)[0])] == ([2] if spaced else [1, 2, 3])
+    assert [time for time, _, _ in applied_transitions(build_timeline(**case)[0])] == ([1] if spaced else [1, 2, 3])
     for item in case["matches"]:
         item["matched_candidate_url"] = None
     assert applied_transitions(build_timeline(**case)[0]) == []
@@ -104,12 +104,12 @@ def test_standard_uses_roles_and_subtitle_event_start(transition_case, spaced):
 def test_silent_title_keyword_does_not_disable_all_cut_fallback(transition_case, spaced):
     """无声成片始终从全部切镜选择；标题词不参与，动态规则对这些候选同样限频。"""
     case = transition_case
-    case.update(use_transition_spacing=spaced, transition_seed="b")
+    case.update(use_transition_spacing="ordered" if spaced else False, transition_seed="b")
     case["request"].update(compositionMode="materials_silent", audioUrl=None, text=None,
                            processRules={"videoDuration": 10})
     case["segments"] = []
     timeline, _ = build_timeline(**case, title_keyword="业务")
-    assert [time for time, _, _ in applied_transitions(timeline)] == ([5] if spaced else [2, 5, 8])
+    assert [time for time, _, _ in applied_transitions(timeline)] == ([2, 8] if spaced else [2, 5, 8])
 
 
 def test_same_time_ignores_float_accumulation_error(transition_case):
@@ -122,7 +122,7 @@ def test_same_time_ignores_float_accumulation_error(transition_case):
 
 
 def test_keywords_without_role_switches_do_not_trigger_fallback(transition_case):
-    """混剪中素材连铺全片时虽有素材切镜，含关键词也不能回退为全部切镜加转场。"""
+    """混剪中素材连铺全片时，有词不回退；无词仍可按间隔选择素材间切镜。"""
     case = transition_case
     case["request"].update(compositionMode="standard", videoUrl="https://media.test/avatar.mp4")
     source = case["segments"][0]
@@ -131,6 +131,9 @@ def test_keywords_without_role_switches_do_not_trigger_fallback(transition_case)
     case["matches"] = [{**item, "matched_candidate_url": f"https://media.test/{i}.mp4", "matched_candidate_type": "video"}
                        for i, item in enumerate(case["segments"])]
     assert applied_transitions(build_timeline(**case)[0]) == []
+    case["use_transition_spacing"] = "ordered"
+    case["segments"][0]["keyword"] = ""
+    assert [time for time, _, _ in applied_transitions(build_timeline(**case)[0])] == [5]
 
 
 @pytest.mark.parametrize("has_keyword,expected", [(False, [5.1]), (True, [])])
@@ -140,7 +143,7 @@ def test_short_cut_is_skipped_without_advancing_or_searching_farther(transition_
     case = transition_case
     case["transition_seed"] = "b"
     if spaced:
-        case["use_transition_spacing"] = True
+        case["use_transition_spacing"] = "ordered"
     case["material_durations"] = [2, 0.1, 3, 4.9]
     case["segments"][0].update(start_time=1, end_time=1.5, keyword="甲乙" if has_keyword else "")
     actual = applied_transitions(build_timeline(**case)[0])
@@ -176,7 +179,7 @@ def test_disabled_and_empty_candidates(transition_case, disabled, spaced):
     """关闭或清空候选均无转场；无词回退与动态限频不会绕过模板开关。"""
     case = transition_case
     if spaced:
-        case["use_transition_spacing"] = True
+        case["use_transition_spacing"] = "ordered"
     case["segments"][0]["keyword"] = ""
     if disabled:
         case["template"]["transition_enabled"] = False
@@ -194,7 +197,7 @@ def test_spacing_uses_total_duration_and_clamped_threshold(transition_case, dura
     """两处切镜验证四秒下限、平方根中段和十二秒上限；实际判断不先按十分之一秒取整。"""
     case = transition_case
     case.update(duration_ms=round(duration * 1000), material_durations=[2, distance, duration - 2 - distance],
-                use_transition_spacing=True)
+                use_transition_spacing="ordered")
     case["request"]["materials"] = case["request"]["materials"][:3]
     case["segments"][0]["keyword"] = ""
     times = [time for time, _, _ in applied_transitions(build_timeline(**case)[0])]
@@ -209,7 +212,7 @@ def test_spacing_uses_total_duration_and_clamped_threshold(transition_case, dura
 def test_spacing_pins_nearest_side_and_deduplicates(transition_case, anchors, expected):
     """单关键词只取近侧；同距优先前侧、同刻仍跳过，首尾共用切镜时只加一次。"""
     case = transition_case
-    case["use_transition_spacing"] = True
+    case["use_transition_spacing"] = "ordered"
     source = case["segments"][0]
     case["segments"] = [{**source, "segment_id": i + 1, "start_time": start, "end_time": start + 0.25,
                          "group_id": [i + 1, len(anchors)]} for i, start in enumerate(anchors)]
@@ -219,7 +222,7 @@ def test_spacing_pins_nearest_side_and_deduplicates(transition_case, anchors, ex
 def test_spacing_keeps_close_endpoints_without_middle(transition_case):
     """首尾保底仅隔三秒时仍保留两处，即使中间关键词命中其他切镜也不再加。"""
     case = transition_case
-    case.update(material_durations=[2, 1, 2, 5], use_transition_spacing=True)
+    case.update(material_durations=[2, 1, 2, 5], use_transition_spacing="ordered")
     source = case["segments"][0]
     case["segments"] = [{**source, "segment_id": i + 1, "start_time": start, "end_time": start + 0.25,
                          "group_id": [i + 1, 3]} for i, start in enumerate([1, 4, 6])]
@@ -233,7 +236,7 @@ def test_spacing_keeps_close_endpoints_without_middle(transition_case):
 def test_spacing_does_not_replace_short_nearest_side(transition_case, durations, anchors, expected):
     """最近一侧过短不替换；单词无中间候选，另一个首尾可用时中间合格点仍可入选。"""
     case = transition_case
-    case.update(duration_ms=round(sum(durations) * 1000), material_durations=durations, use_transition_spacing=True)
+    case.update(duration_ms=round(sum(durations) * 1000), material_durations=durations, use_transition_spacing="ordered")
     case["request"]["materials"] = [{"fileUrl": f"https://media.test/{i}.mp4", "type": "video"}
                                     for i in range(len(durations))]
     source = case["segments"][0]
@@ -242,9 +245,11 @@ def test_spacing_does_not_replace_short_nearest_side(transition_case, durations,
     assert [time for time, _, _ in applied_transitions(build_timeline(**case)[0])] == expected
 
 
-def test_spacing_random_middle_is_bounded_stable_and_ordered(spacing_case):
-    """中间只从原关键词候选抽取，首尾固定、间隔达标，重试一致而不同任务可有不同选择。"""
+@pytest.mark.parametrize("mode", ["sequence", "random"])
+def test_spacing_middle_scans_in_time_order_independently_of_seed(spacing_case, mode):
+    """中间按时间取合格候选；不同任务与效果模式保持相同选点，随机模式仍可分配不同效果。"""
     case = spacing_case
+    case["template"]["transition_mode"] = mode
     original = deepcopy(case)
     observations = set()
     candidates = [track for track in case["template"]["tracks"] if track["target"] == "transition"]
@@ -253,23 +258,25 @@ def test_spacing_random_middle_is_bounded_stable_and_ordered(spacing_case):
         built, _ = build_timeline(**case, transition_seed=seed)
         actual = applied_transitions(built)
         times = [time for time, _, _ in actual]
-        assert len(times) == 8 and times[0] == 16 and times[-1] == 144
-        assert set(times[1:-1]) <= {28, 32, 48, 52, 68, 72, 88, 92, 108, 112, 128, 132}
+        assert times == [16, 28, 48, 68, 88, 108, 128, 144]
         assert all(right - left >= 8 for left, right in zip(times, times[1:]))
-        assert [effect for _, effect, _ in actual] == (effects * 3)[:len(actual)]
+        if mode == "sequence":
+            assert [effect for _, effect, _ in actual] == (effects * 3)[:len(actual)]
         assert applied_transitions(build_timeline(**case, transition_seed=seed)[0]) == actual
         assert built["AudioTracks"][0]["AudioTrackClips"][0]["TimelineOut"] == 160
-        observations.add(tuple(times))
-    assert len(observations) > 1
+        observations.add(tuple(effect for _, effect, _ in actual))
+    if mode == "random":
+        assert len(observations) > 1
     assert case == original
 
 
 def test_spacing_without_keywords_has_no_pinned_endpoints(transition_case):
-    """整片无词时全部切镜参加限频；中间点可胜出并排除首尾，标题关键词不影响选点。"""
+    """无词时从最早合格切镜开始筛选，尾部切镜过近也跳过；标题关键词不影响选点。"""
     case = transition_case
-    case.update(use_transition_spacing=True, transition_seed="b")
+    case.update(use_transition_spacing="ordered", transition_seed="b")
     case["segments"][0]["keyword"] = ""
-    assert [time for time, _, _ in applied_transitions(build_timeline(**case, title_keyword="业务")[0])] == [5]
+    case["material_durations"] = [2, 2, 1, 5]
+    assert [time for time, _, _ in applied_transitions(build_timeline(**case, title_keyword="业务")[0])] == [2]
 
 
 @pytest.mark.parametrize("mode", ["sequence", "random"])
@@ -309,9 +316,11 @@ def test_mixed_renderers_share_selection_and_duration(transition_case, mode, dur
 
 @pytest.mark.parametrize("mode", ["sequence", "random"])
 @pytest.mark.parametrize("duration", [None, 0.6])
-def test_spacing_mixed_renderers_share_points_and_duration(spacing_case, mode, duration):
-    """动态限频在 IMS 与 Remotion 间共享选点；改成 Remotion 候选不改变切镜位置或自身时长。"""
+@pytest.mark.parametrize("spacing_policy", ["ordered", True])
+def test_spacing_mixed_renderers_share_points_and_duration(spacing_case, mode, duration, spacing_policy):
+    """顺序与旧洗牌策略均在 IMS 与 Remotion 间共享选点；替换候选不改变切镜位置或自身时长。"""
     case = spacing_case
+    case["use_transition_spacing"] = spacing_policy
     case["template"]["transition_mode"] = mode
     ims_case = deepcopy(case)
     sprite = published_sprite(kind=pb.SPRITE_KIND_TRANSITION_OVERLAY)
@@ -320,7 +329,7 @@ def test_spacing_mixed_renderers_share_points_and_duration(spacing_case, mode, d
     case["template"]["tracks"] = [clip if track.get("transition_boundary") == 2 else track for track in case["template"]["tracks"]]
     case["remotion_assets"] = {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}
     data = {"request": case["request"], "template": case["template"], "duration_ms": case["duration_ms"],
-            "keyword_transitions": True, "transition_spacing": True,
+            "keyword_transitions": True, "transition_spacing": spacing_policy,
             "output": {key: case[key] for key in ("width", "height", "fps")},
             "segmentation": {"segments": case["segments"]},
             "remotion": {"placements": [{**clip, "editor": {}}], "assets": case["remotion_assets"]}}
@@ -373,19 +382,31 @@ def test_duration_defaults_match_client_preview(transition_case, mocker, duratio
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("rules,expected", [("legacy", [2, 5, 8]), ("keywords", [2, 5]), ("spaced", [5])])
-async def test_resume_keeps_accepted_rules_and_saved_overlay(transition_case, composition_runtime, monkeypatch, rules, expected):
-    """新任务保存动态规则；两代旧快照恢复各自策略，三者均复用已上传产物而不重新渲染。"""
+@pytest.mark.parametrize("has_keyword", [True, False])
+@pytest.mark.parametrize("rules,keyword_times,plain_times", [
+    ("legacy", [2, 5, 8], [2, 5, 8]), ("keywords", [2, 5], [2, 5, 8]),
+    ("shuffled", [5], [5]), ("ordered", [5], [2, 8]),
+])
+async def test_resume_keeps_accepted_rules_and_saved_overlay(transition_case, composition_runtime, monkeypatch,
+                                                          rules, keyword_times, plain_times, has_keyword):
+    """四代任务按保存策略恢复；旧洗牌与新顺序产生各自切镜，均复用已保存叠加而不重新渲染。"""
     case = transition_case
     case["template"]["transition_mode"] = "random"
+    if not has_keyword:
+        case["segments"][0]["keyword"] = ""
     store.initialize_schema()
-    record = store.create(case["request"], composition_runtime.settings.output())
+    record = store.create(case["request"], composition_runtime.settings.output(), task_id="b")
     assert record["data"]["keyword_transitions"] is True
-    assert record["data"]["transition_spacing"] is True
-    if rules != "spaced":
-        # 旧关键词任务仅缺新标识；最早任务两个标识都没有，恢复不按当前默认值补写。
-        missing = {"transition_spacing"} if rules == "keywords" else {"keyword_transitions", "transition_spacing"}
-        data = {key: value for key, value in record["data"].items() if key not in missing}
+    assert record["data"]["transition_spacing"] == "ordered"
+    if rules != "ordered":
+        # 保留已受理策略：布尔 true 代表旧洗牌，缺标识的任务沿用更早规则。
+        data = dict(record["data"])
+        if rules == "shuffled":
+            data["transition_spacing"] = True
+        else:
+            data.pop("transition_spacing")
+            if rules == "legacy":
+                data.pop("keyword_transitions")
         with store.get_engine().begin() as connection:
             connection.execute(update(store.tasks).where(store.tasks.c.task_id == record["task_id"]).values(data=data))
         record = store.get(record["task_id"])
@@ -403,5 +424,5 @@ async def test_resume_keeps_accepted_rules_and_saved_overlay(transition_case, co
     job = service.Job(composition_runtime, record, composition_runtime.settings)
     await job.assemble()
     timeline = job.record["data"]["timeline"]
-    assert [time for time, _, _ in applied_transitions(timeline)] == expected
+    assert [time for time, _, _ in applied_transitions(timeline)] == (keyword_times if has_keyword else plain_times)
     assert timeline["VideoTracks"][-1]["VideoTrackClips"][0]["MediaURL"] == "https://media.test/saved.webm"

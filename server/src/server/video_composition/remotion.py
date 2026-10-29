@@ -182,7 +182,8 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
         selected = keyword_transitions(template, clips, segments if spoken else [], data.get("matches", []),
                                        standard=request.composition_mode == "standard", fps=fps,
                                        seed=transition_seed, assets=saved["assets"],
-                                       duration=duration if data.get("transition_spacing", False) else None) \
+                                       duration=duration if data.get("transition_spacing", False) else None,
+                                       ordered=data.get("transition_spacing") == "ordered") \
             if use_keywords else select_transitions(template["tracks"], len(clips) - 1, template["transition_mode"], transition_seed)
         expanded = []
         for placement in placements:

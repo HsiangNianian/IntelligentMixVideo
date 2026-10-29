@@ -66,7 +66,7 @@ def create(request: dict, output: dict, callback_base_url: str | None = None, ra
         data={"request": request, "raw_request": raw_request if raw_request is not None else request,
               "output": output, "callback_base_url": callback_base_url, "storage_timezone": "Asia/Shanghai", **(prepared or {}),
               # 受理时固定转场规则；缺少标识的旧任务恢复时仍与其已有叠加产物一致。
-              "keyword_transitions": True, "transition_spacing": True}, created_at=now, updated_at=now,
+              "keyword_transitions": True, "transition_spacing": "ordered"}, created_at=now, updated_at=now,
     )
     with get_engine().begin() as connection:
         connection.execute(tasks.insert().values(

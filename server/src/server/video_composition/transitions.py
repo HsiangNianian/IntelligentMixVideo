@@ -10,8 +10,8 @@ from .text_events import subtitle_events
 
 def keyword_transitions(template: dict, clips: list[dict], segments: list[Segment], matches: list[dict], *,
                         standard: bool, fps: int, seed: str, assets: dict,
-                        duration: float | None = None) -> list[tuple[dict, int]]:
-    """提供总秒数时首尾取近侧、中间按动态间隔随机选点；缺省保留旧策略，过短不消耗效果顺序。"""
+                        duration: float | None = None, ordered: bool = False) -> list[tuple[dict, int]]:
+    """有总秒数时按动态间隔选点；ordered 按时间筛选，旧任务按种子洗牌，缺省保留旧关键词规则。"""
     candidates = sorted((track for track in template["tracks"] if track.get("transition_boundary") is not None),
                         key=lambda track: track["transition_boundary"])
     if not template.get("transition_enabled", True) or not candidates:
@@ -49,7 +49,9 @@ def keyword_transitions(template: dict, clips: list[dict], segments: list[Segmen
                   and (not anchors or anchors[0] < clips[boundary]["TimelineIn"] < anchors[-1])]
         # 首尾不足间隔时仍保留两次，但不再加入中间；无关键词时没有首尾保底。
         if len(kept) < 2 or clips[max(kept)]["TimelineIn"] - clips[min(kept)]["TimelineIn"] >= gap - 1e-8:
-            Random(seed).shuffle(middle)
+            # 仅旧版动态任务恢复时沿用洗牌；新任务保持候选的时间顺序。
+            if not ordered:
+                Random(seed).shuffle(middle)
             for boundary in middle:
                 if all(abs(clips[boundary]["TimelineIn"] - clips[other]["TimelineIn"]) >= gap - 1e-8 for other in kept):
                     kept.add(boundary)
