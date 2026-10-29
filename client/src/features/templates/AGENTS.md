@@ -45,6 +45,7 @@
 - 游标与数字时间最多每 0.1 秒更新一次（时间轴每次移动游标都整体重渲染，与 SDK 共用主线程），暂停与播放结束时校准；SDK 定位时暂停，等 `playerSeeked` 后才允许继续。
 - 每次应用时间线后用 `waitForCanPlay` 等到 canplay 才标为「预览已就绪」并交给 SDK 推进：`setTimeline` 返回时 SDK 内部时长仍是 0，这时播放会立即结束。canplay 的计时从 `setTimeline` 完成后开始，满 60 秒（`CAN_PLAY_TIMEOUT_MS`）才降级，不能把超时当成就绪。
 - 降级为 `BasicVideoPreview` 的条件：SDK `renderError`、播放器初始化失败、生成转场画面或载入时间线失败、载入时间线 60 秒未完成、canplay 60 秒未到、定位 10 秒未确认，或播放中 10 秒时间不前进（`STALL_TIMEOUT_MS`）。降级只停用 IMS 侧的文字、转场、滤镜、VFX 与模糊留白，并在预览下方说明原因；时间轴、文字选择框与 AI 资产照常可用。
+- 编辑中的空值或越界值属于参数校验错误，不触发 SDK 降级：暂停并保留同一媒体下最近有效的预览草稿与时间轴，内联提示修正。恢复合法值后按原 250ms 防抖更新、回零暂停；有效预览缓存不能用于保存，保存仍校验当前编辑草稿。
 - 授权请求：SDK 要等 `getWebCert` 回应才初始化，请求失败还会把渲染引擎标为失败且不重试。所以 `sdk.ts` 的 `deferLicenseRequest` 在 SDK 加载前接管播放器窗口的 fetch，立即返回无证书的空 JSON，真实请求在后台发出、出错或 10 秒无回应只写调试日志；授权结果不触发降级，停用时恢复原 fetch。
 - 画布与 AI 资产叠加层挂载时就显示，不等 SDK；「刷新预览」在任何状态都可用，点击后销毁播放器并按当前草稿重新初始化。
 - 时间轴（`@xzdarcy/react-timeline-editor`）用独立编辑副本，轨道与说明由 `TemplatePreview` 用生成 SDK 时间线的同一个 `buildTimeline` 生成，不等 SDK 载入；片段都不可拖动或调整长度（`movable`/`flexible` 为 false），时间在右侧修改。播放器图层从下到上是视频、滤镜、VFX、文字。
