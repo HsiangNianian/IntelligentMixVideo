@@ -1,4 +1,4 @@
-/** 真实 SDK 圆形蒙版、羽化与人物抠像回归；bun tests/avatar-preview.browser.mjs，需要 Chrome、FFmpeg、服务端虚拟环境及 SDK 网络。 */
+/** 真实 SDK 圆形蒙版、输入纠错恢复与人物抠像回归；bun tests/avatar-preview.browser.mjs，需要 Chrome、FFmpeg、服务端虚拟环境及 SDK 网络。 */
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -214,6 +214,46 @@ window.mount();
   await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
   evidence.pixels.workspaceFeather = { hard: hardEdge, soft: await page.evaluate(() => window.pixels([[828,806]])[0]) };
   await page.screenshot({ path: resolve(cache, "ui-03-feather.png") });
+  // 超过防抖窗口的空值/越界值应保留有效画面和轨道，不能降级或把缓存草稿保存出去。
+  evidence.inputRecovery = [];
+  await page.evaluate(() => { window.editingFrame = document.querySelector('iframe[title="模板预览播放器"]'); });
+  for (const [label, invalid, valid] of [["圆边羽化", "", "0"], ["头部圆形留量（倍）", "", "1.8"], ["开场时长（秒）", "", "3"], ["圆边羽化", "0.3", "0.2"]]) {
+    const input = inspector.getByLabel(label, { exact: true });
+    const before = await page.evaluate(() => window.pixels([[540,806],[828,806],[80,900]]));
+    const rows = await page.getByLabel("时间轴轨道标签").innerText();
+    await input.fill(invalid);
+    await page.getByRole("alert").filter({ hasText: "预览参数无效" }).waitFor();
+    await page.waitForTimeout(400); // 特意跨过 250ms，复现 review 中的输入停顿。
+    assert.equal(await input.inputValue(), invalid);
+    assert.deepEqual(await page.evaluate(() => window.pixels([[540,806],[828,806],[80,900]])), before);
+    assert.equal(await page.getByLabel("时间轴轨道标签").innerText(), rows);
+    assert.equal(await page.getByText(/已切换基础视频预览/).count(), 0);
+    await page.getByRole("button", { name: "保存模板", exact: true }).click();
+    assert.equal(await input.evaluate((element) => element.checkValidity()), false);
+    assert.deepEqual(writes, [], "无效草稿不能保存成上次有效值");
+    await input.fill(valid);
+    await page.getByText("正在应用效果并加载媒体…", { exact: true }).waitFor();
+    await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("alert").filter({ hasText: "预览参数无效" }).count(), 0);
+    assert(await page.evaluate(() => window.editingFrame === document.querySelector('iframe[title="模板预览播放器"]')), "纠错不重建 SDK");
+    assert.equal(await page.getByLabel("预览进度").inputValue(), "0");
+    assert.equal(await page.getByRole("button", { name: "播放", exact: true }).count(), 1);
+    assert.equal(await page.getByText(/已切换基础视频预览/).count(), 0);
+    // canplay 先于画布绘制完成；按实际像素等待新几何，不能读上一帧来判断更新是否成功。
+    if (label === "圆边羽化" && valid === "0") await page.waitForFunction((edge) => window.pixels([[828,806]])[0][0] > edge[0] * .9, hardEdge);
+    if (label === "头部圆形留量（倍）") await page.waitForFunction(() => window.pixels([[828,806]])[0][0] < 10);
+    const after = await page.evaluate(() => window.pixels([[540,806],[828,806],[80,900]]));
+    assert(after[0][0] > 70 && after[2][0] < 10, "修正后仍渲染圆形开场");
+    if (label === "圆边羽化" && valid === "0") assert(after[1][0] > hardEdge[0] * .9, "零羽化恢复硬边");
+    if (label === "头部圆形留量（倍）") assert(after[1][0] < 10, "修正的留量实际改变圆形边界");
+    evidence.inputRecovery.push({ label, invalid, valid, before, after, reusedSdk: true, saveBlocked: true });
+  }
+  await page.screenshot({ path: resolve(cache, "ui-input-recovery.png") });
+  await inspector.getByLabel("头部圆形留量（倍）").fill("2.4");
+  await inspector.getByLabel("开场时长（秒）").fill("2");
+  await page.getByText("正在应用效果并加载媒体…", { exact: true }).waitFor();
+  await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
+  console.log("工作区：四组无效输入自动恢复，保存校验与 SDK 实例保留");
   // 从时间轴重选仍保留参数，移除对象同时移除轨道与设置。
   await page.getByRole("button", { name: "关闭圆形蒙版设置" }).click();
   assert.equal(await page.getByLabel("预览取景 X（%）").count(), 0);
