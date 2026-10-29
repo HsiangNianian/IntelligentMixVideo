@@ -1,4 +1,7 @@
 /** 上下纯色蒙版的配置、整数像素几何与 SDK 图片；基础预览复用同一几何。 */
+/** 蒙版的编辑器对象 ID；冒号不在持久化轨道 ID 的字符范围内，避免选择和删除串到真实轨道。 */
+export const FRAME_MASK_OBJECT_ID = "mask:frame";
+
 export interface FrameMaskBar { enabled: boolean; height: number; color: string }
 export interface FrameMask { top: FrameMaskBar; bottom: FrameMaskBar }
 

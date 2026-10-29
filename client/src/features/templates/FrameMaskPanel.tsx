@@ -1,11 +1,13 @@
 /** 蒙版素材卡片与右侧参数；只编辑上下纯色栏，文字与视频构图继续由原功能负责。 */
 import { X } from "lucide-react";
+import { Hint } from "@/components/Hint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import type { FrameMask } from "./frameMask";
+import { RemoveObjectButton } from "./RemoveObjectButton";
 
 /** 蒙版页签只列出实际可用的类型，重复选择保留当前参数。 */
 export function FrameMaskCard({ mask, onSelect }: { mask?: FrameMask; onSelect: () => void }) {
@@ -24,11 +26,11 @@ export function FrameMaskCard({ mask, onSelect }: { mask?: FrameMask; onSelect: 
 }
 
 /** 每条栏最多占半屏；实时更新草稿，关闭保留其配置。 */
-export function FrameMaskPanel({ mask, onChange, onClose }: { mask: FrameMask; onChange: (mask: FrameMask) => void; onClose: () => void }) {
+export function FrameMaskPanel({ mask, onChange, onRemove, onClose }: { mask: FrameMask; onChange: (mask: FrameMask) => void; onRemove: () => void; onClose: () => void }) {
   return <section aria-label="上下蒙版设置" className="space-y-5 p-4">
     <div className="flex items-center justify-between">
       <h2 className="text-[13px] font-semibold">上下蒙版</h2>
-      <Button type="button" variant="ghost" size="icon-xs" aria-label="关闭蒙版设置" onClick={onClose}><X className="size-3.5" /></Button>
+      <Hint label="关闭蒙版设置"><Button type="button" variant="ghost" size="icon-xs" aria-label="关闭蒙版设置" onClick={onClose}><X className="size-3.5" aria-hidden="true" /></Button></Hint>
     </div>
     {(["top", "bottom"] as const).map((edge) => {
       const bar = mask[edge];
@@ -52,6 +54,7 @@ export function FrameMaskPanel({ mask, onChange, onClose }: { mask: FrameMask; o
           onChange={(event) => onChange({ ...mask, [edge]: { ...bar, color: event.target.value } })} className="h-8 w-12 p-1" /><span className="text-xs text-muted-foreground">{bar.color.toUpperCase()}</span></div>
       </div>;
     })}
-    <p className="text-xs leading-relaxed text-muted-foreground">蒙版覆盖原视频并整段显示，现有文字和特效显示在其上方。关闭两栏即可停用。</p>
+    <p className="text-xs leading-relaxed text-muted-foreground">蒙版覆盖原视频并整段显示，现有文字和特效显示在其上方。关闭两栏可停用并保留参数，不再需要时可移除。</p>
+    <RemoveObjectButton onRemove={onRemove} onClose={onClose} />
   </section>;
 }

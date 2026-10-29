@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Hint } from "@/components/Hint";
 import { EffectCombobox } from "./EffectCombobox";
+import { RemoveObjectButton } from "./RemoveObjectButton";
 import { TemplateFontPicker } from "./TemplateFontPicker";
 import {
   effectGroups,
@@ -353,7 +354,7 @@ export function EffectEditor({
           }
         />
       </div>}
-      {target !== "title" && target !== "subtitle" && <Button type="button" variant="outline" className="template-inspector-remove w-full" onClick={() => { if (onRemove) onRemove(); else onChange(removeTarget(draft, target)); onClose(); }}>移除当前画面对象</Button>}
+      {target !== "title" && target !== "subtitle" && <RemoveObjectButton onRemove={() => { if (onRemove) onRemove(); else onChange(removeTarget(draft, target)); }} onClose={onClose} />}
     </section>
   );
 }

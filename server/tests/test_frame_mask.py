@@ -48,6 +48,33 @@ def test_mask_roundtrip_and_legacy_update(client, template_payload, mask):
     assert {field: saved[field] for field in settings} == settings
 
 
+def test_empty_mask_removes_saved_configuration(client, template_payload, composition_case, mask):
+    """明确空消息移除已保存蒙版，省略字段仍保留；移除后详情与合成均无蒙版。"""
+    baseline, _ = build_timeline(**composition_case)
+    payload = {**template_payload, "template_id": composition_case["template"]["template_id"]}
+    added = post_template(client, {**payload, "frame_mask": mask})
+    assert added.status_code == 200, added.text
+    assert saved_template(post_template(client, payload))["frame_mask"] == mask
+    removed = post_template(client, {**payload, "frame_mask": {}})
+    assert removed.status_code == 200, removed.text
+    assert "frameMask" not in removed.json()["template"]
+    record = detail_template(client.get(f"/template/{payload['template_id']}"))
+    assert "frame_mask" not in record
+    assert "frame_mask" not in saved_template(post_template(client, payload))
+    timeline, _ = build_timeline(**{**composition_case, "template": record})
+    assert timeline == baseline
+
+
+@pytest.mark.parametrize("edge", ["top", "bottom"])
+def test_partial_mask_cannot_remove_configuration(client, template_payload, mask, edge):
+    """只有整个空消息代表移除，缺少单栏的非法配置仍拒绝且不改已有蒙版。"""
+    created = saved_template(post_template(client, {**template_payload, "frame_mask": mask}))
+    partial = {key: value for key, value in mask.items() if key != edge}
+    result = post_template(client, {**template_payload, "template_id": created["template_id"], "frame_mask": partial})
+    assert result.status_code == 422
+    assert detail_template(client.get(f"/template/{created['template_id']}"))["frame_mask"] == mask
+
+
 @pytest.mark.parametrize("field,value", [("height", -1), ("height", 51), ("height", "NaN"), ("height", "Infinity"), ("color", "red"), ("color", "#12345600")])
 def test_invalid_mask_rejected(client, template_payload, mask, field, value):
     """非法颜色与高度在保存边界拒绝，不留下模板。"""
