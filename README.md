@@ -468,7 +468,7 @@ Release preflight explicitly installs the Python version selected by `setup-uv` 
 
 When Validate project runs manually, `integration-tests` is enabled by default and uses temporary MySQL and an isolated rendering environment. Regular push / PR runs do not start these heavier tests. Reports and artifacts are retained for 14 days. Enable `build-installers` to create installers in the same run. Set `api-url` for the standard package API URL; leaving it empty defaults to `http://localhost:20070`.
 
-See the [client build CI conventions](AGENTS.md#客户端构建-ci) for scheduling based on client or CI changes, lockfile validation, native checks across four platform/architecture targets, and the integration environment.
+See the [client build CI conventions](.github/AGENTS.md#客户端构建-ci) for scheduling based on client or CI changes, lockfile validation, native checks across four platform/architecture targets, and the integration environment.
 
 </details>
 
@@ -485,7 +485,7 @@ Debug packages include the complete server, Python, uv, a private MySQL instance
 | Windows | `%APPDATA%/com.intelligentmixvideo.client/backend/` |
 | macOS | `~/Library/Application Support/com.intelligentmixvideo.client/backend/` |
 
-These directories contain the private database, configuration, and `server.log`; Remotion data lives in the corresponding `remotion/` directory. Initial configuration is created from an example without credentials. Existing configuration and data are preserved, and installers do not include a developer's `.env` or database. See the [build conventions](AGENTS.md#客户端构建-ci) for runtime cache locations and testing scope.
+These directories contain the private database, configuration, and `server.log`; Remotion data lives in the corresponding `remotion/` directory. Initial configuration is created from an example without credentials. Existing configuration and data are preserved, and installers do not include a developer's `.env` or database. See the [build conventions](.github/AGENTS.md#客户端构建-ci) for runtime cache locations and testing scope.
 
 On Unix, the database uses a private socket. On Windows, it uses a random password and a dynamically assigned loopback port. Neither depends on a host MySQL installation. macOS builds are produced separately for Apple Silicon and Intel; Windows uses an x64 native runtime.
 
@@ -526,7 +526,7 @@ Here, `origin` must point to the project repository that actually publishes rele
 
 The workflow generates changelogs from Conventional Commits. Publishing uses the built-in `GITHUB_TOKEN` and requires the appropriate write permissions. Failed runs can be retried and missing draft attachments can be uploaded, but reruns do not overwrite published releases. Do not move published tags.
 
-See the [versioning conventions](AGENTS.md#正式版本与-tag-发版) and [Release and CHANGELOG conventions](AGENTS.md#github-release-与-changelog) for version synchronization, concurrent releases, and recovery.
+See the [versioning conventions](.github/AGENTS.md#正式版本与-tag-发版) and [Release and CHANGELOG conventions](.github/AGENTS.md#github-release-与-changelog) for version synchronization, concurrent releases, and recovery.
 
 </details>
 

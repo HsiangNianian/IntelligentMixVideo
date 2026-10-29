@@ -1064,12 +1064,15 @@ def test_the_review_keyword_description_matches_the_sampler():
 
     root = Path(__file__).parents[2]
     document = (root / "docs/remotion-agent-tool-contracts.md").read_text(encoding="utf-8")
-    agents = (root / "AGENTS.md").read_text(encoding="utf-8")
+    server_agents = (root / "server/src/server/remotion_templates/AGENTS.md").read_text(encoding="utf-8")
+    client_agents = (root / "client/src/features/remotion_templates/AGENTS.md").read_text(encoding="utf-8")
     assert "优先文字块的 preview_keywords" in SpriteReview.__doc__
     assert "优先文字块的 `preview_keywords`" in document
     assert "排版检查 `text_fit` 的关键词挂载不看 `preview_keywords`" in document
     assert "默认文字首个非空行开头至多两个字，与字效工作区预览、排版检查的关键词挂载相同" not in document
-    assert "以当前文字的同样位置为示例关键词" not in agents
+    assert "字效生成按需求区分基础文字外观与关键词外观" in server_agents
+    assert "优先以文字块标出的 `preview_keywords`" in client_agents
+    assert "以当前文字的同样位置为示例关键词" not in client_agents
 
 
 def test_the_executor_knows_what_hides_a_gradient_fill_and_how_to_order_parts():

@@ -1,23 +1,26 @@
 # Remotion Preset → Sprite
 
-This module runs the three-layer ReAct workflow. The Outer loop only answers,
-asks, delegates or stops through `tools_plan_execute`. A delegation starts the
-host's standard two-step plan directly: `preset` readies the Presets and
-`sprite` composes and saves the Sprite (a `plan` sent with `delegate` is refused;
-only `update_plan` takes one). The Executor loop calls the tools of one step and
-ends it with `tools_report_step`; the host checks the step's recorded outputs,
-starts the next step and publishes the saved Sprite after the last one. A task never
-asks the user: the host refuses Outer's `ask`, the Executor's `needs_input` and a
-Plan result asking for input, and steers them to build with sensible choices
-the user changes afterwards; a task that delegated cannot end with an ordinary
+This module runs the three-layer ReAct workflow. The Outer loop answers, asks,
+delegates, hands the task to the Plan ReAct (`plan`) or stops through
+`tools_plan_execute`. A delegation starts the host's standard two-step plan
+directly: `preset` readies the Presets and `sprite` composes and saves the Sprite
+(a `plan` sent with `delegate` is refused; only `update_plan` takes one). The
+`plan` action builds no default plan: the Plan ReAct designs the steps with
+`update_plan` and then drives the Executor. The Executor loop calls the tools of
+one step and ends it with `tools_report_step`; the host checks the step's recorded
+outputs, starts the next step and publishes the saved Sprite after the last one.
+A task builds first with sensible choices the user changes afterwards, but a
+genuine ambiguity may be asked: Outer's `ask`, the Executor's `needs_input` and
+the Plan's `ask` end the task as `needs_input` with the questions, and the user's
+answer resumes the same work. A task that delegated cannot end with an ordinary
 answer. The Executor's handoff carries the request (`user_intent` without the
-base spec), and the snapshot puts it first. A text effect's words and keywords are never asked for:
+base spec), and the snapshot puts it first. A text effect's words and keywords are not asked for:
 templates pass them each time they render, so a work only needs sample text for
 its preview, taken from the request or a reference image or written by the
 Executor, which reads the request from the snapshot's `user_intent`
-(`step_inputs` only lists earlier steps' outputs). The Plan loop only runs to recover a step that is
-blocked or used a batch without new evidence. The final delivery is a saved
-Sprite published as an isolated Player preview.
+(`step_inputs` only lists earlier steps' outputs). Besides a `plan` hand-off, the
+Plan loop runs to recover a step that is blocked or used a batch without new
+evidence. The final delivery is a saved Sprite published as an isolated Player preview.
 
 ## Tool catalog
 
@@ -259,8 +262,15 @@ glyph and a longer line goes faster. A line stays one run of text otherwise. Onl
 effect there is refused with the fix. Every effect Preset also receives `index` and `count`: the unit within its tier
 at `chars`, the tier at `tiers`/`line1`/`line2`, 0 of 1 elsewhere, so a loop can offset its motion per glyph. The text block of a new work records `still`: the host then holds
 each tier Preset on the middle frame of the frames the tier plays (`compose.mjs` `__Hold`), so motion of its own
-never plays and a stored animated text Preset is reused as it is, look kept; compose requires at least one enter and
-one exit effect (kept with `enabled: false` for still text), so a block never ends up without motion. Transparency of
+never plays and a stored animated text Preset is reused as it is, look kept; when such a block names no enter or no
+exit effect, compose adds a built-in `fade` for the missing slot (on by default, switchable in the editor; kept with
+`enabled: false` for still text), so a block never ends up without motion. Common
+entrances, exits and loops are host built-ins: a `text.effects` entry names `builtin` (`fade`, `rise`, `pop`,
+`slideLeft`/`slideRight`/`slideUp`/`slideDown`, `blur`, `glow`, `breathing`; `builtin_effects.py`) instead of a
+`source`, and the generated code draws it with `compose.mjs` `__BUILTINS`, so no effect Preset is written for it; an
+omitted title, slot, target or length takes the built-in default (0.5 s for an entrance or exit, none for a loop). A
+built-in's own style props (a glow's colour and strength, a slide's distance) are bound and tuned like a Preset's,
+and the text block records `builtin` so an edit restores it. Transparency of
 a target — the whole text or one tier showing the video through — is a loop effect Preset that multiplies opacity and
 binds its factor as a numeric style parameter, so users adjust the transparency itself; tier colours (`color`,
 `line1Color`, `line2Color`) stay opaque, and the generation path refuses an alpha default there. The keyword
@@ -781,7 +791,12 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   `visibility: visible` counts toward completeness even when its own or an ancestor's opacity is at most 0.01,
   so making one tier transparent does not produce `text_too_long`. Only painted text contributes clipping,
   size and placement measurements; missing text, `display: none` and `visibility: hidden` are still excluded.
-  Generation's `text_fit` check continues to require visible text. Text that already fits keeps its `fontSize`; otherwise the
+  Completeness walks the element's text nodes in reading order: each node continues the run where the previous one
+  stopped, or holds the whole remaining text itself. A keyword's glow, outline or echo copy repeating a fragment
+  inside a sentence therefore is no longer taken for a gap, and `aria-hidden` makes no difference either way. Text
+  that is cut, reordered or missing characters still fails, and every painted copy still participates in size,
+  clipping and position measurements. Generation uses the same completeness rule, and its `text_fit` check continues
+  to require visible text. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum but never below 24 (smaller lines count as unreadable), at which it is shown in full
   (binary search; the size is logged, the template and the sealed source are untouched). An English title or subtitle of a
   video composition is marked `one_line`: its effect is laid out for one line, and a wrapped translation would reach into the
@@ -798,13 +813,18 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Chinese subtitle is only marked `up` while an English subtitle is enabled; without one it keeps the original centred
   growth. A `keywordSize` above 0 is
   an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's
-  proportion to the text instead of crowding the smaller text. If at the minimum the text
+  proportion to the text instead of crowding the smaller text. If the minimum makes a keyword or the Preset's
+  own smaller text unreadable while the requested size is readable, the host first finds the lowest readable
+  size by measuring the actual text, then searches for the largest size that fits. A too-small keyword at the
+  minimum therefore cannot reject an intermediate size that fits. If at that readable minimum the text
   still leaves the canvas only because of where it is placed (a long title whose centre sits near the top edge), the
   host moves this render's copy of the placement by the shortest distance that brings it back inside (the shift is
   logged; the saved placement is untouched, and the horizontal position changes only when the text overhangs the
   side). Text that is clipped, too small, or wider or taller than the canvas even then fails the task with
   `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
-  tell the user to shorten it, instead of publishing a clipped title. Other Sprites skip the pass, and a fit sandbox
+  tell the user to shorten it, instead of publishing a clipped title. The private exception chain records the
+  Sprite ID, instance, text length, measured font size, sampled frames and failure reasons; it does not include
+  the text itself. Other Sprites skip the pass, and a fit sandbox
   that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
   text or cue (a held text is measured on its frozen frame), and a video composition (`video_composition/remotion.py`)
   on its titles and subtitles: it measures the code it renders (the timing wrapper of a fixed-clock asset) on the
