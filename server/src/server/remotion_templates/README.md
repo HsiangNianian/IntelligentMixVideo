@@ -768,6 +768,14 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Longer than `IMV_OVERLAY_MAX_SECONDS` (default 300 seconds / 5 minutes) is a 422 at acceptance when the length is already known (`duration`
   or the clips' end); an `audioUrl` is only probed while rendering, so an over-long one fails the task with
   `duration_too_long`.
+- **Subtitle capacity**: before ASR, video composition uses the same isolated browser measurement to find how many
+  full-width sample characters fit each line at the frozen placement's requested size and position. It measures
+  plain and keyword variants within the published text contract, including actual fonts, spacing, tier sizes,
+  host transforms and the output's cover crop. Samples use the asset's preview timing; binary search assumes
+  ordinary text layout grows with length. It measures DOM text boxes, not the pixel extent of shadows or separate
+  decorations; canvas-only text cannot supply these measurements. No font size or position is changed. This is a segmentation estimate,
+  not a guarantee about future text or animation frames: the final render still performs the text fit below.
+  See [video composition's capacity rules](../video_composition/AGENTS.md#字幕上限) for replacement, recovery and errors.
 - **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
   placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text
   Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's

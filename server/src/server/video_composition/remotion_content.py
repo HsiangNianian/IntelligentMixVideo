@@ -1,11 +1,12 @@
 """动态字效参数契约：解析显式字段声明并注入业务文字、首次关键词区间、多行字效的行起点和实际帧数。
 
-读取上游发布的正文/关键词路径，兼容已有 x-imv-role 声明，不修改生成或发布流程。
+读取上游发布的正文/关键词路径，兼容已有 x-imv-role 声明，供真实字幕和容量样本共用；不修改生成或发布流程。
 固定时长资产由合成宿主映射播放时钟；已声明动态时长的资产继续接收实际帧数。
 """
 from copy import deepcopy
 import json
-from ..remotion_templates.categories import LINE_STARTS_PROP, line_count
+import math
+from ..remotion_templates.categories import LINE_STARTS_PROP, TEXT_MAX_LENGTH, line_count
 from ..remotion_templates.fonts import open_font_schema
 from ..remotion_templates.tools.schema import validate_parameters
 
@@ -114,3 +115,37 @@ def resolve_config(sprite, text: str, keyword: str | list[str], frames: int,
     except Exception as exc:
         raise ContentError("业务文字或时间不符合资产参数契约") from exc
     return config
+
+
+def capacity_samples(sprite, config: dict, frames: int) -> tuple[int, list[dict]]:
+    """按封存业务契约构造有界全角样本；每栏同时出现，正文/关键词各测一次，不改默认参数。
+
+    字数按每栏计，受所有正文路径的 maxLength 限制（含换行）；关键词遵守旧字段的长度/项数约束。
+    实际字幕和关键词尚未生成，这些样本只供切片容量参考，不替代最终排版预检。
+    """
+    schema = json.loads(sprite.config_schema_json)
+    mapping = roles(schema)
+    definitions = dict(fields(schema))
+    text_paths = list(dict.fromkeys([*mapping["text"], *([sprite.text_prop] if sprite.text_prop else [])]))
+    keyword_paths = list(dict.fromkeys([*mapping["keywords"], *([sprite.keywords_prop] if sprite.keywords_prop else [])]))
+    if not text_paths:
+        raise ContentError("资产尚未适配业务文字，请声明正文参数")
+    lines = line_count(schema)
+    maximum = min(TEXT_MAX_LENGTH, *(definitions[path].get("maxLength", TEXT_MAX_LENGTH) for path in text_paths))
+    minimum = max(definitions[path].get("minLength", 1) for path in text_paths)
+    keyword_length, keyword_count = TEXT_MAX_LENGTH, lines
+    for path in keyword_paths:
+        field = definitions[path]
+        keyword_count = min(keyword_count, field.get("maxItems", 1 if field.get("type") == "string" else lines))
+        keyword_length = min(keyword_length, (field.get("items", {}) if field.get("type") == "array" else field).get("maxLength", TEXT_MAX_LENGTH))
+    samples = []
+    for chars in range(max(1, math.ceil((minimum - lines + 1) / lines)), (maximum - lines + 1) // lines + 1):
+        # 各栏用不同全角字，避免旧关键词区间只高亮第一栏的同名词。
+        texts = [chr(ord("测") + index) * chars for index in range(lines)]
+        text = "\n".join(texts)
+        plain = resolve_config(sprite, text, [], frames, config=config)
+        highlighted = resolve_config(sprite, text, [part[:keyword_length] for part in texts[:keyword_count]], frames, config=config)
+        samples.append({"chars": chars, "text": text, "values": [plain] if highlighted == plain else [plain, highlighted]})
+    if not samples:
+        raise ContentError("资产正文长度契约无法容纳全角测量样本")
+    return lines, samples
