@@ -636,7 +636,8 @@ async def test_frame_mask_task_snapshot_and_recovery(upstreams, composition_case
 
     store.initialize_schema()
     template = composition_case["template"]
-    mask = {"top": {"enabled": scenario != "disabled", "height": 18.4, "color": "#112233"},
+    mask = {"top": {"enabled": scenario != "disabled", "height": 18.4, "color": "#112233",
+                    "gradient": {"enabled": True, "endColor": "#aabbcc", "direction": "up", "range": 50}},
             "bottom": {"enabled": False, "height": 16.6, "color": "#445566"}}
     templates.save_template(TemplateSave.model_validate({
         **{key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}, "frame_mask": mask,
@@ -652,6 +653,7 @@ async def test_frame_mask_task_snapshot_and_recovery(upstreams, composition_case
         path, key, mime = files[0]
         with Image.open(path) as image:
             assert image.size == (1080, 1920)
+            assert image.getpixel((0, 0)) == image.getpixel((0, 176)) == (170, 187, 204, 255)
             assert image.getpixel((0, 352)) == (17, 34, 51, 255)
             assert image.getpixel((0, 353)) == (0, 0, 0, 0)
         calls.append((key, path.read_bytes()))

@@ -18,7 +18,7 @@ import { buildTestTimeline, jsonTemplateResponse, savedTemplate } from "./fixtur
 import { fetchMock } from "./setup";
 import cases from "../../server/tests/frame_mask_cases.json";
 
-test.each(cases)("蒙版按成片高度 $height 生成相同整数边界", ({ height, top, bottom, expected }) => {
+test.each(cases.geometry)("蒙版按成片高度 $height 生成相同整数边界", ({ height, top, bottom, expected }) => {
   const mask = newFrameMask();
   mask.top.height = top;
   mask.bottom.height = bottom;

@@ -11,7 +11,7 @@ mkdirSync(cache, { recursive: true });
 const video = spawnSync("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=green:size=180x320:rate=30",
   "-t", "10", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", resolve(cache, "video.mp4")], { encoding: "utf8" });
 assert.equal(video.status, 0, video.error?.message || video.stderr);
-const cases = JSON.parse(readFileSync("../server/tests/frame_mask_cases.json", "utf8"));
+const { geometry: cases } = JSON.parse(readFileSync("../server/tests/frame_mask_cases.json", "utf8"));
 const html = `<!doctype html><html><body><div id="root"></div><script type="module">
 import React from 'react';
 import {createRoot} from 'react-dom/client';

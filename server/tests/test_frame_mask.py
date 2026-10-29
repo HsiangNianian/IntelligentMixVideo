@@ -82,6 +82,31 @@ def test_invalid_gradient_keeps_saved_template(client, template_payload, mask, f
     assert detail_template(client.get(f"/template/{original['template_id']}"))["frame_mask"] == original["frame_mask"]
 
 
+@pytest.mark.parametrize("case", CASES["gradient"], ids=lambda case: case["name"])
+def test_gradient_png_matches_browser_pixels(monkeypatch, case):
+    """真实 PNG 与浏览器共用预期像素，覆盖方向、范围、透明中部及单像素边界。"""
+    bar = {"enabled": True, "height": case["barHeight"], "color": case["color"], "gradient": case["gradient"]}
+    images = []
+
+    def upload(files, settings, timeout):
+        """只读取真实生成的 PNG，不访问对象存储。"""
+        with Image.open(files[0][0]) as image:
+            images.append(image.copy())
+        return ["https://media.test/gradient.png"]
+
+    monkeypatch.setattr(frame_mask, "upload_public", upload)
+    result = frame_mask.upload_mask({"top": bar, "bottom": bar}, 80, case["height"], "gradient", None, 1, "imv/playground")
+    if not case["expected"]:
+        assert result is None and not images
+        return
+    assert result == "https://media.test/gradient.png"
+    size = len(case["expected"])
+    for y in range(case["height"]):
+        row = y if y < size else y - (case["height"] - size)
+        expected = tuple(case["expected"][row]) if 0 <= row < size else (0, 0, 0, 0)
+        assert images[0].getpixel((0, y)) == images[0].getpixel((79, y)) == expected
+
+
 def test_empty_mask_removes_saved_configuration(client, template_payload, composition_case, mask):
     """明确空消息移除已保存蒙版，省略字段仍保留；移除后详情与合成均无蒙版。"""
     baseline, _ = build_timeline(**composition_case)
@@ -117,7 +142,7 @@ def test_invalid_mask_rejected(client, template_payload, mask, field, value):
     assert client.get("/template").json()["templates"] == []
 
 
-@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("case", CASES["geometry"])
 def test_png_matches_shared_pixel_cases(monkeypatch, mask, case):
     """与客户端共享尺寸案例，逐行检查栏高、色值与透明中部，并检查上传路径。"""
     mask["top"]["height"], mask["bottom"]["height"] = case["top"], case["bottom"]
