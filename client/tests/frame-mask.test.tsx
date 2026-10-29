@@ -3,6 +3,7 @@ import { expect, spyOn, test } from "bun:test";
 import { fromBinary } from "@bufbuild/protobuf";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SaveTemplateRequestSchema, type SaveTemplateRequest } from "@/generated/imv/template/v1/template_pb";
+import { AppliedEffects } from "@/features/templates/EffectAssets";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { PreviewTimeline } from "@/features/templates/PreviewTimeline";
 import { frameMaskRects, newFrameMask, type FrameMask } from "@/features/templates/frameMask";
@@ -11,7 +12,7 @@ import { saveTemplate, getTemplate } from "@/features/templates/api";
 import { defaultSplitScreen } from "@/features/templates/splitScreen";
 import { defaultAvatarEffects } from "@/features/templates/avatarEffects";
 import { readCatalog } from "@/features/templates/sdk";
-import { addTrack } from "@/features/templates/tracks";
+import { addTrack, removeTrack } from "@/features/templates/tracks";
 import { buildPreviewRows, mergeSpriteRows, playerTimeline } from "@/features/templates/timeline";
 import { buildTestTimeline, jsonTemplateResponse, savedTemplate } from "./fixtures";
 import { fetchMock } from "./setup";
@@ -177,6 +178,35 @@ test("删除蒙版保存失败后可重试，成功后更新保存基线", async
   expect(writes[2].frameMask).toBeUndefined();
 });
 
+// 外部模板合法轨道可以叫 frame-mask；选择、删除和时间轴不得把它与蒙版混为一项。
+test("真实 frame-mask 轨道与蒙版可分别选择删除", () => {
+  const catalog = readCatalog();
+  const draft = addTrack(newDraft(), catalog.find(asset => asset.category === "bubble")!, "bubble").draft;
+  const bubble = draft.tracks.find(track => track.target === "bubble")!;
+  bubble.id = "frame-mask";
+  draft.frame_mask = newFrameMask();
+  const withoutBubble = removeTrack(draft, bubble.id);
+  expect(withoutBubble.tracks).toEqual(draft.tracks.filter(track => track !== bubble));
+  expect(withoutBubble.frame_mask).toEqual(draft.frame_mask);
+  const rows = buildPreviewRows(buildTestTimeline(draft, catalog));
+  const maskId = rows.find(row => row.actions[0]?.effectId === "frame-mask")!.actions[0].targetId!;
+  expect(new Set(rows.map(row => row.id)).size).toBe(rows.length);
+  const actions = rows.flatMap(row => row.actions);
+  expect(new Set(actions.map(action => action.id)).size).toBe(actions.length);
+  const withoutMask = removeTrack(draft, maskId);
+  expect(withoutMask.tracks).toEqual(draft.tracks);
+  expect(withoutMask.frame_mask).toBeUndefined();
+  const selected: string[] = [];
+  render(<><AppliedEffects draft={draft} catalog={catalog} selected={bubble.id} onSelect={id => selected.push(id)} />
+    <PreviewTimeline ref={null} rows={rows} disabled={false} time={0} onSeek={() => {}} onSelect={id => selected.push(id)} /></>);
+  const objects = screen.getByRole("region", { name: "已添加特效" });
+  expect(within(objects).getAllByRole("button", { pressed: true })).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "编辑气泡字", pressed: true }));
+  fireEvent.click(within(objects).getByRole("button", { name: "编辑上下蒙版" }));
+  fireEvent.click(within(screen.getByRole("group", { name: "视频轨道" })).getByRole("button", { name: "编辑上下蒙版" }));
+  expect(selected).toEqual([bubble.id, maskId, maskId]);
+});
+
 test("蒙版覆盖视频和转场补帧，位于滤镜、特效和文字下面且贯穿全片", () => {
   // happy-dom 不解码 Canvas；真实 PNG 像素另由浏览器用例检查。
   spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ fillRect() {}, fillStyle: "" } as unknown as CanvasRenderingContext2D);
@@ -205,7 +235,7 @@ test("时间轴显示整段蒙版并按层级排列，关闭后仍可点击配�
   let draft = newDraft();
   for (const category of ["bubble", "filter", "vfx/normal", "transition/normal"])
     draft = addTrack(draft, catalog.find((asset) => asset.category === category)!, "title").draft;
-  expect(buildPreviewRows(buildTestTimeline(draft, catalog)).some((row) => row.id === "frame-mask")).toBe(false);
+  expect(buildPreviewRows(buildTestTimeline(draft, catalog)).some((row) => row.id === "mask:frame")).toBe(false);
   draft.frame_mask = newFrameMask();
   const rows = mergeSpriteRows(buildPreviewRows(buildTestTimeline(draft, catalog)), [
     { id: "ai", spriteId: "sprite", name: "装饰", aspect: 9 / 16, start: 0, end: 3, length: 3 },
@@ -213,16 +243,16 @@ test("时间轴显示整段蒙版并按层级排列，关闭后仍可点击配�
   expect(rows.map((row) => row.actions[0]?.effectId)).toEqual([
     "title", "subtitle", "bubble", "transition", "vfx", "filter", "remotion", "frame-mask", "video", "video", "video",
   ]);
-  expect(rows.find((row) => row.id === "frame-mask")?.actions[0]).toMatchObject({
-    targetId: "frame-mask", start: 0, end: 30, movable: false, flexible: false,
+  expect(rows.find((row) => row.id === "mask:frame")?.actions[0]).toMatchObject({
+    targetId: "mask:frame", start: 0, end: 30, movable: false, flexible: false,
   });
   draft.frame_mask.top.enabled = draft.frame_mask.bottom.enabled = false;
   const disabledRows = buildPreviewRows(buildTestTimeline(draft, catalog));
-  expect(disabledRows.find((row) => row.id === "frame-mask")?.actions[0].effectName).toBe("上下蒙版（未显示）");
+  expect(disabledRows.find((row) => row.id === "mask:frame")?.actions[0].effectName).toBe("上下蒙版（未显示）");
   const selected: string[] = [];
   render(<PreviewTimeline ref={null} rows={disabledRows} disabled={false} time={0} duration={30} onSeek={() => {}} onSelect={(id) => selected.push(id)} />);
   fireEvent.click(screen.getByRole("button", { name: "编辑上下蒙版" }));
-  expect(selected).toEqual(["frame-mask"]);
+  expect(selected).toEqual(["mask:frame"]);
 });
 
 // 合并上游协议后，三个配置必须同时经过二进制请求及 JSON 响应，不能互相覆盖。

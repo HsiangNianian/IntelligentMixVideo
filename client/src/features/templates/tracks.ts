@@ -4,6 +4,7 @@ import { appliedTargets, applyAsset, effectTargets, isTextTarget, targetEffectKe
 import { previewVideos } from "./media";
 import { compactTransitions, nextTransitionBoundary, setTransitionDuration } from "./transitions";
 import { previewFont } from "./fonts";
+import { FRAME_MASK_OBJECT_ID } from "./frameMask";
 
 /** 时间轴自上向下显示的固定图层；同类对象保持添加顺序。 */
 export const trackLayers: Record<EffectTarget, number> = { title: 0, subtitle: 1, bubble: 2, transition: 3, vfx: 4, filter: 5 };
@@ -240,7 +241,7 @@ export function updateTrack(draft: Draft, id: string, edit: EffectDraft): Draft 
 
 /** 删除指定画面对象；蒙版清除模板级配置，其他对象的时间规则保持不变。 */
 export function removeTrack(draft: Draft, id: string): Draft {
-  if (id === "frame-mask") return { ...draft, frame_mask: undefined };
+  if (id === FRAME_MASK_OBJECT_ID) return { ...draft, frame_mask: undefined };
   if (draft.tracks.some((track) => track.id === id && (track.target === "title" || track.target === "subtitle")))
     throw new Error("标题和底部字幕为固定对象");
   const next = { ...draft, tracks: draft.tracks.filter((track) => track.id !== id) };

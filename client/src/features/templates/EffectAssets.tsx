@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { defaultEditor, textRoles, type Category, type Draft, type Editor, type EffectAsset, type EffectTrack, type TextRole } from "./model";
 import { assetCategories, assetField, isSelectableAsset, type EffectTarget } from "./effects";
 import { trackLabel, trackLayers } from "./tracks";
+import { FRAME_MASK_OBJECT_ID } from "./frameMask";
 import { AssetBrowser, CoverPlaceholder } from "./AssetBrowser";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 
@@ -104,7 +105,7 @@ export function AppliedEffects({ draft, catalog, resolved, selected, onSelect }:
       const interval = timing ? timing.end > timing.start ? `${Number(timing.start.toFixed(1))}～${Number(timing.end.toFixed(1))} 秒` : "当前视频未应用" : resolved ? "当前视频未应用" : "等待预览时间";
       return { id: track.id, target: track.target, label: trackLabel(track, draft.tracks), detail: `${effect} · ${interval}` };
     });
-  if (draft.frame_mask) objects.push({ id: "frame-mask", target: "frame-mask", label: "上下蒙版", detail: "上下纯色栏 · 贯穿全片" });
+  if (draft.frame_mask) objects.push({ id: FRAME_MASK_OBJECT_ID, target: "frame-mask", label: "上下蒙版", detail: "上下纯色栏 · 贯穿全片" });
   return <section aria-label="已添加特效" className="space-y-3 border-b p-4">
     <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">画面对象</h2><span className="text-[11px] tabular-nums text-muted-foreground">{objects.length}</span></div>
     <div className="space-y-0.5">{objects.map((object) => <Button key={object.id} type="button" variant="ghost" data-object={object.target} className="template-object-row h-auto w-full min-w-0 justify-start gap-2.5 rounded-md px-2 py-2 text-left" aria-pressed={selected === object.id} aria-label={`编辑${object.label}`} onClick={() => onSelect(object.id)}>
