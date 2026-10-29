@@ -9,6 +9,23 @@ import { fetchMock, mockDesktop } from "./setup";
 // 摆放的完整时长 5 秒长于预览里显示的 1～4 秒：同步消息带完整时长，Sprite 按它排布。
 const clip = { id: "sprite-a", spriteId: "s1", aspect: 9 / 16, name: "霓虹标题", start: 1, end: 4, length: 5 };
 
+// 开场前后只切换字幕位置，保留原字效时钟；回拖时恢复开场内的位置。
+test("圆形开场内使用普通字幕摆放，越过边界只改位置并保持完整字效时钟", async () => {
+  const ref = createRef<SpriteOverlayHandle>();
+  const normal = { x: 540, y: 1600 }, sameScreen = { x: 540, y: 1200 };
+  render(<SpriteOverlay ref={ref} clips={[{ ...clip, transform: sameScreen, opening: { end: 2, transform: normal } }]} stageAspect={9 / 16} initialTime={1} />);
+  const frame = screen.getByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
+  const post = spyOn(frame.contentWindow!, "postMessage");
+  const channel = new URL(frame.src).hash.slice(1);
+  await act(async () => { window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, data: { type: "imv-preview-ready", channel, sync: true, host: true } })); });
+  await waitFor(() => expect(post.mock.calls.some(([message]) => message.type === "imv-preview-update" && message.host.transform.y === 1600)).toBe(true));
+  await act(async () => { ref.current!.setTime(2); });
+  await waitFor(() => expect(post.mock.calls.some(([message]) => message.type === "imv-preview-update" && message.host.transform.y === 1200)).toBe(true));
+  expect(post.mock.calls.some(([message]) => message.type === "imv-preview-sync" && message.time === 1 && message.duration === 5)).toBe(true);
+  await act(async () => { ref.current!.setTime(1.5); });
+  await waitFor(() => expect(post.mock.calls.filter(([message]) => message.type === "imv-preview-update").at(-1)![0].host.transform).toEqual(normal));
+});
+
 /** 渲染叠加层并取出其播放器，返回通道号与消息探针；Happy DOM 不执行 iframe，按协议手动模拟就绪。 */
 function mount() {
   const ref = createRef<SpriteOverlayHandle>();

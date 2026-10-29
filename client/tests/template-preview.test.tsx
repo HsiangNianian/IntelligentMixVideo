@@ -13,6 +13,7 @@ import { addTrack, previewContext, resolveTemplate } from "@/features/templates/
 import { sampleMedia } from "./fixtures";
 import { frames } from "./frames";
 import { defaultSplitScreen } from "@/features/templates/splitScreen";
+import { defaultAvatarEffects } from "@/features/templates/avatarEffects";
 
 /** SDK 播放器替身：记录调用，事件由用例推送；载入时间线一直不完成，除非用例调用 finishTimeline。 */
 class FakePlayer {
@@ -116,6 +117,49 @@ test("同屏圆角从 SDK 媒体回调返回，直角视频保留原地址", asy
   await act(async () => player.emit("canplay"));
   await screen.findByText("预览已就绪，点击播放查看效果");
   expect(screen.queryByText(/已切换基础视频预览/)).toBeNull();
+});
+
+// 取景和羽化变化必须重新应用 SDK 时间线，预览不得反向修改模板草稿。
+test("工作区传入预览圆心和羽化后刷新 SDK 并暂停回零，不改变草稿", async () => {
+  spyOn(HTMLImageElement.prototype, "decode").mockResolvedValue();
+  spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage() {} } as unknown as CanvasRenderingContext2D);
+  spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,cHJldmlldw==");
+  const draft = { ...newDraft(), avatar_effects: { ...defaultAvatarEffects(), openingEnabled: true } };
+  const original = JSON.stringify(draft), stable = props(draft);
+  const { view, player } = await mountWithSdk(draft, { resolved: stable.resolved });
+  /** 完成当前更新，模拟 SDK 就绪后播放到中间。 */
+  const ready = async () => { await act(async () => { player.finishTimeline(); }); await act(async () => { player.emit("canplay"); }); };
+  await ready();
+  player.currentTime = 1;
+  await act(async () => player.emit("timeupdate", { currentTime: 1 }));
+  view.rerender(<TemplatePreview {...stable} previewCenter={{ x: 30, y: 50 }} />);
+  await waitFor(() => expect(player.setTimeline).toHaveBeenCalledTimes(2));
+  await ready();
+  expect(player.currentTime).toBe(0);
+  const timeline = player.setTimeline.mock.calls[1][0] as { VideoTracks: { VideoTrackClips: { MediaURL?: string }[] }[] };
+  const id = timeline.VideoTracks.flatMap((row) => row.VideoTrackClips).find((clip) => clip.MediaURL?.includes("#imv-mask="))!.MediaURL!;
+  const mask = await player.mediaInfo!(id, "Video", "mediaURL") as { maskUrl: string };
+  expect(new URL(mask.maskUrl).searchParams.get("x")).toBe("0.3");
+  view.rerender(<TemplatePreview {...stable} draft={{ ...draft, avatar_effects: { ...draft.avatar_effects, feather: 0.2 } }} />);
+  await waitFor(() => expect(player.setTimeline).toHaveBeenCalledTimes(3));
+  await ready();
+  expect(screen.queryByLabelText("数字人预览来源")).toBeNull();
+  expect(JSON.stringify(draft)).toBe(original);
+});
+
+// SDK 未处理的模型加载拒绝需要切换基础播放器并明确说明抠像不可用。
+test("SDK 抠像模型未处理的拒绝明确降级，保留原背景并提示差异", async () => {
+  const draft = { ...newDraft(), split_screen: { ...defaultSplitScreen(), enabled: true, layout: "overlay" as const }, avatar_effects: { ...defaultAvatarEffects(), removeBackground: true } };
+  const { player } = await mountWithSdk(draft);
+  await act(async () => { player.finishTimeline(); });
+  const frame = screen.getByTitle<HTMLIFrameElement>("模板预览播放器");
+  await act(async () => {
+    const event = new Event("unhandledrejection");
+    Object.defineProperty(event, "reason", { value: new Error("model unavailable") });
+    frame.contentWindow!.dispatchEvent(event);
+  });
+  expect(screen.getByText(/SDK 抠像预览不可用，当前保留原视频背景/)).toBeTruthy();
+  expect(screen.getByLabelText("数字人同屏预览")).toBeTruthy();
 });
 
 // 回归：时间轴行只在 SDK 载入时间线之后才生成和更新，IMS 加载慢或卡住时时间轴没有对象与视频行，修改模板后也不变。

@@ -1,6 +1,7 @@
 /** 模板编辑工作区：接收主页选择，展示模板信息，协调效果编辑、保存和未保存切换保护。 */
 import { SplitScreenEditor } from "./SplitScreenEditor";
 import { defaultAvatarEffects } from "./avatarEffects";
+import { previewOpeningDuration } from "./avatarPreview";
 import { AvatarEffectsEditor } from "./AvatarEffectsEditor";
 import { validateSplitScreen } from "./splitScreen";
 import { useUpdateBlocker } from "@/lib/update-guard";
@@ -138,9 +139,10 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
       boundary: clip.transition_boundary,
       values: text && clip.text_target ? { ...clip.parameters, text: text.editor[clip.text_target], keywords: [exampleKeyword(text.editor, clip.text_target, text.language)].filter(Boolean) } : clip.parameters,
       transform,
+      opening: point ? { end: previewOpeningDuration(previewDraft?.avatar_effects, previewLength), transform: clip.transform } : undefined,
       canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: !point && transformFields(asset.kind).includes("x") } : undefined,
     };
-  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength, previewDraft?.split_screen]);
+  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength, previewDraft?.split_screen, previewDraft?.avatar_effects]);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
   useUpdateBlocker("模板尚未保存或正在处理", dirty || busy || loading || !!openRequest);
   useEffect(() => { recovery.template = current ? { templateId: current.template_id } : null; }, [current]);
