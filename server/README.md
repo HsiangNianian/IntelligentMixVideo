@@ -56,6 +56,7 @@ PORT=8010 uv run --locked server
 | GET | `/template/{template_id}` | 返回 `GetTemplateResponse` |
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
 | GET | `/template/preview-mask` | 几何圆角蒙版 MP4，供 SDK 实时预览；不访问用户媒体或数据库 |
+| GET | `/template/preview-circle-mask` | 头部圆形与羽化蒙版 MP4，仅接收预览几何，不分析人脸 |
 
 GET 与 POST 成功响应默认使用 `application/json`，采用 Protobuf JSON 映射：字段为 camelCase（如 `templateId`、`createdAt`、`effectIds`），时间为 UTC RFC 3339 字符串；列表为 `{"templates":[...]}`，空库为 `{"templates":[]}`，详情和保存为 `{"template":{...}}`，轨道保留 `template.tracks.tracks` 结构。空数组、空映射和非 optional 标量默认值保留，未设置的 optional 字段省略。POST 请求仍使用 `application/x-protobuf`，JSON 请求返回 415，损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422；错误响应使用 JSON，删除成功仍为 204 空响应。为兼容旧客户端，单一 `Accept: application/x-protobuf` 仍返回 Protobuf 二进制；其他请求（含省略 Accept、`*/*` 或 `application/json`）默认返回 JSON，成功响应带 `Vary: Accept`。新客户端按响应 `Content-Type` 解析 JSON 或旧服务端的 Protobuf 二进制，JSON 解析忽略未知字段；仅响应格式迁移不要求两端同时升级。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
@@ -68,7 +69,11 @@ GET 与 POST 成功响应默认使用 `application/json`，采用 Protobuf JSON 
 
 数字人效果独立通过 `SaveTemplateRequest.avatar_effects` 保存，JSON 为 `avatarEffects`：`openingEnabled` 默认 false，`openingDuration` 默认 2 秒（0.1～300），`circleScale` 默认 1.6（1～3，脸框留量），`feather` 默认 0.02（0～0.2），`removeBackground` 默认 false。省略整个字段时，旧客户端重存保留已有设置；显式关闭不清除参数。位置尺寸继续使用 `splitScreen.avatar`，相对整张画布、按原视频矩形框定位。
 
-标准合成开启开场，或选择圆形头像且存在匹配素材时，FFmpeg 按显示方向和像素宽高比抽取片头区间最多 8 帧，`opencv-python-headless==4.12.0.88` 与随包 YuNet 在线程中定位固定圆（限制在源画面内，不逐帧跟踪）；模型位于 `video_composition/models/`，无需运行时下载；来源与完整许可声明见本文末尾。两种圆形效果共用检测，成功定位或明确无脸结果持久化为任务 `avatar_opening`；恢复复用。只启用头像时检测结果的 `duration=0`，不上传黑底、不隐藏素材。无脸跳过开场；圆形头像无脸时回退直接切换：命中区间只显示完整素材，其余显示原数字人，字幕用普通位置。读取/检测/上传故障仍以 `avatar_opening_failed` 失败。有效开场以黑底与 `mask_circle` 覆盖原业务视频，不拆素材、不补时、不重启源时间，字幕沿用普通位置；结束恢复对应区间布局。仅非圆形的实际同屏且开启抠像时使用 `AI_RealMatting`，忽略数字人圆角和边框，保留分区素材装饰；不支持的地域以 `avatar_matting_region_unsupported` 失败（目前仅北京、上海、杭州）。编辑器切换到人物叠加时默认开启去背景，可用同一个开关保留原背景，不另列小窗画中画模式；切到分区或圆形时关闭抠像。圆形头像始终保留圆内背景，忽略旧抠像开关。纯素材模式不检测、不抠像。SDK 只展示配置和布局，头像圆形以居中裁切示意，真实头部位置和边缘以成片为准。
+标准合成开启开场，或选择圆形头像且存在匹配素材时，FFmpeg 按显示方向和像素宽高比抽取片头区间最多 8 帧，`opencv-python-headless==4.12.0.88` 与随包 YuNet 在线程中定位固定圆（限制在源画面内，不逐帧跟踪）；模型位于 `video_composition/models/`，无需运行时下载；来源与完整许可声明见本文末尾。两种圆形效果共用检测，成功定位或明确无脸结果持久化为任务 `avatar_opening`；恢复复用。只启用头像时检测结果的 `duration=0`，不上传黑底、不隐藏素材。无脸跳过开场；圆形头像无脸时回退直接切换：命中区间只显示完整素材，其余显示原数字人，字幕用普通位置。读取/检测/上传故障仍以 `avatar_opening_failed` 失败。有效开场以黑底与 `mask_circle` 覆盖原业务视频，不拆素材、不补时、不重启源时间，字幕沿用普通位置；结束恢复对应区间布局。仅非圆形的实际同屏且开启抠像时使用 `AI_RealMatting`，忽略数字人圆角和边框，保留分区素材装饰；不支持的地域以 `avatar_matting_region_unsupported` 失败（目前仅北京、上海、杭州）。编辑器切换到人物叠加时默认开启去背景，可用同一个开关保留原背景，不另列小窗画中画模式；切到分区或圆形时关闭抠像。圆形头像始终保留圆内背景，忽略旧抠像开关。纯素材模式不检测、不抠像。编辑预览用手动圆心与固定示意直径显示圆形开场、头像和羽化；预览 X/Y 与来源槽位通过独立的 `avatar_preview` 保存，成片仍使用上述检测结果。非圆形同屏启用去背景时由 SDK 在浏览器中分割，边缘可能与云端成片不一致。
+
+编辑器取景独立通过 `SaveTemplateRequest.avatar_preview` 保存（JSON `avatarPreview`）：`x/y` 为源宽高百分比 0～100，缺省 50；`source` 为三个预览视频的槽位 0～2，缺省 0。详情恢复，旧客户端省略重存保留；没有媒体地址或源尺寸。普通合成与操练场均在冻结模板时移除整个字段，后续检测和 IMS 时间线不能读取它；使用保存取景需要客户端与服务端一起升级。
+
+`GET /template/preview-circle-mask` 只接收 `width/height`（2～32768）、`x/y`（源宽高归一化 0～1）、`radius`（相对源短边，0～0.5 且大于 0）、`feather`（0～0.2）与 `seconds`（正整数，上限 2147483647）。圆内白、圆外黑，软边在圆内线性过渡；编码前缩到最长边 1920，生成一帧覆盖源时长的 MP4，有限内存缓存且不落持久化文件。缺少 FFmpeg 或编码失败返回 503；不读取视频、不调用 OpenCV、不写模板或任务。预览软边不承诺与 IMS 私有羽化算法逐像素一致。
 
 `SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置（省略的蒙版、同屏和数字人效果字段除外）。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
