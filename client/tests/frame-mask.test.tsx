@@ -1,7 +1,7 @@
 /** 蒙版保存边界、面板与图层顺序；整数像素案例与后端生成 PNG 共用。 */
 import { expect, spyOn, test } from "bun:test";
 import { fromBinary } from "@bufbuild/protobuf";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { SaveTemplateRequestSchema, type SaveTemplateRequest } from "@/generated/imv/template/v1/template_pb";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { PreviewTimeline } from "@/features/templates/PreviewTimeline";
@@ -32,17 +32,19 @@ test("旧模板默认无蒙版，选择后编辑、保存、重读及关闭保�
     if (init?.method !== "POST") return jsonTemplateResponse(stored, "get");
     const request = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as Uint8Array));
     writes.push(request);
-    stored = { ...stored, frame_mask: request.frameMask as FrameMask };
+    stored = { ...stored, frame_mask: request.frameMask?.top ? request.frameMask as FrameMask : undefined };
     return jsonTemplateResponse(stored, "save");
   }) as typeof fetch);
   const selection = { templateId: stored.template_id };
   const view = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
   await screen.findByLabelText("模板名称");
   expect(screen.queryByLabelText("上下蒙版设置")).toBeNull();
-  // 未使用蒙版时保存也不补字段。
+  // 草稿没有蒙版时发送空消息，明确保持无蒙版状态。
   fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
   await screen.findByText("已保存");
-  expect(writes[0].frameMask).toBeUndefined();
+  expect(writes[0].frameMask).toBeDefined();
+  expect(writes[0].frameMask?.top).toBeUndefined();
+  expect(writes[0].frameMask?.bottom).toBeUndefined();
   fireEvent.click(screen.getByRole("tab", { name: "蒙版" }));
   fireEvent.click(screen.getByRole("button", { name: "选择上下蒙版" }));
   expect(screen.getByRole("switch", { name: "启用上栏" }).getAttribute("aria-checked")).toBe("true");
@@ -68,6 +70,55 @@ test("旧模板默认无蒙版，选择后编辑、保存、重读及关闭保�
   fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
   await screen.findByText("已保存");
   expect(writes.at(-1)?.frameMask?.top).toMatchObject({ enabled: false, height: 21.7, color: "#123456" });
+});
+
+// 关闭面板保留蒙版；明确移除后立即清空草稿，保存重读不恢复，重新添加使用默认参数。
+test("移除蒙版后保存重读不恢复，关闭设置不会移除", async () => {
+  let stored = savedTemplate();
+  stored.frame_mask = newFrameMask();
+  stored.frame_mask.top.height = 25;
+  const writes: SaveTemplateRequest[] = [];
+  fetchMock.mockImplementation((async (_url, init) => {
+    if (init?.method === "POST") {
+      const request = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as ArrayBuffer));
+      writes.push(request);
+      if (request.frameMask) stored = { ...stored, frame_mask: request.frameMask.top ? request.frameMask as FrameMask : undefined };
+    }
+    return jsonTemplateResponse(stored, init?.method === "POST" ? "save" : "get");
+  }) as typeof fetch);
+  const selection = { templateId: stored.template_id };
+  const view = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
+  await screen.findByLabelText("模板名称");
+  fireEvent.click(screen.getByRole("tab", { name: "蒙版" }));
+  fireEvent.click(screen.getByRole("button", { name: "选择上下蒙版" }));
+  fireEvent.click(screen.getByRole("button", { name: "关闭蒙版设置" }));
+  expect(screen.queryByLabelText("上下蒙版设置")).toBeNull();
+  expect(screen.getByText("3 个对象")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "选择上下蒙版" }));
+  expect(screen.getByLabelText<HTMLInputElement>("上栏高度").value).toBe("25");
+  fireEvent.click(screen.getByRole("button", { name: "关闭蒙版设置" }));
+  const objects = screen.getByRole("region", { name: "已添加特效" });
+  fireEvent.click(within(objects).getByRole("button", { name: "编辑上下蒙版" }));
+  expect(within(objects).getByRole("button", { name: "编辑上下蒙版", pressed: true })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
+  expect(within(objects).queryByRole("button", { name: "编辑上下蒙版" })).toBeNull();
+  expect(within(objects).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["编辑顶部标题", "编辑底部字幕"]);
+  expect(screen.queryByLabelText("上下蒙版设置")).toBeNull();
+  expect(screen.getByText("2 个对象")).toBeTruthy();
+  expect(screen.getByText("点击添加，整段显示")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
+  await screen.findByText("已保存");
+  expect(writes.at(-1)?.frameMask).toBeDefined();
+  expect(writes.at(-1)?.frameMask?.top).toBeUndefined();
+  expect(writes.at(-1)?.frameMask?.bottom).toBeUndefined();
+  expect(stored.frame_mask).toBeUndefined();
+  view.unmount();
+  render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
+  await screen.findByLabelText("模板名称");
+  expect(screen.getByText("2 个对象")).toBeTruthy();
+  fireEvent.click(screen.getByRole("tab", { name: "蒙版" }));
+  fireEvent.click(screen.getByRole("button", { name: "选择上下蒙版" }));
+  expect(screen.getByLabelText<HTMLInputElement>("上栏高度").value).toBe("18.4");
 });
 
 test("蒙版覆盖视频和转场补帧，位于滤镜、特效和文字下面且贯穿全片", () => {

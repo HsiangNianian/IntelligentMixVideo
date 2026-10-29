@@ -396,7 +396,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
               inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={visibleDraft!} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
                 <SpriteClips clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
                 {target === "frame-mask" && draft.frame_mask && <FrameMaskPanel mask={draft.frame_mask}
-                  onChange={(frame_mask) => editTrack(() => ({ ...draft, frame_mask }))} onClose={() => setTarget(null)} />}
+                  onChange={(frame_mask) => editTrack(() => ({ ...draft, frame_mask }))}
+                  onRemove={() => editTrack(() => removeTrack(draft, "frame-mask"))} onClose={() => setTarget(null)} />}
                 <SplitScreenEditor value={draft.split_screen} removeBackground={draft.avatar_effects?.removeBackground} onChange={(split_screen) => editTrack(() => ({ ...draft, split_screen,
                   ...(split_screen.layout !== (draft.split_screen?.layout ?? "split") ? { avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground: split_screen.layout === "overlay" } } : {}),
                 }))} />

@@ -238,8 +238,9 @@ export function updateTrack(draft: Draft, id: string, edit: EffectDraft): Draft 
   return current.target === "transition" ? setTransitionDuration(next, edit.transition_duration_seconds) : next;
 }
 
-/** 删除指定实例，其他对象的时间规则保持不变。 */
+/** 删除指定画面对象；蒙版清除模板级配置，其他对象的时间规则保持不变。 */
 export function removeTrack(draft: Draft, id: string): Draft {
+  if (id === "frame-mask") return { ...draft, frame_mask: undefined };
   if (draft.tracks.some((track) => track.id === id && (track.target === "title" || track.target === "subtitle")))
     throw new Error("标题和底部字幕为固定对象");
   const next = { ...draft, tracks: draft.tracks.filter((track) => track.id !== id) };

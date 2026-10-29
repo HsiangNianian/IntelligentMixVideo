@@ -232,7 +232,8 @@ export async function saveTemplate(draft: Draft, id?: string): Promise<Template>
     transitionDurationSeconds: draft.transition_duration_seconds,
     transitionMode: draft.transition_mode ?? "sequence",
     transitionEnabled: draft.transition_enabled ?? true,
-    frameMask: draft.frame_mask,
+    // 空消息明确清除蒙版；省略字段会让服务端为旧客户端保留原配置。
+    frameMask: draft.frame_mask ?? {},
     splitScreen: draft.split_screen,
     avatarEffects: draft.avatar_effects,
     tracks: {
