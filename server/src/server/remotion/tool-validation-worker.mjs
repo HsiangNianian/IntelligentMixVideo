@@ -3,7 +3,7 @@
  * source-policy/type checks and drives a fixed Remotion Player through a small
  * page bridge; it never encodes media or invokes a visual reviewer. On request,
  * once every check has passed, it captures a few still frames for the Agent to
- * look at (`captureFrames`).
+ * look at (`captureFrames`), or measures full-width subtitle capacity before segmentation.
  */
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -654,7 +654,7 @@ function textFitProblems(page, needle, placement, collectLines = false) {
       problems: [...problems], readable, area, extent, view, lines: rows.length,
       ...(collectLines ? { first: describe(ordered[0]), last: describe(ordered.at(-1)) } : {}),
     };
-  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, request.mode === "fit", collectLines);
+  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, ["fit", "capacity"].includes(request.mode), collectLines);
 }
 
 /** No host transform: generation checks mount the Sprite over the whole canvas where it was laid out. */
@@ -1265,10 +1265,49 @@ async function fitTexts(page, loadError, sprite) {
 }
 
 /**
- * Fit mode: the texts of every text Sprite of one render, measured in one browser under one deadline. Each Sprite's
+ * Measure full-width characters per intended line at the saved size and position. The caller supplies schema-valid
+ * plain/keyword samples; measure both so a larger keyword cannot silently reduce capacity. Binary search assumes
+ * ordinary text layout grows with length, as render preflight does with font size. It samples full-size preview
+ * frames, includes actual font metrics, letter spacing and transforms, and never shrinks or nudges the placement.
+ * These probes precede real text/timing; render preflight remains authoritative for the final subtitles.
+ */
+async function textCapacities(page, loadError, sprite) {
+  if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
+  const canvas = sprite.canvas ?? request.composition;
+  const box = sprite.box ?? { x: 0, y: 0, width: canvas.width, height: canvas.height };
+  const visible = visibleWindow(canvas, request.composition);
+  const answers = [];
+  for (const item of sprite.fit) {
+    const placement = hostPlacement(box, item.transform, visible);
+    /** A sample fits only when every style variant is complete, readable and has no extra wrapped lines. */
+    const fits = async (sample) => {
+      for (const values of sample.values) {
+        await page.evaluate(() => window.__imvTool.reset());
+        await page.evaluate((length) => window.__imvTool.setDuration(length), item.length);
+        await page.evaluate((value) => window.__imvTool.setSample(value, {}), values);
+        const measured = await measureTextFit(page, sample.text, item.frames, placement);
+        if (measured.error || measured.shown === 0) throw new Error("Subtitle capacity probe could not measure rendered text");
+        if (!measured.fits || measured.lines > item.lines) return false;
+      }
+      return true;
+    };
+    let low = 0;
+    let high = item.samples.length;
+    // [0, low) fits and [high, length) does not; zero means even the shortest valid sample cannot fit.
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (await fits(item.samples[middle])) low = middle + 1; else high = middle;
+    }
+    answers.push({ index: item.index, capacity: low ? item.samples[low - 1].chars : 0 });
+  }
+  return answers;
+}
+
+/**
+ * Fit/capacity mode: the texts of every text Sprite, measured in one browser under one deadline. Each Sprite's
  * code as the render runs it (the sealed source, type-checked when it was published, or a video composition's
  * timing wrapper around it) is policy-checked again, bundled into its own host with its own `canvas` size and loaded
- * on the same page in turn. `result.fits` holds one list of answers per Sprite, in request order.
+ * on the same page in turn. The result holds one list of answers per Sprite, in request order.
  */
 async function fitAll() {
   await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`).catch(() => undefined);
@@ -1277,7 +1316,8 @@ async function fitAll() {
   try {
     const opened = await openPage(url);
     browser = opened.browser;
-    result.fits = [];
+    const answers = [];
+    result[request.mode === "capacity" ? "capacities" : "fits"] = answers;
     for (const sprite of request.sprites) {
       sourcePolicy(sprite.code);
       await fs.writeFile(`${root}/Template.tsx`, sprite.code, "utf8");
@@ -1285,9 +1325,10 @@ async function fitAll() {
       const { width, height } = sprite.canvas ?? request.composition;
       await bundleHost({
         defaults: sprite.default_parameters, configured: sprite.default_parameters, parameter_schema: sprite.parameter_schema,
-        composition: { ...request.composition, width, height }, ...(sprite.box ? { box: sprite.box } : {}),
+        composition: { ...request.composition, width, height, ...(sprite.canvas?.fps ? { fps: sprite.canvas.fps } : {}) }, ...(sprite.box ? { box: sprite.box } : {}),
       });
-      result.fits.push(await fitTexts(opened.page, await waitReady(opened.page), sprite));
+      const measure = request.mode === "capacity" ? textCapacities : fitTexts;
+      answers.push(await measure(opened.page, await waitReady(opened.page), sprite));
     }
   } finally {
     if (browser) await browser.close({ silent: true });
@@ -1345,7 +1386,7 @@ async function sampleChecks(page, loadError) {
 }
 
 async function main() {
-  if (request.mode === "fit") return fitAll();
+  if (["fit", "capacity"].includes(request.mode)) return fitAll();
   const valid = await prepareSource();
   if (!valid) { result.passed = false; return; }
   if (request.mode === "code") { result.passed = checks.every((item) => item.status === "passed" || item.status === "pass"); return; }
