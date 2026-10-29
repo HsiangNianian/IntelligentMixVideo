@@ -60,6 +60,11 @@ export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (O
     label: "上下蒙版", effectName: frameMaskRects(timeline.frameMask, timeline.FECanvas.Height).length ? "上下蒙版" : "上下蒙版（未显示）",
     url: "", sourceIn: 0, sourceOut: 0,
   }] });
+  if (timeline.openingDuration > 0) rows.push({ id: "avatar-mask", actions: [{
+    id: "avatar-mask", targetId: "avatar-mask", effectId: "avatar-mask",
+    start: 0, end: timeline.openingDuration, movable: false, flexible: false,
+    label: "圆形蒙版", effectName: "圆形开场", url: "", sourceIn: 0, sourceOut: 0,
+  }] });
   const effects = rows.filter((row) => row.actions[0]?.effectId !== "video");
   const videos = rows.filter((row) => row.actions[0]?.effectId === "video").flatMap((row) => row.actions);
   const videoRows = videos.map((clip) => ({ id: clip.id, actions: [clip] }));
@@ -72,7 +77,7 @@ function groupTransitionRows(rows: (Omit<TimelineRow, "actions"> & { actions: Pr
   const result = rows.filter((row) => row.id !== "transitions" && row.actions[0]?.effectId !== "transition");
   result.push({ id: "transitions", actions: actions.sort((a, b) => a.start - b.start) });
   // 蒙版固定在文字/特效行下、视频行上；转场仍沿用原来的共用行。
-  const layer = (row: (typeof rows)[number]) => row.id === "transitions" ? trackLayers.transition : row.id === FRAME_MASK_OBJECT_ID ? 100 : row.actions[0]?.effectId === "video" ? Infinity : trackLayers[row.actions[0]?.effectId as EffectTarget] ?? 99;
+  const layer = (row: (typeof rows)[number]) => row.id === "transitions" ? trackLayers.transition : row.id === FRAME_MASK_OBJECT_ID || row.id === "avatar-mask" ? 100 : row.actions[0]?.effectId === "video" ? Infinity : trackLayers[row.actions[0]?.effectId as EffectTarget] ?? 99;
   return result.sort((a, b) => layer(a) - layer(b));
 }
 

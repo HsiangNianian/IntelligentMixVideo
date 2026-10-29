@@ -78,6 +78,7 @@ function templateRecord(template: Template): TemplateRecord {
     frameMask: template.frame_mask,
     splitScreen: template.split_screen,
     avatarEffects: template.avatar_effects,
+    avatarPreview: template.avatar_preview,
     templateId: template.template_id,
     tracks: { tracks: [
       ...template.tracks.map((track) => ({

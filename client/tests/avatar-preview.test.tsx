@@ -1,14 +1,15 @@
 /** 数字人预览几何、开场时间、抠像与基础播放器回归；bun run test，不访问云服务。 */
 import { expect, mock, test } from "bun:test";
 import { createRef } from "react";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { defaultAvatarEffects } from "@/features/templates/avatarEffects";
 import { previewHeadCircle } from "@/features/templates/avatarPreview";
 import { BasicVideoPreview } from "@/features/templates/BasicVideoPreview";
 import { newDraft, type Draft } from "@/features/templates/model";
 import type { PlaybackHandle } from "@/features/templates/previewClock";
 import { defaultSplitScreen } from "@/features/templates/splitScreen";
-import { buildTimeline } from "@/features/templates/timeline";
+import { PreviewTimeline } from "@/features/templates/PreviewTimeline";
+import { buildPreviewRows, buildTimeline } from "@/features/templates/timeline";
 import { previewContext, resolveTemplate } from "@/features/templates/tracks";
 import { sampleMedia } from "./fixtures";
 import { watchMattingFailures } from "@/features/templates/sdk";
@@ -99,4 +100,23 @@ test("基础预览切换开场和头像且保留绝对源时间，取景修改�
   view.rerender(<BasicVideoPreview {...props} previewCenter={{ x: 70, y: 60 }} />);
   expect(opening.style.display).toBe("");
   expect(screen.getByLabelText<HTMLVideoElement>("圆形开场预览").currentTime).toBe(0);
+});
+
+
+// 时间轴使用真实开场区间，长开场截到片尾；头像单独开启不产生开场轨道。
+test("圆形蒙版轨道按开场时长显示、可选中，移除后消失", () => {
+  const draft: Draft = { ...newDraft(), avatar_effects: { ...defaultAvatarEffects(), openingEnabled: true, openingDuration: 2.01 } };
+  const resolved = resolveTemplate(draft, previewContext(sampleMedia));
+  const rows = buildPreviewRows(buildTimeline(draft, [], sampleMedia, resolved));
+  expect(rows.find((row) => row.id === "avatar-mask")?.actions[0]).toMatchObject({ targetId: "avatar-mask", label: "圆形蒙版", start: 0, end: 2, movable: false, flexible: false });
+  expect(rows.findIndex((row) => row.id === "avatar-mask")).toBeLessThan(rows.findIndex((row) => row.actions[0]?.effectId === "video"));
+  const select = mock();
+  render(<PreviewTimeline ref={null} rows={rows} disabled={false} time={0} duration={resolved.duration} onSeek={() => {}} onSelect={select} />);
+  fireEvent.click(screen.getByRole("button", { name: "编辑圆形蒙版" }));
+  expect(select).toHaveBeenCalledWith("avatar-mask");
+  draft.avatar_effects!.openingDuration = 300;
+  expect(buildPreviewRows(buildTimeline(draft, [], sampleMedia, resolved)).find((row) => row.id === "avatar-mask")?.actions[0].end).toBe(30);
+  draft.avatar_effects!.openingEnabled = false;
+  draft.split_screen = { ...defaultSplitScreen(), enabled: true, layout: "circle" };
+  expect(buildPreviewRows(buildTimeline(draft, [], sampleMedia, resolved)).some((row) => row.id === "avatar-mask")).toBe(false);
 });
