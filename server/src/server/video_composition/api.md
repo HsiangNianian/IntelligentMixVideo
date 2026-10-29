@@ -1,6 +1,6 @@
 # 视频合成接口文档
 
-本文按当前 `router.py`、`schema.py`、`service.py` 实现整理，更新日期：2026-10-26。
+本文按当前 `router.py`、`schema.py`、`service.py` 实现整理，更新日期：2026-10-29。
 
 ## 1. 接口概览
 
@@ -78,6 +78,10 @@
 URL 不接受 Markdown 链接、空白、用户名密码或 `#fragment`，允许查询参数。媒体需要可被实际处理服务访问；URL 格式通过不代表媒体可用。
 
 `headerSwitch`、`keywordSwitch`、`materialSwitch`、`subtitleSwitch`、`processRules.watermarkShow`、`introduceCard`、`materialSoundSwitch` 等额外字段目前被忽略，不控制输出。正式请求推荐使用本文列出的 camelCase 字段。
+
+所有新建任务（含操练场）统一采用动态转场间隔，已有模板用于新任务时也使用该策略；模板与请求均没有单独关闭限频的配置。模板的 `transition_enabled=false` 仍可关闭全部转场，`transition_mode` 只控制选中切镜处的效果分配。编辑器预览仅示意效果，不代表成片的转场次数。
+
+已受理任务恢复时沿用保存的转场策略，不按当前默认值重选。首尾近侧、短镜头跳过、中间随机选点与无关键词限频的完整规则见[服务端模板说明](../../../README.md#模板接口)。
 
 有字幕文案时，字数上限只在 ASR 前按冻结模板计算 `max(1, 最小单行全角字容量 - 2)`，以 `max_segment_chars` 传给切片。IMS 按模板中文字幕对象的字号与位置估算（全角字一 em）；Remotion 在共享渲染名额内加载封存源码、字体和摆放参数，用隔离浏览器测量全角样本在预览时序下的单行容量，包含字距、关键词、分栏、缩放、位置和输出画布裁切，不改变字号或位置。被新槽位字效替代的 IMS 字幕不参与；旧 `businessTarget` 两者共存取较小值。没有数字 `fontSize` 的字效也实测。样本受发布正文长度契约限制，不能保证最终任意文案都放得下；真实文字、关键词与时序仍由成片排版预检处理。容量随任务保存，恢复时复用；已有切片与操练场样本不重切。一字放不下以 `subtitle_capacity_too_small` 失败，无法测量以 `subtitle_capacity_unavailable` 失败，均在 `template` 阶段、不调用 ASR 或切片模型。
 
