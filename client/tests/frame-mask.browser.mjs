@@ -11,7 +11,7 @@ mkdirSync(cache, { recursive: true });
 const video = spawnSync("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=green:size=180x320:rate=30",
   "-t", "10", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", resolve(cache, "video.mp4")], { encoding: "utf8" });
 assert.equal(video.status, 0, video.error?.message || video.stderr);
-const { geometry: cases } = JSON.parse(readFileSync("../server/tests/frame_mask_cases.json", "utf8"));
+const { geometry: cases, gradient: gradientCases } = JSON.parse(readFileSync("../server/tests/frame_mask_cases.json", "utf8"));
 const html = `<!doctype html><html><body><div id="root"></div><script type="module">
 import React from 'react';
 import {createRoot} from 'react-dom/client';
@@ -42,6 +42,21 @@ window.checkPixels=async(cases)=>{
    let expected=[0,0,0,0];
    for(const [start,size] of item.expected)if(y>=start&&y<start+size)expected=start===0?[17,34,51,255]:[68,85,102,255];
    for(const x of [0,79])if(String(ctx.getImageData(x,y,1,1).data)!==String(expected))throw Error('像素不一致：'+item.height+':'+x+','+y);
+  }
+ }
+};
+window.checkGradientPixels=async(cases)=>{
+ for(const item of cases){
+  const bar={enabled:true,height:item.barHeight,color:item.color,gradient:item.gradient};
+  const url=frameMaskImage({top:bar,bottom:bar},80,item.height);
+  if(!item.expected.length){if(url!==undefined)throw Error('零高度应省略');continue;}
+  const image=new Image();image.src=url;await image.decode();
+  const canvas=document.createElement('canvas');canvas.width=80;canvas.height=item.height;
+  const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0);
+  for(let y=0;y<item.height;y++){
+   const size=item.expected.length,row=y<size?y:y-(item.height-size);
+   const expected=item.expected[row]??[0,0,0,0];
+   for(const x of [0,79])if(String(ctx.getImageData(x,y,1,1).data)!==String(expected))throw Error('渐变像素不一致：'+item.name+':'+x+','+y);
   }
  }
 };
@@ -86,6 +101,7 @@ try {
   await page.goto(`http://localhost:${server.httpServer.address().port}/__frame_mask`);
   await page.waitForFunction(() => window.mount);
   await page.evaluate((cases) => window.checkPixels(cases), cases);
+  await page.evaluate((cases) => window.checkGradientPixels(cases), gradientCases);
   await page.evaluate(() => window.mount(window.mask));
   await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
   await page.getByRole("button", { name: "播放", exact: true }).click();

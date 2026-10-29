@@ -6,7 +6,7 @@ import { SaveTemplateRequestSchema, type SaveTemplateRequest } from "@/generated
 import { AppliedEffects } from "@/features/templates/EffectAssets";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { PreviewTimeline } from "@/features/templates/PreviewTimeline";
-import { frameMaskRects, newFrameMask, type FrameMask } from "@/features/templates/frameMask";
+import { frameMaskRects, newFrameMask, validateFrameMask, type FrameMask } from "@/features/templates/frameMask";
 import { newDraft, toDraft } from "@/features/templates/model";
 import { saveTemplate, getTemplate } from "@/features/templates/api";
 import { defaultSplitScreen } from "@/features/templates/splitScreen";
@@ -69,6 +69,13 @@ test("旧模板默认无蒙版，选择后编辑、保存、重读及关闭保�
   fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
   await screen.findByText("已保存");
   expect(writes.at(-1)?.frameMask?.top).toMatchObject({ enabled: false, height: 21.7, color: "#123456" });
+});
+
+// 外部输入只在通信边界校验，不能把透明结束色、未知方向或无效范围带入预览。
+test.each([{ endColor: "#11223300" }, { direction: "left" }, { range: 0 }, { range: 101 }, { range: 1.5 }, { range: NaN }, { enabled: undefined }])("拒绝非法渐变参数 %j", (change) => {
+  const mask = newFrameMask();
+  mask.top.gradient = { enabled: true, endColor: "#abcdef", direction: "down", range: 50, ...change } as NonNullable<FrameMask["top"]["gradient"]>;
+  expect(() => validateFrameMask(mask)).toThrow("蒙版渐变");
 });
 
 // 关闭面板保留蒙版；明确移除后立即清空草稿，保存重读不恢复，重新添加使用默认参数。

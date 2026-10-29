@@ -11,6 +11,7 @@ import {
   SaveTemplateResponseSchema,
   SplitScreenSchema,
   AvatarEffectsSchema,
+  FrameMaskSchema,
   type TemplateRecord,
 } from "@/generated/imv/template/v1/template_pb";
 import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
@@ -34,10 +35,7 @@ function toTemplate(record: TemplateRecord): Template {
     transition_duration_seconds: record.transitionDurationSeconds,
     transition_mode: record.transitionMode as Draft["transition_mode"],
     transition_enabled: record.transitionEnabled ?? true,
-    ...(record.frameMask ? { frame_mask: validateFrameMask({
-      top: { enabled: record.frameMask.top?.enabled, height: record.frameMask.top?.height, color: record.frameMask.top?.color },
-      bottom: { enabled: record.frameMask.bottom?.enabled, height: record.frameMask.bottom?.height, color: record.frameMask.bottom?.color },
-    } as FrameMask) } : {}),
+    ...(record.frameMask ? { frame_mask: validateFrameMask(toJson(FrameMaskSchema, record.frameMask) as unknown as FrameMask) } : {}),
     ...(record.avatarEffects ? { avatar_effects: (() => {
       const value = { ...defaultAvatarEffects(), ...toJson(AvatarEffectsSchema, record.avatarEffects) as Partial<AvatarEffects> };
       validateAvatarEffects(value);
