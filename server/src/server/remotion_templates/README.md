@@ -1,23 +1,26 @@
 # Remotion Preset → Sprite
 
-This module runs the three-layer ReAct workflow. The Outer loop only answers,
-asks, delegates or stops through `tools_plan_execute`. A delegation starts the
-host's standard two-step plan directly: `preset` readies the Presets and
-`sprite` composes and saves the Sprite (a `plan` sent with `delegate` is refused;
-only `update_plan` takes one). The Executor loop calls the tools of one step and
-ends it with `tools_report_step`; the host checks the step's recorded outputs,
-starts the next step and publishes the saved Sprite after the last one. A task never
-asks the user: the host refuses Outer's `ask`, the Executor's `needs_input` and a
-Plan result asking for input, and steers them to build with sensible choices
-the user changes afterwards; a task that delegated cannot end with an ordinary
+This module runs the three-layer ReAct workflow. The Outer loop answers, asks,
+delegates, hands the task to the Plan ReAct (`plan`) or stops through
+`tools_plan_execute`. A delegation starts the host's standard two-step plan
+directly: `preset` readies the Presets and `sprite` composes and saves the Sprite
+(a `plan` sent with `delegate` is refused; only `update_plan` takes one). The
+`plan` action builds no default plan: the Plan ReAct designs the steps with
+`update_plan` and then drives the Executor. The Executor loop calls the tools of
+one step and ends it with `tools_report_step`; the host checks the step's recorded
+outputs, starts the next step and publishes the saved Sprite after the last one.
+A task builds first with sensible choices the user changes afterwards, but a
+genuine ambiguity may be asked: Outer's `ask`, the Executor's `needs_input` and
+the Plan's `ask` end the task as `needs_input` with the questions, and the user's
+answer resumes the same work. A task that delegated cannot end with an ordinary
 answer. The Executor's handoff carries the request (`user_intent` without the
-base spec), and the snapshot puts it first. A text effect's words and keywords are never asked for:
+base spec), and the snapshot puts it first. A text effect's words and keywords are not asked for:
 templates pass them each time they render, so a work only needs sample text for
 its preview, taken from the request or a reference image or written by the
 Executor, which reads the request from the snapshot's `user_intent`
-(`step_inputs` only lists earlier steps' outputs). The Plan loop only runs to recover a step that is
-blocked or used a batch without new evidence. The final delivery is a saved
-Sprite published as an isolated Player preview.
+(`step_inputs` only lists earlier steps' outputs). Besides a `plan` hand-off, the
+Plan loop runs to recover a step that is blocked or used a batch without new
+evidence. The final delivery is a saved Sprite published as an isolated Player preview.
 
 ## Tool catalog
 
@@ -259,8 +262,15 @@ glyph and a longer line goes faster. A line stays one run of text otherwise. Onl
 effect there is refused with the fix. Every effect Preset also receives `index` and `count`: the unit within its tier
 at `chars`, the tier at `tiers`/`line1`/`line2`, 0 of 1 elsewhere, so a loop can offset its motion per glyph. The text block of a new work records `still`: the host then holds
 each tier Preset on the middle frame of the frames the tier plays (`compose.mjs` `__Hold`), so motion of its own
-never plays and a stored animated text Preset is reused as it is, look kept; compose requires at least one enter and
-one exit effect (kept with `enabled: false` for still text), so a block never ends up without motion. Transparency of
+never plays and a stored animated text Preset is reused as it is, look kept. A block has only the effects the request
+or the reference asks for: the host adds no default entrance, exit or other effect, so a block without effects shows its
+text still for its whole length. Common
+entrances, exits and loops are host built-ins: a `text.effects` entry names `builtin` (`fade`, `rise`, `pop`,
+`slideLeft`/`slideRight`/`slideUp`/`slideDown`, `blur`, `glow`, `breathing`; `builtin_effects.py`) instead of a
+`source`, and the generated code draws it with `compose.mjs` `__BUILTINS`, so no effect Preset is written for it; an
+omitted title, slot, target or length takes the built-in default (0.5 s for an entrance or exit, none for a loop). A
+built-in's own style props (a glow's colour and strength, a slide's distance) are bound and tuned like a Preset's,
+and the text block records `builtin` so an edit restores it. Transparency of
 a target — the whole text or one tier showing the video through — is a loop effect Preset that multiplies opacity and
 binds its factor as a numeric style parameter, so users adjust the transparency itself; tier colours (`color`,
 `line1Color`, `line2Color`) stay opaque, and the generation path refuses an alpha default there. The keyword

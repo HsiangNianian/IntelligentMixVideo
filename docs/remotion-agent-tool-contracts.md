@@ -718,14 +718,17 @@ EffectSlot = Literal["enter", "exit", "loop", "cue"]
 EffectTarget = Literal["block", "tiers", "line1", "line2", "chars", "keywordChars", "plainChars", "keyword"]
 # 特效的中文名称，如「淡入」「发光」：宿主据此写它的开关、位置与时长参数的标题。
 EffectTitle = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=8)]
+# 宿主内置特效的名字：模型只写名字，宿主自己画，不必写 effect Preset。
+EffectBuiltin = Literal["fade", "rise", "pop", "slideLeft", "slideRight", "slideUp", "slideDown", "blur", "glow", "breathing"]
 
 
 class TextEffect(ContractModel):
-    """文字块的一个特效：画它的 effect 角色 Preset 及其样式参数、中文名称、类型，以及作用位置、时长与开关（配置的默认值）；
-    名称、类型、位置与时长省略时取 Preset 记下的默认用法。"""
+    """文字块的一个特效：一个 effect 角色 Preset（source）或宿主内置特效（builtin）其一，加样式参数、中文名称、类型，
+    以及作用位置、时长与开关（配置的默认值）；名称、类型、位置与时长省略时取 Preset 的 usage 或内置特效的默认值。"""
 
     instance_id: NonEmptyString
-    source: PresetSource
+    source: Omittable[PresetSource]
+    builtin: Omittable[EffectBuiltin]
     parameters: Omittable[JsonObject]
     title: Omittable[EffectTitle]
     slot: Omittable[EffectSlot]
@@ -764,11 +767,12 @@ class TextComposition(ContractModel):
 
 
 class TextBlockEffect(ContractModel):
-    """组合后记录的一个特效：实例、中文名称与类型；位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
+    """组合后记录的一个特效：实例、中文名称与类型；内置特效另记 builtin。位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
 
     instance_id: NonEmptyString
     title: EffectTitle
     slot: EffectSlot
+    builtin: Omittable[EffectBuiltin]
 
 
 class TextBlock(ContractModel):
@@ -882,7 +886,7 @@ description 非空；字效给出 text 文字块且 instances 为空，其他分
 
 契约版本 5 新增逐字位置 `chars` 并让 text Preset 可以画宿主排好的这一栏：text Preset 除 `text`、`segments`、`Keyword` 外另收 `children`（宿主已把关键词命中按六个关键词样式与关键词 Preset 画好），用到 `children` 的 Preset 只在自己的块上画外观并渲染它；只画 `segments` 的旧写法照常可用。各栏都画 `children` 时特效可选 `chars`：开启这样的特效后宿主把每个字（字素，关键词命中整体算一个，空格不算）包成一个单元，入场与出场的进度按 `clamp(P × n − i)` 依次分给第 i 个单元（共 n 个），入场按阅读顺序、出场从最后一个开始，总时长仍是 `effect{k}Seconds`；有栏画 `segments` 时 `effect{k}Target` 的枚举不含 `chars`，组合时选它按字段返回 INVALID_ARGUMENT 并说明修法。所有特效 Preset 另收 `index`、`count`：`chars` 时是该单元在本栏的序号与单元数，`tiers`/`line1`/`line2` 时是栏序号与栏数，其余为 0 与 1；这些 prop 同样不能写进 parameter_schema。
 
-契约版本 4 在文字块里新增 `effects` 特效：每项是一个 role=effect 的 Preset（宿主传入被包住的 `children`、外层元素 `Box` 与显现进度 `progress`，入场、出场的 0 为隐藏、1 为完整显示（版本 6 的 `cue` 另有语义）；它只改变被包住部分的呈现，不改变尺寸、字体与排版），带中文名称 `title`、类型 `slot`（`enter` 入场、`exit` 出场、`loop` 持续）、默认作用位置 `target`（`block` 整体、`tiers` 各栏、`line1`/`line2` 上栏或下栏，这三个只用于双栏，`keyword` 每个关键词命中）、入场与出场的时长 `seconds`（0.1～3 秒，省略为 0.5；持续特效不能填）与默认开关 `enabled`，先列的在里层。宿主在整体、每一栏与每个关键词命中处都留出包裹点：入场的进度在该位置出现后按时长从 0 升到 1（各栏与关键词从所在栏出现的帧算起），出场在结尾按时长从 1 降到 0，持续特效恒为 1；时长最多取该位置播放帧数减一后的一半，定格在中间帧的短字幕仍完整显示。第 k 个特效（从 1 起）得到配置参数 `effect{k}`（开关）、`effect{k}Target`（位置枚举）与入场、出场的 `effect{k}Seconds`，标题取特效的中文名称，样式参数与实例都不能用这种名字。新作品（以及有 `still` 标记的基线）的各栏由宿主定格在该栏播放帧数的中间帧显示，text Preset 自带的动画不再播放（库里带动画的 text Preset 可原样复用），文字块至少要有一个入场与一个出场特效（不想要动画时保留它们并设 `enabled: false`）；关键词命中在定格的栏里取回实时帧，keyword Preset 与作用于关键词的特效照常播放；编辑更早的字效时 text Preset 自带的动画照常播放、不要求特效。单栏使用 `tiers`/`line1`/`line2`、持续特效带 `seconds`、缺少入场或出场特效、特效 Preset 角色不符或 instance_id 占用配置名时按字段返回 INVALID_ARGUMENT。
+契约版本 4 在文字块里新增 `effects` 特效：每项是一个 role=effect 的 Preset（宿主传入被包住的 `children`、外层元素 `Box` 与显现进度 `progress`，入场、出场的 0 为隐藏、1 为完整显示（版本 6 的 `cue` 另有语义）；它只改变被包住部分的呈现，不改变尺寸、字体与排版），带中文名称 `title`、类型 `slot`（`enter` 入场、`exit` 出场、`loop` 持续）、默认作用位置 `target`（`block` 整体、`tiers` 各栏、`line1`/`line2` 上栏或下栏，这三个只用于双栏，`keyword` 每个关键词命中）、入场与出场的时长 `seconds`（0.1～3 秒，省略为 0.5；持续特效不能填）与默认开关 `enabled`，先列的在里层。宿主在整体、每一栏与每个关键词命中处都留出包裹点：入场的进度在该位置出现后按时长从 0 升到 1（各栏与关键词从所在栏出现的帧算起），出场在结尾按时长从 1 降到 0，持续特效恒为 1；时长最多取该位置播放帧数减一后的一半，定格在中间帧的短字幕仍完整显示。第 k 个特效（从 1 起）得到配置参数 `effect{k}`（开关）、`effect{k}Target`（位置枚举）与入场、出场的 `effect{k}Seconds`，标题取特效的中文名称，样式参数与实例都不能用这种名字。新作品（以及有 `still` 标记的基线）的各栏由宿主定格在该栏播放帧数的中间帧显示，text Preset 自带的动画不再播放（库里带动画的 text Preset 可原样复用），文字块只有列出的特效，宿主不自动补入场、出场或其他特效：需求没有提到动画时不写特效，文字全程静止显示；关键词命中在定格的栏里取回实时帧，keyword Preset 与作用于关键词的特效照常播放；编辑更早的字效时 text Preset 自带的动画照常播放、不要求特效。单栏使用 `tiers`/`line1`/`line2`、持续特效带 `seconds`、特效 Preset 角色不符或 instance_id 占用配置名时按字段返回 INVALID_ARGUMENT。
 
 契约版本 3 新增 `text` 文字块（字效专用，新作品必须使用，编辑更早按固定框组合的字效时仍可用 instances）：文字块给出区域、默认文字（单栏一行，双栏「上栏\n下栏」）、基准字号、各栏（role=text 的 Preset、样式参数、字体、字重、双栏的字号比例）、双栏的栏间距与行起点、可选的 role=keyword 关键词 Preset 和时长。宿主据此生成源码（各栏在区域内纵向居中排布，下栏到起点前定格于首帧、不显示但占位；每个关键词在全文的首次字面命中按 IMS 六个关键词样式包裹，`keywordEffect` 开启时交给关键词 Preset 画），并生成固定名称、Schema 与中文标题的配置参数：`text`、`fontSize`、单栏 `fontFamily`/`fontWeight` 或双栏每栏 `line{i}FontFamily`/`line{i}FontWeight`/`line{i}SizeRatio` 与 `lineGap`、`lineStartFrames`、七个关键词参数及有关键词 Preset 时的 `keywordEffect`；它们在 bindings 中以伪实例 `text` 为目标。`parameters` 只绑定各 Preset 的样式 prop，不能占用配置名。text Preset 由宿主传入 `text`、`segments`、`Keyword`、`fontFamily`、`fontWeight`、`fontSize`，keyword Preset 传入 `text`；这些 prop 不能写进它们的 parameter_schema。行数与栏数不符、双栏缺字号比例/栏间距/行起点、行起点不从 0 开始、递减或下栏不早于文字块结束、字体不在字体库、Preset 角色不符、各栏与关键词实例的 instance_id 重复或占用 `text` 与配置名（否则它的嵌套参数会顶替同名配置参数）时按字段返回 INVALID_ARGUMENT。
 

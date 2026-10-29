@@ -6,9 +6,11 @@ from uuid import UUID
 
 from pydantic import (
     BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, StrictFloat,
-    StrictInt, StrictStr, StringConstraints,
+    StrictInt, StrictStr, StringConstraints, model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
+
+from ..builtin_effects import EffectBuiltin
 
 # 显式严格类型也用于递归 JSON，避免参数中的值被隐式转换。
 Integer = Annotated[StrictInt, Field(ge=-(2**53 - 1), le=2**53 - 1)]
@@ -334,13 +336,15 @@ class PresetInstance(ContractModel):
 
 
 class ResolvedPresetInstance(ContractModel):
-    """解析来源后保留的完整快照和有效参数。"""
+    """解析来源后保留的完整快照和有效参数；宿主内置特效（builtin）没有 Preset 源码。"""
 
     instance_id: NonEmptyString
     preset: PresetDraft
     parameters: JsonObject
     layout: InstanceLayout
     timing: InstanceTiming
+    # 文字块里由宿主自己画的内置特效（fade、glow…）；有它时 preset 只是占位，不参与打包。
+    builtin: Omittable[EffectBuiltin]
 
 
 # 效果分类：text 为字效，filter_overlay 为滤镜，video_overlay 与 transition_overlay 合为转场与视频特效。
@@ -405,11 +409,13 @@ EffectTitle = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_
 
 
 class TextEffect(ContractModel):
-    """文字块的一个特效：画它的 effect 角色 Preset 及其样式参数、中文名称、类型，以及作用位置、时长与开关（配置的默认值）；
-    名称、类型、位置与时长省略时取 Preset 记下的默认用法。"""
+    """文字块的一个特效：一个 effect 角色 Preset（source）或宿主内置特效（builtin）其一，加样式参数、中文名称、类型，
+    以及作用位置、时长与开关（配置的默认值）；名称、类型、位置与时长省略时取 Preset 的 usage 或内置特效的默认值。"""
 
     instance_id: NonEmptyString
-    source: PresetSource
+    source: Omittable[PresetSource]
+    # 宿主内置特效的名字（fade、rise、pop、slide*、blur、glow、breathing）：只写名字，宿主自己画，不必写 Preset。
+    builtin: Omittable[EffectBuiltin]
     parameters: Omittable[JsonObject]
     title: Omittable[EffectTitle]
     slot: Omittable[EffectSlot]
@@ -423,6 +429,13 @@ class TextEffect(ContractModel):
     stagger: Omittable[Annotated[FiniteNumber, Field(ge=0, le=1)]]
     # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
     enabled: Omittable[StrictBool]
+
+    @model_validator(mode="after")
+    def one_source(self):
+        """An effect is drawn by exactly one of an effect Preset (source) or a host built-in (builtin)."""
+        if (self.source is None) == (self.builtin is None):
+            raise ValueError("give exactly one of source (an effect Preset) or builtin (a host built-in effect such as fade)")
+        return self
 
 
 class TextComposition(ContractModel):
@@ -448,11 +461,13 @@ class TextComposition(ContractModel):
 
 
 class TextBlockEffect(ContractModel):
-    """组合后记录的一个特效：实例、中文名称与类型；位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
+    """组合后记录的一个特效：实例、中文名称与类型；内置特效另记 builtin。位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
 
     instance_id: NonEmptyString
     title: EffectTitle
     slot: EffectSlot
+    # 宿主内置特效的名字；有它时编辑据此还原 builtin，而不是引用 base_* 草稿。
+    builtin: Omittable[EffectBuiltin]
 
 
 class TextBlock(ContractModel):

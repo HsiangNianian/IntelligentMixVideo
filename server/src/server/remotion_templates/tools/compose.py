@@ -222,7 +222,11 @@ def compose_text_source(
     defaults: dict[str, Any] = {**host_defaults, **lifted_defaults}
     _nested(instances, targets, defs, properties, defaults)
     schema = {"type": "object", "properties": properties, "$defs": defs, "additionalProperties": False, "required": [*host_schemas, *lifted]}
-    source = lambda item: {"instance_id": item["instance_id"], "code": item["preset"]["code"], "bindings": targets.get(item["instance_id"], [])}
+    def source(item: dict[str, Any]) -> dict[str, Any]:
+        """One bundled source entry: a built-in effect by name, or a Preset's code plus its bound style params."""
+        if item.get("builtin"):
+            return {"instance_id": item["instance_id"], "builtin": item["builtin"], "bindings": []}
+        return {"instance_id": item["instance_id"], "code": item["preset"]["code"], "bindings": targets.get(item["instance_id"], [])}
     answer = _bundle({"text": {
         "layout": block["layout"], "tiers": [source(item) for item in tiers], "keyword": source(keyword) if keyword else None,
         "effects": [{**source(item), "slot": effect["slot"]} for item, effect in zip(effects, block.get("effects", []))], "still": still,

@@ -128,10 +128,10 @@ def default_plan(edit: bool, base_drafts: bool | None = None) -> Plan:
 
 
 class PlanAction(Contract):
-    """Host-owned control shared by Outer (answer/ask/delegate/stop) and Plan ReAct (step changes)."""
+    """Host-owned control shared by Outer (answer/ask/delegate/plan/stop) and Plan ReAct (step changes)."""
 
     action: Literal[
-        "answer", "ask", "delegate", "update_plan", "continue", "advance", "complete", "stop"
+        "answer", "ask", "delegate", "plan", "update_plan", "continue", "advance", "complete", "stop"
     ]
     plan: PlanDraft | None = Field(
         default=None,
@@ -148,8 +148,8 @@ class PlanAction(Contract):
         if self.action == "update_plan" and self.plan is None:
             raise ValueError(f"{self.action} requires a plan")
         if self.action != "update_plan" and self.plan is not None:
-            # A delegation always starts the host's standard plan; a plan it carried would be silently ignored.
-            raise ValueError("Only update_plan accepts a plan; delegate {reason} starts the host's standard plan")
+            # delegate runs the host's standard plan and plan hands the design to the Plan ReAct; a carried plan is ignored.
+            raise ValueError("Only update_plan accepts a plan; delegate (standard plan) and plan (Plan ReAct designs it) start it themselves")
         if self.sprite_id is not None and self.action != "complete":
             raise ValueError(
                 f"sprite_id is only valid with action=complete; omit it for {self.action} "

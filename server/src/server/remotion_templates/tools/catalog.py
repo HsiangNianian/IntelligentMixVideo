@@ -90,7 +90,7 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
     constraints=[
         "The host canvas is fixed at 1080x1920, 30 FPS. When the snapshot has target_duration_frames (a new work), the Sprite must last exactly that long (the last instance's end, or the text block's duration_frames), otherwise the call is refused.",
         "Contract v4: kind is required (text, filter_overlay, video_overlay or transition_overlay). A text effect is composed from text {layout, text, font_size, tiers, line_gap, line_starts, keyword, effects, duration_frames} with role text Presets for the tiers, an optional role keyword Preset and role effect Presets, and no instances; the host lays the block out and provides its configuration parameters. Other kinds place instances by layout and timing.",
-        "text.effects (v4) lists up to 6 effects {instance_id, source, parameters, title, slot enter|exit|loop, target block|tiers|line1|line2|chars|keyword, seconds (enter and exit only), enabled}, the first innermost; tiers, line1 and line2 need two tiers; a new work's block has at least one enter and one exit effect. Effect k gets the configuration parameters effect{k} (switch), effect{k}Target (position) and, entering or exiting, effect{k}Seconds (length).",
+        "text.effects (v4) lists up to 6 effects {instance_id, source, parameters, title, slot enter|exit|loop, target block|tiers|line1|line2|chars|keyword, seconds (enter and exit only), enabled}, the first innermost; a host built-in draws the motion itself, so name one with builtin (fade, rise, pop, slideLeft, slideRight, slideUp, slideDown, blur, glow, breathing) instead of source, and give exactly one of source or builtin, and a built-in's own style props (for example a glow's color and intensity) can be bound like a Preset's; tiers, line1 and line2 need two tiers; a block has only the effects listed: the host adds none, so a block without effects shows its text still. Effect k gets the configuration parameters effect{k} (switch), effect{k}Target (position) and, entering or exiting, effect{k}Seconds (length).",
         "v5: a text Preset may draw the line the host passes as children (keyword hits already drawn) instead of drawing segments itself; only such tiers offer the position chars, where every glyph is a unit and the units take an entrance or exit in turn (reading order in, last first out). Every effect Preset also receives index and count (the unit in its tier at chars, the tier at tiers/line1/line2, 0 of 1 elsewhere).",
         "v6: a two-tier text takes arrangement stack (default; line_gap apart) or overlap (both tiers in one place, centred on each other, the lower one on top; line_gap may be left out), which becomes the configuration parameter tierLayout. The slot cue (two tiers only) keeps progress 0 until the lower tier appears and then rises to 1 over seconds; it stays 0 while the lower tier has no text. The element around each tier carries the tier's font size.",
         "v7: a text.effects entry may leave out title, slot, target and seconds; the host takes them from its effect Preset's usage, and an entry without them whose Preset records no usage is refused.",
@@ -314,13 +314,15 @@ PLAN_TOOL = HostTool(
     name="tools.plan_execute",
     input=PlanAction,
     description=(
-        "Host control; never runs a business tool. Outer: answer (a question that asks for no Sprite), delegate (the host "
-        "then runs its standard Preset -> Sprite plan) or stop; ask is refused, since a Sprite is built first and changed afterwards. Plan: update_plan (send only the unfinished steps), continue, "
-        "advance, complete (the host publishes the latest Sprite this task saved) or stop."
+        "Host control; never runs a business tool. Outer: answer (a question that asks for no Sprite), ask (a genuine "
+        "ambiguity, or a plan_result whose status is needs_input), delegate (the host "
+        "then runs its standard Preset -> Sprite plan), plan (hand the task to the Plan ReAct to design or revise its steps) or stop. "
+        "Plan: update_plan (send only the unfinished steps), continue, "
+        "advance, complete (the host publishes the latest Sprite this task saved), ask (route a blocking question to Outer) or stop."
     ),
     constraints=(
         "Only Outer and Plan may invoke this tool; Executor may only inspect it.",
-        "Outer answers, delegates or stops; Plan owns ordered step changes.",
+        "Outer answers, asks, delegates, plans or stops; Plan owns ordered step changes and may ask through Outer.",
         "Completion still requires host verification of a saved Sprite; the host, not Outer, publishes it.",
     ),
     error_codes=("INVALID_ARGUMENT", "tool_limit_reached", "tool_budget_exhausted", "agent_stopped"),
@@ -334,10 +336,11 @@ REPORT_TOOL = HostTool(
     name="tools.report_step",
     input=StepResult,
     description=(
-        "Executor: report the current step as step_done or blocked; call it alone. The host checks "
+        "Executor: report the current step as step_done, blocked or needs_input; call it alone. The host checks "
         "the step really produced its output (a sprite_create success in a step with the sprite module, a ready "
-        "Preset in a preset step) and then starts the next step or publishes the Sprite. needs_input is refused: what "
-        "the request leaves open is chosen sensibly, and the user changes the saved Sprite afterwards."
+        "Preset in a preset step) and then starts the next step or publishes the Sprite. needs_input routes a genuine, "
+        "blocking question to Outer, which asks the user and resumes the work; what the request leaves open is otherwise "
+        "chosen sensibly and changed afterwards."
     ),
     constraints=(
         "Only the Executor may invoke this tool; the host records the step's Presets and Sprite from tool receipts.",

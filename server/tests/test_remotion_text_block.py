@@ -201,6 +201,42 @@ def two_tiers(tier: str, glow: str | None, fade: str | None = None, **text) -> S
     return SpriteComposeInput.model_validate({"description": "双栏标题", "kind": "text", "text": block, "parameters": bindings})
 
 
+@needs_bundler
+def test_a_text_block_can_name_host_built_in_effects(tmp_path):
+    """收缩创作面：模型只写特效名字（builtin fade/glow），宿主出组件，不必存 effect Preset；组合源码引用 __BUILTINS，
+    效果配置参数仍由宿主生成，文字块记下 builtin 以便编辑还原。"""
+    current = session(tmp_path)
+    tier = asyncio.run(current.execute("preset.create", preset("text", TIER_CODE, "color"), available()))["preset"]["preset_id"]
+    block = {
+        "layout": {"x": 90, "y": 700, "width": 900, "height": 400}, "text": "今日灵感", "font_size": 96,
+        "tiers": [{"instance_id": "tier", "source": {"kind": "stored", "preset_id": tier}, "parameters": {"color": "#FFFFFF"},
+                   "font_family": "Noto Sans CJK SC", "font_weight": 700}],
+        "effects": [
+            {"instance_id": "fadeIn", "builtin": "fade", "title": "淡入", "slot": "enter", "target": "block"},
+            {"instance_id": "fadeOut", "builtin": "fade", "title": "淡出", "slot": "exit", "target": "block"},
+            {"instance_id": "glow", "builtin": "glow", "title": "发光", "slot": "loop", "target": "block"},
+        ],
+        "duration_frames": 90,
+    }
+    bindings = [
+        {"name": "color", "title": "颜色", "targets": [{"instance_id": "tier", "parameter": "color"}]},
+        {"name": "glowColor", "title": "发光颜色", "targets": [{"instance_id": "glow", "parameter": "color"}]},
+        {"name": "glowLight", "title": "发光强度", "targets": [{"instance_id": "glow", "parameter": "intensity"}]},
+    ]
+    request = SpriteComposeInput.model_validate({"description": "内置淡入淡出", "kind": "text", "text": block, "parameters": bindings})
+    composed = asyncio.run(current.execute("sprite.compose", request, available()))
+    draft = current.sprite_draft(composed["draft_id"])
+    assert 'Preset: __BUILTINS["fade"]' in draft.code and 'Preset: __BUILTINS["glow"]' in draft.code
+    effects = {item["instance_id"]: item for item in draft.model_dump(mode="json")["text"]["effects"]}
+    assert effects["fadeIn"]["builtin"] == "fade" and effects["glow"]["slot"] == "loop"
+    # The effect{k} configuration parameters still come from the host; a loop has no length.
+    assert {"effect1", "effect1Target", "effect1Seconds", "effect3", "effect3Target"} <= set(draft.default_parameters)
+    assert "effect3Seconds" not in draft.default_parameters
+    # A built-in carries tunable style props, bindable like a Preset's.
+    assert draft.default_parameters["glowColor"] == "#FFFFFF" and draft.default_parameters["glowLight"] == 10
+    assert {"glowColor", "glowLight"} <= set(draft.parameter_schema["properties"])
+
+
 def test_the_host_owns_a_text_blocks_configuration():
     """单栏暴露 fontFamily/fontWeight，双栏暴露每栏的字体、字重与字号比例以及栏间距、行起点；都带文字、字号与七个关闭的关键词参数，
     有关键词 Preset 时另有默认开启的 keywordEffect；名称、Schema 与中文标题由宿主固定，字体枚举是字体库。"""
@@ -364,7 +400,7 @@ def test_a_text_block_wraps_its_positions_in_effect_presets(tmp_path, monkeypatc
         host = {item.name for item in sprite.bindings if item.targets[0].instance_id == TEXT_BLOCK_ID}
         assert {"effect1", "effect1Target", "effect1Seconds", "effect2Seconds", "effect3Target", "effect4", "effect4Target"} <= host and "effect4Seconds" not in host
         assert (sprite.default_parameters["effect2Seconds"], sprite.default_parameters["effect3Target"], sprite.default_parameters["shineColor"]) == (0.4, "keyword", "#FFD54A")
-        assert [item.model_dump() for item in sprite.text.effects] == [{"instance_id": item["instance_id"], "title": item["title"], "slot": item["slot"]} for item in EFFECTS]
+        assert [{k: item.model_dump()[k] for k in ("instance_id", "title", "slot")} for item in sprite.text.effects] == [{"instance_id": item["instance_id"], "title": item["title"], "slot": item["slot"]} for item in EFFECTS]
         assert sprite.text.still is True and 'at: ["keyword"], inline: true' in sprite.code and 'at: ["tiers", "line2"]' in sprite.code and "__Hold" in sprite.code
         assert category_problems("text", sprite.parameter_schema, {item.name for item in sprite.bindings}, sprite.default_parameters) == []
         checked = recording(current)
@@ -548,20 +584,24 @@ def test_two_tiers_stack_or_overlap(tmp_path, monkeypatch):
 
 
 @needs_bundler
-def test_a_new_works_text_block_needs_an_entrance_and_an_exit(tmp_path, monkeypatch):
-    """审计复现（作品 afb7aeb1）：新作品复用了自带动画的旧 text Preset，被静止检查拒绝后 Agent 删掉动画、也没加特效，保存出一个完全不动的字效。
-    现在新作品的文字块至少要有一个入场与一个出场特效；要静止文字时保留它们并关掉开关。编辑更早的字效（没有 still 标记）不要求特效，
-    它的各栏也不被定格。"""
+def test_a_new_works_text_block_keeps_only_the_requested_effects(tmp_path, monkeypatch):
+    """回归（PR #283 评审）：宿主曾给没写入场或出场的新作品文字块自动补内置 fade 入场与出场，违反以用户需求为准。
+    现在文字块只有列出的特效：没写特效就没有特效与特效配置、文字全程静止；只写入场就不补出场；显式关掉的特效保持关闭；
+    编辑更早的字效（没有 still 标记）也不定格各栏。"""
     monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
 
     async def run():
-        """Compose without effects, with only an entrance, with switched-off fades, and in an edit of an older text effect."""
+        """Compose without effects, with only an entrance, with explicit switched-off fades, and in an edit of an older text effect."""
         current = session(tmp_path / "new")
         tier, glow, fade = await stored(current)
-        for effects, missing in (([], "no enter and no exit effect"), (fades(fade)[:1], "no exit effect")):
-            with pytest.raises(ToolFault) as refused:
-                await current.execute("sprite.compose", two_tiers(tier, glow, effects=effects), available())
-            assert refused.value.error.field == "/text/effects" and missing in refused.value.error.message and "enabled false" in refused.value.error.message
+        bare = await current.execute("sprite.compose", two_tiers(tier, glow), available())
+        block = current.sprite_drafts[bare["draft_id"]]
+        assert block.text.effects == [] and "effect1" not in block.default_parameters
+        assert '__BUILTINS["fade"]' not in block.code
+        # Only the entrance is given, so the block has no exit.
+        half = await current.execute("sprite.compose", two_tiers(tier, glow, effects=fades(fade)[:1]), available())
+        assert [item.slot for item in current.sprite_drafts[half["draft_id"]].text.effects] == ["enter"]
+        # Explicit fades keep their switches off.
         still = await current.execute("sprite.compose", two_tiers(tier, glow, effects=fades(fade, enabled=False)), available())
         assert {name: current.sprite_drafts[still["draft_id"]].default_parameters[name] for name in ("effect1", "effect2")} == {"effect1": False, "effect2": False}
         legacy = SimpleNamespace(text=SimpleNamespace(still=None), instances=[])
@@ -988,14 +1028,15 @@ def test_the_executor_draws_a_tiers_look_on_its_block():
     assert "so the whole line inherits it" in EXECUTOR_RULES
 
 
-def test_text_and_keywords_are_preview_samples_never_questions():
-    """审计复现（作品 58be1abc、e208020e）：请求「关键词以打字机的样式出现，然后再显示整体的非关键字」时，Outer 直接追问用户文案、
-    关键词与语言；另一次 Executor 把快照里为空的 step_inputs 当成没收到用户需求，报 needs_input 去问。字效的文字与关键词由模板每次
-    渲染时传入，生成只需要预览用的示例文字，规则写明这一点，并说明需求在 user_intent 里。"""
+def test_text_and_keywords_are_preview_samples_not_the_thing_to_ask_about():
+    """审计复现（作品 58be1abc、e208020e）：Outer 追问用户文案、关键词与语言；Executor 把空的 step_inputs 当成没收到需求、报 needs_input 去问。
+    字效的文字与关键词由模板每次渲染时传入，生成只需要预览用的示例文字；规则要说明这一点，并说明需求在 user_intent 里。
+    重构后允许为真正的歧义提问，但这些由模板注入的内容仍不应成为问题。"""
     from server.remotion_templates.agent import EXECUTOR_RULES, OUTER_RULES
 
-    assert "A text effect's words and keywords are never missing" in OUTER_RULES and "ask is refused" in OUTER_RULES
-    assert "its default text and keywords are only the preview sample" in EXECUTOR_RULES and "Never ask the user" in EXECUTOR_RULES
+    assert "are injected by templates on each render" in OUTER_RULES
+    assert "do not ask about those unless the user clearly wants a specific wording chosen now" in OUTER_RULES
+    assert "its default text and keywords are only the preview sample" in EXECUTOR_RULES
     assert "The request is user_intent, in the host handoff and at the top of the snapshot" in EXECUTOR_RULES
 
 
