@@ -365,6 +365,15 @@ class FrameMask(BaseModel):
     bottom: FrameMaskBar
 
 
+class AvatarPreview(BaseModel):
+    """仅编辑器使用的源视频圆心与槽位，保存后恢复，不参与真实合成。"""
+
+    model_config = ConfigDict(extra="forbid")
+    x: float = Field(default=50, ge=0, le=100, allow_inf_nan=False)
+    y: float = Field(default=50, ge=0, le=100, allow_inf_nan=False)
+    source: int = Field(default=0, ge=0, le=2, strict=True)
+
+
 class TemplateData(BaseModel):
     """完整模板配置；API 和数据库读取共用字段定义。"""
 
@@ -379,6 +388,7 @@ class TemplateData(BaseModel):
     transition_enabled: bool = Field(default=True, strict=True)
     split_screen: SplitScreen | None = Field(default=None, exclude_if=lambda value: value is None)
     avatar_effects: AvatarEffects | None = Field(default=None, exclude_if=lambda value: value is None)
+    avatar_preview: AvatarPreview | None = Field(default=None, exclude_if=lambda value: value is None)
     tracks: list[EffectTrack] = Field(max_length=100)
     frame_mask: FrameMask | None = Field(default=None, exclude_if=lambda value: value is None)
 
