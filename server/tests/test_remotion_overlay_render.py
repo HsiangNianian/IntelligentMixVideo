@@ -2154,7 +2154,7 @@ def test_real_browser_transparency_does_not_hide_missing_or_clipped_text(tmp_pat
     assert failure.value.code == "text_too_long"
 
 
-# 关键词用两份 DOM 叠出光晕，aria-hidden 的绝对定位副本与正文占同一位置，不能被串成重复的业务文字。
+# 关键词用两份 DOM 画出描边/光晕：装饰副本与正文占同一位置，正文仍在文字流里，两层都不能被拼成重复的业务文字。
 DECORATIVE_KEYWORD_COPY = """import { AbsoluteFill } from "remotion";
 export default function Title(props: { text: string; fontSize: number }) {
   const keyword = props.text.slice(2, 4);
@@ -2162,7 +2162,7 @@ export default function Title(props: { text: string; fontSize: number }) {
     <div style={{fontSize: props.fontSize, lineHeight: 1.2, color: "#fff"}}>
       {props.text.slice(0, 2)}
       <span style={{display: "inline-block", position: "relative"}}>
-        <span aria-hidden="true" style={{position: "absolute", left: 0, top: 0, whiteSpace: "nowrap"}}><span>{keyword}</span></span>
+        <span style={{position: "absolute", left: 0, top: 0, whiteSpace: "nowrap"}}><span>{keyword}</span></span>
         <span>{keyword}</span>
       </span>
       {props.text.slice(4)}
@@ -2172,20 +2172,22 @@ export default function Title(props: { text: string; fontSize: number }) {
 """
 
 
-# 场景：线上双栏字幕的关键词光晕副本曾让完整文字被误判缺字；仅忽略逻辑正文中的装饰副本，仍检查真实裁切。
+# 场景：线上双栏字幕的关键词描边副本曾让完整文字被误判缺字；副本是否带 aria-hidden 不影响判定，仍检查真实裁切与乱序。
 @pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
-@pytest.mark.parametrize("variant", ["copy", "all-aria-hidden", "missing-text", "clipped-copy"])
+@pytest.mark.parametrize("variant", ["copy", "hidden-copy", "reordered", "missing-text", "clipped-copy"])
 def test_real_browser_handles_decorative_keyword_copies(tmp_path: Path, variant: str) -> None:
-    """完整的六字字幕保持 128；整段 aria-hidden 仍按可见文字检查；缺字或被裁切的副本仍失败。"""
+    """完整的六字字幕保持 128；副本整段隐藏、乱序、缺字或被裁切时仍以 text_too_long 失败。"""
     code = DECORATIVE_KEYWORD_COPY
-    if variant == "all-aria-hidden":
-        code = code.replace('<span>{keyword}</span></span>', '</span>')
+    if variant == "hidden-copy":
+        # 正文整段 aria-hidden（一些组件这样标记纯装饰层）：仍是页面上真实显示的文字，不能被当成缺字。
         code = code.replace('<div style=', '<div aria-hidden="true" style=')
+    elif variant == "reordered":
+        code = code.replace("{props.text.slice(4)}", "{props.text.slice(0, 1)}")
     elif variant == "missing-text":
         code = code.replace("props.text.slice(4)", "props.text.slice(4, -1)")
     elif variant == "clipped-copy":
         code = code.replace('whiteSpace: "nowrap"', 'whiteSpace: "nowrap", width: 5, overflow: "hidden"')
-    if variant in {"missing-text", "clipped-copy"}:
+    if variant in {"reordered", "missing-text", "clipped-copy"}:
         with pytest.raises(OverlayError) as failure:
             fit_for_real(tmp_path, code, [titled("发现全新世界")], 1.0)
         assert failure.value.code == "text_too_long"
@@ -2552,6 +2554,32 @@ def test_real_browser_rejects_text_without_a_readable_fitting_size(tmp_path: Pat
     detail = json.loads(str(failure.value.__cause__))
     assert detail["font_size"] > 24
     assert any("extends beyond" in problem for problem in detail["problems"])
+
+
+# 关键词在偶数帧只有半个正文字号：最小字号下这一行读不清，奇数帧读得清——可读性随帧不同，不能因为有一帧可读就沿用最小字号。
+PULSING_KEYWORD_TITLE = """import React from "react";
+import { AbsoluteFill, useCurrentFrame } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  const frame = useCurrentFrame();
+  const small = frame % 2 === 0;
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, whiteSpace: "normal", wordBreak: "break-all", color: "#fff" }}>
+        <span style={{ fontSize: small ? props.fontSize * 0.5 : props.fontSize }}>{props.text.slice(0, 2)}</span>{props.text.slice(2)}
+      </div>
+    </AbsoluteFill>
+  );
+}
+"""
+
+
+# 场景：部分满尺寸帧可读时，不能把“有一帧读得清”当成下限可读而直接沿用最小字号；旋转顶到画布上沿的摆放还会靠平移放行。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_raises_the_readable_floor_when_a_frame_is_unreadable(tmp_path: Path) -> None:
+    """100 字、旋转 90 度顶在上沿：关键词每两帧缩到半字号，宿主把字号抬到所有满尺寸帧都可读，不止 24。"""
+    instance = fit_for_real(tmp_path, PULSING_KEYWORD_TITLE, [titled("测" * 100, font_size=100, x=540, y=100, rotation=90)], 1.0).instances[0]
+    assert 24 < instance["config"]["fontSize"] < 100
+    assert instance["host"]["transform"]["rotation"] == 90
 
 
 # 场景：资产声明的 fontSize 最小值是 8，100 个字在字号 200 下放不下。宿主的下限取 24（再小的行高算不可读，“越小越放得下”的二分假设不成立），

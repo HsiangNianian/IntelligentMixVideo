@@ -781,11 +781,12 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   `visibility: visible` counts toward completeness even when its own or an ancestor's opacity is at most 0.01,
   so making one tier transparent does not produce `text_too_long`. Only painted text contributes clipping,
   size and placement measurements; missing text, `display: none` and `visibility: hidden` are still excluded.
-  Completeness checks both the complete DOM text and the text without `aria-hidden="true"` decorative copies;
-  either may contain the whole requested text. This prevents a keyword's glow or outline copy from being counted
-  twice in the middle of a sentence, while still checking effects whose entire visible text is aria-hidden.
-  Every painted copy still participates in size, clipping and position measurements. Generation uses the same
-  completeness rule, and its `text_fit` check continues to require visible text. Text that already fits keeps its `fontSize`; otherwise the
+  Completeness walks the element's text nodes in reading order: each node continues the run where the previous one
+  stopped, or holds the whole remaining text itself. A keyword's glow, outline or echo copy repeating a fragment
+  inside a sentence therefore is no longer taken for a gap, and `aria-hidden` makes no difference either way. Text
+  that is cut, reordered or missing characters still fails, and every painted copy still participates in size,
+  clipping and position measurements. Generation uses the same completeness rule, and its `text_fit` check continues
+  to require visible text. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum but never below 24 (smaller lines count as unreadable), at which it is shown in full
   (binary search; the size is logged, the template and the sealed source are untouched). An English title or subtitle of a
   video composition is marked `one_line`: its effect is laid out for one line, and a wrapped translation would reach into the

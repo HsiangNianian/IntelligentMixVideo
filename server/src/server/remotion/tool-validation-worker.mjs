@@ -552,10 +552,24 @@ function textFitProblems(page, needle, placement, collectLines = false) {
     // Components may split the text into words or glyphs and drop the spaces between them.
     const compact = (value) => value.replace(/\s+/g, "");
     const wanted = compact(needle);
+    /**
+     * Whether the text nodes, in document order, still show all of `wanted`: each node continues the run where the
+     * last one stopped, or holds the whole remaining text itself. A keyword's glow, outline or echo copy repeats a
+     * fragment inside the line ("prefix keyword keyword suffix"), so joining every node would hide the complete line;
+     * this rule still fails text that is cut, reordered or missing characters.
+     */
+    const covers = (parts) => {
+      let at = 0;
+      for (const part of parts) {
+        if (at === wanted.length) return true;
+        if (wanted.startsWith(part, at)) at += part.length;
+        else if (part.includes(wanted.slice(at))) return true;
+      }
+      return at === wanted.length;
+    };
     const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
     const problems = new Set();
-    let joined = "";
-    let withoutDecorations = "";
+    const parts = []; // each text node's text, in document order, for the completeness check below
     let area = 0;
     let readable = true;
     let extent = null; // canvas rectangle of all shown text after the transform
@@ -575,11 +589,9 @@ function textFitProblems(page, needle, placement, collectLines = false) {
       if (!lines.length) continue;
       // Opacity can deliberately hide a tier without removing any text from its layout. Count it for render
       // preflight, but do not let its invisible boxes affect the full-size frames, clipping, or placement shift.
-      joined += shown;
-      // Glow/outline Presets may paint an aria-hidden copy beside the real keyword. Joining both would turn
-      // complete text into "prefix keyword keyword suffix". Also try the logical text without those copies;
-      // keep the full join for effects whose whole visible text is aria-hidden, and measure every painted box.
-      if (!node.parentElement.closest('[aria-hidden="true"]')) withoutDecorations += shown;
+      // Completeness reads these nodes in order (`covers`); every painted copy keeps its own boxes for clipping,
+      // size and placement below, so a decorative copy that overflows still fails.
+      parts.push(shown);
       if (!isPainted) continue;
       const bounds = {
         left: Math.min(...lines.map((rect) => rect.left)), right: Math.max(...lines.map((rect) => rect.right)),
@@ -631,7 +643,7 @@ function textFitProblems(page, needle, placement, collectLines = false) {
       }
     }
     if (!extent) return null;
-    if (!joined.includes(wanted) && !withoutDecorations.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
+    if (!covers(parts)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
     const ordered = [...rows].sort((first, second) => first.top - second.top);
     /** The canvas centre and rendered text of one visual line, for measuring its single-line position. */
     const describe = (row) => row && {
@@ -655,7 +667,8 @@ const UNPLACED = Object.freeze({ cx: 0, cy: 0, x: 0, y: 0, scale: 1, rotation: 0
  * lines): entrance and exit animations show it smaller, scaled down or typed in, and would hide a layout that clips
  * it while it holds. It `fits` when one of those frames has no problem, so a reveal mask or slide-in that moves the
  * full-size text out of view for a few frames is fine; `problems` are those of the full-size frames otherwise.
- * `readable` distinguishes lines that are too small from overflow, so fitting need not assume the floor fits.
+ * `readable` is true only when no full-size frame has lines too small to read, so fitting can tell a floor that fails
+ * for being unreadable from one that fails for overflow and need not assume the floor fits.
  * With `placement.nudge` the text leaving the window is no problem and `shift` is the smallest move of the placement
  * (`{x, y}` in canvas pixels, zero when none is needed) that brings the text of the middle one of the problem-free
  * full-size frames back inside it; when that text is larger than the window no move helps and it does not fit.
@@ -670,7 +683,7 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
   for (const frame of frames) {
     await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
     const error = await page.evaluate(() => window.__imvRuntimeError ?? null);
-    if (error) return { error, frame, shown: verdicts.length, full: 0, fits: false, lines: 0, extent: null, first: null, last: null, problems: [] };
+    if (error) return { error, frame, shown: verdicts.length, full: 0, fits: false, readable: false, lines: 0, extent: null, first: null, last: null, problems: [] };
     const verdict = await textFitProblems(page, needle, placement, collectLines);
     if (verdict) verdicts.push({ ...verdict, frame });
   }
@@ -689,7 +702,10 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
   // The anchor line and its text come from a frame without problems, so an entrance or exit offset cannot move it.
   const middle = (clean.length ? clean : full)[Math.floor(((clean.length ? clean : full).length - 1) / 2)] ?? null;
   return {
-    error: null, shown: verdicts.length, full: full.length, fits, readable: full.some((verdict) => verdict.readable),
+    // Every full-size frame must be readable for the floor to fail only for its size; one tiny frame still needs a bigger size.
+    // No full-size frame at all says nothing about size, so it is not reported as readable.
+    error: null, shown: verdicts.length, full: full.length, fits,
+    readable: full.length > 0 && full.every((verdict) => verdict.readable),
     lines: Math.max(0, ...full.map((verdict) => verdict.lines)), extent: middle?.extent ?? null,
     first: middle?.first ?? null, last: middle?.last ?? null, frame: middle?.frame ?? null, shift,
     problems: fits ? [] : [...new Set(full.flatMap((verdict) => verdict.problems))],
