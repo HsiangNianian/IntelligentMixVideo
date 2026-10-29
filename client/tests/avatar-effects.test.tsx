@@ -39,11 +39,16 @@ test("自动开场和抠像保存读取、另存、关闭后保留参数", async
 });
 
 // 不含新字段的旧模板继续读写；编辑中的非法数值须在网络写入前被拒绝。
-test("兼容旧模板，无效开场时长不发保存请求", async () => {
+test("兼容旧模板，无效数字人参数不发保存请求", async () => {
   fetchMock.mockResolvedValue(jsonTemplateResponse(savedTemplate(), "get"));
   expect((await getTemplate(savedTemplate().template_id)).avatar_effects).toBeUndefined();
   fetchMock.mockClear();
-  await expect(saveTemplate({ ...newDraft(), name: "错误时长", avatar_effects: { ...defaultAvatarEffects(), openingDuration: NaN } })).rejects.toThrow("开场时长");
+  for (const [key, value, message] of [
+    ["openingDuration", NaN, "开场时长"], ["circleScale", NaN, "圆形留量"],
+    ["feather", NaN, "羽化"], ["feather", 0.3, "羽化"],
+  ] as const) {
+    await expect(saveTemplate({ ...newDraft(), name: "无效输入", avatar_effects: { ...defaultAvatarEffects(), [key]: value } })).rejects.toThrow(message);
+  }
   expect(fetchMock).not.toHaveBeenCalled();
 });
 

@@ -4,6 +4,7 @@
  * IMS 就绪前由前端时钟推进播放位置、就绪后接着播放；执行 bun run test。
  */
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { useState, type ReactNode } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TemplatePreview } from "@/features/templates/TemplatePreview";
 import { newDraft, type Draft } from "@/features/templates/model";
@@ -14,6 +15,7 @@ import { sampleMedia } from "./fixtures";
 import { frames } from "./frames";
 import { defaultSplitScreen } from "@/features/templates/splitScreen";
 import { defaultAvatarEffects } from "@/features/templates/avatarEffects";
+import { AvatarEffectsEditor } from "@/features/templates/AvatarEffectsEditor";
 
 /** SDK 播放器替身：记录调用，事件由用例推送；载入时间线一直不完成，除非用例调用 finishTimeline。 */
 class FakePlayer {
@@ -58,7 +60,7 @@ function props(draft: Draft) {
 }
 
 /** 挂载模板预览，在播放器页面挂上 SDK 替身，等到 SDK 开始载入第一份时间线。 */
-async function mountWithSdk(draft: Draft, extra: Partial<Parameters<typeof TemplatePreview>[0]> = {}) {
+async function mountWithSdk(draft: Draft, extra: Partial<Parameters<typeof TemplatePreview>[0]> = {}, content?: ReactNode) {
   FakePlayer.last = undefined;
   const append = Element.prototype.append;
   spyOn(Element.prototype, "append").mockImplementation(function (this: Element, ...nodes: (Node | string)[]) {
@@ -66,13 +68,59 @@ async function mountWithSdk(draft: Draft, extra: Partial<Parameters<typeof Templ
     for (const node of nodes)
       if (node instanceof HTMLIFrameElement && node.title === "模板预览播放器") Reflect.set(node.contentWindow!, "AliyunTimelinePlayer", FakePlayer);
   });
-  const view = render(<TemplatePreview {...props(draft)} {...extra} />);
+  const view = render(content ?? <TemplatePreview {...props(draft)} {...extra} />);
   await waitFor(() => expect(FakePlayer.last?.setTimeline.mock.calls.length).toBe(1));
   return { view, player: FakePlayer.last! };
 }
 
 /** 时间轴各行的对象类型。 */
 const rowObjects = () => [...screen.getByLabelText("时间轴轨道标签").querySelectorAll("[data-object]")].map((label) => label.getAttribute("data-object"));
+
+/** 使用实际数字输入更新草稿，复现清空、停顿与重新填写的编辑过程。 */
+function AvatarPreviewEditor({ initial }: { initial: Draft }) {
+  const [draft, setDraft] = useState(initial);
+  return <><AvatarEffectsEditor value={draft.avatar_effects!} onChange={(avatar_effects) => setDraft({ ...draft, avatar_effects })} onClose={() => {}} onRemove={() => {}} />
+    <TemplatePreview {...props(draft)} /></>;
+}
+
+// 回归：临时空值或越界值不能触发永久降级；修正后同一 SDK 实例恢复更新，合法的零羽化也可应用。
+test.each([
+  ["圆边羽化", "", "0"],
+  ["头部圆形留量（倍）", "", "1.8"],
+  ["开场时长（秒）", "", "3"],
+  ["圆边羽化", "0.3", "0.1"],
+])("%s 从无效值 %s 修正为 %s 自动恢复预览", async (label, invalid, valid) => {
+  spyOn(HTMLImageElement.prototype, "decode").mockResolvedValue();
+  spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage() {} } as unknown as CanvasRenderingContext2D);
+  spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,cHJldmlldw==");
+  const draft = { ...newDraft(), avatar_effects: { ...defaultAvatarEffects(), openingEnabled: true } };
+  const { player } = await mountWithSdk(draft, {}, <AvatarPreviewEditor initial={draft} />);
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  player.currentTime = 1;
+  await act(async () => player.emit("render"));
+  const rows = rowObjects();
+  const input = screen.getByLabelText<HTMLInputElement>(label);
+  fireEvent.change(input, { target: { value: invalid } });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+  expect(input.value).toBe(invalid);
+  expect(screen.getByRole("alert").textContent).toContain("预览参数无效");
+  expect(rowObjects()).toEqual(rows);
+  expect(player.currentTime).toBe(1);
+  expect(player.setTimeline).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText(/已切换基础视频预览/)).toBeNull();
+  fireEvent.change(input, { target: { value: valid } });
+  await waitFor(() => expect(player.setTimeline).toHaveBeenCalledTimes(2));
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("预览已就绪，点击播放查看效果")).toBeTruthy();
+  expect(player.currentTime).toBe(0);
+  expect(player.pause).toHaveBeenCalled();
+  expect(player.destroy).not.toHaveBeenCalled();
+  expect(FakePlayer.last).toBe(player);
+  expect(screen.queryByText(/已切换基础视频预览/)).toBeNull();
+});
 
 test("只修改蒙版也刷新 SDK，失败降级保留相同几何，关闭即移除", async () => {
   spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ fillRect() {}, fillStyle: "" } as unknown as CanvasRenderingContext2D);

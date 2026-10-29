@@ -1,5 +1,5 @@
 /**
- * SDK 预览组件：管理单个播放器、串行更新时间线；授权在后台请求，IMS 渲染或载入时间线失败、卡住或 60 秒仍不能播放时降级为基础视频。
+ * SDK 预览组件：管理单个播放器、串行更新时间线；无效输入保留上次有效预览，IMS 渲染或载入时间线失败、卡住或 60 秒仍不能播放时降级为基础视频。
  * 播放位置由前端持有：IMS 就绪时由它推进，降级后由基础视频推进，二者都不可用时由前端时钟推进，换来源时接着当前位置与播放状态；
  * 播放按钮、进度条、时间轴、文字选择框与 AI 资产都只跟随这个位置，不等 IMS。卸载时清理订阅和异步任务。
  */
@@ -51,8 +51,25 @@ function TimelineMark() {
   return <span className="template-timeline-mark flex size-8 items-center justify-center rounded-lg" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" className="size-5"><rect x="2" y="7" width="8" height="4" rx="1" fill="currentColor" /><rect x="14" y="7" width="8" height="4" rx="1" fill="currentColor" /><rect x="5" y="15" width="13" height="4" rx="1" fill="currentColor" /><path d="M12 4v17m-2-18h4l-2 3-2-3Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg></span>;
 }
 
-/** 每次修改全量更新时间线并回到开头；串行处理，快速修改只应用最新草稿。 */
-export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMedia, onMediaChange, videoInputKey, onCatalog, selectedId, selectionTargets, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder, avatarSource = 0, previewCenter = defaultPreviewCenter }: Props) {
+/** 有效修改全量更新时间线并回到开头；无效输入保留预览，快速修改只应用最新有效草稿。 */
+export function TemplatePreview({ draft: editingDraft, media, resolved, mediaError, onRetryMedia, onMediaChange, videoInputKey, onCatalog, selectedId, selectionTargets, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder, avatarSource = 0, previewCenter = defaultPreviewCenter }: Props) {
+  // 沿用时间轴构建的校验结果；有效草稿只缓存给预览，父组件保存的仍是当前编辑值。
+  const [catalog, setCatalog] = useState<EffectAsset[]>(readCatalog);
+  const latestCatalog = useRef(catalog);
+  const lastValid = useRef({ media, draft: editingDraft, rows: [] as ReturnType<typeof buildPreviewRows>, notices: [] as string[] });
+  const { draft, rows, notices, previewError } = useMemo(() => {
+    const empty = { media, draft: editingDraft, rows: [] as ReturnType<typeof buildPreviewRows>, notices: [] as string[] };
+    if (!media || !resolved) return { ...empty, previewError: "" };
+    try {
+      const timeline = buildTimeline(editingDraft, catalog, media, resolved, videoOrder, avatarSource, previewCenter);
+      lastValid.current = { media, draft: editingDraft, rows: buildPreviewRows(timeline), notices: timeline.notices };
+      return { ...lastValid.current, previewError: "" };
+    } catch (error) {
+      return { ...(lastValid.current.media === media ? lastValid.current : empty), previewError: `预览参数无效：${error instanceof Error ? error.message : "请检查输入"}。修正后自动更新预览。` };
+    }
+  }, [editingDraft, catalog, media, resolved, videoOrder, avatarSource, previewCenter]);
+  const latestPreviewError = useRef(previewError);
+  latestPreviewError.current = previewError;
   const latestCenter = useRef(previewCenter);
   latestCenter.current = previewCenter;
   const latestAvatar = useRef(avatarSource);
@@ -80,20 +97,6 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const clockTime = useRef(0);
   // 最近一次显示到界面的时间（0.1 秒为单位）。
   const shownDecisecond = useRef(0);
-  // 效果目录：SDK 加载前用随包目录（与工作区编辑用的相同），加载后换成 SDK 目录；时间轴行与 SDK 时间线共用。
-  const [catalog, setCatalog] = useState<EffectAsset[]>(readCatalog);
-  const latestCatalog = useRef(catalog);
-  // 时间轴的对象与视频行、时间调整说明直接按当前草稿生成，不等 SDK 应用时间线：IMS 加载、出错或卡住时照常显示。
-  const { rows, notices } = useMemo((): { rows: ReturnType<typeof buildPreviewRows>; notices: string[] } => {
-    if (!media || !resolved) return { rows: [], notices: [] };
-    try {
-      const timeline = buildTimeline(draft, catalog, media, resolved, videoOrder, avatarSource, previewCenter);
-      return { rows: buildPreviewRows(timeline), notices: timeline.notices };
-    } catch {
-      // 生成失败时 SDK 应用同一份时间线也会失败，原因在那里提示与记录。
-      return { rows: [], notices: [] };
-    }
-  }, [draft, catalog, media, resolved, videoOrder, avatarSource, previewCenter]);
   const timelineRows = useMemo(() => mergeSpriteRows(rows, sprites).map((row) => ({ ...row,
     actions: row.actions.map((clip) => ({ ...clip, targetId: clip.targetId ? selectionTargets?.get(clip.targetId) ?? clip.targetId : undefined })),
   })), [rows, sprites, selectionTargets]);
@@ -289,7 +292,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
 
     // 避免异步旧时间线覆盖新配置；卸载后不再更新 React 状态。
     const update = async () => {
-      if (!instance || active || disposed || basicRequested) return;
+      if (!instance || active || disposed || basicRequested || latestPreviewError.current) return;
       active = true;
       setReady(false);
       if (!mediaFailed) setFailed(false);
@@ -375,7 +378,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       }
     };
     apply.current = () => {
-      if (basicRequested) return;
+      if (basicRequested || latestPreviewError.current) return;
       // 初始化已应用相同输入时，延迟通知无需再次重置播放位置。
       if (appliedEffects === latest.current.avatar_effects && appliedCenter === latestCenter.current && appliedLayout === latest.current.split_screen && appliedAvatar === latestAvatar.current && appliedTracks === latest.current.tracks && appliedMask === latest.current.frame_mask && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current && appliedResolved === latestResolved.current) return;
       revision++;
@@ -578,13 +581,13 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   useEffect(() => {
     const timer = window.setTimeout(() => apply.current?.(), 250);
     return () => window.clearTimeout(timer);
-  }, [draft.tracks, draft.frame_mask, draft.split_screen, draft.avatar_effects, previewCenter, avatarSource, media, videoOrder, resolved, replacedTexts]);
+  }, [draft.tracks, draft.frame_mask, draft.split_screen, draft.avatar_effects, previewCenter, avatarSource, media, videoOrder, resolved, replacedTexts, previewError]);
 
-  // 修改模板、视频或排列后回到开头并暂停（IMS 播放器随后重新应用时间线），各画面来源一致。
+  // 无效输入暂停并保留当前帧；有效修改回到开头，IMS 随后重新应用时间线。
   useEffect(() => {
     activePlayback().pause();
-    clock.seek(0);
-  }, [media, videoOrder, resolved, draft.frame_mask, draft.split_screen, draft.avatar_effects, previewCenter, avatarSource]);
+    if (!previewError) clock.seek(0);
+  }, [media, videoOrder, resolved, draft.frame_mask, draft.split_screen, draft.avatar_effects, previewCenter, avatarSource, previewError]);
 
   // 换画面来源（IMS 就绪或开始应用修改、切换基础视频、基础视频可以播放）时交接：新来源从当前位置接着走，
   // 原来在播放就接着播放，AI 资产与时间轴不跳回开头，播放也不因 IMS 就绪或降级中断。
@@ -637,6 +640,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       </div>
       <p role={failed || mediaError ? "alert" : "status"} className={failed || mediaError ? "text-xs text-destructive" : videoReady ? "sr-only" : "text-[11px] text-muted-foreground"}>{mediaError || status}</p>
       {mediaError && !media && <Button type="button" variant="outline" onClick={onRetryMedia}>重试读取视频</Button>}
+      {previewError && <p role="alert" className="text-xs text-destructive">{previewError}</p>}
       {mediaFailures.length > 0 && <div role="alert" className="space-y-1 text-xs text-destructive">{mediaFailures.map((message) => <p key={message}>{message}</p>)}</div>}
       {(failed || mediaFailures.length > 0) && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试预览</Button>}
       {basicFallback && <p className="text-[11px] text-muted-foreground">IMS 渲染暂不可用（{fallbackReason}），已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。</p>}
