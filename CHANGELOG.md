@@ -3,6 +3,32 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.18] - 2026-10-29
+### New Features
+- [`620d457`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/620d4575242e76ed58b670fd03a0494a4dfed248) - **remotion-agent**: add built-in text effects and allow clarifying questions *(PR [#283](https://github.com/HsiangNianian/IntelligentMixVideo/pull/283) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`ba64a83`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ba64a836af353fa033e08e530446306d00d2e8e6) - **video-composition**: limit transitions with dynamic spacing *(PR [#290](https://github.com/HsiangNianian/IntelligentMixVideo/pull/290) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Bug Fixes
+- [`8ce310d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8ce310dad96573be55f1cee83ae7557fb1ba34f3) - **remotion**: correct split reveal generation and validation *(PR [#276](https://github.com/HsiangNianian/IntelligentMixVideo/pull/276) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`b7b73bd`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b7b73bd6f035016c40e83bc36b0628f78da17541) - **remotion**: clarify keyword intent and effect scope *(PR [#280](https://github.com/HsiangNianian/IntelligentMixVideo/pull/280) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`98d3ee7`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/98d3ee7500335b6efb9ab1e4696b6be50d5bd6b0) - **remotion**: avoid false text fit failures *(PR [#282](https://github.com/HsiangNianian/IntelligentMixVideo/pull/282) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`93212af`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/93212aff2f416500e98fb9f6ead7fb0b95f30276) - **video-composition**: measure Remotion subtitle capacity *(PR [#287](https://github.com/HsiangNianian/IntelligentMixVideo/pull/287) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`0ee639c`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/0ee639c289342810d74c6d0a48dea3e535af2971) - remove frame masks through scene object controls *(PR [#288](https://github.com/HsiangNianian/IntelligentMixVideo/pull/288) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Documentation Changes
+- [`da97653`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/da9765346af79b3ecff0c9c1b599d9499967e6ba) - update CHANGELOG.md for v0.9.17 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+- [`cd25443`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/cd254432408913bfd619459738b03855106f3620) - split AGENTS.md into per-directory guides *(PR [#277](https://github.com/HsiangNianian/IntelligentMixVideo/pull/277) by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Chores
+- [`6b3fdab`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6b3fdab15779890564ce648ed47b3c10110d49ee) - **video-composition**: re-segment the playground sample by meaning *(PR [#284](https://github.com/HsiangNianian/IntelligentMixVideo/pull/284) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`c417906`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c417906541e45441b752aea854e76b4896ef4a59) - **release**: promote dev to main for v0.9.18 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`56863b6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/56863b6629cc44d3028f200a2c7748853be482e5) - **release**: prepare v0.9.18 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`571a698`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/571a6985f6ab7483e21749e2bd0b9e589818bd35) - Merge pull request [#291](https://github.com/HsiangNianian/IntelligentMixVideo/pull/291) from YUZHEthefool/codex/release-v0.9.18
+
+chore(release): promote dev to main for v0.9.18 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.17] - 2026-10-28
 ### New Features
 - [`2b65f63`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2b65f63f55952eb14edb18e0cd79326bf5a73a32) - **remotion**: overwrite a saved Sprite asset by default *(PR [#262](https://github.com/HsiangNianian/IntelligentMixVideo/pull/262) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
@@ -1835,3 +1861,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.16]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.15...v0.9.16
 
 [v0.9.17]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.16...v0.9.17
+
+[v0.9.18]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.17...v0.9.18
