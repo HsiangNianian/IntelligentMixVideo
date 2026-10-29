@@ -79,7 +79,7 @@ URL 不接受 Markdown 链接、空白、用户名密码或 `#fragment`，允许
 
 `headerSwitch`、`keywordSwitch`、`materialSwitch`、`subtitleSwitch`、`processRules.watermarkShow`、`introduceCard`、`materialSoundSwitch` 等额外字段目前被忽略，不控制输出。正式请求推荐使用本文列出的 camelCase 字段。
 
-有字幕文案时，字数上限只在 ASR 前按冻结模板计算 `max(1, 最小单行全角字容量 - 2)`，以 `max_segment_chars` 传给切片。只按模板中文字幕对象的字号与位置估算（全角字一 em，以较近画布边缘为界）；Remotion 字效替代或叠加字幕时同样按该对象估算，不在浏览器里实测，实际放不下时由成片排版预检缩小字号，英文译文沿用成片预检。容量随任务保存，恢复时复用；已有切片与操练场样本不重切。一字也放不下时在 `template` 阶段以 `subtitle_capacity_too_small` 失败，不调用 ASR 或切片模型。
+有字幕文案时，字数上限只在 ASR 前按冻结模板计算 `max(1, 最小单行全角字容量 - 2)`，以 `max_segment_chars` 传给切片。按模板中文字幕对象的字号与位置估算（全角字一 em，以较近画布边缘为界）；字幕由 Remotion 字效接管时改按字效自己的字号（发布默认值或摆放覆盖，乘以缩放）与内容区域估算，旧 `businessTarget` 叠加的字效与 IMS 字幕取较小值；都不在浏览器里实测，实际放不下时由成片排版预检缩小字号，英文译文沿用成片预检。容量随任务保存，恢复时复用；已有切片与操练场样本不重切。一字也放不下时在 `template` 阶段以 `subtitle_capacity_too_small` 失败，不调用 ASR 或切片模型。
 
 ### 三种模式
 
