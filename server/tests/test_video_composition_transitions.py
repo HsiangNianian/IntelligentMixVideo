@@ -316,9 +316,11 @@ def test_mixed_renderers_share_selection_and_duration(transition_case, mode, dur
 
 @pytest.mark.parametrize("mode", ["sequence", "random"])
 @pytest.mark.parametrize("duration", [None, 0.6])
-def test_spacing_mixed_renderers_share_points_and_duration(spacing_case, mode, duration):
-    """动态限频在 IMS 与 Remotion 间共享选点；改成 Remotion 候选不改变切镜位置或自身时长。"""
+@pytest.mark.parametrize("spacing_policy", ["ordered", True])
+def test_spacing_mixed_renderers_share_points_and_duration(spacing_case, mode, duration, spacing_policy):
+    """顺序与旧洗牌策略均在 IMS 与 Remotion 间共享选点；替换候选不改变切镜位置或自身时长。"""
     case = spacing_case
+    case["use_transition_spacing"] = spacing_policy
     case["template"]["transition_mode"] = mode
     ims_case = deepcopy(case)
     sprite = published_sprite(kind=pb.SPRITE_KIND_TRANSITION_OVERLAY)
@@ -327,7 +329,7 @@ def test_spacing_mixed_renderers_share_points_and_duration(spacing_case, mode, d
     case["template"]["tracks"] = [clip if track.get("transition_boundary") == 2 else track for track in case["template"]["tracks"]]
     case["remotion_assets"] = {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}
     data = {"request": case["request"], "template": case["template"], "duration_ms": case["duration_ms"],
-            "keyword_transitions": True, "transition_spacing": "ordered",
+            "keyword_transitions": True, "transition_spacing": spacing_policy,
             "output": {key: case[key] for key in ("width", "height", "fps")},
             "segmentation": {"segments": case["segments"]},
             "remotion": {"placements": [{**clip, "editor": {}}], "assets": case["remotion_assets"]}}
