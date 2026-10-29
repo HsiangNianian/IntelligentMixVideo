@@ -998,7 +998,7 @@ export type SaveTemplateRequest = Message<"imv.template.v1.SaveTemplateRequest">
   avatarEffects?: AvatarEffects | undefined;
 
   /**
-   * 缺省不添加蒙版；更新时省略保留原配置，显式关闭两栏即可停用。
+   * 缺省不添加蒙版；更新时省略保留原配置，空消息移除，关闭两栏仅停用。
    *
    * @generated from field: imv.template.v1.FrameMask frame_mask = 11;
    */
