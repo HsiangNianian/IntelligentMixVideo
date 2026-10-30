@@ -17,6 +17,7 @@ from ..database import get_engine
 from ..remotion_templates import placement, sprite_store, sprites
 from ..remotion_templates.store import Conflict
 from .schema import EffectTrack, Template, TemplateSave, TemplateSummary, completeness_error, effect_catalog
+from . import images
 
 # 模板元数据用于查询和约束，配置 JSON 保留完整编辑字段与可信效果快照。
 metadata = MetaData()
@@ -147,6 +148,9 @@ def save_template(data: TemplateSave) -> Template:
     # 创建和更新都检查必需文字对象，检查通过后才访问资产及模板数据库。
     if issue := completeness_error(data):
         raise HTTPException(422, issue)
+    if data.frame_mask:
+        for image_id in {bar.image_id for bar in (data.frame_mask.top, data.frame_mask.bottom) if bar.image_id}:
+            images.read_image(image_id)
     clips = [track for track in data.tracks if track.target == "remotion"]
     clip_ids = {str(track.sprite_id) for track in clips}
     if clip_ids:
@@ -198,6 +202,8 @@ def save_template(data: TemplateSave) -> Template:
                         old_bar = existing.configuration.get("frame_mask", {}).get(edge, {})
                         if "gradient" not in getattr(data.frame_mask, edge).model_fields_set and "gradient" in old_bar:
                             configuration["frame_mask"][edge]["gradient"] = old_bar["gradient"]
+                        if "image_id" not in getattr(data.frame_mask, edge).model_fields_set and "imageId" in old_bar:
+                            configuration["frame_mask"][edge]["imageId"] = old_bar["imageId"]
                 connection.execute(templates.update().where(
                     templates.c.template_id == template_id,
                 ).values(**values))

@@ -1,5 +1,6 @@
 """图片蒙版的上传、持久引用与真实 PNG 回归；运行 uv run --locked pytest tests/test_frame_mask_images.py。"""
 
+from copy import deepcopy
 from hashlib import sha256
 from io import BytesIO
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from PIL import Image
 import pytest
 
 from server.template import images
+from .template_wire import detail_template, post_template, saved_template
 
 
 def picture(size=(90, 160), color=(200, 80, 40, 128), format="PNG", **kwargs):
@@ -93,6 +95,38 @@ def test_upload_preserves_resolution_and_exif_orientation(image_store):
         assert image.size == (17, 30) and not image.getexif()
 
 
+def test_image_reference_roundtrip_clear_and_frozen_copy(client, template_payload, image_store):
+    """旧客户端省略保留图片，显式空值清除；停用保留，替换不改冻结快照及旧图片。"""
+    first = client.post("/template/frame-mask-images", files={"file": ("one.png", picture())}).json()["imageId"]
+    second = client.post("/template/frame-mask-images", files={"file": ("two.png", picture(color=(40, 80, 200, 255)))}).json()["imageId"]
+    mask = {"top": {"enabled": True, "height": 20, "color": "#112233", "imageId": first},
+            "bottom": {"enabled": False, "height": 0, "color": "#112233", "imageId": second}}
+    response = post_template(client, {**template_payload, "frame_mask": mask})
+    assert response.status_code == 201, response.text
+    record = saved_template(response)
+    template_id = record["template_id"]
+    assert detail_template(client.get(f"/template/{template_id}"))["frame_mask"]["top"]["imageId"] == first
+    frozen = deepcopy(response.json()["template"]["frameMask"])
+    payload = {**template_payload, "template_id": template_id}
+    legacy = deepcopy(mask)
+    for bar in legacy.values():
+        del bar["imageId"]
+    preserved = post_template(client, {**payload, "frame_mask": legacy})
+    assert preserved.status_code == 200
+    assert preserved.json()["template"]["frameMask"]["top"]["imageId"] == first
+    mask["top"]["imageId"] = second
+    assert post_template(client, {**payload, "frame_mask": mask}).status_code == 200
+    assert frozen["top"]["imageId"] == first and first in image_store
+    mask["top"]["imageId"] = ""
+    cleared = post_template(client, {**payload, "frame_mask": mask})
+    assert cleared.status_code == 200 and cleared.json()["template"]["frameMask"]["top"]["imageId"] == ""
+    assert cleared.json()["template"]["frameMask"]["bottom"]["imageId"] == second
+    original = detail_template(client.get(f"/template/{template_id}"))
+    mask["top"]["imageId"] = "https://untrusted.test/image.png"
+    assert post_template(client, {**payload, "frame_mask": mask}).status_code == 422
+    mask["top"]["imageId"] = "f" * 64
+    assert post_template(client, {**payload, "frame_mask": mask}).status_code == 404
+    assert detail_template(client.get(f"/template/{template_id}")) == original
 
 
 
