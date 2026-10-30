@@ -76,7 +76,7 @@ export function instanceTitle(version: Version, id: string): string {
   const block = version.spec.sprite?.text;
   const tier = block?.tiers.indexOf(id) ?? -1;
   if (block && tier >= 0) return block.tiers.length === 1 ? "正文" : block.bilingual && block.tiers.length === 4
-    ? ["上栏中文", "上栏英文", "下栏中文", "下栏英文"][tier] : ["上栏", "下栏"][tier];
+    ? ["第一组中文", "第一组英文", "第二组中文", "第二组英文"][tier] : ["上栏", "下栏"][tier];
   if (block?.keyword === id) return "关键词字效";
   const effect = block?.effects?.find((item) => item.instance_id === id);
   return effect ? `特效 · ${effect.title}` : `实例 · ${id}`;

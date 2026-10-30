@@ -284,3 +284,17 @@ test("双栏双语参数保留两组中英文字", () => {
   fireEvent.change(screen.getByLabelText("英文文字第 2 行"), { target: { value: "New second" } });
   expect(changes).toEqual([["textEn", "First\nNew second"]]);
 });
+
+// 场景：四行双语字效的特效位置必须按“第一组/第二组”显示，不能把第 3、4 行误标成同一栏的中英文。
+test("四行双语字效的作用位置显示两组中英文", () => {
+  const version = textBlockVersion();
+  version.spec.sprite!.text = { tiers: ["upper", "upperEn", "lower", "lowerEn"], bilingual: true, effects: [{ instance_id: "shine", title: "发光" }] };
+  version.candidate.config_schema.properties.effect1Target = {
+    type: "string", title: "发光位置", enum: ["block", "tiers", "line1", "line2", "line3", "line4"],
+  };
+  const values = { ...version.candidate.default_config, effect1Target: "line3" };
+  render(<ParametersPanel version={version} values={values} disabled={false} pending={false} dirty={false} saving={false}
+    onChange={() => {}} onSave={() => {}} onDiscard={() => {}} />);
+  const shine = within(screen.getByRole("group", { name: "特效" })).getByRole("region", { name: "持续·发光" });
+  expect(within(shine).getByLabelText("发光位置").textContent).toBe("第二组中文");
+});

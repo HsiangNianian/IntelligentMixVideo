@@ -51,8 +51,8 @@ const OPTION_LABELS: Record<string, string> = {
   tiers: "各栏",
   line1: "上栏",
   line2: "下栏",
-  line3: "下栏中文",
-  line4: "下栏英文",
+  line3: "第二组中文",
+  line4: "第二组英文",
   chars: "逐字",
   keywordChars: "关键词逐字",
   plainChars: "非关键词逐字",
@@ -186,8 +186,8 @@ export function ParameterControl({
           <SelectContent>
             {field.options.map((option) => (
               <SelectItem key={String(option)} value={String(option)}>
-                {field.options?.includes("line4") && (option === "line1" || option === "line2")
-                  ? option === "line1" ? "上栏中文" : "上栏英文"
+                {field.options?.includes("line4") && String(option).startsWith("line")
+                  ? ["第一组中文", "第一组英文", "第二组中文", "第二组英文"][Number(String(option).slice(4)) - 1]
                   : OPTION_LABELS[String(option)] ?? String(option)}
               </SelectItem>
             ))}

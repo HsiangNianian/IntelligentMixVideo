@@ -69,22 +69,19 @@ def subtitle_blocks(segments, lines: int, max_length: int | None = None, max_spa
 def bilingual_events(segments):
     """双语字效的字幕事件 (中文, 中文关键词, 英文, 英文关键词, 开始, 结束)：同一条切片的中英文字幕一起显示。
 
-    一个原切片被拆成多条短句（已保存的 ``subtitle_parts``）时，每条短句配同一条切片的英文译文，英文随中文一起
-    换行出现；缺少英文译文按翻译失败终止合成。
+    已保存的 ``subtitle_parts`` 只有整条切片的译文，无法与每个短句一一对应；双语渲染改用原切片文字和完整区间
+    作为一个事件，避免重复或猜测译文。没有切片级短句时每个切片仍使用自己的译文，缺少译文按翻译失败终止合成。
     """
     events = []
     for item in segments:
         if not item.text_en or not item.text_en.strip():
             raise ValueError("缺少英文字幕译文")
+        text = _subtitle_text(item.text)
+        keyword = _subtitle_text(item.keyword) if item.keyword and item.keyword in item.text else ""
         english = _subtitle_text(item.text_en, "en")
         english_keyword = _subtitle_text(item.keyword_en, "en") if item.keyword_en and item.keyword_en in item.text_en else ""
-        used = False
-        for part in item.subtitle_parts or [item]:
-            text = _subtitle_text(part.text)
-            keyword = _subtitle_text(item.keyword) if not used and item.keyword and item.keyword in part.text else ""
-            used = used or bool(keyword)
-            if text:
-                events.append((text, keyword, english, english_keyword, part.start_time, part.end_time))
+        if text:
+            events.append((text, keyword, english, english_keyword, item.start_time, item.end_time))
     return events
 
 

@@ -1187,6 +1187,23 @@ def test_bilingual_sprite_shows_chinese_and_english_together_per_cue(composition
     assert all("one_line" not in item and "grow" not in item and "reveal_frame" not in item for item in result.instances)
 
 
+def test_bilingual_sprite_shows_one_translation_for_legacy_parts(composition_case):
+    """历史短句只有整条切片的一份译文：按原切片整体显示一次，独立切片仍使用自己的译文。"""
+    data = bilingual_sprite_case(composition_case)
+    data["segmentation"]["segments"] = [{
+        "segment_id": 1, "text": "甲乙，丙丁。", "keyword": "", "text_en": "One sentence", "keyword_en": "",
+        "start_time": 0, "end_time": 2, "level": 1, "group_id": [1, 1], "subtitle_parts": [
+            {"text": "甲乙", "start_time": 0, "end_time": 1}, {"text": "丙丁", "start_time": 1, "end_time": 2},
+        ],
+    }, {
+        "segment_id": 2, "text": "戊己。", "keyword": "", "text_en": "Next sentence", "keyword_en": "",
+        "start_time": 2, "end_time": 3, "level": 1, "group_id": [2, 2],
+    }]
+    result = remotion.plan(data, 120)
+    assert [(item["config"]["text"], item["config"]["textEn"]) for item in result.instances] == [
+        ("甲乙丙丁", "One sentence"), ("戊己", "Next sentence")]
+
+
 def test_bilingual_sprite_is_not_shown_twice_with_an_english_effect(composition_case):
     """双语字效已显示英文：绑定英文对象的另一个字效不再渲染，否则英文会出现两次。"""
     from .conftest import remotion_track
