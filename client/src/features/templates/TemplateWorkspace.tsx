@@ -281,6 +281,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     if (timingInputs && [...timingInputs].some((input) => !input.checkValidity())) { setInspectorTab("timing"); return; }
     const transitionInput = form.current?.querySelector<HTMLInputElement>('[aria-label="转场时间设置"] input[type="number"]');
     if (transitionInput && !transitionInput.checkValidity()) { transitionInput.reportValidity(); return; }
+    // 数字人输入有独立字符串草稿；按钮、快捷键和元数据自动保存都不能把未完成输入当成旧有效值保存。
+    const avatarInput = [...(form.current?.querySelectorAll<HTMLInputElement>('input[data-avatar-effect]') ?? [])].find((input) => !input.checkValidity());
+    if (avatarInput) { avatarInput.reportValidity(); return; }
     lock.current = true;
     setBusy(true);
     setError("");

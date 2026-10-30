@@ -3,11 +3,11 @@
  * 由用例决定载入时间线与 canplay 的结果，检查 IMS 还在加载、卡住或出错时时间轴照常可用，卡住、出错或播放不前进时切换基础视频，
  * IMS 就绪前由前端时钟推进播放位置、就绪后接着播放；执行 bun run test。
  */
-import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { useState, type ReactNode } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TemplatePreview } from "@/features/templates/TemplatePreview";
-import { newDraft, type Draft } from "@/features/templates/model";
+import { newDraft, type Draft, type PreviewMedia } from "@/features/templates/model";
 import { newFrameMask } from "@/features/templates/frameMask";
 import { CAN_PLAY_TIMEOUT_MS, readCatalog, STALL_TIMEOUT_MS, type PlayerEvent } from "@/features/templates/sdk";
 import { addTrack, previewContext, resolveTemplate } from "@/features/templates/tracks";
@@ -16,6 +16,12 @@ import { frames } from "./frames";
 import { defaultSplitScreen } from "@/features/templates/splitScreen";
 import { defaultAvatarEffects } from "@/features/templates/avatarEffects";
 import { AvatarEffectsEditor } from "@/features/templates/AvatarEffectsEditor";
+import { AppliedEffects } from "@/features/templates/EffectAssets";
+
+// Happy DOM 用浮点取余误拒绝 1.8/0.1 等合法小数；这里只验证空值和范围，原生步长由浏览器回归验证。
+const stepValidity = Object.getOwnPropertyDescriptor(ValidityState.prototype, "stepMismatch")!;
+beforeEach(() => { Object.defineProperty(ValidityState.prototype, "stepMismatch", { get: () => false, configurable: true }); });
+afterEach(() => { Object.defineProperty(ValidityState.prototype, "stepMismatch", stepValidity); });
 
 /** SDK 播放器替身：记录调用，事件由用例推送；载入时间线一直不完成，除非用例调用 finishTimeline。 */
 class FakePlayer {
@@ -77,10 +83,12 @@ async function mountWithSdk(draft: Draft, extra: Partial<Parameters<typeof Templ
 const rowObjects = () => [...screen.getByLabelText("时间轴轨道标签").querySelectorAll("[data-object]")].map((label) => label.getAttribute("data-object"));
 
 /** 使用实际数字输入更新草稿，复现清空、停顿与重新填写的编辑过程。 */
-function AvatarPreviewEditor({ initial }: { initial: Draft }) {
+function AvatarPreviewEditor({ initial, media = sampleMedia }: { initial: Draft; media?: PreviewMedia }) {
   const [draft, setDraft] = useState(initial);
+  const resolved = resolveTemplate(draft, previewContext(media));
   return <><AvatarEffectsEditor value={draft.avatar_effects!} onChange={(avatar_effects) => setDraft({ ...draft, avatar_effects })} onClose={() => {}} onRemove={() => {}} />
-    <TemplatePreview {...props(draft)} /></>;
+    <AppliedEffects draft={draft} catalog={[]} resolved={resolved} selected={null} onSelect={() => {}} />
+    <TemplatePreview {...props(draft)} media={media} resolved={resolved} /></>;
 }
 
 // 回归：临时空值或越界值不能触发永久降级；修正后同一 SDK 实例恢复更新，合法的零羽化也可应用。
@@ -120,6 +128,36 @@ test.each([
   expect(player.destroy).not.toHaveBeenCalled();
   expect(FakePlayer.last).toBe(player);
   expect(screen.queryByText(/已切换基础视频预览/)).toBeNull();
+});
+
+// 无效输入不得污染其他草稿消费者；换媒体仍生成完整轨道，真实 SDK 失败后基础预览仍用有效几何。
+test.each([["开场时长（秒）", ""], ["头部圆形留量（倍）", ""], ["圆边羽化", "0.3"]])("%s 输入 %s 后换媒体仍保留对象、轨道及基础蒙版", async (label, invalid) => {
+  spyOn(HTMLImageElement.prototype, "decode").mockResolvedValue();
+  spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage() {} } as unknown as CanvasRenderingContext2D);
+  spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,cHJldmlldw==");
+  const initial = { ...newDraft(), avatar_effects: { ...defaultAvatarEffects(), openingEnabled: true }, split_screen: { ...defaultSplitScreen(), enabled: true, layout: "circle" as const } };
+  const { view, player } = await mountWithSdk(initial, {}, <AvatarPreviewEditor initial={initial} />);
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  const rows = rowObjects();
+  fireEvent.change(screen.getByLabelText(label), { target: { value: invalid } });
+  expect(screen.getByText("开场显示 · 2 秒")).toBeTruthy();
+  const media: PreviewMedia = [{ ...sampleMedia[0], url: "http://localhost/updated-0.mp4" }, sampleMedia[1], sampleMedia[2]];
+  view.rerender(<AvatarPreviewEditor initial={initial} media={media} />);
+  await waitFor(() => { expect(FakePlayer.last).not.toBe(player); expect(FakePlayer.last?.setTimeline).toHaveBeenCalledTimes(1); });
+  const next = FakePlayer.last!;
+  await act(async () => next.finishTimeline());
+  await act(async () => next.emit("canplay"));
+  expect(rowObjects()).toEqual(rows);
+  expect(screen.getByText("3 个对象")).toBeTruthy();
+  expect(screen.getByLabelText<HTMLInputElement>(label).value).toBe(invalid);
+  expect(JSON.stringify(next.setTimeline.mock.calls[0][0])).toContain("updated-0.mp4");
+  await act(async () => next.emit("renderError", { error: "测试渲染失败" }));
+  for (const name of ["圆形开场预览", "数字人同屏预览"]) {
+    const mask = screen.getByLabelText<HTMLVideoElement>(name).style.maskImage;
+    expect(mask).toContain("radial-gradient");
+    expect(mask).not.toContain("NaN");
+  }
 });
 
 test("只修改蒙版也刷新 SDK，失败降级保留相同几何，关闭即移除", async () => {

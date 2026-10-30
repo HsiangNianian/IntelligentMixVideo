@@ -1,11 +1,23 @@
 /** 圆形蒙版入口与右侧设置；取景参数仅作用于预览，留量与羽化随模板保存。 */
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { defaultAvatarEffects, type AvatarEffects } from "./avatarEffects";
 import type { ScreenPoint } from "./splitScreen";
 import { RemoveObjectButton } from "./RemoveObjectButton";
+
+/** 三项效果数值保留本地输入；只有原生范围校验通过才写入共享草稿，保存入口仍检查未完成输入。 */
+function AvatarNumberInput({ label, value, min, max, step, onChange }: { label: string; value: number; min: number; max: number; step: number; onChange: (value: number) => void }) {
+  const [input, setInput] = useState({ text: String(value), invalid: false });
+  useEffect(() => setInput({ text: String(value), invalid: false }), [value]);
+  return <label className="block space-y-1 text-xs">{label}<Input data-avatar-effect aria-label={label} aria-invalid={input.invalid} type="number" min={min} max={max} step={step} required value={input.text}
+    onChange={(event) => {
+      const valid = event.currentTarget.validity.valid;
+      setInput({ text: event.currentTarget.value, invalid: !valid });
+      if (valid) onChange(event.currentTarget.valueAsNumber);
+    }} />{input.invalid && <span role="alert" className="block text-destructive">预览参数无效：请输入 {min}～{max} 的有效数值。</span>}</label>;
+}
 
 /** 工作区保存的预览参数；回车不提交表单，来源与取景不影响成片定位。 */
 export function AvatarPreviewControls({ source, center, onSourceChange, onCenterChange }: {
@@ -25,7 +37,7 @@ export function AvatarCircleControls({ value, onChange }: { value?: AvatarEffect
   const config = value ?? defaultAvatarEffects();
   return <fieldset className="grid grid-cols-2 gap-2">
     {([['circleScale', '头部圆形留量（倍）', 1, 3, 0.1], ['feather', '圆边羽化', 0, 0.2, 0.01]] as const).map(([key, label, min, max, step]) =>
-      <label key={key} className="space-y-1 text-xs">{label}<Input aria-label={label} type="number" min={min} max={max} step={step} required value={Number.isNaN(config[key]) ? "" : config[key]} onChange={(event) => onChange({ ...config, [key]: event.target.valueAsNumber })} /></label>)}
+      <AvatarNumberInput key={key} label={label} min={min} max={max} step={step} value={config[key]} onChange={(next) => onChange({ ...config, [key]: next })} />)}
   </fieldset>;
 }
 
@@ -33,7 +45,7 @@ export function AvatarCircleControls({ value, onChange }: { value?: AvatarEffect
 export function AvatarEffectsEditor({ value, onChange, onClose, onRemove, children }: { value: AvatarEffects; onChange: (value: AvatarEffects) => void; onClose: () => void; onRemove: () => void; children?: ReactNode }) {
   return <section aria-label="圆形蒙版设置" className="space-y-3 border-b p-4">
     <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">圆形蒙版</h2><Button type="button" variant="ghost" size="icon-xs" aria-label="关闭圆形蒙版设置" onClick={onClose}><X className="size-3.5" /></Button></div>
-    <label className="block space-y-1 text-xs">开场时长（秒）<Input aria-label="开场时长（秒）" type="number" min={0.1} max={300} step={0.1} required value={Number.isNaN(value.openingDuration) ? "" : value.openingDuration} onChange={(event) => onChange({ ...value, openingDuration: event.target.valueAsNumber })} /></label>
+    <AvatarNumberInput label="开场时长（秒）" min={0.1} max={300} step={0.1} value={value.openingDuration} onChange={(openingDuration) => onChange({ ...value, openingDuration })} />
     <AvatarCircleControls value={value} onChange={onChange} />
     {children}
     <RemoveObjectButton onRemove={onRemove} onClose={onClose} />

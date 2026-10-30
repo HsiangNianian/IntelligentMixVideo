@@ -1,5 +1,5 @@
 /** 数字人效果配置的协议往返、关闭保留和编辑入口；bun run test，不访问 IMS。 */
-import { expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { useState } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { fromBinary, toJson } from "@bufbuild/protobuf";
@@ -11,6 +11,11 @@ import { AvatarEffectsEditor } from "@/features/templates/AvatarEffectsEditor";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { jsonTemplateResponse, savedTemplate } from "./fixtures";
 import { fetchMock } from "./setup";
+
+// Happy DOM 的浮点步长取余会误拒绝合法小数；此处保留 required/min/max 校验，原生步长由浏览器回归验证。
+const stepValidity = Object.getOwnPropertyDescriptor(ValidityState.prototype, "stepMismatch")!;
+beforeEach(() => { Object.defineProperty(ValidityState.prototype, "stepMismatch", { get: () => false, configurable: true }); });
+afterEach(() => { Object.defineProperty(ValidityState.prototype, "stepMismatch", stepValidity); });
 
 // 请求经真实 Protobuf 编解码再作为服务端响应读取，验证样式和显式零值不会丢失。
 test("自动开场和抠像保存读取、另存、关闭后保留参数", async () => {
@@ -50,6 +55,33 @@ test("兼容旧模板，无效数字人参数不发保存请求", async () => {
     await expect(saveTemplate({ ...newDraft(), name: "无效输入", avatar_effects: { ...defaultAvatarEffects(), [key]: value } })).rejects.toThrow(message);
   }
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+// 本地输入无效时共享草稿仍合法，所有保存入口必须检查控件，不能悄悄保存旧值。
+test("数字人本地无效输入阻止提交、快捷键和元数据自动保存，修正后可保存", async () => {
+  const requests: ReturnType<typeof fromBinary<typeof SaveTemplateRequestSchema>>[] = [];
+  fetchMock.mockImplementation((async (_url, init) => {
+    if (init?.method !== "POST") return new Response(JSON.stringify({ sprites: [] }), { headers: { "Content-Type": "application/json" } });
+    const request = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as ArrayBuffer));
+    requests.push(request);
+    return jsonTemplateResponse({ ...savedTemplate(), name: "重命名模板", avatar_effects: toJson(AvatarEffectsSchema, request.avatarEffects!) as unknown as AvatarEffects }, "save");
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={{ templateId: null, name: "输入校验", description: "" }} onHome={() => {}} />);
+  fireEvent.click(await screen.findByRole("tab", { name: "蒙版" }));
+  fireEvent.click(screen.getByRole("button", { name: "添加圆形蒙版" }));
+  const input = screen.getByLabelText<HTMLInputElement>("圆边羽化");
+  fireEvent.change(input, { target: { value: "0.3" } });
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+  fireEvent.click(screen.getByRole("button", { name: "编辑模板名称" }));
+  fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "重命名模板" } });
+  fireEvent.blur(screen.getByLabelText("模板名称"));
+  expect(input.value).toBe("0.3");
+  expect(requests).toEqual([]);
+  fireEvent.change(input, { target: { value: "0" } });
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0].avatarEffects?.feather).toBe(0);
 });
 
 // 保存后的取景在重新打开模板时恢复，修改进入未保存状态，真实效果配置仍独立。
