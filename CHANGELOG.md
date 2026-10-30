@@ -3,6 +3,31 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.19] - 2026-10-30
+### New Features
+- [`23f2423`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/23f24237204a17b5aed21a45b83acb5456495866) - **templates**: add live avatar effect previews *(PR [#293](https://github.com/HsiangNianian/IntelligentMixVideo/pull/293) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`7c4ede3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7c4ede32937c08284578eb93e47dbdb0e82d10f5) - **templates**: add gradient fills to frame masks *(PR [#294](https://github.com/HsiangNianian/IntelligentMixVideo/pull/294) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`070c9f1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/070c9f19137e975f1e62066e372b1cd91239c968) - **remotion-agent**: support grouped bilingual text effects *(PR [#296](https://github.com/HsiangNianian/IntelligentMixVideo/pull/296) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`a26a21f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a26a21f018d54105f1b07c7041640bf50204cf18) - **templates**: add image fills to frame masks *(PR [#299](https://github.com/HsiangNianian/IntelligentMixVideo/pull/299) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Bug Fixes
+- [`8161d9b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8161d9bfd20be297137f7adc987e04ed46aec888) - **remotion-agent**: repair keyword defaults that block asset saves *(PR [#298](https://github.com/HsiangNianian/IntelligentMixVideo/pull/298) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`d6b410e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/d6b410ec133415c3d941cf93ec01d4af87488568) - update CHANGELOG.md for v0.9.18 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`4d475db`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4d475dbea3d4d1d8c160c5168d4a6c978f07da84) - **release**: prepare v0.9.19 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`2e14711`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2e14711b97074d6fd66501f9e51a80b980891baf) - Merge pull request [#292](https://github.com/HsiangNianian/IntelligentMixVideo/pull/292) from IT-coder-Yy/fix/chronological-transition-spacing
+
+fix(video-composition): select spaced cuts in time order *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`a6d1eb2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a6d1eb2ddacce56857bf1b468c0588c9ecd91fde) - Merge remote-tracking branch 'upstream/main' into codex/release-v0.9.19 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`ec4840a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ec4840a18aaf8b754df32937d7782a4210a7cde2) - Merge pull request [#300](https://github.com/HsiangNianian/IntelligentMixVideo/pull/300) from YUZHEthefool/codex/release-v0.9.19
+
+chore(release): promote dev to main for v0.9.19 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.18] - 2026-10-29
 ### New Features
 - [`620d457`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/620d4575242e76ed58b670fd03a0494a4dfed248) - **remotion-agent**: add built-in text effects and allow clarifying questions *(PR [#283](https://github.com/HsiangNianian/IntelligentMixVideo/pull/283) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
@@ -1863,3 +1888,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.17]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.16...v0.9.17
 
 [v0.9.18]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.17...v0.9.18
+
+[v0.9.19]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.18...v0.9.19
