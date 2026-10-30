@@ -38,7 +38,7 @@ test("蒙版卡片随渐变设置更新，切回纯色保留起始色", () => {
   view.rerender(<FrameMaskCard mask={{ ...mask, top: { ...mask.top, gradient: { ...mask.top.gradient, enabled: false } } }} onSelect={() => {}} />);
   expect(bars[0].style.background).toBe("#0E2C42");
   render(<AppliedEffects draft={{ ...newDraft(), frame_mask: mask }} catalog={[]} selected={null} onSelect={() => {}} />);
-  expect(screen.getByRole("button", { name: "编辑上下蒙版对象" }).textContent).toContain("上下色栏 · 贯穿全片");
+  expect(screen.getByRole("button", { name: "编辑上下蒙版对象" }).textContent).toContain("上下背景栏 · 贯穿全片");
 });
 
 test("旧模板默认无蒙版，选择后编辑、保存、重读及关闭保留样式", async () => {

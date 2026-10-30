@@ -80,6 +80,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const [catalog, setCatalog] = useState<EffectAsset[]>(() => readCatalog());
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [maskUploading, setMaskUploading] = useState(false);
   const [error, setError] = useState("");
   const [assetError, setAssetError] = useState("");
   const [action, setAction] = useState<TemplateSelection | null>(null);
@@ -274,7 +275,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
 
   /** 成功保存响应建立新基线；失败保留原草稿和待切换目标，不自动重发。 */
   async function persist(nextSelection?: TemplateSelection, savingDraft = draft) {
-    if (!savingDraft || lock.current || loading) return;
+    if (!savingDraft || lock.current || loading || maskUploading) return;
     if (editing?.field === "name" && !editing.value.trim()) { setError("请输入模板名称"); return; }
     // 时间输入保留局部编辑值，写入前检查；模板配置继续由 saveTemplate 校验。
     const timingInputs = form.current?.querySelectorAll<HTMLInputElement>('[aria-label="轨道时间设置"] input');
@@ -367,7 +368,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 <span className="template-workspace-status flex items-center gap-2 text-[11px] text-muted-foreground"><span className={`size-1.5 rounded-full ${dirty ? "bg-warning" : "bg-success"}`} />{current ? dirty ? "有未保存的修改" : "已保存" : "新模板 · 尚未保存"}</span>
-                <Button type="submit" className="template-workspace-save h-9 gap-2 rounded-lg px-4 text-xs">{busy ? <Spinner /> : <CircleCheck className="size-4" aria-hidden="true" />}{busy ? "正在保存…" : "保存模板"}</Button>
+                <Button type="submit" disabled={maskUploading} className="template-workspace-save h-9 gap-2 rounded-lg px-4 text-xs">{busy ? <Spinner /> : <CircleCheck className="size-4" aria-hidden="true" />}{busy ? "正在保存…" : "保存模板"}</Button>
               </div>
             </section>
             <WorkspaceColumns
@@ -406,7 +407,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
               </main>}
               inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={visibleDraft!} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
                 <SpriteClips clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
-                {target === FRAME_MASK_OBJECT_ID && draft.frame_mask && <FrameMaskPanel mask={draft.frame_mask}
+                {target === FRAME_MASK_OBJECT_ID && draft.frame_mask && <FrameMaskPanel key={current?.template_id ?? "new"} mask={draft.frame_mask} onUploadingChange={setMaskUploading}
                   onChange={(frame_mask) => editTrack(() => ({ ...draft, frame_mask }))}
                   onRemove={() => editTrack(() => removeTrack(draft, FRAME_MASK_OBJECT_ID))} onClose={() => setTarget(null)} />}
                 {target === "avatar-mask" && draft.avatar_effects?.openingEnabled && <AvatarEffectsEditor value={draft.avatar_effects} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} onClose={() => setTarget(null)}
@@ -496,7 +497,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
           <DialogFooter>
             <Button type="button" variant="outline" disabled={busy || loading} onClick={() => { setAction(null); setOpenRequest(null); setError(""); }}>取消</Button>
             <Button type="button" variant="outline" disabled={busy || loading} onClick={() => { setOpenRequest(action); setAttempt((value) => value + 1); }}>放弃修改</Button>
-            <Button type="button" disabled={busy || loading} onClick={() => { if (action) void persist(action); }}>保存并切换</Button>
+            <Button type="button" disabled={busy || loading || maskUploading} onClick={() => { if (action) void persist(action); }}>保存并切换</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -140,14 +140,14 @@ async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: Abor
 }
 
 /** 在现有模板路由发送请求，并将 HTTP 错误转换为编辑器可显示的消息。 */
-async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE", signal: AbortSignal, body?: Uint8Array): Promise<Response> {
+async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE", signal: AbortSignal, body?: Uint8Array | FormData): Promise<Response> {
   const response = await fetch(`${apiBase()}${path}`, {
     method,
     headers: {
       Accept: "application/json",
-      ...(body ? { "Content-Type": "application/x-protobuf" } : {}),
+      ...(body instanceof Uint8Array ? { "Content-Type": "application/x-protobuf" } : {}),
     },
-    body: body ? Uint8Array.from(body) : undefined,
+    body: body instanceof Uint8Array ? Uint8Array.from(body) : body,
     signal,
   });
   if (!response.ok) {
@@ -234,7 +234,10 @@ export async function saveTemplate(draft: Draft, id?: string, baselineHadMask = 
     transitionMode: draft.transition_mode ?? "sequence",
     transitionEnabled: draft.transition_enabled ?? true,
     // 只有保存基线带蒙版、当前草稿已移除时才发送空消息；普通无蒙版保存仍兼容旧服务端。
-    frameMask: draft.frame_mask ?? (baselineHadMask ? {} : undefined),
+    frameMask: draft.frame_mask ? {
+      top: { ...draft.frame_mask.top, imageId: draft.frame_mask.top.imageId ?? "" },
+      bottom: { ...draft.frame_mask.bottom, imageId: draft.frame_mask.bottom.imageId ?? "" },
+    } : (baselineHadMask ? {} : undefined),
     splitScreen: draft.split_screen,
     avatarEffects: draft.avatar_effects,
     avatarPreview: draft.avatar_preview,
@@ -282,6 +285,23 @@ export function deleteTemplate(id: string): Promise<void> {
   return cloud(async (requestSignal) => {
     await cloudRequest(`/template/${encodeURIComponent(id)}`, "DELETE", requestSignal);
   });
+}
+
+/** 静态图片由服务端统一校验；成功才返回可长期保存的内容引用。 */
+export function uploadFrameMaskImage(file: File, signal: AbortSignal): Promise<string> {
+  return cloud(async (requestSignal) => {
+    const body = new FormData();
+    body.append("file", file);
+    const response = await cloudRequest("/template/frame-mask-images", "POST", requestSignal, body);
+    const result = await response.json() as { imageId?: unknown };
+    if (typeof result.imageId !== "string" || !/^[a-f0-9]{64}$/.test(result.imageId)) throw new Error("图片上传响应无效");
+    return result.imageId;
+  }, signal, "图片上传超时，原效果已保留，请重试。");
+}
+
+/** 缩略图与预览共用固定服务端图片路由，不持久化临时 blob 地址。 */
+export function frameMaskImageUrl(imageId: string): string {
+  return `${apiBase()}/template/frame-mask-images/${encodeURIComponent(imageId)}`;
 }
 
 /** 有界、可取消地读取图片；blob 由预览组件负责解码及释放。 */
