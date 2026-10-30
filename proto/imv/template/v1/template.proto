@@ -258,6 +258,8 @@ message FrameMaskBar {
   optional double height = 2;
   optional string color = 3;
   FrameMaskGradient gradient = 4;
+  // 图片内容哈希；省略兼容旧客户端，空字符串明确切回颜色填充。
+  optional string image_id = 5;
 }
 
 // 上下蒙版独立设置，整段显示，不改变主体视频的布局。
