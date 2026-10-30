@@ -11,6 +11,7 @@ from PIL import Image
 import pytest
 
 from server.template import images
+from server.video_composition import frame_mask
 from .template_wire import detail_template, post_template, saved_template
 
 
@@ -43,6 +44,7 @@ def image_store(monkeypatch):
 
     monkeypatch.setattr(images, "upload_public", upload)
     monkeypatch.setattr(images, "read_image", read)
+    monkeypatch.setattr(frame_mask, "read_image", read)
     return objects
 
 
@@ -129,6 +131,42 @@ def test_image_reference_roundtrip_clear_and_frozen_copy(client, template_payloa
     assert detail_template(client.get(f"/template/{template_id}")) == original
 
 
+@pytest.mark.parametrize("size", [(90, 160), (160, 160), (90, 240)])
+def test_image_crop_stretch_alpha_and_inactive(monkeypatch, image_store, size):
+    """不同原图比例居中裁成 9:16、整图压缩到上下栏；透明度不乘两次，停用不读取。"""
+    source = Image.new("RGBA", size, (0, 255, 0, 255))
+    left, top = (size[0] - 90) // 2, (size[1] - 160) // 2
+    source.paste(Image.new("RGBA", (90, 80), (255, 0, 0, 128)), (left, top))
+    source.paste(Image.new("RGBA", (90, 80), (0, 0, 255, 255)), (left, top + 80))
+    content = BytesIO()
+    source.save(content, format="PNG")
+    image_id = images.save_image(content.getvalue())
+    with Image.open(BytesIO(image_store[image_id])) as cropped:
+        assert cropped.size == (90, 160)
+    outputs = []
+
+    def upload(files, settings, timeout):
+        """读取生成的真实 PNG，不连接 IMS 或 ZOS。"""
+        with Image.open(files[0][0]) as image:
+            outputs.append(image.copy())
+        return ["https://storage.test/rendered.png"]
+
+    monkeypatch.setattr(frame_mask, "upload_public", upload)
+    bar = {"enabled": True, "height": 20, "color": "#ff0000", "imageId": image_id}
+    mask = {"top": bar, "bottom": {**bar, "height": 30}}
+    assert frame_mask.upload_mask(mask, 90, 160, "task", None, 1, "test")
+    image = outputs[-1]
+    pixel = image.getpixel((45, 10))
+    assert pixel == (255, 0, 0, 128)
+    assert image.getpixel((0, 2)) == image.getpixel((89, 2)) == (255, 0, 0, 128)
+    assert image.getpixel((45, 31)) == (0, 0, 255, 255) and image.getpixel((45, 32))[3] == 0
+    assert image.getpixel((45, 111))[3] == 0 and image.getpixel((45, 112))[3] == 128
+    mask["top"]["imageId"] = "0" * 64
+    with pytest.raises(HTTPException):
+        frame_mask.upload_mask(mask, 90, 160, "task", None, 1, "test")
+    mask["top"]["enabled"] = False
+    mask["bottom"]["height"] = 0
+    assert frame_mask.upload_mask(mask, 90, 160, "task", None, 1, "test") is None
 
 
 def test_read_checks_fixed_storage_and_content_hash(monkeypatch):
