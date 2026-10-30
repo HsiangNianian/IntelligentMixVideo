@@ -283,16 +283,18 @@ class FrameMaskGradient(_message.Message):
     def __init__(self, enabled: _Optional[bool] = ..., end_color: _Optional[str] = ..., direction: _Optional[str] = ..., range: _Optional[int] = ...) -> None: ...
 
 class FrameMaskBar(_message.Message):
-    __slots__ = ("enabled", "height", "color", "gradient")
+    __slots__ = ("enabled", "height", "color", "gradient", "image_id")
     ENABLED_FIELD_NUMBER: _ClassVar[int]
     HEIGHT_FIELD_NUMBER: _ClassVar[int]
     COLOR_FIELD_NUMBER: _ClassVar[int]
     GRADIENT_FIELD_NUMBER: _ClassVar[int]
+    IMAGE_ID_FIELD_NUMBER: _ClassVar[int]
     enabled: bool
     height: float
     color: str
     gradient: FrameMaskGradient
-    def __init__(self, enabled: _Optional[bool] = ..., height: _Optional[float] = ..., color: _Optional[str] = ..., gradient: _Optional[_Union[FrameMaskGradient, _Mapping]] = ...) -> None: ...
+    image_id: str
+    def __init__(self, enabled: _Optional[bool] = ..., height: _Optional[float] = ..., color: _Optional[str] = ..., gradient: _Optional[_Union[FrameMaskGradient, _Mapping]] = ..., image_id: _Optional[str] = ...) -> None: ...
 
 class FrameMask(_message.Message):
     __slots__ = ("top", "bottom")

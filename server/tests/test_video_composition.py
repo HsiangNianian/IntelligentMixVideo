@@ -626,7 +626,8 @@ def finished(client, task_id, headers=None):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("scenario", ["fresh", "resume", "resume-before-save", "upload-failed", "disabled"])
-async def test_frame_mask_task_snapshot_and_recovery(upstreams, composition_case, composition_runtime, monkeypatch, scenario):
+@pytest.mark.parametrize("fill", ["gradient", "image"])
+async def test_frame_mask_task_snapshot_and_recovery(upstreams, composition_case, composition_runtime, monkeypatch, scenario, fill):
     """真实 PNG 与任务恢复：URL 落库前中断允许同 key 覆盖，落库后复用，上传失败不提交 IMS。"""
     from threading import get_ident
     from PIL import Image
@@ -639,6 +640,19 @@ async def test_frame_mask_task_snapshot_and_recovery(upstreams, composition_case
     mask = {"top": {"enabled": scenario != "disabled", "height": 18.4, "color": "#112233",
                     "gradient": {"enabled": True, "endColor": "#aabbcc", "direction": "up", "range": 50}},
             "bottom": {"enabled": False, "height": 16.6, "color": "#445566"}}
+    if fill == "image":
+        from io import BytesIO
+        payload = BytesIO()
+        Image.new("RGBA", (90, 160), (255, 0, 0, 128)).save(payload, format="PNG")
+        mask["top"]["imageId"] = "a" * 64
+        monkeypatch.setattr(templates.images, "read_image", lambda image_id: payload.getvalue())
+
+        def read_frozen_image(image_id):
+            """合成必须读取冻结的旧图，不能读取模板后来更换的引用。"""
+            assert image_id == "a" * 64
+            return payload.getvalue()
+
+        monkeypatch.setattr(frame_mask, "read_image", read_frozen_image)
     templates.save_template(TemplateSave.model_validate({
         **{key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}, "frame_mask": mask,
     }))
@@ -653,8 +667,8 @@ async def test_frame_mask_task_snapshot_and_recovery(upstreams, composition_case
         path, key, mime = files[0]
         with Image.open(path) as image:
             assert image.size == (1080, 1920)
-            assert image.getpixel((0, 0)) == image.getpixel((0, 176)) == (170, 187, 204, 255)
-            assert image.getpixel((0, 352)) == (17, 34, 51, 255)
+            assert image.getpixel((0, 0)) == image.getpixel((0, 176)) == ((255, 0, 0, 128) if fill == "image" else (170, 187, 204, 255))
+            assert image.getpixel((0, 352)) == ((255, 0, 0, 128) if fill == "image" else (17, 34, 51, 255))
             assert image.getpixel((0, 353)) == (0, 0, 0, 0)
         calls.append((key, path.read_bytes()))
         assert mime == "image/png"
@@ -671,6 +685,11 @@ async def test_frame_mask_task_snapshot_and_recovery(upstreams, composition_case
     if scenario in ("resume", "resume-before-save"):
         job = service.Job(composition_runtime, record, composition_runtime.settings)
         await job.prepare()
+        if fill == "image":
+            templates.save_template(TemplateSave.model_validate({
+                **{key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")},
+                "frame_mask": {**mask, "top": {**mask["top"], "imageId": "b" * 64}},
+            }))
         if scenario == "resume":
             await job.save("assembling", frame_mask_url=url)
         else:

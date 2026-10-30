@@ -1,6 +1,7 @@
-"""把模板上下色栏生成透明 PNG 并转存 ZOS；在线程池调用，不改变源视频与文字。"""
+"""把模板上下背景栏生成透明 PNG 并转存 ZOS；在线程池调用，不改变源视频与文字。"""
 
 from math import floor
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -8,6 +9,7 @@ from PIL import Image, ImageDraw
 
 from .settings import ZosSettings
 from .zos import upload_public
+from ..template.images import read_image
 
 
 def upload_mask(mask: dict, width: int, height: int, task_id: str, settings: ZosSettings,
@@ -26,6 +28,12 @@ def upload_mask(mask: dict, width: int, height: int, task_id: str, settings: Zos
         with Image.new("RGBA", (width, height)) as image:
             draw = ImageDraw.Draw(image)
             for y, size, bar in rects:
+                if image_id := bar.get("imageId"):
+                    with Image.open(BytesIO(read_image(image_id))) as source:
+                        # 上传时已统一裁成 9:16；整图拉伸到栏，透明区域不叠原颜色。
+                        fill = source.resize((width, size), Image.Resampling.LANCZOS)
+                        image.alpha_composite(fill, (0, y))
+                    continue
                 gradient = bar.get("gradient")
                 if not gradient or not gradient["enabled"]:
                     draw.rectangle((0, y, width - 1, y + size - 1), fill=bar["color"])

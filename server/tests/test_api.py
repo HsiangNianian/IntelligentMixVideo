@@ -154,6 +154,7 @@ def test_api_documentation(client: TestClient) -> None:
     assert schema["info"]["version"] == version("imv-server")
     assert set(schema["paths"]) == {
         "/", "/users/", "/users/{user_id}", "/template", "/template/{template_id}", "/template/preview-mask", "/template/preview-circle-mask", "/segmentations",
+        "/template/frame-mask-images", "/template/frame-mask-images/{image_id}",
         "/api/v1/video-compositions", "/api/v1/video-compositions/{task_id}",
         "/api/v1/video-compositions/playground",
         "/api/v1/video-compositions/{task_id}/segment-match-callback",

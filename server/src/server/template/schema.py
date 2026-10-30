@@ -359,13 +359,16 @@ class FrameMaskGradient(BaseModel):
 
 
 class FrameMaskBar(BaseModel):
-    """贴住画布边缘的全宽色栏；color 为纯色或渐变起始色，缺省 gradient 保持旧样式。"""
+    """全宽背景栏；非空图片引用优先，否则按 gradient 与 color 绘制原有颜色填充。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
     enabled: StrictBool
     height: float = Field(ge=0, le=50, allow_inf_nan=False)
     color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
     gradient: FrameMaskGradient | None = Field(default=None, exclude_if=lambda value: value is None)
+    # 省略兼容旧客户端，空字符串明确清图；非空引用优先于原颜色与渐变。
+    image_id: str | None = Field(default=None, alias="imageId", pattern=r"^(?:[a-f0-9]{64})?$",
+                                exclude_if=lambda value: value is None)
 
 
 class FrameMask(BaseModel):

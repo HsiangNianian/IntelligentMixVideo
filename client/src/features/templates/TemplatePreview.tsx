@@ -5,6 +5,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { frameMaskImage, frameMaskRects } from "./frameMask";
+import { useFrameMaskImages } from "./useFrameMaskImages";
 import { Maximize2, Pause, Play, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { previewOpeningDuration } from "./avatarPreview";
@@ -104,6 +105,10 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
     actions: row.actions.map((clip) => ({ ...clip, targetId: clip.targetId ? selectionTargets?.get(clip.targetId) ?? clip.targetId : undefined })),
   })), [rows, sprites, selectionTargets]);
   const [attempt, setAttempt] = useState(0);
+  const maskImages = useFrameMaskImages(draft.frame_mask, PREVIEW_CANVAS.height, attempt);
+  const latestMaskImages = useRef(maskImages);
+  latestMaskImages.current = maskImages;
+  useEffect(() => { apply.current?.(); }, [maskImages.images, maskImages.error]);
   const [status, setStatus] = useState("正在加载预览组件…");
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -113,13 +118,13 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
   const showFallbackMask = basicFallback && frameMaskRects(draft.frame_mask, PREVIEW_CANVAS.height).length > 0;
   // 按上次绘制时间节流，持续拖动也每 250ms 使用最新配置；关闭、移除或退出降级时取消待绘制任务。
   useEffect(() => {
-    if (!showFallbackMask) { setFallbackMask(undefined); return; }
+    if (!showFallbackMask || !maskImages.ready) { setFallbackMask(undefined); return; }
     const timer = setTimeout(() => {
       maskPaintedAt.current = performance.now();
-      setFallbackMask(frameMaskImage(draft.frame_mask, PREVIEW_CANVAS.width, PREVIEW_CANVAS.height));
+      setFallbackMask(frameMaskImage(draft.frame_mask, PREVIEW_CANVAS.width, PREVIEW_CANVAS.height, maskImages.images));
     }, Math.max(0, 250 - (performance.now() - maskPaintedAt.current)));
     return () => clearTimeout(timer);
-  }, [showFallbackMask, draft.frame_mask]);
+  }, [showFallbackMask, draft.frame_mask, maskImages.images, maskImages.ready]);
   const [basicReady, setBasicReady] = useState(false);
   // 切换基础视频的原因，显示在预览下方说明里。
   const [fallbackReason, setFallbackReason] = useState("");
@@ -133,7 +138,7 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
   // 有画面在播放：IMS 预览就绪，或已降级且基础视频可以播放。
   const videoReady = ready || (basicFallback && basicReady);
   // 播放按钮、进度条、时间轴与文字选择框只需要解析出的时间：前端时钟随时可用，不等 IMS 或基础视频。
-  const controlsReady = duration > 0;
+  const controlsReady = duration > 0 && maskImages.ready;
   // 当前推进播放位置的画面来源：IMS 就绪时用它，降级后用基础视频，二者都不可用时用前端时钟。
   const source = ready ? "ims" : basicFallback && basicReady ? "basic" : "clock";
   // PreviewClock 只创建一次；用 ref 让它的回调判断当前是否仍由前端时钟驱动，避免来源交接时覆盖新状态。
@@ -325,6 +330,11 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
           const currentBilingual = latestBilingual.current;
           const currentResolved = latestResolved.current;
           if (!currentMedia || !currentResolved) { instance.pause(); return; }
+          if (!latestMaskImages.current.ready) {
+            instance.pause();
+            setStatus(latestMaskImages.current.error || "正在读取蒙版图片…");
+            return;
+          }
           const applyStarted = performance.now();
           const currentCenter = latestCenter.current;
           const timeline = buildTimeline(currentDraft, latestCatalog.current, currentMedia, currentResolved, currentOrder, latestAvatar.current, currentCenter, currentBilingual);
@@ -337,7 +347,7 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
           // 生成转场画面与 SDK 载入时间线同样设上限：卡在这里时 canplay 的计时还没开始，不能一直停在加载中。
           clearTimeout(applyTimer);
           applyTimer = setTimeout(() => switchToBasicVideo(`${CAN_PLAY_TIMEOUT_MS / 1000} 秒内没有载入时间线`), CAN_PLAY_TIMEOUT_MS);
-          const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames);
+          const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames, latestMaskImages.current.images);
           previewMasks = new Map();
           for (const row of playback.VideoTracks) for (const clip of row.VideoTrackClips) {
             if (!("MaskVideoURL" in clip) || typeof clip.MaskVideoURL !== "string" || typeof clip.MediaURL !== "string") continue;
@@ -649,6 +659,7 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
           {sprites.length > 0 && <SpriteOverlay ref={overlay} clips={sprites} stageAspect={PREVIEW_CANVAS.width / PREVIEW_CANVAS.height} initialTime={time} selectedId={selectedId} onMove={onSpriteMove} onSelect={onSelect} />}
         </div>
         {!videoReady && !failed && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-white/60"><Spinner className="size-6" /></div>}
+        {maskImages.error && <div role="alert" className="absolute inset-0 z-20 flex items-center justify-center bg-background p-5 text-sm text-destructive">{maskImages.error}</div>}
         <Hint label="全屏预览"><Button type="button" variant="ghost" size="icon-xs" aria-label="全屏预览" onClick={() => { if (stage.current) void stage.current.requestFullscreen(); }} className="template-preview-fullscreen absolute bottom-2 right-2 rounded-[5px] p-0"><Maximize2 className="size-3" aria-hidden="true" /></Button></Hint>
       </div>
       <div className="template-preview-controls flex flex-wrap items-center gap-2.5 py-3">
