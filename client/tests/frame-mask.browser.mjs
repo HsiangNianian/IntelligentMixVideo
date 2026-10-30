@@ -31,6 +31,20 @@ window.mount=(mask)=>root.render(React.createElement('div',{className:'template-
  draft:{...draft,frame_mask:mask},media,resolved,videoInputKey:'mask',onMediaChange:()=>{},onCatalog:()=>{}
 })),mask&&React.createElement('aside',{className:'w-80'},React.createElement(FrameMaskPanel,{mask,onChange:window.mount,onRemove:()=>window.mount(undefined),onClose:()=>{}}))));
 window.mask=newFrameMask();
+// 服务端已完成 9:16 裁剪；真实 Canvas 验证整张图拉伸与半透明像素，不叠旧颜色。
+window.checkImagePixels=async()=>{
+ const source=document.createElement('canvas');source.width=90;source.height=160;
+ const paint=source.getContext('2d');paint.fillStyle='rgba(255,0,0,0.5)';paint.fillRect(0,0,90,80);
+ paint.fillStyle='#0000ff';paint.fillRect(0,80,90,80);
+ const data=source.toDataURL('image/png'),image=new Image();image.src=data;await image.decode();
+ const bar={enabled:true,height:20,color:'#00ff00',imageId:'a'.repeat(64)};
+ const result=new Image();result.src=frameMaskImage({top:bar,bottom:{...bar,height:30}},90,160,new Map([[bar.imageId,image]]));await result.decode();
+ const output=document.createElement('canvas');output.width=90;output.height=160;const ctx=output.getContext('2d');ctx.drawImage(result,0,0);
+ for(const [x,y,expected] of [[0,2,[255,0,0,128]],[89,10,[255,0,0,128]],[45,31,[0,0,255,255]],[45,32,[0,0,0,0]],[45,111,[0,0,0,0]],[45,120,[255,0,0,128]],[45,159,[0,0,255,255]]]){
+  if(String(ctx.getImageData(x,y,1,1).data)!==String(expected))throw Error('图片像素不一致：'+x+','+y);
+ }
+ return data;
+};
 window.checkPixels=async(cases)=>{
  for(const item of cases){
   const mask={top:{enabled:true,height:item.top,color:'#112233'},bottom:{enabled:true,height:item.bottom,color:'#445566'}};
@@ -103,6 +117,14 @@ try {
   await page.waitForFunction(() => window.mount);
   await page.evaluate((cases) => window.checkPixels(cases), cases);
   await page.evaluate((cases) => window.checkGradientPixels(cases), gradientCases);
+  const imageData = await page.evaluate(() => window.checkImagePixels());
+  const imageBytes = Buffer.from(imageData.split(",")[1], "base64");
+  // 只替换图片存储 HTTP；上传面板、读取解码、Canvas 和 IMS SDK 都执行真实逻辑。
+  await page.route("**/template/frame-mask-images", route => route.fulfill({ status: 201, contentType: "application/json",
+    headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ imageId: "a".repeat(64) }) }));
+  await page.route("**/template/frame-mask-images/*", route => route.fulfill(route.request().url().endsWith("a".repeat(64))
+    ? { status: 200, contentType: "image/png", headers: { "Access-Control-Allow-Origin": "*" }, body: imageBytes }
+    : { status: 404, contentType: "application/json", headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ detail: "蒙版图片不存在" }) }));
   await page.evaluate(() => window.mount(window.mask));
   await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
   await page.getByRole("button", { name: "播放", exact: true }).click();
@@ -135,6 +157,13 @@ try {
   await page.getByRole("radio", { name: "上栏纯色", exact: true }).click();
   assert.equal(await page.getByLabel("上栏结束色", { exact: true }).count(), 0);
   await page.waitForFunction(() => window.pixels([0,176,352]).every(pixel => String(pixel) === "170,34,68,255"));
+  await page.getByLabel("上传上栏图片", { exact: true }).setInputFiles({ name: "mask.png", mimeType: "image/png", buffer: imageBytes });
+  await page.getByRole("img", { name: "上栏图片缩略图" }).waitFor();
+  await page.waitForFunction(() => String(window.pixels([300])[0]) === "0,0,255,255");
+  await page.getByLabel("上栏高度", { exact: true }).fill("30");
+  await page.waitForFunction(() => String(window.pixels([500])[0]) === "0,0,255,255");
+  assert.equal(await page.getByLabel("上栏颜色", { exact: true }).count(), 0);
+  await page.screenshot({ path: resolve(cache, "image.png") });
   await page.evaluate(() => window.mount({
     top: { ...window.mask.top, enabled: false }, bottom: { ...window.mask.bottom, enabled: false },
   }));
@@ -167,7 +196,16 @@ try {
   });
   assert.deepEqual(fallbackPixels, [[7,16,31,255],[11,30,49,255],[14,44,66,255],[0,0,0,0],[0,0,0,0]]);
   await page.screenshot({ path: resolve(cache, "fallback.png") });
-  console.log("通过：共享纯色/渐变 PNG 像素、真实 SDK 面板切换/方向/范围、暂停回零、降级预览、透明中部、停用与移除。");
+  await page.evaluate(() => window.mount({ top: { ...window.mask.top, height: 20, imageId: 'a'.repeat(64) }, bottom: { ...window.mask.bottom, enabled: false } }));
+  await page.waitForFunction(async () => {
+    const image=document.querySelector('img[alt="上下蒙版预览"]');if(!image)return false;await image.decode();
+    const canvas=document.createElement('canvas');canvas.width=1080;canvas.height=1920;const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0);
+    return String(ctx.getImageData(10,10,1,1).data)==='255,0,0,128' && String(ctx.getImageData(10,380,1,1).data)==='0,0,255,255';
+  });
+  await page.screenshot({ path: resolve(cache, "image-fallback.png") });
+  await page.evaluate(() => window.mount({ top: { ...window.mask.top, imageId: 'b'.repeat(64) }, bottom: { ...window.mask.bottom, enabled: false } }));
+  await page.getByRole("alert").filter({ hasText: "蒙版图片读取失败" }).waitFor();
+  console.log("通过：纯色/渐变/图片 PNG 像素、上传与调高、真实 SDK、暂停回零、降级与缺图报错、透明中部、停用与移除。");
 } catch (error) {
   if (page) {
     console.error((await page.locator("body").innerText()).slice(0, 1200));
