@@ -1,6 +1,6 @@
 /** 特效资产浏览与已添加对象列表；读取真实目录缩略图，选择操作更新父组件草稿和当前编辑对象。 */
 import { useId, useState } from "react";
-import { Captions, Heading1, Layers, MessageCircle, Shuffle, SlidersHorizontal, Sparkles, type LucideIcon } from "lucide-react";
+import { Captions, Circle, Heading1, Layers, MessageCircle, Shuffle, SlidersHorizontal, Sparkles, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -22,7 +22,7 @@ function AssetCover({ asset }: { asset: EffectAsset }) {
 }
 
 /** 画面对象使用独立图标和颜色，列表与设置栏共享。 */
-export const objectIcons: Record<EffectTarget | "frame-mask", LucideIcon> = { title: Heading1, subtitle: Captions, bubble: MessageCircle, filter: SlidersHorizontal, vfx: Sparkles, transition: Shuffle, "frame-mask": Layers };
+export const objectIcons: Record<EffectTarget | "frame-mask" | "avatar-mask", LucideIcon> = { title: Heading1, subtitle: Captions, bubble: MessageCircle, filter: SlidersHorizontal, vfx: Sparkles, transition: Shuffle, "frame-mask": Layers, "avatar-mask": Circle };
 
 /** 对象列表和设置栏展示带类别色块的图标。 */
 export function ObjectIcon({ target }: { target: keyof typeof objectIcons }) {
@@ -101,6 +101,7 @@ export function AppliedEffects({ draft, catalog, resolved, selected, onSelect }:
       return { id: track.id, target: track.target, label: trackLabel(track, draft.tracks), detail: `${effect} · ${interval}` };
     });
   if (draft.frame_mask) objects.push({ id: FRAME_MASK_OBJECT_ID, target: "frame-mask", label: "上下蒙版", detail: "上下色栏 · 贯穿全片" });
+  if (draft.avatar_effects?.openingEnabled) objects.push({ id: "avatar-mask", target: "avatar-mask", label: "圆形蒙版", detail: `开场显示 · ${draft.avatar_effects.openingDuration} 秒` });
   return <section aria-label="已添加特效" className="space-y-3 border-b p-4">
     <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">画面对象</h2><span className="text-[11px] tabular-nums text-muted-foreground">{objects.length}</span></div>
     <div className="space-y-0.5">{objects.map((object) => <Button key={object.id} type="button" variant="ghost" data-object={object.target} className="template-object-row h-auto w-full min-w-0 justify-start gap-2.5 rounded-md px-2 py-2 text-left" aria-pressed={selected === object.id} aria-label={object.target === "frame-mask" ? "编辑上下蒙版对象" : `编辑${object.label}`} onClick={() => onSelect(object.id)}>

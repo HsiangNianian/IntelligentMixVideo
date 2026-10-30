@@ -2353,3 +2353,15 @@ def test_zos_address_available_while_log_writer_is_blocked(upstreams, client, co
         release.set()
         execution_log.LOG_QUEUE.join()
     assert (execution_log.LOG_ROOT / "video_composition" / task_id / "zos.json").exists()
+
+
+@pytest.mark.anyio
+async def test_preview_settings_excluded_from_composition_snapshot(upstreams, client, composition_case, composition_runtime):
+    """真实模板可读取预览取景，但普通合成在准备入口剔除它，不传给后续渲染。"""
+    template = composition_case["template"]
+    response = post_template(client, {**{key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")},
+                                      "avatar_preview": {"x": 15, "y": 70, "source": 2}})
+    assert response.status_code == 200, response.text
+    record = await composition_runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
+    await service.Job(composition_runtime, record, composition_runtime.settings).prepare()
+    assert "avatar_preview" not in store.get(record["task_id"])["data"]["template"]

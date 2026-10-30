@@ -167,7 +167,8 @@ class Runtime:
         prepared = await self.sync(playground.prepared_sample, payload)
         request = CompositionRequest.from_snapshot(prepared.pop("request"))
         template = await self.sync(get_template, request.style_id)
-        prepared["template"] = template.model_dump(mode="json", by_alias=True)
+        # 编辑器取景不进入操练场或普通合成的冻结模板。
+        prepared["template"] = template.model_dump(mode="json", by_alias=True, exclude={"avatar_preview"})
         try:
             prepared["remotion"] = await remotion.snapshot(template)
             await remotion.require_environment({**prepared, "request": request.model_dump(mode="json", by_alias=True)})
@@ -470,7 +471,7 @@ class Job:
             # 两份模板一起持久化，后续恢复只读取这一份快照；源码不进入执行日志。
             await self.runtime.log(self.record, "step_started", step="remotion_snapshot", input={"style_id": str(request.style_id)})
             effects = await remotion.snapshot(template)
-            await self.save("template", template=template.model_dump(mode="json", by_alias=True), remotion=effects)
+            await self.save("template", template=template.model_dump(mode="json", by_alias=True, exclude={"avatar_preview"}), remotion=effects)
             await self.runtime.log(self.record, "step_finished", step="remotion_snapshot",
                                    output={"revision": effects["revision"], "placements": effects["placements"]})
         template = self.record["data"]["template"]

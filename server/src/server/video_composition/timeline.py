@@ -1,6 +1,7 @@
 """由业务快照生成 IMS Timeline；纯素材按序裁尾，标题沿用模板区间，字幕使用切片正文与时间。"""
 
 from math import floor
+from typing import Literal
 
 from pydantic import TypeAdapter
 
@@ -76,7 +77,7 @@ def build_timeline(
     frame_mask_url: str | None = None,
     split_assets: dict | None = None, avatar_opening: dict | None = None,
     use_keyword_transitions: bool = False, remotion_assets: dict | None = None,
-    use_transition_spacing: bool = False,
+    use_transition_spacing: bool | Literal["ordered"] = False,
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
     request = CompositionRequest.from_snapshot(request)
@@ -268,7 +269,8 @@ def build_timeline(
     elif use_keyword_transitions or template.transition_mode is not None:
         selected = keyword_transitions(template.model_dump(mode="json"), clips, source, matches,
                                        standard=standard, fps=fps, seed=transition_seed, assets=remotion_assets or {},
-                                       duration=duration if use_transition_spacing else None) \
+                                       duration=duration if use_transition_spacing else None,
+                                       ordered=use_transition_spacing == "ordered") \
             if use_keyword_transitions else select_transitions(
                 [track.model_dump(mode="json") for track in template.tracks],
                 len(clips) - 1, template.transition_mode, transition_seed)

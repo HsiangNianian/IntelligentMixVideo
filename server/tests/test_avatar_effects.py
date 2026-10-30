@@ -413,3 +413,35 @@ async def test_circle_assembly_detects_without_opening_and_skips_matting_region(
     saved = store.get(record["task_id"])
     assert calls == [True] and saved["data"]["avatar_opening"] == result
     assert len(saved["data"]["timeline"]["VideoTracks"]) == (2 if detected else 1)
+
+
+def test_preview_coordinates_roundtrip_and_legacy_update(client):
+    """预览槽位和零值圆心随模板保存、详情恢复，旧客户端省略字段重存不丢失。"""
+    preview = {"x": 0, "y": 100, "source": 2}
+    payload = {"name": "保存预览取景", "tracks": [template_track("title"), template_track("subtitle")],
+               "avatar_preview": preview}
+    response = post_template(client, payload)
+    assert response.status_code == 201, response.text
+    saved = ParseDict(response.json(), pb.SaveTemplateResponse()).template
+    assert saved.avatar_preview.x == 0 and saved.avatar_preview.HasField("x")
+    assert detail_template(client.get(f"/template/{saved.template_id}"))["avatar_preview"] == preview
+    del payload["avatar_preview"]
+    response = post_template(client, {**payload, "template_id": saved.template_id})
+    assert response.status_code == 200, response.text
+    assert ParseDict(response.json(), pb.SaveTemplateResponse()).template.avatar_preview == saved.avatar_preview
+
+
+@pytest.mark.parametrize("preview", [{"x": -1}, {"y": 101}, {"x": "NaN"}, {"source": 3}])
+def test_invalid_preview_does_not_save(client, preview):
+    """圆心和视频槽位在 API 边界校验；无效参数不写库。"""
+    response = post_template(client, {"name": "错误预览", "tracks": [template_track("title"), template_track("subtitle")], "avatar_preview": preview})
+    assert response.status_code == 422
+    assert client.get("/template").json()["templates"] == []
+
+
+def test_preview_coordinates_do_not_change_composition_geometry(composition_case):
+    """即使传入编辑器取景，正式时间线仍只使用真实检测圆与成片摆放。"""
+    case = opening(enable(composition_case))
+    expected = build_timeline(**case)
+    case["template"]["avatar_preview"] = {"x": 0, "y": 100, "source": 2}
+    assert build_timeline(**case) == expected

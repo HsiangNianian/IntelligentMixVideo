@@ -10,6 +10,7 @@ import pytest
 from server.video_composition import playground, service, store
 from server.video_composition.schema import CompositionRequest, PlaygroundRequest
 from .test_video_composition import finished, upstreams
+from .template_wire import post_template
 
 BASE = "/api/v1/video-compositions"
 
@@ -53,6 +54,9 @@ def sample(composition_case, composition_settings, monkeypatch, mode="standard",
 def test_playground_reuses_prepared_content(upstreams, client, composition_case, composition_settings, monkeypatch, mode):
     """三种完整样本都跳过成本调用，创建独立任务并由原 GET 返回 playground 成片。"""
     source = sample(composition_case, composition_settings, monkeypatch, mode)
+    template = composition_case["template"]
+    assert post_template(client, {**{key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")},
+                                  "avatar_preview": {"x": 15, "y": 70, "source": 2}}).status_code == 200
     monkeypatch.delenv("SEGMENT_MATCH_BASE_URL")
     monkeypatch.delenv("IMV_LLM_API_KEY")
 
@@ -70,6 +74,7 @@ def test_playground_reuses_prepared_content(upstreams, client, composition_case,
     assert result["status"] == "succeeded", result
     assert result["result"]["videoUrl"].endswith(f"/imv/playground/{task_id}.mp4")
     saved = store.get(task_id)["data"]
+    assert "avatar_preview" not in saved["template"]
     assert saved["playground"] == {"mode": mode, "source_task_id": source["task_id"]}
     assert saved["segmentation"] == source["data"]["segmentation"]
     assert saved["request"]["callbackUrl"] is None and "match_callback_token" not in saved

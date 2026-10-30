@@ -1,7 +1,7 @@
 /** 视频与效果片段固定显示，SDK 驱动游标，卸载取消缩略图任务。 */
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { Timeline, type TimelineState } from "@xzdarcy/react-timeline-editor";
-import { Film, Layers, Wand2 } from "lucide-react";
+import { Circle, Film, Layers, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { buildPreviewRows, PreviewClip } from "./timeline";
 import { objectIcons } from "./EffectAssets";
@@ -103,8 +103,12 @@ export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 
             return <button key={row.id} type="button" data-object="transition" onClick={() => onSelect?.("transitions")} className="template-timeline-label flex h-[42px] w-full items-center gap-1.5 text-left"><Icon className="size-3.5 shrink-0" aria-hidden="true" /><span className="text-[11px]">镜头转场</span></button>;
           }
           if (!clip) throw new Error("时间轴轨道缺少片段");
-          if (clip.effectId === "frame-mask") return <button key={row.id} type="button" data-object="frame-mask" aria-label="编辑蒙版轨道" aria-pressed={selectedId === clip.targetId}
-            onClick={() => onSelect?.(clip.targetId!)} className="template-timeline-label flex h-[42px] w-full items-center gap-1.5 text-left"><Layers className="size-3.5 shrink-0" aria-hidden="true" /><span className="text-[11px]">蒙版</span></button>;
+          if (clip.effectId === "frame-mask" || clip.effectId === "avatar-mask") {
+            const circular = clip.effectId === "avatar-mask";
+            const Icon = circular ? Circle : Layers;
+            return <button key={row.id} type="button" data-object={clip.effectId} aria-label={circular ? `编辑${clip.label}` : "编辑蒙版轨道"} aria-pressed={selectedId === clip.targetId}
+              onClick={() => onSelect?.(clip.targetId!)} className="template-timeline-label flex h-[42px] w-full items-center gap-1.5 text-left"><Icon className="size-3.5 shrink-0" aria-hidden="true" /><span className="text-[11px]">{circular ? clip.label : "蒙版"}</span></button>;
+          }
           const Icon = clip.effectId === "video" ? Film : clip.effectId === "remotion" ? Wand2 : objectIcons[clip.effectId as EffectTarget];
           if (!Icon) throw new Error("时间轴轨道类型无效");
           return <div key={row.id} data-object={clip.effectId} className="template-timeline-label flex h-[42px] min-w-0 items-center gap-1.5" title={clip.label}><Icon className="size-3.5 shrink-0" aria-hidden="true" /><span className="truncate text-[11px]">{clip.effectId === "video" ? "视频" : clip.effectId === "transition" ? "镜头转场" : clip.label}</span></div>;
