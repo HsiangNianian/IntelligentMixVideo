@@ -18,6 +18,7 @@ import {
   controlLabel,
   instanceTitle,
   isJsonValue,
+  keywordDefaultProblem,
   sameJson,
   numericRules,
   schemaGroups,
@@ -214,6 +215,8 @@ export function ParametersPanel({
 }) {
   const [invalid, setInvalid] = useState<Record<string, boolean>>({});
   useEffect(() => setInvalid({}), [version?.id]);
+  // 关键词样式由云端模板按摆放设置：默认值未关闭（多为这一规则上线前生成的版本）时提前说明，不能保存到资产。
+  const keywordProblem = version?.spec.sprite?.kind === "text" ? keywordDefaultProblem(values) : null;
   return (
     <section
       aria-label="模板参数"
@@ -259,6 +262,13 @@ export function ParametersPanel({
               </p>
             )}
           </div>
+        )}
+        {keywordProblem && (
+          <p role="status" className="text-xs text-destructive">
+            {readOnly
+              ? "此历史版本的关键词默认值不是关闭状态，无法保存到资产；请回到最新版本把它们恢复为关闭并保存配置。"
+              : keywordProblem}
+          </p>
         )}
       </div>
       {!version ? (

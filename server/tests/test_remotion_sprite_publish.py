@@ -23,7 +23,7 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 from sqlalchemy import Engine, select, update
 
 from server.app import app
-from server.remotion_templates import sprite_events, sprite_store, sprites
+from server.remotion_templates import parameters, sprite_events, sprite_store, sprites
 from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
@@ -753,10 +753,22 @@ def test_a_text_version_whose_keyword_options_default_to_on_is_refused(published
     with pytest.raises(HTTPException) as caught:
         sprites._validated_request(publish_request(version.id), version)
     assert caught.value.status_code == 422
-    # 审计复现：这条 422 曾说成「缺少必备参数」；现在说明默认值必须关闭，并指向参数面板而不是聊天。
+    # 审计复现：这条 422 曾说成「缺少必备参数」；现在说明默认值必须关闭，并给出恢复关闭、保存成新版本的路径。
     detail = caught.value.detail
     assert detail.startswith("关键词参数的默认值必须是关闭状态") and "缺少" not in detail and "参数面板" in detail
-    assert all(item in detail for item in ("keywords（应为 []）", "keywordBold（应为 false）", 'keywordColor（应为 ""）', "keywordSize（应为 0）"))
+    assert all(item in detail for item in ("keywords（应为 []）", "keywordBold（应为 false）", 'keywordColor（应为 ""）', "keywordSize（应为 0）", "保存配置", "历史版本"))
+
+
+def test_a_parameter_revision_cannot_turn_a_keyword_option_on(published) -> None:
+    """参数修订把关键词选项保存成开启会被拒绝（否则这个版本无法保存到资产）；恢复关闭或修改其他参数照常保存。"""
+    with pytest.raises(ValueError) as caught:
+        parameters.patch_parameters(published.version.candidate, published.version.spec, {"keywordSize": 80})
+    assert "关键词样式由云端模板按摆放设置" in str(caught.value) and "keywordSize 应为 0" in str(caught.value)
+    assert "本地预览不受影响" in str(caught.value)
+    candidate, _ = parameters.patch_parameters(
+        published.version.candidate, published.version.spec, {"text": "新标题", "keywordSize": 0},
+    )
+    assert (candidate.default_config["text"], candidate.default_config["keywordSize"]) == ("新标题", 0)
 
 
 def test_a_text_version_must_publish_its_keywords_field(published) -> None:

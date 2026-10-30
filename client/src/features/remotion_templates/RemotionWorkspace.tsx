@@ -34,6 +34,11 @@ import { defaultKind, PUBLISH_KINDS, publishChoice } from "./spriteChoice";
 /** 保存方式：默认覆盖本会话上次保存的资产，也可以另存为新资产。 */
 type SaveMode = "overwrite" | "new";
 
+/** 服务端因为关键词默认值未关闭而拒绝保存资产时，发布说明以这句话开头；此时也可以请 Agent 生成修复后的新版本。 */
+const KEYWORD_DEFAULTS_ERROR = "关键词参数的默认值必须是关闭状态";
+/** 请 Agent 修复旧版本的聊天指令：保留外观，把七个关键词参数的默认值恢复为关闭（由模板按摆放设置）。 */
+const KEYWORD_REPAIR = "这个版本的关键词参数默认值不是关闭状态，无法保存到资产。请保持现有外观，重新生成一个版本，并把七个关键词参数的默认值恢复为关闭（关键词为空、加粗/斜体/下划线/删除线关闭、关键词颜色为空、关键词字号为 0）。";
+
 /** 宽屏左右分栏，小屏切换聊天和预览但保留会话与播放器实例。 */
 export function RemotionWorkspace() {
   const history = useWorkHistory();
@@ -216,7 +221,16 @@ export function RemotionWorkspace() {
           )}
         </div>
       )}
-      {publishError && <p role="alert" className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-sm text-destructive">{publishError}</p>}
+      {publishError && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-sm">
+          <p role="alert" className="min-w-0 flex-1 text-destructive">{publishError}</p>
+          {!historical && !locked && !session.dirty && publishError.startsWith(KEYWORD_DEFAULTS_ERROR) && (
+            <Button variant="outline" size="sm" onClick={() => { setPublishError(""); session.send(KEYWORD_REPAIR); }}>
+              让 Agent 修复
+            </Button>
+          )}
+        </div>
+      )}
       {assetError && <div role="alert" className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-sm text-destructive">
         {assetError}<Button variant="ghost" size="sm" onClick={() => refreshAssets.current?.()}>重试资产目录</Button>
       </div>}

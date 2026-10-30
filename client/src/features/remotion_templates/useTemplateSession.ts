@@ -11,6 +11,7 @@ import { briefly, debugLog, oneLine } from "@/lib/diagnostics";
 import * as local from "./localSessions";
 import { defaultComposition } from "./composition";
 import {
+  keywordDefaultProblem,
   sameValues,
   sameJson,
   validValue,
@@ -670,6 +671,12 @@ export function useTemplateSession(onHistoryChange: () => void) {
         ([name, value]) => !sameJson(value, s.version!.candidate.default_config[name]),
       ),
     );
+    // 关键词样式由云端模板按摆放设置：把关键词选项保存成开启（或开启后未恢复）的版本无法保存到资产。
+    const keywordProblem = s.version.spec.sprite?.kind === "text" ? keywordDefaultProblem(parameters) : null;
+    if (keywordProblem) {
+      publish({ error: keywordProblem, retryMode: null });
+      return false;
+    }
     parameterSave.current = true;
     void execute("parameters", () =>
       api.message(s.workId!, {

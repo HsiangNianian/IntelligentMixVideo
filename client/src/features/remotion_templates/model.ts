@@ -289,6 +289,23 @@ export function sameValues(left: Values, right: Values): boolean {
   return sameJson(left, right);
 }
 
+/** 关键词参数的关闭默认值，与服务端 `categories.TEXT_KEYWORDS` 一致（关键词为空、样式关闭、颜色为空、字号为 0）。 */
+const KEYWORD_OFF: Record<string, JsonValue> = {
+  keywords: [], keywordBold: false, keywordItalic: false, keywordUnderline: false, keywordStrikeout: false, keywordColor: "", keywordSize: 0,
+};
+
+/**
+ * 字效参数里没有保持关闭的关键词选项，返回可直接展示的说明；全部关闭时为 null。云端模板按摆放设置关键词样式，
+ * 这些默认值必须保持关闭，否则这个版本只能预览、无法保存到资产。参数面板用当前值提示，保存配置用净变化拦截。
+ */
+export function keywordDefaultProblem(patch: Values): string | null {
+  const issues = Object.entries(patch).filter(([name, value]) =>
+    Object.prototype.hasOwnProperty.call(KEYWORD_OFF, name) && !sameJson(value, KEYWORD_OFF[name]));
+  if (!issues.length) return null;
+  const expected = issues.map(([name]) => `${name} 应为 ${JSON.stringify(KEYWORD_OFF[name])}`).join("；");
+  return `关键词样式由云端模板按摆放设置，关键词参数的默认值必须保持关闭（${expected}）。本地预览不受影响，请恢复为关闭后再保存配置，否则无法保存到资产。`;
+}
+
 /** JSON 对象忽略键顺序，数组保留顺序；不把相同对象副本误判为未保存修改。 */
 export function sameJson(left: JsonValue, right: JsonValue): boolean {
   if (left === right) return true;

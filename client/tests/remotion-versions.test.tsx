@@ -302,6 +302,70 @@ test("顶栏保存资产展示失败原因并允许重试", async () => {
   expect(screen.queryByText("关键词字号须先设为 0") === null).toBe(true);
 });
 
+// 关键词样式由云端模板按摆放设置：参数面板把关键词选项改成开启时先提示，保存配置被拒绝且不写服务端（本地预览不受影响）。
+test("关键词选项没有保持关闭时拒绝保存配置并说明原因", async () => {
+  const writes: string[] = [];
+  await history((path, options) => {
+    if (/^\/versions\/version-\d+$/.test(path)) {
+      const version = remotionVersion(path.split("/")[2], { keywordSize: 0 });
+      version.spec.schema_version = "2";
+      version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywordSize", title: "关键词字号" }] };
+      version.candidate.config_schema.properties.keywordSize = { type: "integer", minimum: 0, maximum: 300, title: "关键词字号" };
+      return Response.json(version);
+    }
+    if (path === "/works/work-1/messages") {
+      writes.push(String(options?.body ?? ""));
+      return Response.json(remotionJob("succeeded", "version-3"));
+    }
+  });
+  render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  expect(screen.queryByText(/关键词样式由云端模板按摆放设置/) === null).toBe(true);
+  fireEvent.change(screen.getByLabelText("关键词字号"), { target: { value: "80" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("关键词样式由云端模板按摆放设置"));
+  expect(screen.getByRole("alert").textContent).toContain("keywordSize 应为 0");
+  expect(writes).toHaveLength(0);
+  // 恢复关闭后不再提示；与默认值相同，没有净变化可保存。
+  fireEvent.change(screen.getByLabelText("关键词字号"), { target: { value: "0" } });
+  const panel = screen.getByRole("region", { name: "模板参数" });
+  await waitFor(() => expect(within(panel).queryByText(/关键词样式由云端模板按摆放设置/) === null).toBe(true));
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存配置" }).disabled).toBe(true);
+});
+
+// 旧版本的关键词默认值未关闭时，保存资产会被拒；用户可以在聊天里让 Agent 生成关键词默认关闭的新版本（保留外观）。
+test("保存资产被关键词默认值拒绝时可以请 Agent 修复", async () => {
+  const instructions: string[] = [];
+  await history((path, options) => {
+    if (/^\/versions\/version-\d+$/.test(path)) {
+      const version = remotionVersion(path.split("/")[2], { keywordSize: 80 });
+      version.spec.schema_version = "2";
+      version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywordSize", title: "关键词字号" }] };
+      version.candidate.config_schema.properties.keywordSize = { type: "integer", minimum: 0, maximum: 300, title: "关键词字号" };
+      return Response.json(version);
+    }
+    if (path === "/api/sprites/publish") {
+      return Response.json({ detail: "关键词参数的默认值必须是关闭状态：keywordSize（应为 0）。关键词样式由模板按摆放设置" }, { status: 422 });
+    }
+    if (path === "/works/work-1/messages") {
+      instructions.push(JSON.parse(String(options?.body)).instruction ?? "");
+      return Response.json(remotionJob("running"));
+    }
+  });
+  render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  const save = screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" });
+  await waitFor(() => expect(save.disabled).toBe(false));
+  fireEvent.click(save);
+  await screen.findByText(/关键词参数的默认值必须是关闭状态/);
+  fireEvent.click(screen.getByRole("button", { name: "让 Agent 修复" }));
+  await waitFor(() => expect(instructions).toHaveLength(1));
+  expect(instructions[0]).toContain("关键词参数的默认值恢复为关闭");
+  expect(instructions[0]).toContain("保持现有外观");
+});
+
 // 每次成功关联各自聊天结果；初始折叠，旧版本复制不能读成当前代码，查看版本不写服务端。
 test("成功卡片默认折叠，复制对应版本并切换只读预览", async () => {
   await history((path) =>

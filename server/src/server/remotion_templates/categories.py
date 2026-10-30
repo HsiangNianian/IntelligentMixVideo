@@ -515,8 +515,17 @@ def _same(value: object, expected: object) -> bool:
     return isinstance(value, bool) == isinstance(expected, bool) and value == expected
 
 
+def keyword_default_issues(values: dict) -> list[tuple[str, object]]:
+    """``values`` 里被改成非关闭值的关键词参数（名称与应有的关闭值）。
+
+    关键词样式由云端模板按摆放设置，字效的这七个参数必须默认关闭；生成之后的参数修订也据此拒绝，
+    否则会得到一个只能预览、无法保存到资产的版本。
+    """
+    return [(rule.name, rule.off) for rule in TEXT_KEYWORDS if rule.name in values and not _same(values[rule.name], rule.off)]
+
+
 def agent_message(kind: str | None, problems: list[Problem]) -> str:
-    """给 Agent 的英文说明：缺什么、应有的 Schema，以及如何在 sprite_compose 里绑定。"""
+    """给 Agent 的英文说明：缺什么、应有的 Schema、如何在 sprite_compose 里绑定，以及关键词默认值要怎么修复。"""
     lines = [f"The {kind} Sprite does not expose the category's required top-level parameters:"]
     for item in problems:
         example = f"; schema {item.rule.example}" if item.rule else ""
@@ -525,18 +534,28 @@ def agent_message(kind: str | None, problems: list[Problem]) -> str:
         'Bind each one with sprite_compose "parameters": [{"name": ..., "title": <Chinese label>, '
         '"targets": [{"instance_id": ..., "parameter": <Preset prop>}]}] after giving the Preset prop that schema.'
     )
+    if any(item.reason.startswith(DEFAULT_REASON) for item in problems):
+        # 修复旧字效：总线每次渲染都会传入关键词与六个样式，外观留在关键词 Preset 自己的样式参数里。
+        lines.append(
+            "Keyword options are content the bus passes on every render, so a Sprite must not default them on. To repair an older "
+            "effect, keep the keyword look in a keyword Preset's own style parameters (keywordEffect...) and give the keyword options "
+            'their off defaults in this Sprite\'s default parameters: keywords [], the four switches false, keywordColor "", keywordSize 0.'
+        )
     return "\n".join(lines)
 
 
 def operator_message(problems: list[Problem]) -> str:
-    """给运营的中文说明：缺少或形状不符的必备参数要在聊天中补充，默认值未关闭的关键词参数要在参数面板恢复。"""
+    """给运营的中文说明：缺少或形状不符的必备参数要在聊天中补充；默认值未关闭的关键词参数要在参数面板恢复并保存成新版本
+    （已封存的版本不能直接修改，历史预览是只读的）。"""
     shape = [f"{item.name}（{item.rule.label}）" for item in problems if item.rule is not None and not item.reason.startswith(DEFAULT_REASON)]
     on = [f"{item.name}（应为 {json.dumps(item.rule.off, ensure_ascii=False)}）" for item in problems if item.rule is not None and item.reason.startswith(DEFAULT_REASON)]
     messages = []
     if shape:
         messages.append(f"所选分类缺少或不符合必备参数：{'；'.join(shape)}。请在聊天中让 Agent 补充后再保存到资产")
     if on:
-        messages.append(f"关键词参数的默认值必须是关闭状态：{'；'.join(on)}。关键词样式由模板按摆放设置，请在参数面板把它们恢复为关闭后再保存到资产")
+        messages.append(f"关键词参数的默认值必须是关闭状态：{'；'.join(on)}。关键词样式由模板按摆放设置，已保存的版本不能直接修改："
+                        "请在参数面板把它们恢复为关闭并点击「保存配置」生成新版本，再保存到资产（预览历史版本时参数面板只读，请先回到最新版本）；"
+                        "也可以在聊天里让 Agent 重新生成一个关键词默认关闭的新版本")
     return "。".join(messages)
 
 
