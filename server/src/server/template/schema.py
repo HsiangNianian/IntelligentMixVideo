@@ -348,13 +348,27 @@ class EffectTrack(BaseModel):
         return self
 
 
-class FrameMaskBar(BaseModel):
-    """贴住画布边缘的全宽纯色栏；两栏各最多半屏，不改变视频构图。"""
+class FrameMaskGradient(BaseModel):
+    """不透明双色渐变；沿方向在指定百分比内过渡至结束色，剩余部分保持结束色。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", alias_generator=to_camel, populate_by_name=True)
+    enabled: StrictBool
+    end_color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+    direction: Literal["up", "down"]
+    range: int = Field(ge=1, le=100, strict=True)
+
+
+class FrameMaskBar(BaseModel):
+    """全宽背景栏；非空图片引用优先，否则按 gradient 与 color 绘制原有颜色填充。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
     enabled: StrictBool
     height: float = Field(ge=0, le=50, allow_inf_nan=False)
     color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+    gradient: FrameMaskGradient | None = Field(default=None, exclude_if=lambda value: value is None)
+    # 省略兼容旧客户端，空字符串明确清图；非空引用优先于原颜色与渐变。
+    image_id: str | None = Field(default=None, alias="imageId", pattern=r"^(?:[a-f0-9]{64})?$",
+                                exclude_if=lambda value: value is None)
 
 
 class FrameMask(BaseModel):
@@ -363,6 +377,15 @@ class FrameMask(BaseModel):
     model_config = ConfigDict(extra="forbid")
     top: FrameMaskBar
     bottom: FrameMaskBar
+
+
+class AvatarPreview(BaseModel):
+    """仅编辑器使用的源视频圆心与槽位，保存后恢复，不参与真实合成。"""
+
+    model_config = ConfigDict(extra="forbid")
+    x: float = Field(default=50, ge=0, le=100, allow_inf_nan=False)
+    y: float = Field(default=50, ge=0, le=100, allow_inf_nan=False)
+    source: int = Field(default=0, ge=0, le=2, strict=True)
 
 
 class TemplateData(BaseModel):
@@ -379,6 +402,7 @@ class TemplateData(BaseModel):
     transition_enabled: bool = Field(default=True, strict=True)
     split_screen: SplitScreen | None = Field(default=None, exclude_if=lambda value: value is None)
     avatar_effects: AvatarEffects | None = Field(default=None, exclude_if=lambda value: value is None)
+    avatar_preview: AvatarPreview | None = Field(default=None, exclude_if=lambda value: value is None)
     tracks: list[EffectTrack] = Field(max_length=100)
     frame_mask: FrameMask | None = Field(default=None, exclude_if=lambda value: value is None)
 

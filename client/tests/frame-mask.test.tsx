@@ -4,9 +4,10 @@ import { fromBinary } from "@bufbuild/protobuf";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SaveTemplateRequestSchema, type SaveTemplateRequest } from "@/generated/imv/template/v1/template_pb";
 import { AppliedEffects } from "@/features/templates/EffectAssets";
+import { FrameMaskCard } from "@/features/templates/FrameMaskPanel";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { PreviewTimeline } from "@/features/templates/PreviewTimeline";
-import { frameMaskRects, newFrameMask, type FrameMask } from "@/features/templates/frameMask";
+import { frameMaskRects, newFrameMask, validateFrameMask, type FrameMask } from "@/features/templates/frameMask";
 import { newDraft, toDraft } from "@/features/templates/model";
 import { saveTemplate, getTemplate } from "@/features/templates/api";
 import { defaultSplitScreen } from "@/features/templates/splitScreen";
@@ -18,11 +19,26 @@ import { buildTestTimeline, jsonTemplateResponse, savedTemplate } from "./fixtur
 import { fetchMock } from "./setup";
 import cases from "../../server/tests/frame_mask_cases.json";
 
-test.each(cases)("蒙版按成片高度 $height 生成相同整数边界", ({ height, top, bottom, expected }) => {
+test.each(cases.geometry)("蒙版按成片高度 $height 生成相同整数边界", ({ height, top, bottom, expected }) => {
   const mask = newFrameMask();
   mask.top.height = top;
   mask.bottom.height = bottom;
   expect(frameMaskRects(mask, height).map((rect) => [rect.y, rect.height])).toEqual(expected);
+});
+
+// 素材卡片反映两栏独立的方向与范围；切回纯色后恢复单色，对象说明不再限定纯色。
+test("蒙版卡片随渐变设置更新，切回纯色保留起始色", () => {
+  const mask = newFrameMask();
+  mask.top.gradient = { enabled: true, endColor: "#abcdef", direction: "up", range: 50 };
+  mask.bottom.gradient = { enabled: true, endColor: "#123456", direction: "down", range: 100 };
+  const view = render(<FrameMaskCard mask={mask} onSelect={() => {}} />);
+  const bars = screen.getByRole("button", { name: "选择上下蒙版" }).querySelectorAll<HTMLElement>("[style]");
+  expect(bars[0].style.background).toBe("linear-gradient(to top, #0E2C42 0%, #abcdef 50%)");
+  expect(bars[1].style.background).toBe("linear-gradient(to bottom, #0E2C42 0%, #123456 100%)");
+  view.rerender(<FrameMaskCard mask={{ ...mask, top: { ...mask.top, gradient: { ...mask.top.gradient, enabled: false } } }} onSelect={() => {}} />);
+  expect(bars[0].style.background).toBe("#0E2C42");
+  render(<AppliedEffects draft={{ ...newDraft(), frame_mask: mask }} catalog={[]} selected={null} onSelect={() => {}} />);
+  expect(screen.getByRole("button", { name: "编辑上下蒙版对象" }).textContent).toContain("上下背景栏 · 贯穿全片");
 });
 
 test("旧模板默认无蒙版，选择后编辑、保存、重读及关闭保留样式", async () => {
@@ -69,6 +85,57 @@ test("旧模板默认无蒙版，选择后编辑、保存、重读及关闭保�
   fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
   await screen.findByText("已保存");
   expect(writes.at(-1)?.frameMask?.top).toMatchObject({ enabled: false, height: 21.7, color: "#123456" });
+});
+
+// 纯色只显示一个颜色；开启渐变才显示附加参数，切换和云端重读都保留两栏独立样式。
+test("渐变参数按填充方式显示，编辑保存重读后切回纯色仍保留", async () => {
+  let stored = { ...savedTemplate(), frame_mask: newFrameMask() };
+  fetchMock.mockImplementation((async (_url, init) => {
+    if (init?.method === "POST") {
+      const request = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as Uint8Array));
+      stored = { ...stored, frame_mask: request.frameMask as FrameMask };
+    }
+    return jsonTemplateResponse(stored, init?.method === "POST" ? "save" : "get");
+  }) as typeof fetch);
+  const selection = { templateId: stored.template_id };
+  const view = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
+  await screen.findByLabelText("模板名称");
+  fireEvent.click(screen.getByRole("button", { name: "编辑上下蒙版对象" }));
+  expect(screen.getByLabelText("上栏颜色")).toBeTruthy();
+  expect(screen.queryByLabelText("上栏结束色")).toBeNull();
+  expect(screen.queryByLabelText("上栏渐变范围")).toBeNull();
+  fireEvent.click(screen.getByRole("radio", { name: "上栏渐变" }));
+  fireEvent.change(screen.getByLabelText("上栏起始色"), { target: { value: "#123456" } });
+  fireEvent.change(screen.getByLabelText("上栏结束色"), { target: { value: "#abcdef" } });
+  fireEvent.click(screen.getByRole("radio", { name: "上栏上到下" }));
+  fireEvent.change(screen.getByLabelText("上栏渐变范围"), { target: { value: "50" } });
+  expect(screen.queryByLabelText("下栏结束色")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
+  await screen.findByText("已保存");
+  expect(stored.frame_mask.top).toMatchObject({ color: "#123456", gradient: { enabled: true, endColor: "#abcdef", direction: "down", range: 50 } });
+  expect(stored.frame_mask.bottom.gradient).toBeUndefined();
+  view.unmount();
+  render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
+  await screen.findByLabelText("模板名称");
+  fireEvent.click(screen.getByRole("button", { name: "编辑上下蒙版对象" }));
+  expect(screen.getByLabelText<HTMLInputElement>("上栏结束色").value).toBe("#abcdef");
+  expect(screen.getByLabelText<HTMLInputElement>("上栏渐变范围").value).toBe("50");
+  fireEvent.click(screen.getByRole("radio", { name: "上栏纯色" }));
+  expect(screen.getByLabelText<HTMLInputElement>("上栏颜色").value).toBe("#123456");
+  expect(screen.queryByLabelText("上栏结束色")).toBeNull();
+  expect(screen.queryByLabelText("上栏渐变方向")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
+  await screen.findByText("已保存");
+  expect(stored.frame_mask.top.gradient).toMatchObject({ enabled: false, endColor: "#abcdef", direction: "down", range: 50 });
+  fireEvent.click(screen.getByRole("radio", { name: "上栏渐变" }));
+  expect(screen.getByLabelText<HTMLInputElement>("上栏渐变范围").value).toBe("50");
+});
+
+// 外部输入只在通信边界校验，不能把透明结束色、未知方向或无效范围带入预览。
+test.each([{ endColor: "#11223300" }, { direction: "left" }, { range: 0 }, { range: 101 }, { range: 1.5 }, { range: NaN }, { enabled: undefined }])("拒绝非法渐变参数 %j", (change) => {
+  const mask = newFrameMask();
+  mask.top.gradient = { enabled: true, endColor: "#abcdef", direction: "down", range: 50, ...change } as NonNullable<FrameMask["top"]["gradient"]>;
+  expect(() => validateFrameMask(mask)).toThrow("蒙版渐变");
 });
 
 // 关闭面板保留蒙版；明确移除后立即清空草稿，保存重读不恢复，重新添加使用默认参数。

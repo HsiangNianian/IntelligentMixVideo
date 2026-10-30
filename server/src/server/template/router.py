@@ -5,7 +5,7 @@ from typing import Annotated
 import logging
 import subprocess
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, File, HTTPException, Path, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from generated.imv.template.v1 import template_pb2 as pb
@@ -14,9 +14,9 @@ from google.protobuf.message import DecodeError, Message
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from . import store
+from . import images, store
 from .schema import Template, TemplateSave
-from .preview_mask import PreviewMask, mask_video
+from .preview_mask import PreviewCircleMask, PreviewMask, circle_mask_video, mask_video
 
 # 静态预览资源必须放在 UUID 详情路径之前，无效果目录接口。
 router = APIRouter(prefix="/template", tags=["模板管理"])
@@ -102,6 +102,40 @@ def preview_mask(params: Annotated[PreviewMask, Query()]) -> Response:
         logging.getLogger(__name__).exception("Preview mask encoding failed")
         raise HTTPException(status_code=503, detail="圆角预览蒙版生成失败，请检查服务端 FFmpeg 后重试") from exc
     return Response(content, media_type="video/mp4", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@router.get("/preview-circle-mask", response_class=Response)
+def preview_circle_mask(params: Annotated[PreviewCircleMask, Query()]) -> Response:
+    """仅按示意圆形生成预览资源，不检测人脸、不读取源视频或写入模板。"""
+    try:
+        content = circle_mask_video(**params.model_dump())
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.getLogger(__name__).exception("Preview circle mask encoding failed")
+        raise HTTPException(status_code=503, detail="圆形预览蒙版生成失败，请检查服务端 FFmpeg 后重试") from exc
+    return Response(content, media_type="video/mp4", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@router.post("/frame-mask-images", status_code=201)
+async def upload_frame_mask_image(file: Annotated[UploadFile, File()]) -> dict[str, str]:
+    """图片成功上传才返回不可变引用；大小超限 413，格式或像素非法 422，存储故障 503。"""
+    try:
+        content = await file.read(images.MAX_IMAGE_BYTES + 1)
+        if len(content) > images.MAX_IMAGE_BYTES:
+            raise HTTPException(413, "图片超过上传大小限制")
+        try:
+            image_id = await run_in_threadpool(images.save_image, content)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"imageId": image_id}
+    finally:
+        await file.close()
+
+
+@router.get("/frame-mask-images/{image_id}")
+def get_frame_mask_image(image_id: Annotated[str, Path(pattern=r"^[a-f0-9]{64}$")]) -> Response:
+    """代理固定存储目录的 PNG，支持跨设备预览和浏览器不可变缓存；不接受任意外部 URL。"""
+    return Response(images.read_image(image_id), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @router.get("/{template_id}", response_class=JSONResponse, responses={200: {"content": RESPONSE_CONTENT}})

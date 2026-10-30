@@ -1,6 +1,6 @@
 /**
- * 模板里一次 Remotion 摆放的设置，只影响这次摆放、不改资产：字效调示例文字（多行字效逐行填写，用换行连接）、
- * 字号、字体与字重（双栏逐栏设置，与字效工作区的配置参数相同）、特效的开关、作用位置与时长、水平/垂直位置（百分比，与 IMS 文字一致）与关键词；
+ * 模板里一次 Remotion 摆放的设置，只影响这次摆放、不改资产：字效调示例文字（多行字效逐行填写、双语字效中英各一行，
+ * 用换行连接）、字号、字体与字重（双栏逐栏设置，与字效工作区的配置参数相同）、特效的开关、作用位置与时长、水平/垂直位置（百分比，与 IMS 文字一致）与关键词；
  * 滤镜与转场调强度，视频特效调位置、缩放、旋转与不透明度，并设置起点或所占交界处。
  * 颜色、速度与动画外观等资产内部参数不在这里调，说明原因并提供回字效工作区的入口；这些参数已有的覆盖仍生效，可在此恢复默认。
  * 修改只进入草稿，随模板保存时服务端再按发布契约检查。
@@ -16,8 +16,8 @@ import { Hint } from "@/components/Hint";
 import { ParameterControl, withLine, type ParameterValue } from "@/components/ParameterControl";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
-import { CATEGORIES, EFFECT_PARAMETER, TEMPLATE_KEYWORD_PARAMETERS, categoryOf, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
-import { textKey, textRoles, type EffectTrack, type RemotionClip } from "./model";
+import { CATEGORIES, EFFECT_PARAMETER, TEMPLATE_KEYWORD_PARAMETERS, categoryOf, contentLines, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
+import { textKey, textRoles, singleRowText, type EffectTrack, type RemotionClip } from "./model";
 import { BOUND_TEXT_PARAMETERS, type bindClip } from "./clips";
 import { TrackTiming } from "./TrackTiming";
 import { trackLabel, type ResolvedTrack } from "./tracks";
@@ -41,7 +41,7 @@ const KEYWORD_STYLES = [
 const SAMPLE_MAX_LENGTH = { title: 60, subtitle: 100 } as const;
 
 /** 选中片段的右栏；资产已不在目录中时只允许移除。调用方按片段 ID 设 key，切换片段时页签回到「外观与位置」。 */
-export function SpriteClipInspector({ clip, asset, duration, textTrack, textTracks, textResolved, onSample, onTextTiming, onOpenRemotion, onParameter, onTransform, onStart, onBind, onRemove, onClose }: {
+export function SpriteClipInspector({ clip, asset, duration, textTrack, textTracks, textResolved, onSample, onEnglishSample, onTextTiming, onOpenRemotion, onParameter, onTransform, onStart, onBind, onRemove, onClose }: {
   clip: RemotionClip;
   asset: SpriteAsset | undefined;
   duration: number | undefined;
@@ -50,6 +50,8 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   textTracks?: EffectTrack[];
   textResolved?: ResolvedTrack;
   onSample: (value: string) => void;
+  /** 双语字效下栏的英文示例文字：写进所作用对象的英文文字对象。 */
+  onEnglishSample?: (value: string) => void;
   onTextTiming: (timing: Pick<EffectTrack, "start_mode" | "start" | "duration">) => void;
   /** 回到字效工作区修改资产本身；没有入口时不显示按钮。 */
   onOpenRemotion?: () => void;
@@ -64,6 +66,8 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   const isText = asset?.kind === SpriteKind.TEXT;
   const isTransition = asset?.kind === SpriteKind.TRANSITION_OVERLAY;
   const legacyTextTarget = clip.business_target === "title" || clip.business_target === "subtitle" ? clip.business_target : undefined;
+  // 双语字效（双语字幕）自己显示中英两种语言：只能作用于中文对象，示例文字中英各一行（下栏取英文文字对象的示例）。
+  const bilingual = isText && asset?.bilingual === true && textTrack?.language !== "en";
   // 作用于文字时，文字与关键词由该文字对象提供，不在这里单独设置。
   const shown = (key: string) => !(clip.text_target || legacyTextTarget) || !BOUND_TEXT_PARAMETERS.includes(key);
   // 只有字效把关键词与六个样式选项移到单独页签；关键词效果参数与其他类型里以 keyword 开头的参数都按资产内部参数处理。
@@ -95,11 +99,18 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   const timedText = isText && textTrack?.target === "title" && textTrack.language !== "en" ? textTrack : undefined;
   const tabs = [["appearance", "外观与位置"], ...(timedText ? [["timing", "时间设置"] as const] : []), ["keyword", "关键词设置"]] as const;
   const activeTab = isText && (tab !== "timing" || timedText) ? tab : "appearance";
-  const textOptions = textTracks?.filter((track) => track.target === "title" || track.target === "subtitle").map((track) => ({ value: textKey(track.target, track.language), label: trackLabel(track, textTracks), target: track.target as "title" | "subtitle", language: track.language }))
-    ?? (["title", "subtitle"] as const).map((target) => ({ value: target, label: textRoles[target], target, language: undefined }));
+  // 字效可作用的文字对象；双语字效已显示中英两种语言，只列中文对象。
+  const textOptions = textTracks
+    ? textTracks.filter((track) => (track.target === "title" || track.target === "subtitle") && (!bilingual || track.language !== "en"))
+      .map((track) => ({ value: textKey(track.target, track.language), label: trackLabel(track, textTracks), target: track.target as "title" | "subtitle", language: track.language }))
+    : (["title", "subtitle"] as const).map((target) => ({ value: target, label: textRoles[target], target, language: undefined }));
   const sampleRole = textTrack?.target === "title" || textTrack?.target === "subtitle" ? textTrack.target : undefined;
+  // 英文标题和字幕固定单行：即使资产是双栏字效，作用在英文上也只用它的上栏，因此示例文字只填一行。
+  const singleRow = isText && textTrack?.language === "en" && (sampleRole === "title" || sampleRole === "subtitle");
+  // 双语字效的下栏取所作用对象的英文文字对象：它的示例译文在这里填写，合成时同样由切片译文替换。
+  const englishTrack = bilingual && sampleRole ? textTracks?.find((track) => track.target === sampleRole && track.language === "en") : undefined;
   // 多行字效逐行填写示例：字幕的连续切片逐行出现，标题按其中的换行分栏，与合成一致。
-  const sampleLines = sampleRole && isText ? asset?.lines ?? 1 : 1;
+  const sampleLines = sampleRole && isText ? (singleRow ? 1 : contentLines(asset)) : 1;
   /** 参数当前值：本次摆放的覆盖优先，否则取发布默认值。 */
   const valueOf = ({ field, defaultValue }: NonNullable<typeof asset>["parameters"][number]) => clip.parameters[field.key] ?? defaultValue;
   /** 写入参数覆盖；与发布默认值相同时清除覆盖。 */
@@ -166,7 +177,21 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
       <fieldset hidden={activeTab !== "appearance"} className="space-y-3 border-t px-4 py-3">
         <legend className="sr-only">当前模板参数覆盖</legend>
         <div><h3 className="text-xs font-medium">当前模板参数覆盖</h3><p className="mt-0.5 text-[11px] text-muted-foreground">只影响这次摆放，不改资产默认值，也不影响其他模板。</p></div>
-        {sampleRole && textTrack && (sampleLines > 1 ? <fieldset className="space-y-1.5">
+        {sampleRole && textTrack && (bilingual ? <fieldset className="space-y-1.5">
+          <legend className="text-xs">{sampleLines > 1 ? "示例文字（两组中英字幕）" : "示例文字（中文、英文各一行）"}</legend>
+          {Array.from({ length: sampleLines }, (_, index) => <div key={index} className="space-y-1.5">
+            <Input aria-label={sampleLines > 1 ? `示例文字（中文）第 ${index + 1} 行` : "示例文字（中文）"} placeholder="中文"
+              value={sampleLines > 1 ? textTrack.editor[sampleRole].split("\n")[index] ?? "" : singleRowText(textTrack.editor[sampleRole])}
+              maxLength={Math.floor((SAMPLE_MAX_LENGTH[sampleRole] - sampleLines + 1) / sampleLines)}
+              onChange={(event) => onSample(sampleLines > 1 ? withLine(textTrack.editor[sampleRole], sampleLines, index, event.target.value) : event.target.value)} />
+            <Input aria-label={sampleLines > 1 ? `示例文字（英文）第 ${index + 1} 行` : "示例文字（英文）"} placeholder="English"
+              value={englishTrack ? sampleLines > 1 ? englishTrack.editor[sampleRole].split("\n")[index] ?? "" : singleRowText(englishTrack.editor[sampleRole]) : ""}
+              maxLength={Math.floor((SAMPLE_MAX_LENGTH[sampleRole] - sampleLines + 1) / sampleLines)} disabled={!englishTrack || !onEnglishSample}
+              onChange={(event) => onEnglishSample?.(sampleLines > 1 ? withLine(englishTrack?.editor[sampleRole] ?? "", sampleLines, index, event.target.value) : event.target.value)} />
+          </div>)}
+          <p className="text-[11px] text-muted-foreground">{sampleLines > 1 ? "上下两组各有中文与对应英文，保留各组样式。合成时按同句的连续切片成组，每组中英文同步出现。" : "双语字效上下两栏是同一句的中文与英文：合成时换成每条切片的中文与译文，两种语言同时出现。"}</p>
+          {!englishTrack && <p className="text-[11px] text-destructive">还没有英文{sampleRole === "title" ? "标题" : "字幕"}：请在下方开启中英双语并填写英文示例文字，否则保存时会被拒绝。</p>}
+        </fieldset> : sampleLines > 1 ? <fieldset className="space-y-1.5">
           <legend className="text-xs">示例文字（{sampleLines} 行）</legend>
           {Array.from({ length: sampleLines }, (_, index) =>
             <Input key={index} aria-label={`示例文字第 ${index + 1} 行`} placeholder={`第 ${index + 1} 行`} value={textTrack.editor[sampleRole].split("\n")[index] ?? ""}
@@ -177,8 +202,9 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
             : "合成时实际标题按其中的换行分行（多出的并入最后一行），没有换行时整段显示在第一行。"}</p>
         </fieldset> : <div className="space-y-1.5">
           <Label htmlFor={`${textTrack.id}-sample`} className="text-xs">示例文字</Label>
-          <Input id={`${textTrack.id}-sample`} value={textTrack.editor[sampleRole]} maxLength={SAMPLE_MAX_LENGTH[sampleRole]} onChange={(event) => onSample(event.target.value)} />
+          <Input id={`${textTrack.id}-sample`} value={singleRow ? singleRowText(textTrack.editor[sampleRole]) : textTrack.editor[sampleRole]} maxLength={SAMPLE_MAX_LENGTH[sampleRole]} onChange={(event) => onSample(event.target.value)} />
           <p className="text-[11px] text-muted-foreground">{textRoles[sampleRole]}的文字由这个文字对象提供，合成时换成实际{sampleRole === "title" ? "标题" : "字幕"}。</p>
+          {singleRow && (asset?.lines ?? 1) > 1 && <p className="text-[11px] text-muted-foreground">英文{sampleRole === "title" ? "标题" : "字幕"}固定单行：这个字效是双栏，作用在英文上只用上栏显示，下栏的字体、字重、字号比例与栏间距不参与，因此中英双语不会出现四行。</p>}
         </div>)}
         {appearanceParameters.filter((item) => !effectParameters.includes(item)).map(parameterRow)}
         {exposedTransforms.map((name) => {
@@ -224,7 +250,8 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
           onValueChange={(value) => { const option = textOptions.find((item) => item.value === value); if (option) onBind({ text_target: option.target, ...(option.language ? { language: option.language } : {}) }); }}>
           {textOptions.map((option) => <ToggleGroupItem key={option.value} value={option.value} className="flex-1 text-xs">{option.label}</ToggleGroupItem>)}
         </ToggleGroup>
-        <p className="text-[11px] text-muted-foreground">{clip.text_target ? `由这个字效显示${textRoles[clip.text_target]}：文字与关键词取自${textRoles[clip.text_target]}，时间跟随它。` : legacyTextTarget ? `当前与 IMS ${textRoles[legacyTextTarget]}同时显示。重新选择作用对象后，将改为仅显示 Remotion 字效。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
+        <p className="text-[11px] text-muted-foreground">{clip.text_target ? `由这个字效显示${textRoles[clip.text_target]}${bilingual ? sampleLines > 1 ? "的两组中英字幕" : "的中英两行（上栏中文、下栏英文）" : ""}：文字与关键词取自${textRoles[clip.text_target]}${bilingual ? "和它的英文译文" : ""}，时间跟随它。` : legacyTextTarget ? `当前与 IMS ${textRoles[legacyTextTarget]}同时显示。重新选择作用对象后，将改为仅显示 Remotion 字效。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
+        {bilingual && <p className="text-[11px] text-muted-foreground">双语字效自己显示中英两种语言，所以中英文的 IMS 文字都不再显示，也只能作用于中文对象；英文{clip.text_target === "title" ? "标题" : "字幕"}的启用与文字由下方「中英双语」与英文示例文字提供。</p>}
       </div> : isTransition ? <div className="space-y-2">
         <h3 className="text-xs font-medium">转场 {clip.transition_boundary}</h3>
         <p className="text-[11px] text-muted-foreground">使用资产自身持续时间，选择方式在「镜头转场」中设置。</p>

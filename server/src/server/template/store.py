@@ -1,5 +1,6 @@
 # MySQL 模板存储：列表保留每条记录的校验结果，详情只返回有效模板，事务保护写入。
 
+import json
 from datetime import UTC, datetime
 from threading import Lock
 from uuid import UUID, uuid4
@@ -15,8 +16,10 @@ from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
 
 from ..database import get_engine
 from ..remotion_templates import placement, sprite_store, sprites
+from ..remotion_templates.categories import BILINGUAL_PROP, bilingual as is_bilingual
 from ..remotion_templates.store import Conflict
 from .schema import EffectTrack, Template, TemplateSave, TemplateSummary, completeness_error, effect_catalog
+from . import images
 
 # 模板元数据用于查询和约束，配置 JSON 保留完整编辑字段与可信效果快照。
 metadata = MetaData()
@@ -124,7 +127,7 @@ def check_slot(track: EffectTrack, kind: int) -> None:
         if track.text_target is None and legacy_target not in {"title", "subtitle"}:
             raise HTTPException(422, f"Remotion 字效「{track.id}」须作用于标题或底部字幕")
         overrides = {item.key for item in track.editor.remotion.parameters} if track.editor.remotion else set()
-        if bound := sorted(overrides & {sprites.TEXT_PROP, sprites.KEYWORDS_PROP}):
+        if bound := sorted(overrides & {sprites.TEXT_PROP, sprites.KEYWORDS_PROP, BILINGUAL_PROP}):
             raise HTTPException(422, f"Remotion 字效「{track.id}」的文字与关键词取自所作用的对象，不能覆盖 {'、'.join(bound)}")
     elif track.text_target is not None or legacy_target in {"title", "subtitle"}:
         raise HTTPException(422, f"Remotion 片段「{track.id}」不是字效，不能作用于文字")
@@ -133,6 +136,23 @@ def check_slot(track: EffectTrack, kind: int) -> None:
             raise HTTPException(422, f"Remotion 转场「{track.id}」须指定视频交界处")
     elif track.transition_boundary is not None:
         raise HTTPException(422, f"Remotion 片段「{track.id}」不是转场，不能占用视频交界处")
+
+
+def check_bilingual(track: EffectTrack, published: sprite_pb.PublishedSprite, tracks: list[EffectTrack]) -> None:
+    """双语字效（双语字幕）自己同时显示中英两种语言：它必须作用于中文对象、该对象的英文文字已开启，且不能另有英文字效。
+
+    合成时按切片把同一句的英文译文注入字效的下栏，所以缺少英文文字就取不到译文，英文字效又会把英文再显示一遍（422）。
+    """
+    if not is_bilingual(json.loads(published.config_schema_json or "{}")):
+        return
+    if track.text_target is None or track.language == "en":
+        raise HTTPException(422, f"Remotion 字效「{track.id}」是双语字效，已同时显示中英两种语言，须作用于中文标题或中文字幕")
+    role = "标题" if track.text_target == "title" else "字幕"
+    english = next((item for item in tracks if item.target == track.text_target and item.language == "en"), None)
+    if english is None or not english.enabled:
+        raise HTTPException(422, f"Remotion 字效「{track.id}」是双语字效，需要同时开启中英双语：合成时用英文{role}的译文显示下栏")
+    if any(item.target == "remotion" and item.text_target == track.text_target and item.language == "en" for item in tracks):
+        raise HTTPException(422, f"Remotion 字效「{track.id}」是双语字效，已显示英文{role}，请移除额外的英文{role}字效")
 
 
 def save_template(data: TemplateSave) -> Template:
@@ -147,6 +167,9 @@ def save_template(data: TemplateSave) -> Template:
     # 创建和更新都检查必需文字对象，检查通过后才访问资产及模板数据库。
     if issue := completeness_error(data):
         raise HTTPException(422, issue)
+    if data.frame_mask:
+        for image_id in {bar.image_id for bar in (data.frame_mask.top, data.frame_mask.bottom) if bar.image_id}:
+            images.read_image(image_id)
     clips = [track for track in data.tracks if track.target == "remotion"]
     clip_ids = {str(track.sprite_id) for track in clips}
     if clip_ids:
@@ -169,6 +192,7 @@ def save_template(data: TemplateSave) -> Template:
             except ValueError as exc:
                 raise HTTPException(422, f"Remotion 片段「{track.id}」：{exc}") from None
             check_slot(track, published[str(track.sprite_id)].kind)
+            check_bilingual(track, published[str(track.sprite_id)], data.tracks)
         effects = sum(published[str(track.sprite_id)].kind in VFX_KINDS for track in clips)
         if effects + sum(track.target == "vfx" for track in data.tracks) > 1:
             raise HTTPException(422, "VFX 最多一个，Remotion 视频特效也占用这个名额")
@@ -187,11 +211,19 @@ def save_template(data: TemplateSave) -> Template:
                 if existing is None:
                     raise HTTPException(404, "模板不存在")
                 # 旧客户端省略新配置时保留；开关的显式 false 仍正常保存。
-                for field in ("frame_mask", "split_screen", "avatar_effects"):
+                for field in ("frame_mask", "split_screen", "avatar_effects", "avatar_preview"):
                     if field not in data.model_fields_set and field in existing.configuration:
                         configuration[field] = existing.configuration[field]
                 if data.split_screen is not None and "layout" not in data.split_screen.model_fields_set:
                     configuration["split_screen"]["layout"] = existing.configuration.get("split_screen", {}).get("layout", "split")
+                # 纯色版客户端仍会发送上下栏，但不认识 gradient；仅显式开关覆盖已有渐变。
+                if data.frame_mask is not None:
+                    for edge in ("top", "bottom"):
+                        old_bar = existing.configuration.get("frame_mask", {}).get(edge, {})
+                        if "gradient" not in getattr(data.frame_mask, edge).model_fields_set and "gradient" in old_bar:
+                            configuration["frame_mask"][edge]["gradient"] = old_bar["gradient"]
+                        if "image_id" not in getattr(data.frame_mask, edge).model_fields_set and "imageId" in old_bar:
+                            configuration["frame_mask"][edge]["imageId"] = old_bar["imageId"]
                 connection.execute(templates.update().where(
                     templates.c.template_id == template_id,
                 ).values(**values))

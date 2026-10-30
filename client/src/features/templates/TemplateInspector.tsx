@@ -89,8 +89,12 @@ export function TransitionInspector({ draft, catalog, sprites, onChoose, onRemov
 
 export type InspectorTab = "appearance" | "timing" | "keyword";
 
-/** 字幕只提供外观与关键词页签；其他对象的时间输入保持挂载以便保存前校验。 */
-export function TemplateInspector({ track, draft, catalog, duration, resolved, tab, onTabChange, onTimingChange, onEffectChange, onRemove, onClose }: {
+/**
+ * 字幕只提供外观与关键词页签；其他对象的时间输入保持挂载以便保存前校验。
+ * 标题和字幕另可直接改由 Remotion 字效显示：IMS 只能用自带字体，字效才可以用共享字体库的字体，
+ * 这个入口因此放在右栏，不必先去左侧 AI 资产里找资产。
+ */
+export function TemplateInspector({ track, draft, catalog, duration, resolved, tab, onTabChange, onTimingChange, onEffectChange, sprites, onBindSprite, onNeedSprites, onRemove, onClose }: {
   track: EffectTrack;
   draft: EffectDraft;
   catalog: EffectAsset[];
@@ -100,11 +104,18 @@ export function TemplateInspector({ track, draft, catalog, duration, resolved, t
   onTabChange: (tab: InspectorTab) => void;
   onTimingChange: (timing: Pick<EffectTrack, "start_mode" | "start" | "duration">) => void;
   onEffectChange: (draft: EffectDraft) => void;
+  /** 资产目录；null 表示尚未读到，此时不显示字效入口。 */
+  sprites: SpriteAsset[] | null;
+  onBindSprite: (spriteId: string) => void;
+  /** 这个入口需要资产目录，选中文字对象时就请求读取。 */
+  onNeedSprites: () => void;
   onRemove: () => void;
   onClose: () => void;
 }) {
   const id = useId();
   const hasKeywords = track.target === "title" || track.target === "subtitle";
+  const textSprites = hasKeywords ? (sprites ?? []).filter((asset) => asset.kind === SpriteKind.TEXT) : [];
+  useEffect(() => { if (hasKeywords) onNeedSprites(); }, [hasKeywords, onNeedSprites]);
   const tabs: InspectorTab[] = track.target === "subtitle" || track.language === "en" ? ["appearance", "keyword"] : hasKeywords ? ["appearance", "timing", "keyword"] : ["appearance", "timing"];
   const activeTab = tabs.includes(tab) ? tab : tabs[0];
   const effectId = { title: track.editor.titleFlower, subtitle: track.editor.subtitleFlower, bubble: track.editor.bubble, filter: track.editor.filter, vfx: track.editor.vfx, transition: track.editor.transition }[track.target];
@@ -116,6 +127,13 @@ export function TemplateInspector({ track, draft, catalog, duration, resolved, t
       <Hint label="关闭特效设置"><Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label="关闭特效设置" onClick={onClose}><X className="size-3.5" aria-hidden="true" /></Button></Hint>
     </div>
     <div role="tablist" aria-label={`${effectTargets[track.target]}设置分类`} className={`grid border-b px-4 ${tabs.length === 1 ? "grid-cols-1" : tabs.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>{tabs.map((value) => <button key={value} type="button" role="tab" id={`${id}-${value}`} aria-controls={`${id}-panel-${value}`} aria-selected={activeTab === value} onClick={() => onTabChange(value)} className="border-b-2 border-transparent px-1 py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring data-[selected=true]:border-primary data-[selected=true]:text-primary" data-selected={activeTab === value}>{value === "appearance" ? "外观与效果" : value === "timing" ? "时间设置" : "关键词设置"}</button>)}</div>
+    {hasKeywords && sprites !== null && <div className="space-y-1.5 border-b px-4 py-3">
+      <Label htmlFor={`${id}-sprite`} className="text-xs">用 Remotion 字效显示</Label>
+      {textSprites.length ? <EffectCombobox id={`${id}-sprite`} value="" ariaLabel="用 Remotion 字效显示" placeholder="选择字效" searchPlaceholder="搜索字效"
+        options={textSprites.map((asset) => ({ value: asset.id, label: asset.name }))} onChange={onBindSprite} />
+        : <p className="text-[11px] text-muted-foreground">资产库里还没有字效，可以先去字效工作区做好并保存为资产。</p>}
+      <p className="text-[11px] text-muted-foreground">IMS 只能用自带字体，字效可以用共享字体库里的字体；选中后在「外观与位置」里换字体，文字与时间仍取自这个{effectTargets[track.target]}。</p>
+    </div>}
     <div id={`${id}-panel-appearance`} role="tabpanel" aria-labelledby={`${id}-appearance`} hidden={activeTab !== "appearance"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} language={track.language} onRemove={onRemove} onClose={onClose} view="appearance" showHeader={false} /></div>
     {tabs.includes("timing") && <div id={`${id}-panel-timing`} role="tabpanel" aria-labelledby={`${id}-timing`} hidden={activeTab !== "timing"}><TrackTiming track={track} duration={duration} resolved={resolved} onChange={onTimingChange} /></div>}
     {hasKeywords && <div id={`${id}-panel-keyword`} role="tabpanel" aria-labelledby={`${id}-keyword`} hidden={activeTab !== "keyword"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} language={track.language} onRemove={onRemove} onClose={onClose} view="keyword" showHeader={false} /></div>}

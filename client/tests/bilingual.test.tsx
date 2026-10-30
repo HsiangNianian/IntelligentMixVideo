@@ -1,14 +1,15 @@
 /** 双语核心回归：对象开关、独立样式、协议往返、时间绑定和实际工作区；执行 bun run test。 */
 import { expect, test } from "bun:test";
-import { fromBinary, fromJson, toJson } from "@bufbuild/protobuf";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { create, fromBinary, fromJson, toBinary, toJson } from "@bufbuild/protobuf";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SaveTemplateRequestSchema, SaveTemplateResponseSchema } from "@/generated/imv/template/v1/template_pb";
-import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
+import { ListSpritesResponseSchema, SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { activeDraft, boundText, newDraft, toDraft } from "@/features/templates/model";
+import { defaultAvatarEffects } from "@/features/templates/avatarEffects";
 import { addTrack, previewContext, resolveTemplate, setBilingual, setTrackTiming, trackDraft, updateTrack, validateTemplateTracks } from "@/features/templates/tracks";
 import { addClip, bindClip, setClipParameter, timeClips, validateClipSlots } from "@/features/templates/clips";
-import { buildPreviewRows, mergeSpriteRows } from "@/features/templates/timeline";
+import { buildPreviewRows, buildTimeline, mergeSpriteRows, remotionTexts } from "@/features/templates/timeline";
 import { resetTextTarget } from "@/features/templates/effects";
 import { saveTemplate } from "@/features/templates/api";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
@@ -18,6 +19,34 @@ import { fetchMock } from "./setup";
 
 const asset: SpriteAsset = { id: "text-asset", name: "字效", kind: SpriteKind.TEXT, seconds: 3, aspect: 9 / 16,
   width: 1080, height: 1920, fps: 30, box: { x: 100, y: 100, width: 800, height: 100 }, parameters: [] };
+
+// 场景：双语字效（双语字幕）自己显示中英两种语言：只绑定中文对象，英文对象不能再绑字效，中英 IMS 文字一起交给字效显示。
+test("双语字效绑定中文对象并同时替换中英文字", () => {
+  const bilingual: SpriteAsset = { ...asset, id: "bilingual-asset", name: "双语字幕", lines: 2, bilingual: true };
+  let draft = setBilingual(newDraft(), "subtitle", true);
+  draft = addClip(draft, bilingual, [bilingual], "subtitle");
+  const clip = draft.clips[0];
+  // 双语字效连它所作用对象的英文字幕一起替换，普通字效只替换自己绑定的那一个。
+  expect([...remotionTexts(draft, new Set([clip.id]))].sort()).toEqual(["subtitle", "subtitle:en"]);
+  expect([...remotionTexts(draft)]).toEqual(["subtitle"]);
+  expect(buildTestTimeline(draft, [], sampleMedia, [0, 1, 2], new Set([clip.id])).SubtitleTracks).toHaveLength(1);
+  expect(buildTestTimeline(draft, []).SubtitleTracks).toHaveLength(2);
+  // 英文已由双语字效显示，不能再给英文对象绑字效。
+  expect(() => addClip(draft, bilingual, [bilingual], "subtitle", "en")).toThrow("中英两种语言");
+});
+
+// 场景：数字人预览与双语字效共存时，圆形取景仍使用指定圆心，中英字幕仍统一由字效显示。
+test("数字人取景与双语字幕替换同时生效", () => {
+  const bilingual: SpriteAsset = { ...asset, lines: 4, bilingual: true };
+  let draft = addClip(setBilingual(newDraft(), "subtitle", true), bilingual, [bilingual], "subtitle");
+  draft = { ...draft, avatar_effects: { ...defaultAvatarEffects(), openingEnabled: true, openingDuration: 2 } };
+  const timeline = buildTimeline(draft, [], sampleMedia, resolveTemplate(draft, previewContext(sampleMedia)), undefined, 0,
+    { x: 30, y: 40 }, new Set([draft.clips[0].id]));
+  expect(timeline.SubtitleTracks).toHaveLength(1);
+  const mask = new URL(timeline.openingTracks[1].VideoTrackClips[0].MaskVideoURL!);
+  expect(mask.searchParams.get("x")).toBe("0.3");
+  expect(mask.searchParams.get("y")).toBe("0.4");
+});
 
 // 场景：从未开启没有英文；关闭后保留英文外观与字效，重新开启恢复同一个对象，标题和字幕开关独立。
 test("双语关闭只隐藏，再开启恢复设置", () => {
@@ -114,4 +143,40 @@ test("工作区双语开关保留英文设置", async () => {
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" }).checked).toBe(false);
   fireEvent.click(screen.getByRole("checkbox", { name: "中英双语" }));
   expect(screen.getAllByRole("button", { name: "编辑英文字幕" }).length).toBeGreaterThan(0);
+});
+
+// 场景：选中英文字幕后右栏直接提供「用 Remotion 字效显示」，不必先去左侧 AI 资产里找资产；绑定后右栏交给字效设置
+// （字体来自共享字体库），保存请求里这条 remotion 轨道带 textTarget=subtitle 与 language=en。
+test("右栏可直接把英文字幕改由 Remotion 字效显示", async () => {
+  const template = savedTemplate();
+  let request: ReturnType<typeof fromBinary<typeof SaveTemplateRequestSchema>> | undefined;
+  fetchMock.mockImplementation((async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/api/sprites") {
+      const catalog = create(ListSpritesResponseSchema, { sprites: [{
+        spriteId: "sprite-t", name: "金色字幕", kind: SpriteKind.TEXT,
+        canvas: { width: 1080, height: 1920, fps: 30, previewFrames: 90 },
+        contentBox: { x: 90, y: 760, width: 900, height: 400 }, parameters: [], lineCount: 0,
+      }] });
+      return new Response(Uint8Array.from(toBinary(ListSpritesResponseSchema, catalog)), { headers: { "Content-Type": "application/x-protobuf" } });
+    }
+    if (path === "/template" && init?.method === "POST") {
+      request = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as Uint8Array));
+      return jsonTemplateResponse(template, "save");
+    }
+    return jsonTemplateResponse(template, "get");
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={{ templateId: template.template_id }} onHome={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: "编辑底部字幕" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "中英双语" }));
+  fireEvent.click(screen.getAllByRole("button", { name: "编辑英文字幕" })[0]);
+  fireEvent.click(await screen.findByRole("combobox", { name: "用 Remotion 字效显示" }));
+  fireEvent.click(await screen.findByRole("option", { name: /金色字幕/ }));
+  // 绑定后右栏改由字效设置接管，字效的字体在「外观与位置」里换。
+  expect(await screen.findByRole("region", { name: "AI 资产设置" })).toBeTruthy();
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(request).toBeDefined());
+  const clip = request!.tracks!.tracks.find((track) => track.target === "remotion")!;
+  expect(clip.textTarget).toBe("subtitle");
+  expect(clip.language).toBe("en");
 });

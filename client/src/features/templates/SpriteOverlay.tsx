@@ -87,7 +87,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     const frame = frames.current.get(clip.id);
     if (!frame || !hosts.current.has(clip.id)) return;
     const values = clip.values ?? {};
-    const transform = clip.transform ?? {};
+    const transform = (clip.opening && time.current < clip.opening.end ? clip.opening.transform : clip.transform) ?? {};
     const key = JSON.stringify([values, transform]);
     if (sent.current.get(clip.id) === key) return;
     sent.current.set(clip.id, key);
@@ -120,6 +120,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
       if (!frame) continue;
       const active = supported.current.has(clip.id) && time.current >= clip.start && time.current < clip.end;
       frame.style.visibility = active ? "visible" : "hidden";
+      if (active && clip.opening) update(clip);
       // 带上摆放的完整时长：Sprite 按它排布，与总线渲染时一致，而不是停在资产的预览长度。
       if (active) frame.contentWindow?.postMessage({ type: "imv-preview-sync", channel: channels.current.get(clip.id)?.channel, time: time.current - clip.start, duration: clip.length }, "*");
     }

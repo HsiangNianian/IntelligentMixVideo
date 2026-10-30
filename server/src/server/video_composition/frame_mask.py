@@ -1,6 +1,7 @@
-"""把模板上下色栏生成透明 PNG 并转存 ZOS；在线程池调用，不改变源视频与文字。"""
+"""把模板上下背景栏生成透明 PNG 并转存 ZOS；在线程池调用，不改变源视频与文字。"""
 
 from math import floor
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -8,6 +9,7 @@ from PIL import Image, ImageDraw
 
 from .settings import ZosSettings
 from .zos import upload_public
+from ..template.images import read_image
 
 
 def upload_mask(mask: dict, width: int, height: int, task_id: str, settings: ZosSettings,
@@ -18,14 +20,31 @@ def upload_mask(mask: dict, width: int, height: int, task_id: str, settings: Zos
         bar = mask[edge]
         size = floor(height * bar["height"] / 100 + 0.5) if bar["enabled"] else 0
         if size:
-            rects.append((0 if edge == "top" else height - size, size, bar["color"]))
+            rects.append((0 if edge == "top" else height - size, size, bar))
     if not rects:
         return None
     with TemporaryDirectory() as directory:
         path = Path(directory) / "frame-mask.png"
         with Image.new("RGBA", (width, height)) as image:
             draw = ImageDraw.Draw(image)
-            for y, size, color in rects:
-                draw.rectangle((0, y, width - 1, y + size - 1), fill=color)
+            for y, size, bar in rects:
+                if image_id := bar.get("imageId"):
+                    with Image.open(BytesIO(read_image(image_id))) as source:
+                        # 上传时已统一裁成 9:16；整图拉伸到栏，透明区域不叠原颜色。
+                        fill = source.resize((width, size), Image.Resampling.LANCZOS)
+                        image.alpha_composite(fill, (0, y))
+                    continue
+                gradient = bar.get("gradient")
+                if not gradient or not gradient["enabled"]:
+                    draw.rectangle((0, y, width - 1, y + size - 1), fill=bar["color"])
+                    continue
+                start = [int(bar["color"][i:i + 2], 16) for i in (1, 3, 5)]
+                end = [int(gradient["endColor"][i:i + 2], 16) for i in (1, 3, 5)]
+                # 与 Canvas 共用 sRGB 插值与向上取半规则，单像素栏显示起始色。
+                for row in range(size):
+                    distance = row if gradient["direction"] == "down" else size - 1 - row
+                    t = min(1, distance / (max(1, size - 1) * gradient["range"] / 100))
+                    color = tuple(floor(a + (b - a) * t + 0.5) for a, b in zip(start, end))
+                    draw.line((0, y + row, width - 1, y + row), fill=(*color, 255))
             image.save(path)
         return upload_public([(path, f"{prefix}/{task_id}-mask.png", "image/png")], settings, timeout)[0]

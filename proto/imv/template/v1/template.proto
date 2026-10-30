@@ -243,17 +243,37 @@ message AvatarEffects {
   optional bool remove_background = 5;
 }
 
-// 覆盖原视频的一条全宽纯色栏；高度为画布高度的百分比。
+// 不透明双色渐变；范围表示沿方向完成颜色过渡所占的栏高百分比。
+// 消息一旦提供，四个字段必须完整填写（包括 enabled=false）；不支持仅发送开关。
+message FrameMaskGradient {
+  optional bool enabled = 1;
+  optional string end_color = 2;
+  optional string direction = 3;
+  optional int32 range = 4;
+}
+
+// 覆盖原视频的一条全宽色栏；color 为纯色或渐变起始色，高度为画布高度的百分比。
 message FrameMaskBar {
   optional bool enabled = 1;
   optional double height = 2;
   optional string color = 3;
+  FrameMaskGradient gradient = 4;
+  // 图片内容哈希；省略兼容旧客户端，空字符串明确切回颜色填充。
+  optional string image_id = 5;
 }
 
 // 上下蒙版独立设置，整段显示，不改变主体视频的布局。
 message FrameMask {
   FrameMaskBar top = 1;
   FrameMaskBar bottom = 2;
+}
+
+// 编辑器记住的取景参数；随模板保存，冻结合成模板时移除。
+message AvatarPreview {
+  optional double x = 1;
+  optional double y = 2;
+  // 三个预览视频的槽位，0～2，不是实际合成的数字人来源。
+  optional uint32 source = 3;
 }
 
 // 创建或完整更新模板；提供 template_id 时更新。
@@ -280,6 +300,8 @@ message SaveTemplateRequest {
   AvatarEffects avatar_effects = 10;
   // 缺省不添加蒙版；更新时省略保留原配置，空消息移除，关闭两栏仅停用。
   FrameMask frame_mask = 11;
+  // 省略时保留原设置；只供编辑器预览使用。
+  AvatarPreview avatar_preview = 12;
 }
 
 // 已保存的模板及效果快照。
@@ -309,8 +331,9 @@ message TemplateRecord {
   // 缺省为未启用同屏的已有模板。
   SplitScreen split_screen = 12;
   AvatarEffects avatar_effects = 13;
-  // 上下纯色蒙版；旧模板省略此字段。
+  // 上下蒙版，每栏可选纯色或渐变；旧模板省略此字段。
   FrameMask frame_mask = 14;
+  AvatarPreview avatar_preview = 15;
 }
 
 // 模板列表只返回摘要；无效记录保留标识与原因，不能用于预览和合成。

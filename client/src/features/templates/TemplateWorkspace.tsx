@@ -1,7 +1,8 @@
 /** 模板编辑工作区：接收主页选择，展示模板信息，协调效果编辑、保存和未保存切换保护。 */
 import { SplitScreenEditor } from "./SplitScreenEditor";
 import { defaultAvatarEffects } from "./avatarEffects";
-import { AvatarEffectsEditor } from "./AvatarEffectsEditor";
+import { AvatarCircleControls, AvatarEffectsEditor, AvatarMaskCard, AvatarPreviewControls } from "./AvatarEffectsEditor";
+import { defaultAvatarPreview, previewOpeningDuration } from "./avatarPreview";
 import { validateSplitScreen } from "./splitScreen";
 import { useUpdateBlocker } from "@/lib/update-guard";
 import { recovery } from "@/features/updates/recovery";
@@ -17,7 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import * as api from "./api";
 import { readCatalog } from "./sdk";
-import { activeDraft, boundText, newDraft, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
+import { activeDraft, boundText, newDraft, singleRowText, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
 import { addTrack, previewContext, resolveTemplate, removeTrack, setBilingual, setTrackTiming, trackDraft, updateTrack } from "./tracks";
@@ -31,7 +32,7 @@ import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
 import { addClip, bindClip, clipSlot, hiddenTextClips, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
 import { exampleKeyword } from "./timeline";
-import { transformFields } from "@/features/sprites/parameters";
+import { BILINGUAL_PROP, contentLines, transformFields } from "@/features/sprites/parameters";
 import { useSpriteCatalog } from "./useSpriteCatalog";
 import type { TemplateSelection } from "./TemplateHome";
 import "./template-workspace.css";
@@ -79,6 +80,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const [catalog, setCatalog] = useState<EffectAsset[]>(() => readCatalog());
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [maskUploading, setMaskUploading] = useState(false);
   const [error, setError] = useState("");
   const [assetError, setAssetError] = useState("");
   const [action, setAction] = useState<TemplateSelection | null>(null);
@@ -97,11 +99,12 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const [transitionRandom, setTransitionRandom] = useState<readonly [number, number]>(() => [Math.random(), Math.random()]);
   const visibleDraft = useMemo(() => draft ? activeDraft(draft) : null, [draft]);
   const previewSelection = useMemo(() => visibleDraft ? previewTransitions(visibleDraft, transitionRandom, spriteCatalog.assets ?? []) : null, [visibleDraft, transitionRandom, spriteCatalog.assets]);
-  const previewDraft = useMemo(() => {
-    const selected = previewSelection?.draft;
-    if (!selected?.avatar_effects?.removeBackground || !selected.split_screen?.enabled) return selected;
-    return { ...selected, split_screen: { ...selected.split_screen, avatar: { ...selected.split_screen.avatar, radius: 0, borderWidth: 0 } } };
-  }, [previewSelection?.draft]);
+  const previewDraft = previewSelection?.draft;
+  const circleAvatar = !!draft?.split_screen?.enabled && draft.split_screen.layout === "circle";
+  const avatarPreview = draft?.avatar_preview ?? defaultAvatarPreview;
+  const avatarPreviewControls = <AvatarPreviewControls source={avatarPreview.source} center={target === "avatar-mask" || circleAvatar ? avatarPreview : undefined}
+    onSourceChange={(source) => { if (draft) editTrack(() => ({ ...draft, avatar_preview: { ...defaultAvatarPreview, source } })); }}
+    onCenterChange={(point) => { if (draft) editTrack(() => ({ ...draft, avatar_preview: { ...avatarPreview, ...point } })); }} />;
   const preview = useMemo(() => {
     if (!previewDraft || !media) return { timeline: undefined, error: "" };
     try {
@@ -120,8 +123,10 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const draftTracks = draft?.tracks;
   const spriteClips = useMemo(() => previewClips.map((clip) => {
     const asset = spriteCatalog.assets?.find((item) => item.id === clip.sprite_id);
-    // 作用于文字的字效显示该文字对象的示例文字与关键词，合成时由总线换成实际标题或切片。
+    // 作用于文字的字效显示该文字对象的示例文字与关键词，合成时由总线换成实际标题或切片；英文固定单行，双栏字效只用上栏。
     const text = boundText(draftTracks ?? [], clip);
+    // 双语字效（双语字幕）的下栏是所作用对象英文文字对象的示例译文，与合成注入同一句译文一致。
+    const english = asset?.bilingual && clip.text_target ? draftTracks?.find((track) => track.target === clip.text_target && track.language === "en") : undefined;
     const point = previewDraft?.split_screen?.enabled && clip.text_target === "subtitle" ? previewDraft.split_screen[text?.language === "en" ? "subtitleEn" : "subtitle"] : undefined;
     const transform = point && asset ? { ...clip.transform, x: point.x * asset.width / 100, y: point.y * asset.height / 100 + asset.box.height * (clip.transform?.scale ?? 1) / 2 } : clip.transform;
     return {
@@ -136,11 +141,19 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
       slot: clipSlot(clip, asset),
       textTrackId: text?.id,
       boundary: clip.transition_boundary,
-      values: text && clip.text_target ? { ...clip.parameters, text: text.editor[clip.text_target], keywords: [exampleKeyword(text.editor, clip.text_target, text.language)].filter(Boolean) } : clip.parameters,
+      values: text && clip.text_target ? {
+        ...clip.parameters,
+        text: text.language === "en" ? singleRowText(text.editor[clip.text_target]) : text.editor[clip.text_target],
+        keywords: [exampleKeyword(text.editor, clip.text_target, text.language)].filter(Boolean),
+        ...(asset?.bilingual && clip.text_target ? { [BILINGUAL_PROP]: english ? contentLines(asset) > 1 ? english.editor[clip.text_target] : singleRowText(english.editor[clip.text_target]) : "",
+          lineStartFrames: Array(asset.lines ?? 2).fill(0) } : {}),
+      } : clip.parameters,
       transform,
+      opening: point ? { end: previewOpeningDuration(previewDraft?.avatar_effects, previewLength), transform: clip.transform } : undefined,
+      bilingual: asset?.bilingual === true,
       canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: !point && transformFields(asset.kind).includes("x") } : undefined,
     };
-  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength, previewDraft?.split_screen]);
+  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength, previewDraft?.split_screen, previewDraft?.avatar_effects]);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
   useUpdateBlocker("模板尚未保存或正在处理", dirty || busy || loading || !!openRequest);
   useEffect(() => { recovery.template = current ? { templateId: current.template_id } : null; }, [current]);
@@ -271,13 +284,16 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
 
   /** 成功保存响应建立新基线；失败保留原草稿和待切换目标，不自动重发。 */
   async function persist(nextSelection?: TemplateSelection, savingDraft = draft) {
-    if (!savingDraft || lock.current || loading) return;
+    if (!savingDraft || lock.current || loading || maskUploading) return;
     if (editing?.field === "name" && !editing.value.trim()) { setError("请输入模板名称"); return; }
     // 时间输入保留局部编辑值，写入前检查；模板配置继续由 saveTemplate 校验。
     const timingInputs = form.current?.querySelectorAll<HTMLInputElement>('[aria-label="轨道时间设置"] input');
     if (timingInputs && [...timingInputs].some((input) => !input.checkValidity())) { setInspectorTab("timing"); return; }
     const transitionInput = form.current?.querySelector<HTMLInputElement>('[aria-label="转场时间设置"] input[type="number"]');
     if (transitionInput && !transitionInput.checkValidity()) { transitionInput.reportValidity(); return; }
+    // 数字人输入有独立字符串草稿；按钮、快捷键和元数据自动保存都不能把未完成输入当成旧有效值保存。
+    const avatarInput = [...(form.current?.querySelectorAll<HTMLInputElement>('input[data-avatar-effect]') ?? [])].find((input) => !input.checkValidity());
+    if (avatarInput) { avatarInput.reportValidity(); return; }
     lock.current = true;
     setBusy(true);
     setError("");
@@ -361,7 +377,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 <span className="template-workspace-status flex items-center gap-2 text-[11px] text-muted-foreground"><span className={`size-1.5 rounded-full ${dirty ? "bg-warning" : "bg-success"}`} />{current ? dirty ? "有未保存的修改" : "已保存" : "新模板 · 尚未保存"}</span>
-                <Button type="submit" className="template-workspace-save h-9 gap-2 rounded-lg px-4 text-xs">{busy ? <Spinner /> : <CircleCheck className="size-4" aria-hidden="true" />}{busy ? "正在保存…" : "保存模板"}</Button>
+                <Button type="submit" disabled={maskUploading} className="template-workspace-save h-9 gap-2 rounded-lg px-4 text-xs">{busy ? <Spinner /> : <CircleCheck className="size-4" aria-hidden="true" />}{busy ? "正在保存…" : "保存模板"}</Button>
               </div>
             </section>
             <WorkspaceColumns
@@ -385,25 +401,37 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 }, true)} /></div>
-                <div hidden={assetSource !== "ai"}><SpriteCatalog catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} /></div>
+                <div hidden={assetSource !== "ai"}><SpriteCatalog catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => {
+                  // 双语字效（双语字幕）的下栏是同一句的英文：添加时开启所作用对象的中英双语，合成才有译文可注入。
+                  const role = textTarget === "title" || textTarget === "subtitle" ? textTarget : undefined;
+                  const prepared = asset.bilingual && role ? setBilingual(draft, role, true) : draft;
+                  return addClip(prepared, asset, spriteCatalog.assets ?? [], textTarget, prepared.tracks.find((track) => track.id === lastTextTrack.current)?.language);
+                }, true)} /></div>
                 <div hidden={assetSource !== "masks"}><FrameMaskCard mask={draft.frame_mask} onSelect={() => {
                   if (!draft.frame_mask) editTrack(() => ({ ...draft, frame_mask: newFrameMask() }));
                   setTarget(FRAME_MASK_OBJECT_ID);
+                }} /><AvatarMaskCard onSelect={() => {
+                  if (!draft.avatar_effects?.openingEnabled) editTrack(() => ({ ...draft, avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, openingEnabled: true } }));
+                  setTarget("avatar-mask");
                 }} /></div>
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <TemplatePreview draft={previewDraft!} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={current?.template_id ?? draft.name} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
+                <TemplatePreview draft={previewDraft!} media={media} avatarSource={avatarPreview.source} previewCenter={avatarPreview} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); if (draft.avatar_preview) editTrack(() => ({ ...draft, avatar_preview: { ...avatarPreview, x: 50, y: 50 } })); }} videoInputKey={current?.template_id ?? draft.name} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
                 />
               </main>}
               inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={visibleDraft!} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
                 <SpriteClips clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
-                {target === FRAME_MASK_OBJECT_ID && draft.frame_mask && <FrameMaskPanel mask={draft.frame_mask}
+                {target === FRAME_MASK_OBJECT_ID && draft.frame_mask && <FrameMaskPanel key={current?.template_id ?? "new"} mask={draft.frame_mask} onUploadingChange={setMaskUploading}
                   onChange={(frame_mask) => editTrack(() => ({ ...draft, frame_mask }))}
                   onRemove={() => editTrack(() => removeTrack(draft, FRAME_MASK_OBJECT_ID))} onClose={() => setTarget(null)} />}
-                <SplitScreenEditor value={draft.split_screen} removeBackground={draft.avatar_effects?.removeBackground} onChange={(split_screen) => editTrack(() => ({ ...draft, split_screen,
+                {target === "avatar-mask" && draft.avatar_effects?.openingEnabled && <AvatarEffectsEditor value={draft.avatar_effects} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} onClose={() => setTarget(null)}
+                  onRemove={() => editTrack(() => ({ ...draft, avatar_effects: { ...draft.avatar_effects!, openingEnabled: false } }))}>{avatarPreviewControls}</AvatarEffectsEditor>}
+                <SplitScreenEditor value={draft.split_screen} removeBackground={draft.avatar_effects?.removeBackground} onRemoveBackgroundChange={(removeBackground) => editTrack(() => ({ ...draft, avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground } }))} onChange={(split_screen) => editTrack(() => ({ ...draft, split_screen,
                   ...(split_screen.layout !== (draft.split_screen?.layout ?? "split") ? { avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground: split_screen.layout === "overlay" } } : {}),
-                }))} />
-                <AvatarEffectsEditor value={draft.avatar_effects} sameScreen={!!draft.split_screen?.enabled} circle={!!draft.split_screen?.enabled && draft.split_screen.layout === "circle"} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} />
+                }))}>{target !== "avatar-mask" && draft.split_screen?.enabled && <>
+                  {circleAvatar && <AvatarCircleControls value={draft.avatar_effects} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} />}
+                  {avatarPreviewControls}
+                </>}</SplitScreenEditor>
                 {bilingualTarget && <div className="space-y-2 border-b px-4 py-3">
                   <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!english && english.enabled !== false} onChange={(event) => {
                     const enabled = event.target.checked;
@@ -425,6 +453,14 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                     const role = clipText.target as "title" | "subtitle";
                     const edit = trackDraft(draft, clipText);
                     return updateTrack(draft, clipText.id, { ...edit, editor: { ...edit.editor, [role]: value, ...(role === "title" ? { titleKeyword: "" } : {}) } });
+                  })}
+                  onEnglishSample={(value) => clipText && editTrack(() => {
+                    // 双语字效下栏的英文示例写进同一用途的英文文字对象，合成时同样由切片译文替换。
+                    const role = clipText.target as "title" | "subtitle";
+                    const english = draft.tracks.find((track) => track.target === role && track.language === "en");
+                    if (!english) throw new Error("还没有英文文字对象，请先开启中英双语");
+                    const edit = trackDraft(draft, english);
+                    return updateTrack(draft, english.id, { ...edit, editor: { ...edit.editor, [role]: value, ...(role === "title" ? { titleKeyword: "" } : {}) } });
                   })}
                   onTextTiming={(timing) => clipText && editTrack(() => setTrackTiming(draft, clipText.id, timing))}
                   onParameter={(key, value) => editTrack(() => setClipParameter(draft, selectedClip.id, key, value))}
@@ -464,7 +500,17 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   onMode={(mode) => { setTransitionRandom([Math.random(), Math.random()]); editTrack(() => ({ ...draft, transition_mode: mode })); }}
                   onEnabled={(enabled) => editTrack(() => ({ ...draft, transition_enabled: enabled }))}
                   onSelect={selectTarget} />}
-                {selectedTrack && !selectedClip && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
+                {selectedTrack && !selectedClip && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} sprites={spriteCatalog.assets} onNeedSprites={spriteCatalog.peek} onBindSprite={(spriteId) => editTrack(() => {
+                  const asset = spriteCatalog.assets?.find((item) => item.id === spriteId);
+                  if (!asset) return draft;
+                  const role = selectedTrack.target === "title" ? "title" : "subtitle";
+                  // 绑定后右栏改由字效设置接管，用户随即在「外观与位置」里换字体。
+                  const next = addClip(draft, asset, spriteCatalog.assets ?? [], role, selectedTrack.language);
+                  setTarget(next.clips.at(-1)!.id);
+                  setTextTarget(role);
+                  lastTextTrack.current = selectedTrack.id;
+                  return next;
+                }, true)} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
               </aside>}
             />
           </fieldset>
@@ -483,7 +529,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
           <DialogFooter>
             <Button type="button" variant="outline" disabled={busy || loading} onClick={() => { setAction(null); setOpenRequest(null); setError(""); }}>取消</Button>
             <Button type="button" variant="outline" disabled={busy || loading} onClick={() => { setOpenRequest(action); setAttempt((value) => value + 1); }}>放弃修改</Button>
-            <Button type="button" disabled={busy || loading} onClick={() => { if (action) void persist(action); }}>保存并切换</Button>
+            <Button type="button" disabled={busy || loading || maskUploading} onClick={() => { if (action) void persist(action); }}>保存并切换</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

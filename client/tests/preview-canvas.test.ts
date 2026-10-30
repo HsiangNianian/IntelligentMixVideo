@@ -10,9 +10,10 @@ import { sampleDraft, sampleMedia, buildTestTimeline as buildTimeline } from "./
 const catalog = readCatalog();
 
 // 高分屏上 SDK 内置的 Konva 默认按屏幕倍数放大画布；加载完成、创建播放器之前绘制倍数固定为 1，画布与视频原尺寸一致。
-test("SDK 加载后按视频原尺寸绘制，不随屏幕缩放倍数放大", async () => {
+test("SDK 加载后固定绘制倍数，并仅在独立预览窗口使用 WebGL 分割后端", async () => {
   const player = function Player() {} as unknown as PreviewSDK;
-  const view = { AliyunTimelinePlayer: undefined as PreviewSDK | undefined, Konva: { pixelRatio: 2 } };
+  const gpu = window.navigator.gpu;
+  const view = { AliyunTimelinePlayer: undefined as PreviewSDK | undefined, Konva: { pixelRatio: 2 }, navigator: { gpu: {} } };
   // 只实现 loadSDK 用到的接口：追加脚本与样式后模拟两者都加载完成，脚本执行时挂上 SDK 与 Konva。
   const target = {
     defaultView: view,
@@ -28,6 +29,8 @@ test("SDK 加载后按视频原尺寸绘制，不随屏幕缩放倍数放大", a
   } as unknown as Document;
   expect(await loadSDK(target, new AbortController().signal)).toBe(player);
   expect(view.Konva.pixelRatio).toBe(1);
+  expect(view.navigator.gpu).toBeUndefined();
+  expect(window.navigator.gpu).toBe(gpu);
 });
 
 // 回归：换了比例不同的预览视频后画布跟着变（1080×1440、720×1280），字号与位置都随之错位。画布固定为成片的

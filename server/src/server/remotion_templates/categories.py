@@ -40,7 +40,11 @@ LINE_GAP_PROP = "lineGap"
 # 双栏的排布参数与取值：stack 上下排列，overlap 两栏叠在同一处、彼此居中、下栏在上层。
 TIER_LAYOUT = "tierLayout"
 TIER_LAYOUTS = ("stack", "overlap")
-# 生成只做双栏：新的多行字效固定上下两栏；更早发布的 3～MAX_LINES 行资产仍按自己封存的行数显示。
+# 双语字效每组占中文、英文两行，支持一组或两组；textEn 的各行与 text 的各行配对注入。
+BILINGUAL_PROP = "textEn"
+# 四行双栏双语的组内中英间距；lineGap 仍控制两组之间的距离。
+TRANSLATION_GAP_PROP = "translationGap"
+# 普通双栏固定两行；双栏双语使用四行，更早发布的多行资产仍按封存的行数显示。
 TIERS = 2
 # 双栏字效每栏的字号是两栏共用的 fontSize 乘以该栏的比例，比例范围固定。
 TIER_SIZE_RATIO = (0.4, 2)
@@ -147,6 +151,25 @@ def line_count(schema: dict) -> int:
     return definition["maxItems"] if isinstance(definition, dict) and _line_starts(definition) else 1
 
 
+def bilingual(schema: dict) -> bool:
+    """字效是否是双语字效：声明了英文文字参数 `textEn` 的字效下栏是同一句的英文，模板与合成据此注入两种语言。"""
+    return isinstance(_properties(schema).get(BILINGUAL_PROP), dict)
+
+
+def content_line_count(schema: dict) -> int:
+    """每个实例容纳的内容组数；双语每组占中文、英文两行，旧单组双语仍为一组。"""
+    count = line_count(schema)
+    return max(1, count // 2) if bilingual(schema) else count
+
+
+def content_line_starts(schema: dict, starts: list[int]) -> list[int]:
+    """将各组出现帧补齐到资产行数；双语每组的原文与译文使用同一个起点。"""
+    groups = content_line_count(schema)
+    values = (starts or [0])[:groups]
+    values += [values[-1]] * (groups - len(values))
+    return [frame for frame in values for _ in range(2)] if bilingual(schema) else values
+
+
 def _keyword_color(definition: dict) -> bool:
     """关键词颜色参数：字符串且使用允许空串的 pattern。"""
     return definition.get("type") == "string" and definition.get("pattern") == KEYWORD_COLOR
@@ -211,6 +234,15 @@ LINE_GAP = Rule(
     "多行字效相邻两行之间的距离（像素），数字，下界可在 -600～0 之间（负值让下栏上移叠住上栏）、上界在 200～600 之间",
     _between(-600, 600, 0, 200),
 )
+# 双语字效的英文文字：可选，绑定了才是双语字效（下栏是中文那一句的英文译文，由总线按切片注入）。
+BILINGUAL = Rule(
+    BILINGUAL_PROP, {"type": "string", "minLength": 1, "maxLength": TEXT_MAX_LENGTH},
+    f"双语字效的英文文字，非空字符串且 maxLength 必须为 {TEXT_MAX_LENGTH}", _text,
+)
+TRANSLATION_GAP = Rule(
+    TRANSLATION_GAP_PROP, {"type": "number", "minimum": 0, "maximum": 100},
+    "双栏双语每组中文与英文之间的距离，0～100 像素", _exact(0, 100),
+)
 _COLOR = {"type": "string", "pattern": HEX_COLOR}
 REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
     "text": (
@@ -241,10 +273,10 @@ FIXED_TITLES = {
     "text": "文字", "fontSize": "字号", "fontWeight": "字重", "fontFamily": "字体",
     "keywords": "关键词", "keywordBold": "关键词加粗", "keywordItalic": "关键词斜体", "keywordUnderline": "关键词下划线",
     "keywordStrikeout": "关键词删除线", "keywordColor": "关键词颜色", "keywordSize": "关键词字号", KEYWORD_EFFECT_PROP: "关键词字效",
-    LINE_GAP_PROP: "栏间距", LINE_STARTS_PROP: "各栏出现帧", TIER_LAYOUT: "双栏排布",
+    LINE_GAP_PROP: "栏间距", LINE_STARTS_PROP: "各栏出现帧", TIER_LAYOUT: "双栏排布", BILINGUAL_PROP: "英文文字", TRANSLATION_GAP_PROP: "中英间距",
     **{
         f"line{tier}{suffix}": f"{name}{label}"
-        for tier, name in ((1, "上栏"), (2, "下栏"))
+        for tier, name in ((1, "上栏"), (2, "下栏"), (3, "第三行"), (4, "第四行"))
         for suffix, label in (("Color", "颜色"), ("SizeRatio", "字号比例"), ("FontFamily", "字体"), ("FontWeight", "字重"))
     },
 }
@@ -258,6 +290,7 @@ EFFECT_PARAMETER = re.compile(r"^effect[1-9][0-9]*(?:Target|Seconds|Delay|Stagge
 EFFECT_TARGETS = {
     1: ("block", "chars", "keywordChars", "plainChars", "keyword"),
     2: ("block", "tiers", "line1", "line2", "chars", "keywordChars", "plainChars", "keyword"),
+    4: ("block", "tiers", "line1", "line2", "line3", "line4", "chars", "keywordChars", "plainChars", "keyword"),
 }
 # 逐字位置：每个字一个单元，依次分享入场、出场进度；关键词逐字位置单列，它要求关键词 Preset 画宿主的 children。
 GLYPH_TARGETS = ("chars", "keywordChars", "plainChars")
@@ -289,7 +322,7 @@ TIER_STYLES = tuple(rule for tier in range(1, TIERS + 1) for rule in _tier_rules
 # 双栏各栏有自己的颜色、字重与字体，整段共用的这三个参数不再暴露；fontSize 仍是两栏共用的基准字号，宿主据此缩小长文字。
 SHARED_STYLES = ("color", "fontWeight", FONT_FAMILY.name)
 # 取值是字体库家族名的参数：保存时取消冻结的枚举，之后按实时字体库校验（`fonts.open_font_schema`、`fonts.require_family`）。
-FONT_PARAMETERS = (FONT_FAMILY.name, *(f"line{tier}FontFamily" for tier in range(1, TIERS + 1)))
+FONT_PARAMETERS = (FONT_FAMILY.name, *(f"line{tier}FontFamily" for tier in range(1, MAX_LINES + 1)))
 
 
 # 默认值未关闭的关键词参数的原因前缀；运营说明据此与缺少参数分开提示。
@@ -380,16 +413,18 @@ def category_problems(
     """列出某分类缺少、形状不符或默认值不合约定的必备参数；``bound`` 是作为顶层参数暴露的名称，``defaults`` 是默认参数。
 
     ``fonts`` 是字体库里的家族名：生成路径传入时，字效还必须暴露 `fontFamily` 枚举（取值都在字体库里），默认值是枚举之一；
-    多行字效在生成路径必须恰好两栏，并以每栏固定的颜色、字号比例、字体与字重（`TIER_STYLES`）代替整段共用的
+    多行字效在生成路径为两行或四行双语，并以每行固定的颜色、字号比例、字体与字重代替整段共用的
     颜色、字重与字体；画了关键词字效的字效必须暴露默认开启的 `keywordEffect` 开关，文字颜色还必须不透明（透明由带可调
     数字参数的 `role=effect` 特效实现）。``requested`` 是新会话里用户打开的
-    开关（`two_tier`、`keyword_effect`），生成路径据此要求双栏或关键词字效。发布更早的版本时都不传，不要求这些参数；
-    多行字效在两条路径上都不要求整段共用的颜色与字重。
+    开关（`two_tier`、`keyword_effect`、`bilingual`），生成路径据此要求双栏、关键词字效或双语字效。发布更早的版本时都不传，
+    不要求这些参数；多行字效在两条路径上都不要求整段共用的颜色与字重。
     """
     if kind not in REQUIRED:
         return [Problem("kind", None, f"kind must be one of {', '.join(KINDS)}")]
     properties = _properties(schema)
     tiered = kind == "text" and LINE_STARTS_PROP in bound
+    # 双语字效：下栏是中文那一句的英文，英文以 `textEn` 单独注入，所以它必须同时是双栏。
+    bilingual_sprite = kind == "text" and BILINGUAL_PROP in bound
     problems = []
     for rule in REQUIRED[kind]:
         if tiered and rule.name in SHARED_STYLES:
@@ -403,10 +438,24 @@ def category_problems(
     if kind == "text" and fonts is not None:
         problems += _tier_problems(properties, bound, defaults, fonts) if tiered else _font_problems(FONT_FAMILY, properties, bound, defaults, fonts)
         problems += _keyword_effect_problems(properties, bound, defaults, "keyword_effect" in requested)
-        problems += _opaque_colours(defaults, ("line1Color", "line2Color") if tiered else ("color",))
+        problems += _opaque_colours(defaults, tuple(f"line{i}Color" for i in range(1, line_count(schema) + 1)) if tiered else ("color",))
+        if {"two_tier", "bilingual"} <= set(requested) and (not bilingual_sprite or line_count(schema) != 4):
+            problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, "双栏 + 双语字幕 requires two bilingual groups (four tiers: Chinese, English, Chinese, English); do not omit the second group"))
         if "two_tier" in requested and not tiered:
             problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, "missing: the user switched on 双栏 (original_request.two_tier), so make a two-tier "
                                     f"text whose default text has exactly {TIERS} lines and bind {LINE_STARTS_PROP}, {LINE_GAP_PROP} and the tier parameters"))
+        if "bilingual" in requested and not bilingual_sprite:
+            problems.append(Problem(BILINGUAL_PROP, BILINGUAL, "missing: the user switched on 双语字幕 (original_request.bilingual), so make a two-tier "
+                                    f"text whose upper tier is the Chinese line and whose lower tier is its English translation (default text "
+                                    f"\"<Chinese>\\n<English>\"), and bind {BILINGUAL_PROP} (the English line the bus injects), {LINE_STARTS_PROP}, "
+                                    f"{LINE_GAP_PROP} and the tier parameters"))
+        if bilingual_sprite and not tiered:
+            problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, "missing: a bilingual text (双语字幕) is a two-tier text whose lower tier shows the "
+                                    f"English line, so bind {LINE_STARTS_PROP} (minItems and maxItems {TIERS}), {LINE_GAP_PROP} and the tier parameters"))
+    if bilingual_sprite and tiered:
+        definition = properties.get(BILINGUAL_PROP)
+        if not isinstance(definition, dict) or not BILINGUAL.accepts(definition):
+            problems.append(Problem(BILINGUAL_PROP, BILINGUAL, "has the wrong schema"))
     if tiered:
         problems += _line_problems(properties, bound, defaults)
     elif kind == "text" and isinstance(defaults.get("text"), str) and "\n" in defaults["text"]:
@@ -454,13 +503,16 @@ def _keyword_effect_problems(properties: dict, bound: set[str], defaults: dict, 
 
 
 def _tier_problems(properties: dict, bound: set[str], defaults: dict, fonts: Collection[str]) -> list[Problem]:
-    """双栏字效（生成路径）：恰好两栏，每栏的固定样式参数齐全且形状正确，不暴露整段共用的颜色、字重与字体。"""
+    """生成的普通双栏为两行，双语为两行或四行；每行固定样式参数齐全，不暴露整段共用的颜色、字重与字体。"""
     problems = []
     definition = properties.get(LINE_STARTS_PROP)
-    if isinstance(definition, dict) and _line_starts(definition) and definition["maxItems"] != TIERS:
+    count = line_count({"properties": properties})
+    allowed = (2, 4) if BILINGUAL_PROP in bound else (2,)
+    if isinstance(definition, dict) and _line_starts(definition) and count not in allowed:
         problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, f"has {definition['maxItems']} lines: a multi-line text is a two-tier text (双栏) "
                                 f"with exactly {TIERS} lines, minItems and maxItems both {TIERS}; put any further text into one of the two tiers"))
-    for rule in TIER_STYLES:
+    rules = (*TIER_STYLES, *(_tier_rules(3) + _tier_rules(4) if count == 4 and BILINGUAL_PROP in bound else ()))
+    for rule in rules:
         if rule.name in FONT_PARAMETERS:
             problems += _font_problems(rule, properties, bound, defaults, fonts)
         elif rule.name not in bound or rule.name not in properties:
@@ -476,7 +528,7 @@ def _tier_problems(properties: dict, bound: set[str], defaults: dict, fonts: Col
 
 def _line_problems(properties: dict, bound: set[str], defaults: dict) -> list[Problem]:
     """多行字效的行起点与行间距：默认文字恰好 N 个非空行，默认行起点首项为 0 且不递减，预览才能逐行显示每一行；
-    行间距必须作为顶层参数暴露。"""
+    行间距必须作为顶层参数暴露。双语字效的两栏是同一句的中文与英文，默认值分别是单行的 `text` 与 `textEn`。"""
     problems = []
     if LINE_GAP_PROP not in bound or LINE_GAP_PROP not in properties:
         problems.append(Problem(LINE_GAP_PROP, LINE_GAP, "missing"))
@@ -493,6 +545,20 @@ def _line_problems(properties: dict, bound: set[str], defaults: dict) -> list[Pr
         and all(left <= right for left, right in zip(starts, starts[1:]))
     ):
         problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, f"has the wrong default: {count} non-decreasing frames starting at 0"))
+    if BILINGUAL_PROP in bound:
+        # 原文、译文各有 count / 2 行，按相同序号配对；四行资产的组内间距单独可调。
+        if count not in (2, 4):
+            problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, "a bilingual text needs two or four tiers"))
+        if count == 4:
+            if TRANSLATION_GAP_PROP not in bound or not TRANSLATION_GAP.accepts(properties.get(TRANSLATION_GAP_PROP, {})):
+                problems.append(Problem(TRANSLATION_GAP_PROP, TRANSLATION_GAP, "missing or has the wrong schema"))
+            if isinstance(starts, list) and len(starts) == 4 and (starts[0] != starts[1] or starts[2] != starts[3]):
+                problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, "each bilingual pair must start together, for example [0, 0, 30, 30]"))
+        for name, rule in (("text", REQUIRED["text"][0]), (BILINGUAL_PROP, BILINGUAL)):
+            value = defaults.get(name)
+            if not isinstance(value, str) or len(parts := value.split("\n")) != count // 2 or not all(part.strip() for part in parts):
+                problems.append(Problem(name, rule, f"has the wrong default: a bilingual text needs {count // 2} non-empty lines in each language, paired by line number"))
+        return problems
     text = defaults.get("text")
     if not isinstance(text, str) or len(lines := text.split("\n")) != count or not all(line.strip() for line in lines):
         problems.append(Problem("text", REQUIRED["text"][0], f"has the wrong default: a multi-line text defaults to {count} non-empty lines separated by \\n"))
@@ -515,8 +581,17 @@ def _same(value: object, expected: object) -> bool:
     return isinstance(value, bool) == isinstance(expected, bool) and value == expected
 
 
+def keyword_default_issues(values: dict) -> list[tuple[str, object]]:
+    """``values`` 里被改成非关闭值的关键词参数（名称与应有的关闭值）。
+
+    关键词样式由云端模板按摆放设置，字效的这七个参数必须默认关闭；生成之后的参数修订也据此拒绝，
+    否则会得到一个只能预览、无法保存到资产的版本。
+    """
+    return [(rule.name, rule.off) for rule in TEXT_KEYWORDS if rule.name in values and not _same(values[rule.name], rule.off)]
+
+
 def agent_message(kind: str | None, problems: list[Problem]) -> str:
-    """给 Agent 的英文说明：缺什么、应有的 Schema，以及如何在 sprite_compose 里绑定。"""
+    """给 Agent 的英文说明：缺什么、应有的 Schema、如何在 sprite_compose 里绑定，以及关键词默认值要怎么修复。"""
     lines = [f"The {kind} Sprite does not expose the category's required top-level parameters:"]
     for item in problems:
         example = f"; schema {item.rule.example}" if item.rule else ""
@@ -525,18 +600,28 @@ def agent_message(kind: str | None, problems: list[Problem]) -> str:
         'Bind each one with sprite_compose "parameters": [{"name": ..., "title": <Chinese label>, '
         '"targets": [{"instance_id": ..., "parameter": <Preset prop>}]}] after giving the Preset prop that schema.'
     )
+    if any(item.reason.startswith(DEFAULT_REASON) for item in problems):
+        # 修复旧字效：总线每次渲染都会传入关键词与六个样式，外观留在关键词 Preset 自己的样式参数里。
+        lines.append(
+            "Keyword options are content the bus passes on every render, so a Sprite must not default them on. To repair an older "
+            "effect, keep the keyword look in a keyword Preset's own style parameters (keywordEffect...) and give the keyword options "
+            'their off defaults in this Sprite\'s default parameters: keywords [], the four switches false, keywordColor "", keywordSize 0.'
+        )
     return "\n".join(lines)
 
 
 def operator_message(problems: list[Problem]) -> str:
-    """给运营的中文说明：缺少或形状不符的必备参数要在聊天中补充，默认值未关闭的关键词参数要在参数面板恢复。"""
+    """给运营的中文说明：缺少或形状不符的必备参数要在聊天中补充；默认值未关闭的关键词参数要在参数面板恢复并保存成新版本
+    （已封存的版本不能直接修改，历史预览是只读的）。"""
     shape = [f"{item.name}（{item.rule.label}）" for item in problems if item.rule is not None and not item.reason.startswith(DEFAULT_REASON)]
     on = [f"{item.name}（应为 {json.dumps(item.rule.off, ensure_ascii=False)}）" for item in problems if item.rule is not None and item.reason.startswith(DEFAULT_REASON)]
     messages = []
     if shape:
         messages.append(f"所选分类缺少或不符合必备参数：{'；'.join(shape)}。请在聊天中让 Agent 补充后再保存到资产")
     if on:
-        messages.append(f"关键词参数的默认值必须是关闭状态：{'；'.join(on)}。关键词样式由模板按摆放设置，请在参数面板把它们恢复为关闭后再保存到资产")
+        messages.append(f"关键词参数的默认值必须是关闭状态：{'；'.join(on)}。关键词样式由模板按摆放设置，已保存的版本不能直接修改："
+                        "请在参数面板把它们恢复为关闭并点击「保存配置」生成新版本，再保存到资产（预览历史版本时参数面板只读，请先回到最新版本）；"
+                        "也可以在聊天里让 Agent 重新生成一个关键词默认关闭的新版本")
     return "。".join(messages)
 
 

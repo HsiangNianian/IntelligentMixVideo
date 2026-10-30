@@ -265,3 +265,36 @@ test("多行字效逐行编辑文字，行起点不在参数面板显示", () =>
   expect(screen.getByRole("alert").textContent).toBe("请输入有效的标题文字（2 行都要填写）。");
   expect(screen.queryByText(/lineStartFrames|行起点/) === null).toBe(true);
 });
+
+// 场景：四行双语字效以两组中英分别编辑，修改第二组译文保留第一组，不显示四个中文输入框。
+test("双栏双语参数保留两组中英文字", () => {
+  const version = textBlockVersion();
+  version.spec.sprite!.text = { tiers: ["upper", "upperEn", "lower", "lowerEn"], bilingual: true, effects: [] };
+  Object.assign(version.candidate.config_schema.properties, {
+    text: { type: "string", title: "文字", minLength: 1, maxLength: 100 },
+    textEn: { type: "string", title: "英文文字", minLength: 1, maxLength: 100 },
+    lineStartFrames: { type: "array", items: { type: "integer" }, minItems: 4, maxItems: 4 },
+  });
+  const changes: [string, JsonValue][] = [];
+  const values = { ...version.candidate.default_config, text: "做清洁不是因为妆\n而是因为脏", textEn: "First\nSecond", lineStartFrames: [0, 0, 15, 15] };
+  render(<ParametersPanel version={version} values={values} disabled={false} pending={false} dirty={false} saving={false}
+    onChange={(key, value) => changes.push([key, value])} onSave={() => {}} onDiscard={() => {}} />);
+  expect(screen.getByLabelText<HTMLInputElement>("文字第 2 行").value).toBe("而是因为脏");
+  expect(screen.queryByLabelText("文字第 3 行")).toBeNull();
+  fireEvent.change(screen.getByLabelText("英文文字第 2 行"), { target: { value: "New second" } });
+  expect(changes).toEqual([["textEn", "First\nNew second"]]);
+});
+
+// 场景：四行双语字效的特效位置必须按“第一组/第二组”显示，不能把第 3、4 行误标成同一栏的中英文。
+test("四行双语字效的作用位置显示两组中英文", () => {
+  const version = textBlockVersion();
+  version.spec.sprite!.text = { tiers: ["upper", "upperEn", "lower", "lowerEn"], bilingual: true, effects: [{ instance_id: "shine", title: "发光" }] };
+  version.candidate.config_schema.properties.effect1Target = {
+    type: "string", title: "发光位置", enum: ["block", "tiers", "line1", "line2", "line3", "line4"],
+  };
+  const values = { ...version.candidate.default_config, effect1Target: "line3" };
+  render(<ParametersPanel version={version} values={values} disabled={false} pending={false} dirty={false} saving={false}
+    onChange={() => {}} onSave={() => {}} onDiscard={() => {}} />);
+  const shine = within(screen.getByRole("group", { name: "特效" })).getByRole("region", { name: "持续·发光" });
+  expect(within(shine).getByLabelText("发光位置").textContent).toBe("第二组中文");
+});

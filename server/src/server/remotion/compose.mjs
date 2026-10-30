@@ -3,7 +3,8 @@
  * The Agent times instances against the length the user previewed; the generated host lays them out against the
  * length it is actually rendered at (`useVideoConfig().durationInFrames`, set by the render request's time).
  * A text effect's text block (`input.text`) is laid out by the host instead: it splits `text` into one tier or an
- * upper and a lower tier, cuts each tier at the keyword hits, stacks the tiers in one column of the block and hands
+ * upper and a lower tier (a bilingual block takes the upper tier from `text` and the lower one from `textEn`), cuts
+ * each tier at the keyword hits, stacks the tiers in one column of the block and hands
  * each tier to its text Preset, keyword hits to the keyword Preset, and wraps the block, the tiers and the keyword
  * hits in the effect Presets bound there (see `textEntry`). It writes `{code, children, keyword_children}`: the Sprite
  * source, for each tier whether its text Preset takes the host-rendered line as `children`, and whether the keyword
@@ -57,8 +58,11 @@ const prelude = [
  * The host of a text block. Configuration comes from top-level props with fixed names: `text` (tiers split on \n),
  * `fontSize`, one tier's `fontFamily`/`fontWeight` or each tier's `line{i}FontFamily`/`line{i}FontWeight`/
  * `line{i}SizeRatio`, `lineGap`, `lineStartFrames`, the keyword list with its six IMS styles and `keywordEffect`.
- * The first literal hit of each keyword in the whole text (earliest first, never overlapping) becomes a keyword
- * segment; the host wraps it in the IMS styles and draws it with the keyword Preset while `keywordEffect` is on.
+ * A bilingual block (双语字幕, `block.bilingual`) takes its two lines from `text` (the Chinese line) and `textEn` (the
+ * English translation of it) instead of splitting `text`: the host injects both languages, so one effect shows the
+ * same sentence in Chinese above and in English below. The first literal hit of each keyword in a line (earliest
+ * first, never overlapping, per line) becomes a keyword segment; the host wraps it in the IMS styles and draws it
+ * with the keyword Preset while `keywordEffect` is on.
  * Tier i stays at its first frame, invisible but keeping its space, until `lineStartFrames[i]`, then plays from there.
  * Two tiers are stacked `lineGap` apart, or, with `tierLayout` "overlap", share one grid cell, centred on each other
  * with the lower tier drawn over the upper one. The element around each tier carries the tier's font size, so an effect
@@ -97,6 +101,10 @@ const prelude = [
  */
 function textEntry() {
   const tiers = block.tiers.length;
+  // 双语字效（双语字幕）：上栏是 `text` 的中文、下栏是 `textEn` 里同一句的英文，合成与模板按摆放注入两种语言。
+  const bilingual = block.bilingual === true;
+  // Four rows form two bilingual groups; each group keeps its own alignment, styles and shared start.
+  const paired = bilingual && tiers === 4;
   const keyword = block.keyword ? modules.indexOf(block.keyword.code) : -1;
   const effect = block.keyword ? `{...props[${JSON.stringify(block.keyword.instance_id)}], ...${boundProps(block.keyword)}}` : "{}";
   const effects = (block.effects ?? []).map((item, index) => {
@@ -116,14 +124,17 @@ function textEntry() {
       : `fontFamily: props.line${index + 1}FontFamily, fontWeight: props.line${index + 1}FontWeight, fontSize: ${size}`;
     const start = tiers === 1 ? "0" : `(Array.isArray(props.lineStartFrames) && Number.isFinite(props.lineStartFrames[${index}]) ? props.lineStartFrames[${index}] : 0)`;
     // A Preset that takes `children` is handed the host's line; the others draw the segments themselves.
-    const line = children[index] ? `{__line(__segments(__lineText, __offsets[${index}], __found), __glyphs)}` : "";
+    const line = children[index] ? `{__line(__segments(__lineText, __found[${index}]), __glyphs)}` : "";
     return `(() => { const __lineText = __lines[${index}]; if (!__lineText) return null; const __start = ${start}; const __waiting = __frame < __start; `
       // A negative `lineGap` pulls a lower tier up over the upper one; CSS `gap` cannot be negative, so the spacing is a margin.
-      + `return <div key={${JSON.stringify(item.instance_id)}} style={{width: "100%", gridArea: __overlap ? "1 / 1" : undefined, marginTop: ${index === 0 ? 0 : "__overlap ? 0 : props.lineGap"}, fontSize: ${size}, opacity: __waiting ? 0 : 1}}>`
+      + `return <div key={${JSON.stringify(item.instance_id)}} data-imv-tier={${index}} style={{width: "100%", gridArea: ${paired ? "undefined" : '__overlap ? "1 / 1" : undefined'}, marginTop: ${paired ? (index % 2 ? "props.translationGap" : 0) : index === 0 ? 0 : "__overlap ? 0 : props.lineGap"}, fontSize: ${size}, opacity: __waiting ? 0 : 1}}>`
       + `<Freeze frame={__start} active={__waiting}><Sequence from={__start} durationInFrames={Math.max(1, __total - __start)} layout="none"><__Origin.Provider value={__start}>`
-      + `<__Effects at={${at(index)}} index={${index}} count={${tiers}}>${hold(`<Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]}${bound(item)} {...{text: __lineText, segments: __segments(__lineText, __offsets[${index}], __found), Keyword: __Keyword, ${font}}}>${line}</Preset${modules.indexOf(item.code)}>`)}</__Effects>`
+      + `<__Effects at={${at(index)}} index={${index}} count={${tiers}}>${hold(`<Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]}${bound(item)} {...{text: __lineText, segments: __segments(__lineText, __found[${index}]), Keyword: __Keyword, ${font}}}>${line}</Preset${modules.indexOf(item.code)}>`)}</__Effects>`
       + `</__Origin.Provider></Sequence></Freeze></div>; })()`;
   };
+  // Stack or overlap whole bilingual groups, keeping each translation directly under its own Chinese line.
+  const content = paired ? [0, 2].map((start) => `{(__lines[${start}] || __lines[${start + 1}]) && <div data-imv-group={${start / 2}} style={{width: "100%", gridArea: __overlap ? "1 / 1" : undefined, marginTop: ${start ? "__overlap ? 0 : props.lineGap" : 0}}}>{${tier(block.tiers[start], start)}}{${tier(block.tiers[start + 1], start + 1)}}</div>}`).join("")
+    : block.tiers.map((item, index) => `{${tier(item, index)}}`).join("");
   const { x, y, width, height } = block.layout;
   return [
     'import React from "react";',
@@ -143,7 +154,7 @@ function textEntry() {
     'breathing: ({children, Box, amplitude}) => { const __f = useCurrentFrame(); const __s = 1 + (amplitude ?? 0.04) * Math.sin(__f / 8); return <Box style={{display: "inline-block", transform: "scale(" + __s + ")"}}>{children}</Box>; },',
     '};',
     `const __hits = (text, keywords) => { const hits = []; for (const word of Array.isArray(keywords) ? keywords : []) { if (typeof word !== "string" || !word) continue; for (let at = text.indexOf(word); at >= 0; at = text.indexOf(word, at + 1)) { if (!hits.some(([start, end]) => at < end && at + word.length > start)) { hits.push([at, at + word.length]); break; } } } return hits.sort((left, right) => left[0] - right[0]); };`,
-    `const __segments = (line, offset, hits) => { const out = []; let at = 0; for (const [start, end] of hits) { const from = Math.max(start - offset, at), to = Math.min(end - offset, line.length); if (to <= from) continue; if (from > at) out.push({text: line.slice(at, from), keyword: false}); out.push({text: line.slice(from, to), keyword: true}); at = to; } if (at < line.length) out.push({text: line.slice(at), keyword: false}); return out; };`,
+    `const __segments = (line, hits) => { const out = []; let at = 0; for (const [start, end] of hits) { const from = Math.max(start, at), to = Math.min(end, line.length); if (to <= from) continue; if (from > at) out.push({text: line.slice(at, from), keyword: false}); out.push({text: line.slice(from, to), keyword: true}); at = to; } if (at < line.length) out.push({text: line.slice(at), keyword: false}); return out; };`,
     `const __Context = React.createContext({props: {}, effect: {}, cue: null});`,
     // The frame the position's own frames count from: its tier's start, 0 for the block.
     `const __Origin = React.createContext(0);`,
@@ -189,12 +200,14 @@ function textEntry() {
     `function __Keyword({text, glyphs}) { const {props, effect} = React.useContext(__Context); const style = {fontWeight: props.keywordBold ? 700 : undefined, fontStyle: props.keywordItalic ? "italic" : undefined, textDecorationLine: [props.keywordUnderline && "underline", props.keywordStrikeout && "line-through"].filter(Boolean).join(" ") || undefined, color: props.keywordColor || undefined, fontSize: props.keywordSize > 0 ? props.keywordSize : undefined}; const content = glyphs ?? text; const live = React.useContext(__Live); `
       + `const inner = <__Effects at={["keyword"]} inline>{${keyword >= 0 ? `props.keywordEffect !== false ? <Preset${keyword} {...effect} text={text}>${keywordChildren ? "{content}" : ""}</Preset${keyword}> : content` : "content"}}</__Effects>; return <span data-imv-keyword="" style={style}>{live === null ? inner : <Freeze frame={live}>{inner}</Freeze>}</span>; }`,
     `export default function Sprite(inputProps = {}) { const props = __merge(__defaults, inputProps); const __frame = useCurrentFrame(); const {durationInFrames: __total} = useVideoConfig(); `
-      + `const __glyphs = __glyphsOn(props); const __text = typeof props.text === "string" ? props.text : ""; const __lines = ${tiers === 1 ? "[__text]" : "__text.split(\"\\n\").slice(0, 2)"}; const __offsets = __lines.map((_, index) => __lines.slice(0, index).reduce((sum, line) => sum + line.length + 1, 0)); const __found = __hits(__text, props.keywords); `
+      + `const __glyphs = __glyphsOn(props); const __text = typeof props.text === "string" ? props.text : ""; const __english = typeof props.textEn === "string" ? props.textEn : ""; const __lines = ${paired ? '[0, 1].flatMap(i => [__text.split("\\n")[i] || "", __english.split("\\n")[i] || ""])' : bilingual ? "[__text, __english]" : tiers === 1 ? "[__text]" : "__text.split(\"\\n\").slice(0, 2)"}; `
+      // 每行自己的关键词命中：双语字效的两行是两种语言，互不重叠。
+      + `const __found = __lines.map((line) => __hits(line, props.keywords)); `
       // The block frame the lower tier appears at, for cue effects; none while the lower tier has no text.
-      + `const __overlap = __lines.length > 1 && props.tierLayout === "overlap"; const __cue = __lines[1] ? (Array.isArray(props.lineStartFrames) && Number.isFinite(props.lineStartFrames[1]) ? props.lineStartFrames[1] : 0) : null; `
+      + `const __overlap = __lines.length > 1 && props.tierLayout === "overlap"; const __cue = __lines[${paired ? 2 : 1}] ? (Array.isArray(props.lineStartFrames) && Number.isFinite(props.lineStartFrames[${paired ? 2 : 1}]) ? props.lineStartFrames[${paired ? 2 : 1}] : 0) : null; `
       + `return <__Context.Provider value={{props, effect: ${effect}, cue: __cue}}><AbsoluteFill><div data-imv-instance="text" style={{position: "absolute", left: ${x}, top: ${y}, width: ${width}, height: ${height}, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center"}}>`
       + `<__Effects at={["block"]}><div style={__overlap ? {width: "100%", display: "grid", alignItems: "center", justifyItems: "center"} : {width: "100%", display: "flex", flexDirection: "column", alignItems: "center"}}>`
-      + `${block.tiers.map((item, index) => `{${tier(item, index)}}`).join("")}</div></__Effects></div></AbsoluteFill></__Context.Provider>; }`,
+      + `${content}</div></__Effects></div></AbsoluteFill></__Context.Provider>; }`,
   ].join("\n");
 }
 

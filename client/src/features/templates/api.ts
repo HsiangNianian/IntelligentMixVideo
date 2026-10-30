@@ -11,6 +11,7 @@ import {
   SaveTemplateResponseSchema,
   SplitScreenSchema,
   AvatarEffectsSchema,
+  FrameMaskSchema,
   type TemplateRecord,
 } from "@/generated/imv/template/v1/template_pb";
 import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
@@ -19,6 +20,7 @@ import { BOUND_TEXT_PARAMETERS, validateClipSlots } from "./clips";
 import { validateFrameMask, type FrameMask } from "./frameMask";
 import { defaultSplitScreen, validateSplitScreen, type SplitScreen } from "./splitScreen";
 import { defaultAvatarEffects, validateAvatarEffects, type AvatarEffects } from "./avatarEffects";
+import { defaultAvatarPreview, validateAvatarPreview } from "./avatarPreview";
 
 /** 还原现有模板视图的字段名称、可空时长及 UTC 时间；`remotion` 轨道拆成独立的片段列表，不进入 IMS 对象。 */
 function toTemplate(record: TemplateRecord): Template {
@@ -34,10 +36,8 @@ function toTemplate(record: TemplateRecord): Template {
     transition_duration_seconds: record.transitionDurationSeconds,
     transition_mode: record.transitionMode as Draft["transition_mode"],
     transition_enabled: record.transitionEnabled ?? true,
-    ...(record.frameMask ? { frame_mask: validateFrameMask({
-      top: { enabled: record.frameMask.top?.enabled, height: record.frameMask.top?.height, color: record.frameMask.top?.color },
-      bottom: { enabled: record.frameMask.bottom?.enabled, height: record.frameMask.bottom?.height, color: record.frameMask.bottom?.color },
-    } as FrameMask) } : {}),
+    ...(record.avatarPreview ? { avatar_preview: validateAvatarPreview({ x: record.avatarPreview.x ?? defaultAvatarPreview.x, y: record.avatarPreview.y ?? defaultAvatarPreview.y, source: record.avatarPreview.source ?? defaultAvatarPreview.source }) } : {}),
+    ...(record.frameMask ? { frame_mask: validateFrameMask(toJson(FrameMaskSchema, record.frameMask) as unknown as FrameMask) } : {}),
     ...(record.avatarEffects ? { avatar_effects: (() => {
       const value = { ...defaultAvatarEffects(), ...toJson(AvatarEffectsSchema, record.avatarEffects) as Partial<AvatarEffects> };
       validateAvatarEffects(value);
@@ -114,7 +114,7 @@ function toTemplate(record: TemplateRecord): Template {
 }
 
 /** 有界云端请求；读取可取消，写入失败由用户确认后重试。 */
-async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal, timeoutMessage = "请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。"): Promise<T> {
   const controller = new AbortController();
   let timedOut = false;
   const timeout = setTimeout(() => {
@@ -129,7 +129,7 @@ async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: Abor
   } catch (error) {
     if (signal?.aborted) throw error;
     if (timedOut)
-      throw new Error("请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。");
+      throw new Error(timeoutMessage);
     if (error instanceof TypeError)
       throw new Error("无法连接服务端，请确认 API 已启动后重试。");
     throw error;
@@ -140,14 +140,14 @@ async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: Abor
 }
 
 /** 在现有模板路由发送请求，并将 HTTP 错误转换为编辑器可显示的消息。 */
-async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE", signal: AbortSignal, body?: Uint8Array): Promise<Response> {
+async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE", signal: AbortSignal, body?: Uint8Array | FormData): Promise<Response> {
   const response = await fetch(`${apiBase()}${path}`, {
     method,
     headers: {
       Accept: "application/json",
-      ...(body ? { "Content-Type": "application/x-protobuf" } : {}),
+      ...(body instanceof Uint8Array ? { "Content-Type": "application/x-protobuf" } : {}),
     },
-    body: body ? Uint8Array.from(body) : undefined,
+    body: body instanceof Uint8Array ? Uint8Array.from(body) : body,
     signal,
   });
   if (!response.ok) {
@@ -221,6 +221,7 @@ export async function saveTemplate(draft: Draft, id?: string, baselineHadMask = 
   if (draft.frame_mask) validateFrameMask(draft.frame_mask);
   if (draft.split_screen) validateSplitScreen(draft.split_screen);
   if (draft.avatar_effects) validateAvatarEffects(draft.avatar_effects);
+  if (draft.avatar_preview) validateAvatarPreview(draft.avatar_preview);
   for (const target of ["title", "subtitle"])
     if (draft.tracks.filter((track) => track.target === target && track.language !== "en").length !== 1)
       throw new Error("保存模板需要标题和底部字幕各一个");
@@ -233,9 +234,13 @@ export async function saveTemplate(draft: Draft, id?: string, baselineHadMask = 
     transitionMode: draft.transition_mode ?? "sequence",
     transitionEnabled: draft.transition_enabled ?? true,
     // 只有保存基线带蒙版、当前草稿已移除时才发送空消息；普通无蒙版保存仍兼容旧服务端。
-    frameMask: draft.frame_mask ?? (baselineHadMask ? {} : undefined),
+    frameMask: draft.frame_mask ? {
+      top: { ...draft.frame_mask.top, imageId: draft.frame_mask.top.imageId ?? "" },
+      bottom: { ...draft.frame_mask.bottom, imageId: draft.frame_mask.bottom.imageId ?? "" },
+    } : (baselineHadMask ? {} : undefined),
     splitScreen: draft.split_screen,
     avatarEffects: draft.avatar_effects,
+    avatarPreview: draft.avatar_preview,
     tracks: {
       tracks: [
         ...draft.tracks.map((track) => ({
@@ -280,4 +285,26 @@ export function deleteTemplate(id: string): Promise<void> {
   return cloud(async (requestSignal) => {
     await cloudRequest(`/template/${encodeURIComponent(id)}`, "DELETE", requestSignal);
   });
+}
+
+/** 静态图片由服务端统一校验；成功才返回可长期保存的内容引用。 */
+export function uploadFrameMaskImage(file: File, signal: AbortSignal): Promise<string> {
+  return cloud(async (requestSignal) => {
+    const body = new FormData();
+    body.append("file", file);
+    const response = await cloudRequest("/template/frame-mask-images", "POST", requestSignal, body);
+    const result = await response.json() as { imageId?: unknown };
+    if (typeof result.imageId !== "string" || !/^[a-f0-9]{64}$/.test(result.imageId)) throw new Error("图片上传响应无效");
+    return result.imageId;
+  }, signal, "图片上传超时，原效果已保留，请重试。");
+}
+
+/** 缩略图与预览共用固定服务端图片路由，不持久化临时 blob 地址。 */
+export function frameMaskImageUrl(imageId: string): string {
+  return `${apiBase()}/template/frame-mask-images/${encodeURIComponent(imageId)}`;
+}
+
+/** 有界、可取消地读取图片；blob 由预览组件负责解码及释放。 */
+export function readFrameMaskImage(imageId: string, signal: AbortSignal): Promise<Blob> {
+  return cloud(async (requestSignal) => (await cloudRequest(`/template/frame-mask-images/${encodeURIComponent(imageId)}`, "GET", requestSignal)).blob(), signal, "蒙版图片读取超时，请刷新预览重试。");
 }

@@ -114,7 +114,9 @@ test.each(["overlay", "circle"] as const)("%s 的 SDK 与基础预览一致使�
   if (mode === "circle") {
     expect(clip.Width! * 1080).toBe(clip.Height! * 1920);
     const mask = new URL(clip.MaskVideoURL!);
-    expect(Number(mask.searchParams.get("radius")) * 2).toBe(Number(mask.searchParams.get("box_width")));
+    expect(mask.pathname).toBe("/template/preview-circle-mask");
+    expect(Number(mask.searchParams.get("radius"))).toBe(0.2);
+    expect(clip.Effects.some((effect) => effect.Type === "Crop")).toBe(true);
   } else expect(clip.MaskVideoURL).toBeUndefined();
   const ref = createRef<PlaybackHandle>();
   render(<BasicVideoPreview ref={ref} media={media} resolved={resolved} order={[0, 1, 2]} layout={layout} avatarSource={1}

@@ -270,15 +270,31 @@ class AvatarEffects(_message.Message):
     remove_background: bool
     def __init__(self, opening_enabled: _Optional[bool] = ..., opening_duration: _Optional[float] = ..., circle_scale: _Optional[float] = ..., feather: _Optional[float] = ..., remove_background: _Optional[bool] = ...) -> None: ...
 
+class FrameMaskGradient(_message.Message):
+    __slots__ = ("enabled", "end_color", "direction", "range")
+    ENABLED_FIELD_NUMBER: _ClassVar[int]
+    END_COLOR_FIELD_NUMBER: _ClassVar[int]
+    DIRECTION_FIELD_NUMBER: _ClassVar[int]
+    RANGE_FIELD_NUMBER: _ClassVar[int]
+    enabled: bool
+    end_color: str
+    direction: str
+    range: int
+    def __init__(self, enabled: _Optional[bool] = ..., end_color: _Optional[str] = ..., direction: _Optional[str] = ..., range: _Optional[int] = ...) -> None: ...
+
 class FrameMaskBar(_message.Message):
-    __slots__ = ("enabled", "height", "color")
+    __slots__ = ("enabled", "height", "color", "gradient", "image_id")
     ENABLED_FIELD_NUMBER: _ClassVar[int]
     HEIGHT_FIELD_NUMBER: _ClassVar[int]
     COLOR_FIELD_NUMBER: _ClassVar[int]
+    GRADIENT_FIELD_NUMBER: _ClassVar[int]
+    IMAGE_ID_FIELD_NUMBER: _ClassVar[int]
     enabled: bool
     height: float
     color: str
-    def __init__(self, enabled: _Optional[bool] = ..., height: _Optional[float] = ..., color: _Optional[str] = ...) -> None: ...
+    gradient: FrameMaskGradient
+    image_id: str
+    def __init__(self, enabled: _Optional[bool] = ..., height: _Optional[float] = ..., color: _Optional[str] = ..., gradient: _Optional[_Union[FrameMaskGradient, _Mapping]] = ..., image_id: _Optional[str] = ...) -> None: ...
 
 class FrameMask(_message.Message):
     __slots__ = ("top", "bottom")
@@ -288,8 +304,18 @@ class FrameMask(_message.Message):
     bottom: FrameMaskBar
     def __init__(self, top: _Optional[_Union[FrameMaskBar, _Mapping]] = ..., bottom: _Optional[_Union[FrameMaskBar, _Mapping]] = ...) -> None: ...
 
+class AvatarPreview(_message.Message):
+    __slots__ = ("x", "y", "source")
+    X_FIELD_NUMBER: _ClassVar[int]
+    Y_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    x: float
+    y: float
+    source: int
+    def __init__(self, x: _Optional[float] = ..., y: _Optional[float] = ..., source: _Optional[int] = ...) -> None: ...
+
 class SaveTemplateRequest(_message.Message):
-    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "transition_mode", "transition_enabled", "split_screen", "avatar_effects", "frame_mask")
+    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "transition_mode", "transition_enabled", "split_screen", "avatar_effects", "frame_mask", "avatar_preview")
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     EFFECT_IDS_FIELD_NUMBER: _ClassVar[int]
@@ -301,6 +327,7 @@ class SaveTemplateRequest(_message.Message):
     SPLIT_SCREEN_FIELD_NUMBER: _ClassVar[int]
     AVATAR_EFFECTS_FIELD_NUMBER: _ClassVar[int]
     FRAME_MASK_FIELD_NUMBER: _ClassVar[int]
+    AVATAR_PREVIEW_FIELD_NUMBER: _ClassVar[int]
     name: str
     description: str
     effect_ids: _containers.RepeatedScalarFieldContainer[str]
@@ -312,10 +339,11 @@ class SaveTemplateRequest(_message.Message):
     split_screen: SplitScreen
     avatar_effects: AvatarEffects
     frame_mask: FrameMask
-    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ..., frame_mask: _Optional[_Union[FrameMask, _Mapping]] = ...) -> None: ...
+    avatar_preview: AvatarPreview
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ..., frame_mask: _Optional[_Union[FrameMask, _Mapping]] = ..., avatar_preview: _Optional[_Union[AvatarPreview, _Mapping]] = ...) -> None: ...
 
 class TemplateRecord(_message.Message):
-    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "effects", "created_at", "updated_at", "transition_mode", "transition_enabled", "split_screen", "avatar_effects", "frame_mask")
+    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "effects", "created_at", "updated_at", "transition_mode", "transition_enabled", "split_screen", "avatar_effects", "frame_mask", "avatar_preview")
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     EFFECT_IDS_FIELD_NUMBER: _ClassVar[int]
@@ -330,6 +358,7 @@ class TemplateRecord(_message.Message):
     SPLIT_SCREEN_FIELD_NUMBER: _ClassVar[int]
     AVATAR_EFFECTS_FIELD_NUMBER: _ClassVar[int]
     FRAME_MASK_FIELD_NUMBER: _ClassVar[int]
+    AVATAR_PREVIEW_FIELD_NUMBER: _ClassVar[int]
     name: str
     description: str
     effect_ids: _containers.RepeatedScalarFieldContainer[str]
@@ -344,7 +373,8 @@ class TemplateRecord(_message.Message):
     split_screen: SplitScreen
     avatar_effects: AvatarEffects
     frame_mask: FrameMask
-    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., effects: _Optional[_Iterable[_Union[EffectAsset, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ..., frame_mask: _Optional[_Union[FrameMask, _Mapping]] = ...) -> None: ...
+    avatar_preview: AvatarPreview
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., effects: _Optional[_Iterable[_Union[EffectAsset, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ..., frame_mask: _Optional[_Union[FrameMask, _Mapping]] = ..., avatar_preview: _Optional[_Union[AvatarPreview, _Mapping]] = ...) -> None: ...
 
 class TemplateSummary(_message.Message):
     __slots__ = ("template_id", "name", "description", "created_at", "updated_at", "title", "subtitle", "track_count", "validation_error")

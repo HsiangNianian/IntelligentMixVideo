@@ -1,11 +1,14 @@
 """由业务快照生成 IMS Timeline；纯素材按序裁尾，标题沿用模板区间，字幕使用切片正文与时间。"""
 
+import json
 from math import floor
+from typing import Literal
 
 from pydantic import TypeAdapter
 
 from .text_events import subtitle_events
 from .transitions import keyword_transitions
+from ..remotion_templates.categories import bilingual as is_bilingual
 from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template, active_tracks
 from ..template.timing import ClipContext, TimelineContext, resolve_template, resolve_track
 from ..template.transitions import select_transitions
@@ -44,6 +47,17 @@ def format_subtitle_keyword(content: str, keyword: str, config: EffectTemplateEd
     return format_keyword(content, keyword, config, "subtitle")
 
 
+def _bilingual_asset(assets: dict, sprite_id) -> bool:
+    """该片段引用的字效是否是双语字效：声明了英文文字参数 `textEn`，同时显示中英两种语言。"""
+    published = assets.get(str(sprite_id))
+    if not isinstance(published, dict):
+        return False
+    try:
+        return is_bilingual(json.loads(published.get("config_schema_json") or "{}"))
+    except (TypeError, ValueError):
+        return False
+
+
 def format_keyword(content: str, keyword: str, config: EffectTemplateEditor, role: str) -> str:
     """为标题或字幕的首个匹配词语添加局部样式；标题缺少该词语时保留原文。"""
     color = getattr(config, f"{role}_keyword_color")
@@ -76,7 +90,7 @@ def build_timeline(
     frame_mask_url: str | None = None,
     split_assets: dict | None = None, avatar_opening: dict | None = None,
     use_keyword_transitions: bool = False, remotion_assets: dict | None = None,
-    use_transition_spacing: bool = False,
+    use_transition_spacing: bool | Literal["ordered"] = False,
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
     request = CompositionRequest.from_snapshot(request)
@@ -261,14 +275,19 @@ def build_timeline(
     effects = []
     # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验；
     # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。
+    # 双语字效（双语字幕）自己显示中英两种语言，它所作用对象的英文文字也不交给 IMS。
     remotion_texts = {(track.text_target, track.language) for track in template.tracks if track.text_target is not None}
+    remotion_texts |= {(track.text_target, "en") for track in template.tracks
+                       if track.target == "remotion" and track.text_target is not None and track.language != "en"
+                       and _bilingual_asset(remotion_assets or {}, track.sprite_id)}
     tracks = [track for track in template.tracks if track.target != "remotion" and (track.target, track.language) not in remotion_texts]
     if not template.transition_enabled or layout:
         tracks = [track for track in tracks if track.target != "transition"]
     elif use_keyword_transitions or template.transition_mode is not None:
         selected = keyword_transitions(template.model_dump(mode="json"), clips, source, matches,
                                        standard=standard, fps=fps, seed=transition_seed, assets=remotion_assets or {},
-                                       duration=duration if use_transition_spacing else None) \
+                                       duration=duration if use_transition_spacing else None,
+                                       ordered=use_transition_spacing == "ordered") \
             if use_keyword_transitions else select_transitions(
                 [track.model_dump(mode="json") for track in template.tracks],
                 len(clips) - 1, template.transition_mode, transition_seed)

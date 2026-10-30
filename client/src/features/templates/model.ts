@@ -4,6 +4,7 @@ import type { ClipTransform } from "@/features/sprites/parameters";
 import type { FrameMask } from "./frameMask";
 import type { SplitScreen } from "./splitScreen";
 import type { AvatarEffects } from "./avatarEffects";
+import type { AvatarPreview } from "./avatarPreview";
 
 /** IMS Transition 与 DLTransition 的默认持续时间，单位为秒。 */
 export const defaultTransitionDuration = 1;
@@ -140,6 +141,8 @@ export interface Draft {
   frame_mask?: FrameMask;
   split_screen?: SplitScreen;
   avatar_effects?: AvatarEffects;
+  /** 只供编辑器恢复取景，服务端冻结合成模板时移除。 */
+  avatar_preview?: AvatarPreview;
   tracks: EffectTrack[];
   /** Remotion 片段不进入 IMS 效果与 SDK 预览，按分类占用文字对象、视频交界处或特效名额，随模板一并保存。 */
   clips: RemotionClip[];
@@ -192,6 +195,11 @@ export function englishEditor(editor: Editor, target: "title" | "subtitle"): Edi
   return { ...editor, [target]: target === "title" ? "Make every frame count" : "Give your story a new style",
     titleKeyword: "", [`${target}Size`]: Math.max(12, Math.round(editor[`${target}Size`] * 0.8)),
     [`${target}Y`]: Math.min(95, editor[`${target}Y`] + 6) };
+}
+
+/** 英文标题和字幕固定单行：即使字效是双栏，也只显示上栏一行（合成时同样只注入一行），示例文字里的换行按空格合并。 */
+export function singleRowText(text: string): string {
+  return text.split("\n").map((line) => line.trim()).filter(Boolean).join(" ");
 }
 
 /** 仅供展示使用；保存始终使用完整草稿，停用的英文及其资产绑定也保留。 */
@@ -254,6 +262,7 @@ export function toDraft(template: Template): Draft {
     ...(template.frame_mask ? { frame_mask: structuredClone(template.frame_mask) } : {}),
     ...(template.split_screen ? { split_screen: structuredClone(template.split_screen) } : {}),
     ...(template.avatar_effects ? { avatar_effects: { ...template.avatar_effects } } : {}),
+    ...(template.avatar_preview ? { avatar_preview: { ...template.avatar_preview } } : {}),
     tracks: structuredClone(template.tracks).map((track) => track.target === "transition" ? { ...track, duration: template.transition_duration_seconds } : track),
     clips: structuredClone(template.clips),
   };

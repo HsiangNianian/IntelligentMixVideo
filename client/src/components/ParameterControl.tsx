@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/select";
 
 /** 取值是字体库家族名的参数：字体，以及双栏字效的上栏、下栏字体；它们用实时字体库的选择器。 */
-const FONT_PARAMETER = /^(?:fontFamily|line[12]FontFamily)$/;
+const FONT_PARAMETER = /^(?:fontFamily|line[1-4]FontFamily)$/;
 /** 一个参数的取值：标量或关键词列表。 */
 export type ParameterValue = string | number | boolean | string[];
 /** 控件所需的参数描述，由版本 Schema 或已发布资产的参数声明生成。 */
@@ -51,6 +51,8 @@ const OPTION_LABELS: Record<string, string> = {
   tiers: "各栏",
   line1: "上栏",
   line2: "下栏",
+  line3: "第二组中文",
+  line4: "第二组英文",
   chars: "逐字",
   keywordChars: "关键词逐字",
   plainChars: "非关键词逐字",
@@ -184,7 +186,9 @@ export function ParameterControl({
           <SelectContent>
             {field.options.map((option) => (
               <SelectItem key={String(option)} value={String(option)}>
-                {OPTION_LABELS[String(option)] ?? String(option)}
+                {field.options?.includes("line4") && String(option).startsWith("line")
+                  ? ["第一组中文", "第一组英文", "第二组中文", "第二组英文"][Number(String(option).slice(4)) - 1]
+                  : OPTION_LABELS[String(option)] ?? String(option)}
               </SelectItem>
             ))}
           </SelectContent>

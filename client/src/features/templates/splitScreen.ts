@@ -20,7 +20,7 @@ export interface SplitScreen {
   subtitleEn: ScreenPoint;
 }
 
-/** 每份草稿持有独立对象；数字人来源仅是本机预览选择，不属于模板。 */
+/** 每份草稿持有独立同屏配置；数字人预览来源另存于 avatar_preview。 */
 export function defaultSplitScreen(): SplitScreen {
   return {
     enabled: false, layout: "split", backgroundColor: "#000000",
@@ -46,7 +46,7 @@ export function validateSplitScreen(value: SplitScreen): void {
   }
 }
 
-/** SDK 和基础播放器共用布局几何；圆形仅示意居中裁切，真实头部位置在合成时检测。 */
+/** SDK 和基础播放器共用摆放几何；圆形取景另由 avatarPreview 计算，成片由服务端定位头部。 */
 export function previewRect(layout: SplitScreen, role: "material" | "avatar", source: { width: number; height: number }) {
   if (role === "material" && layout.layout !== "split") return { x: 0, y: 0, width: 1080, height: 1920, radius: 0, border: 0 };
   if (role === "avatar" && layout.layout === "circle") {

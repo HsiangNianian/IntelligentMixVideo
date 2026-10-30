@@ -477,18 +477,17 @@ size and the fix: wrap the text inside a bounded width of about 90 % of the canv
 measurement it only applies to generation, and already published versions are not re-checked.
 
 A text effect can show a fixed number of lines (2 to 4, `categories.MAX_LINES`), for example a small lead line above
-a large headline. Generation only makes two-tier texts (双栏, `categories.TIERS`, a two-tier text block): the
-Executor rules define 双栏 as two rows stacked in one column (never side-by-side columns, bars or a frame). Each
+a large headline. Generation makes ordinary two-tier texts (双栏, `categories.TIERS`) or bilingual blocks (`bilingual: true`). An ordinary two-tier block has two rows in one column. A bilingual block has one or two content groups: each group is a Chinese row followed by its English translation. The input is `"<Chinese>\n<English>"` or `"<Chinese1>\n<English1>\n<Chinese2>\n<English2>"`; saved `text` contains Chinese rows and `textEn` contains matching English rows, joined with newlines. Both new-chat switches (`two_tier`, `bilingual`) require two complete groups; composition and acceptance reject a single-group substitute. Four-row blocks use `translationGap` (0–100, default 8) within a group and `lineGap` between groups; stack/overlap applies to whole groups. Each pair starts together, for example `[0, 0, 30, 30]`. Generation and publication require nonempty paired defaults, and editing snapshots retain both languages and the bilingual flag. The render check measures the complete default English as well as Chinese text. Each
 tier's font, weight and size ratio (exactly 0.4 to 2; the tier renders at `fontSize` times it, so the host's shrink
 scales both) and the tier gap are host configuration, each tier's colour `line1Color`/`line2Color` an Agent style
 parameter; a two-tier text exposes no top-level `color`, `fontWeight` or `fontFamily`. On the generation path
-(`category_problems` with the font library) the line starts must have exactly two items, every tier parameter must be
+(`category_problems` with the font library) the line starts must have two items (four for two bilingual groups), every tier parameter must be
 present with its schema and the three shared styles must not be bound; publishing requires neither the shared colour
 and weight of a multi-line version nor its tier parameters, so earlier multi-line versions still publish. Tier fonts
 are opened like `fontFamily` on save and checked against the live library on overrides and parameter revisions.
 `text_fit` and the host's fit never shrink `fontSize` below 24 divided by the smallest tier ratio below 1 (the
 worker's `readableFontSize`), so a small
-lead tier stays readable. Assets published with 3 or 4 lines keep their line count downstream. Such a multi-line text keeps the single `text` parameter, with its lines separated by `\n`, and also
+lead tier stays readable. Assets published with 3 or 4 lines keep their line count downstream. An ordinary multi-line text keeps the single `text` parameter, with its lines separated by `\n`, and also
 binds `lineStartFrames`, an integer array of exactly N items (`minItems` = `maxItems` = N, each 0 to 3600), so that
 line i appears from frame `lineStartFrames[i]` of the instance. A line with no text or no start is not rendered.
 All lines are stacked in one column (the text block's host, or one Preset instance of an older text) spaced by `lineGap` (pixels; its minimum may be as low as -600 so the lower tier moves up over the upper one, and its maximum 200 to
@@ -645,8 +644,12 @@ A text Sprite's required parameters include the keyword options the bus forwards
 title/subtitle keyword fields: `keywords`, `keywordBold`/`Italic`/`Underline`/`Strikeout`, `keywordColor` (`""`
 keeps the text colour) and `keywordSize` (0 keeps the font size, otherwise 12–300; placements refuse 1–11), with `keywords` items holding at least 12
 characters (the segmentation keywords the bus forwards). Their
-defaults must be off (`[]`, `false`, `""`, `0`), checked by `sprite.create` and again at publish (a keyword option turned on in the workspace parameter panel must be
-turned off again before saving to the asset library), so an unused keyword option keeps the plain text style. A text Sprite fixes `text_prop` to `text` and `keywords_prop` to `keywords` (text versions now always bind it;
+defaults must be off (`[]`, `false`, `""`, `0`), checked by `sprite.create` and again at publish. A parameter revision
+(`保存配置`) validates the complete merged defaults, so every keyword option must remain off even when an old version
+supplied it untouched; a refused publication names the options to restore and asks for a new version (saved versions are immutable; a previewed historical version is read-only). An older effect can also be
+repaired in chat: the workspace's refusal banner offers to ask the Agent to regenerate it, and `sprite.create` tells the
+Agent to keep the keyword look in the keyword Preset's own style parameters while giving the options their off defaults,
+so an unused keyword option keeps the plain text style. A text Sprite fixes `text_prop` to `text` and `keywords_prop` to `keywords` (text versions now always bind it;
 `""` remains only for versions without a keywords binding, which only re-saves of older publications reach); other
 kinds leave both empty. Every bound top-level parameter, text and
 keywords included, becomes a `VISIBLE_EDITABLE` control with its bounds, enum, colour or integer format (an

@@ -3,7 +3,7 @@ import { loadVideoFrames } from "./thumbnails";
 import { playerTimeline, transitionFrameKey, type buildTimeline } from "./timeline";
 
 /** SDK 的图片重叠转场放在视频上方，按交界处前后各半段显示，保持视频及文字的原有时间。 */
-export async function centeredPlayerTimeline(timeline: ReturnType<typeof buildTimeline>, signal: AbortSignal, cache: Map<string, string>) {
+export async function centeredPlayerTimeline(timeline: ReturnType<typeof buildTimeline>, signal: AbortSignal, cache: Map<string, string>, maskImages?: ReadonlyMap<string, HTMLImageElement>) {
   const frames = new Map<string, string>();
   const videos = timeline.previewVideoTracks[0].VideoTrackClips;
   for (const transition of timeline.transitions) {
@@ -15,7 +15,7 @@ export async function centeredPlayerTimeline(timeline: ReturnType<typeof buildTi
     }
   }
   signal.throwIfAborted();
-  const playback = playerTimeline(timeline, frames);
+  const playback = playerTimeline(timeline, frames, maskImages);
   const images = new Map<string, Promise<string>>();
   for (const row of playback.VideoTracks) {
     for (const clip of row.VideoTrackClips) {

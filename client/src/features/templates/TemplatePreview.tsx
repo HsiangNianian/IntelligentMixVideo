@@ -1,22 +1,25 @@
 /**
- * SDK 预览组件：管理单个播放器、串行更新时间线；授权在后台请求，IMS 渲染或载入时间线失败、卡住或 60 秒仍不能播放时降级为基础视频。
+ * SDK 预览组件：管理单个播放器、串行更新时间线；无效输入保留上次有效预览，IMS 渲染或载入时间线失败、卡住或 60 秒仍不能播放时降级为基础视频。
  * 播放位置由前端持有：IMS 就绪时由它推进，降级后由基础视频推进，二者都不可用时由前端时钟推进，换来源时接着当前位置与播放状态；
  * 播放按钮、进度条、时间轴、文字选择框与 AI 资产都只跟随这个位置，不等 IMS。卸载时清理订阅和异步任务。
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { frameMaskRects } from "./frameMask";
+import { frameMaskImage, frameMaskRects } from "./frameMask";
+import { useFrameMaskImages } from "./useFrameMaskImages";
 import { Maximize2, Pause, Play, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { previewOpeningDuration } from "./avatarPreview";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import { textKey, type Draft, type EffectAsset, type PreviewMedia } from "./model";
-import { CAN_PLAY_TIMEOUT_MS, deferLicenseRequest, STALL_TIMEOUT_MS, loadSDK, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
+import { CAN_PLAY_TIMEOUT_MS, deferLicenseRequest, STALL_TIMEOUT_MS, loadSDK, readCatalog, waitForCanPlay, watchMattingFailures, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
 import { BasicVideoPreview } from "./BasicVideoPreview";
 import { PreviewClock, type PlaybackHandle } from "./previewClock";
 import { buildTimeline, buildPreviewRows, mergeSpriteRows, PREVIEW_CANVAS, remotionTexts, type SpriteClip } from "./timeline";
 import { centeredPlayerTimeline } from "./centeredTransitions";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { SpriteOverlay, type SpriteOverlayHandle } from "./SpriteOverlay";
+import type { ScreenPoint } from "./splitScreen";
 import type { ResolvedTimeline } from "./tracks";
 import { MasterVideoInput } from "./MasterVideoInput";
 import { debugLog, describe, diagnosticsEnabled, MEDIA_ERRORS, watchWindow } from "@/lib/diagnostics";
@@ -36,6 +39,9 @@ interface Props {
   selectionTargets?: ReadonlyMap<string, string>;
   onSelect?: (id: string) => void;
   videoOrder?: number[];
+  /** 工作区保存的预览专用取景参数，与成片定位独立。 */
+  avatarSource?: number;
+  previewCenter?: ScreenPoint;
   sprites?: SpriteClip[];
   /** 在画面上拖动所选 AI 资产时回报新的内容中心坐标（画布像素）。 */
   onSpriteMove?: (id: string, x: number, y: number) => void;
@@ -46,14 +52,36 @@ function TimelineMark() {
   return <span className="template-timeline-mark flex size-8 items-center justify-center rounded-lg" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" className="size-5"><rect x="2" y="7" width="8" height="4" rx="1" fill="currentColor" /><rect x="14" y="7" width="8" height="4" rx="1" fill="currentColor" /><rect x="5" y="15" width="13" height="4" rx="1" fill="currentColor" /><path d="M12 4v17m-2-18h4l-2 3-2-3Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg></span>;
 }
 
-/** 每次修改全量更新时间线并回到开头；串行处理，快速修改只应用最新草稿。 */
-export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMedia, onMediaChange, videoInputKey, onCatalog, selectedId, selectionTargets, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder }: Props) {
-  const [avatarSource, setAvatarSource] = useState(0);
+/** 有效修改全量更新时间线并回到开头；无效输入保留预览，快速修改只应用最新有效草稿。 */
+export function TemplatePreview({ draft: editingDraft, media, resolved, mediaError, onRetryMedia, onMediaChange, videoInputKey, onCatalog, selectedId, selectionTargets, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder, avatarSource = 0, previewCenter = defaultPreviewCenter }: Props) {
+  // 双语片段在验证草稿和应用 SDK 时间线时都替换中英文字，保留数字人预览的取景坐标。
+  const bilingualClips = useMemo(() => new Set(sprites.filter((clip) => clip.bilingual).map((clip) => clip.id)), [sprites]);
+  // 沿用时间轴构建的校验结果；有效草稿只缓存给预览，父组件保存的仍是当前编辑值。
+  const [catalog, setCatalog] = useState<EffectAsset[]>(readCatalog);
+  const latestCatalog = useRef(catalog);
+  const lastValid = useRef({ media, draft: editingDraft, rows: [] as ReturnType<typeof buildPreviewRows>, notices: [] as string[] });
+  const { draft, rows, notices, previewError } = useMemo(() => {
+    const empty = { media, draft: editingDraft, rows: [] as ReturnType<typeof buildPreviewRows>, notices: [] as string[] };
+    if (!media || !resolved) return { ...empty, previewError: "" };
+    try {
+      const timeline = buildTimeline(editingDraft, catalog, media, resolved, videoOrder, avatarSource, previewCenter, bilingualClips);
+      lastValid.current = { media, draft: editingDraft, rows: buildPreviewRows(timeline), notices: timeline.notices };
+      return { ...lastValid.current, previewError: "" };
+    } catch (error) {
+      return { ...(lastValid.current.media === media ? lastValid.current : empty), previewError: `预览参数无效：${error instanceof Error ? error.message : "请检查输入"}。修正后自动更新预览。` };
+    }
+  }, [editingDraft, catalog, media, resolved, videoOrder, avatarSource, previewCenter, bilingualClips]);
+  const latestPreviewError = useRef(previewError);
+  latestPreviewError.current = previewError;
+  const latestCenter = useRef(previewCenter);
+  latestCenter.current = previewCenter;
   const latestAvatar = useRef(avatarSource);
   latestAvatar.current = avatarSource;
   const duration = resolved?.duration ?? 0;
-  // 改由 Remotion 字效显示的文字变化时，SDK 需要重新应用时间线以隐藏或恢复 IMS 文字。
-  const replacedTexts = [...remotionTexts(draft)].sort().join();
+  const openingDuration = previewOpeningDuration(draft.avatar_effects, duration);
+  const mattingPreview = draft.split_screen?.enabled && draft.split_screen.layout !== "circle" && draft.avatar_effects?.removeBackground;
+  // 改由 Remotion 字效显示的文字变化时，SDK 需要重新应用时间线以隐藏或恢复 IMS 文字；双语字效还替换英文文字。
+  const replacedTexts = [...remotionTexts(draft, bilingualClips)].sort().join();
   const stage = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const latest = useRef(draft);
@@ -61,6 +89,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const latestOrder = useRef(videoOrder);
   const latestResolved = useRef(resolved);
   const latestTexts = useRef(replacedTexts);
+  const latestBilingual = useRef(bilingualClips);
   const apply = useRef<(() => void) | null>(null);
   const catalogCallback = useRef(onCatalog);
   // IMS 播放器的播放入口，播放器就绪后才使用。
@@ -72,28 +101,30 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const clockTime = useRef(0);
   // 最近一次显示到界面的时间（0.1 秒为单位）。
   const shownDecisecond = useRef(0);
-  // 效果目录：SDK 加载前用随包目录（与工作区编辑用的相同），加载后换成 SDK 目录；时间轴行与 SDK 时间线共用。
-  const [catalog, setCatalog] = useState<EffectAsset[]>(readCatalog);
-  const latestCatalog = useRef(catalog);
-  // 时间轴的对象与视频行、时间调整说明直接按当前草稿生成，不等 SDK 应用时间线：IMS 加载、出错或卡住时照常显示。
-  const { rows, notices } = useMemo((): { rows: ReturnType<typeof buildPreviewRows>; notices: string[] } => {
-    if (!media || !resolved) return { rows: [], notices: [] };
-    try {
-      const timeline = buildTimeline(draft, catalog, media, resolved, videoOrder, avatarSource);
-      return { rows: buildPreviewRows(timeline), notices: timeline.notices };
-    } catch {
-      // 生成失败时 SDK 应用同一份时间线也会失败，原因在那里提示与记录。
-      return { rows: [], notices: [] };
-    }
-  }, [draft, catalog, media, resolved, videoOrder, avatarSource]);
   const timelineRows = useMemo(() => mergeSpriteRows(rows, sprites).map((row) => ({ ...row,
     actions: row.actions.map((clip) => ({ ...clip, targetId: clip.targetId ? selectionTargets?.get(clip.targetId) ?? clip.targetId : undefined })),
   })), [rows, sprites, selectionTargets]);
   const [attempt, setAttempt] = useState(0);
+  const maskImages = useFrameMaskImages(draft.frame_mask, PREVIEW_CANVAS.height, attempt);
+  const latestMaskImages = useRef(maskImages);
+  latestMaskImages.current = maskImages;
+  useEffect(() => { apply.current?.(); }, [maskImages.images, maskImages.error]);
   const [status, setStatus] = useState("正在加载预览组件…");
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [basicFallback, setBasicFallback] = useState(false);
+  const [fallbackMask, setFallbackMask] = useState<string>();
+  const maskPaintedAt = useRef(0);
+  const showFallbackMask = basicFallback && frameMaskRects(draft.frame_mask, PREVIEW_CANVAS.height).length > 0;
+  // 按上次绘制时间节流，持续拖动也每 250ms 使用最新配置；关闭、移除或退出降级时取消待绘制任务。
+  useEffect(() => {
+    if (!showFallbackMask || !maskImages.ready) { setFallbackMask(undefined); return; }
+    const timer = setTimeout(() => {
+      maskPaintedAt.current = performance.now();
+      setFallbackMask(frameMaskImage(draft.frame_mask, PREVIEW_CANVAS.width, PREVIEW_CANVAS.height, maskImages.images));
+    }, Math.max(0, 250 - (performance.now() - maskPaintedAt.current)));
+    return () => clearTimeout(timer);
+  }, [showFallbackMask, draft.frame_mask, maskImages.images, maskImages.ready]);
   const [basicReady, setBasicReady] = useState(false);
   // 切换基础视频的原因，显示在预览下方说明里。
   const [fallbackReason, setFallbackReason] = useState("");
@@ -107,7 +138,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   // 有画面在播放：IMS 预览就绪，或已降级且基础视频可以播放。
   const videoReady = ready || (basicFallback && basicReady);
   // 播放按钮、进度条、时间轴与文字选择框只需要解析出的时间：前端时钟随时可用，不等 IMS 或基础视频。
-  const controlsReady = duration > 0;
+  const controlsReady = duration > 0 && maskImages.ready;
   // 当前推进播放位置的画面来源：IMS 就绪时用它，降级后用基础视频，二者都不可用时用前端时钟。
   const source = ready ? "ims" : basicFallback && basicReady ? "basic" : "clock";
   // PreviewClock 只创建一次；用 ref 让它的回调判断当前是否仍由前端时钟驱动，避免来源交接时覆盖新状态。
@@ -118,6 +149,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   latestOrder.current = videoOrder;
   latestResolved.current = resolved;
   latestTexts.current = replacedTexts;
+  latestBilingual.current = bilingualClips;
   latestCatalog.current = catalog;
   catalogCallback.current = onCatalog;
 
@@ -168,6 +200,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let appliedLayout: Draft["split_screen"];
     let previewMasks = new Map<string, { url: string; maskUrl: string }>();
     let appliedAvatar: number | undefined;
+    let appliedCenter: typeof previewCenter | undefined;
+    let appliedEffects: Draft["avatar_effects"];
     let appliedTracks: Draft["tracks"] | undefined;
     let appliedMask: Draft["frame_mask"];
     let appliedMedia: PreviewMedia | undefined;
@@ -178,6 +212,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let stopPlayerLog: (() => void) | undefined;
     let stopPlayback: (() => void) | undefined;
     let stopLicenseWatch: (() => void) | undefined;
+    let stopMattingWatch: (() => void) | undefined;
     let canPlayController: AbortController | undefined;
     let basicRequested = false;
     let mediaFailed = false;
@@ -278,7 +313,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
 
     // 避免异步旧时间线覆盖新配置；卸载后不再更新 React 状态。
     const update = async () => {
-      if (!instance || active || disposed || basicRequested) return;
+      if (!instance || active || disposed || basicRequested || latestPreviewError.current) return;
       active = true;
       setReady(false);
       if (!mediaFailed) setFailed(false);
@@ -292,10 +327,17 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           const currentMedia = latestMedia.current;
           const currentOrder = latestOrder.current;
           const currentTexts = latestTexts.current;
+          const currentBilingual = latestBilingual.current;
           const currentResolved = latestResolved.current;
           if (!currentMedia || !currentResolved) { instance.pause(); return; }
+          if (!latestMaskImages.current.ready) {
+            instance.pause();
+            setStatus(latestMaskImages.current.error || "正在读取蒙版图片…");
+            return;
+          }
           const applyStarted = performance.now();
-          const timeline = buildTimeline(currentDraft, latestCatalog.current, currentMedia, currentResolved, currentOrder, latestAvatar.current);
+          const currentCenter = latestCenter.current;
+          const timeline = buildTimeline(currentDraft, latestCatalog.current, currentMedia, currentResolved, currentOrder, latestAvatar.current, currentCenter, currentBilingual);
           if (disposed) return;
           instance.pause();
           instance.aspectRatio = timeline.AspectRatio;
@@ -305,7 +347,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           // 生成转场画面与 SDK 载入时间线同样设上限：卡在这里时 canplay 的计时还没开始，不能一直停在加载中。
           clearTimeout(applyTimer);
           applyTimer = setTimeout(() => switchToBasicVideo(`${CAN_PLAY_TIMEOUT_MS / 1000} 秒内没有载入时间线`), CAN_PLAY_TIMEOUT_MS);
-          const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames);
+          const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames, latestMaskImages.current.images);
           previewMasks = new Map();
           for (const row of playback.VideoTracks) for (const clip of row.VideoTrackClips) {
             if (!("MaskVideoURL" in clip) || typeof clip.MaskVideoURL !== "string" || typeof clip.MediaURL !== "string") continue;
@@ -330,6 +372,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           if (!disposed && applied === revision) {
             appliedLayout = currentDraft.split_screen;
             appliedAvatar = latestAvatar.current;
+            appliedCenter = currentCenter;
+            appliedEffects = currentDraft.avatar_effects;
             appliedTracks = currentDraft.tracks;
             appliedMask = currentDraft.frame_mask;
             appliedMedia = currentMedia;
@@ -361,9 +405,9 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       }
     };
     apply.current = () => {
-      if (basicRequested) return;
+      if (basicRequested || latestPreviewError.current) return;
       // 初始化已应用相同输入时，延迟通知无需再次重置播放位置。
-      if (appliedLayout === latest.current.split_screen && appliedAvatar === latestAvatar.current && appliedTracks === latest.current.tracks && appliedMask === latest.current.frame_mask && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current && appliedResolved === latestResolved.current) return;
+      if (appliedEffects === latest.current.avatar_effects && appliedCenter === latestCenter.current && appliedLayout === latest.current.split_screen && appliedAvatar === latestAvatar.current && appliedTracks === latest.current.tracks && appliedMask === latest.current.frame_mask && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current && appliedResolved === latestResolved.current) return;
       revision++;
       void update();
     };
@@ -398,16 +442,25 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         const target = frame.contentDocument!;
         // 渲染引擎等授权回应才初始化、请求失败后一直黑屏；须在 SDK 加载前把授权改为后台请求，授权结果不再决定是否降级。
         stopLicenseWatch = deferLicenseRequest(frame.contentWindow!);
+        stopMattingWatch = watchMattingFailures(frame.contentWindow!, (error) => {
+          const current = latest.current;
+          if (current.split_screen?.enabled && current.split_screen.layout !== "circle" && current.avatar_effects?.removeBackground)
+            switchToBasicVideo("SDK 抠像加载或渲染失败", error);
+        });
         // SDK 的媒体元素不挂到文档上，加载失败由此记录并按视频序号提示（SDK 会在地址后追加 #t= 片段）。
         const sdkMedia = watchSdkMedia(target, (element) => {
           if (disposed || basicRequested) return;
+          const url = (element.currentSrc || element.src).replace(/#.*$/, "");
+          if ([...previewMasks.values()].some((mask) => mask.maskUrl === url)) {
+            switchToBasicVideo("预览蒙版资源加载失败");
+            return;
+          }
           mediaFailed = true;
           // 停下 SDK，由前端时钟接着推进播放位置。
           cancel();
           instance?.pause();
           setReady(false);
           setFailed(true);
-          const url = (element.currentSrc || element.src).replace(/#.*$/, "");
           const index = sources.findIndex((item) => item.url === url);
           const reason = MEDIA_ERRORS[element.error?.code ?? 0] ?? "未知错误";
           const message = `${index >= 0 ? `视频 ${index + 1} ` : "预览素材"}无法在播放器中播放（${reason}），请检查视频编码与跨域访问配置后重试预览。`;
@@ -542,6 +595,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       subscription?.unsubscribe();
       stopPlayerLog?.();
       stopPlayback?.();
+      stopMattingWatch?.();
       stopLicenseWatch?.();
       notifyMediaCreated = undefined;
       ims.current = null;
@@ -554,13 +608,17 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   useEffect(() => {
     const timer = window.setTimeout(() => apply.current?.(), 250);
     return () => window.clearTimeout(timer);
-  }, [draft.tracks, draft.frame_mask, draft.split_screen, avatarSource, media, videoOrder, resolved, replacedTexts]);
+  }, [draft.tracks, draft.frame_mask, draft.split_screen, draft.avatar_effects, previewCenter, avatarSource, media, videoOrder, resolved, replacedTexts, previewError]);
 
-  // 修改模板、视频或排列后回到开头并暂停（IMS 播放器随后重新应用时间线），各画面来源一致。
+  // 无效输入暂停并保留当前帧；有效修改回到开头，IMS 随后重新应用时间线。
   useEffect(() => {
-    activePlayback().pause();
-    clock.seek(0);
-  }, [media, videoOrder, resolved, draft.frame_mask, draft.split_screen, avatarSource]);
+    if (previewError) activePlayback().pause();
+    else {
+      // 同时定位画面来源，避免延迟刷新前的旧 SDK 帧把已回零的游标拉回原位置。
+      activePlayback().seek(0);
+      clock.seek(0);
+    }
+  }, [media, videoOrder, resolved, draft.frame_mask, draft.split_screen, draft.avatar_effects, previewCenter, avatarSource, previewError]);
 
   // 换画面来源（IMS 就绪或开始应用修改、切换基础视频、基础视频可以播放）时交接：新来源从当前位置接着走，
   // 原来在播放就接着播放，AI 资产与时间轴不跳回开头，播放也不因 IMS 就绪或降级中断。
@@ -577,24 +635,22 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   return <section aria-label="实时预览" className="flex min-h-full min-w-0 flex-col">
     <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
       <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[13px] font-semibold">实时预览</h2></div><div className="flex items-center gap-2"><span className="rounded-md border px-2 py-1 text-[11px] tabular-nums text-muted-foreground">{PREVIEW_CANVAS.width} × {PREVIEW_CANVAS.height}</span><Hint label="刷新预览"><Button type="button" variant="ghost" size="icon-xs" aria-label="刷新预览" onClick={() => setAttempt((value) => value + 1)} className="rounded-[5px] p-0"><RotateCw className="size-3" aria-hidden="true" /></Button></Hint></div></div>
-      {draft.split_screen?.enabled && <label className="mb-3 flex flex-wrap items-center gap-2 text-xs">数字人预览来源<select aria-label="数字人预览来源" value={avatarSource} onChange={(event) => setAvatarSource(Number(event.target.value))} className="rounded-md border bg-background px-2 py-1">{[0, 1, 2].map((index) => <option key={index} value={index}>视频 {index + 1}</option>)}</select><span className="text-muted-foreground">布局示例，短视频循环播放{draft.split_screen.layout === "circle" ? "；圆形居中示意，成片自动定位头部" : ""}</span></label>}
       <div ref={stage} className="template-preview-canvas relative mx-auto w-full overflow-hidden rounded-lg bg-black" style={{ aspectRatio: `${PREVIEW_CANVAS.width} / ${PREVIEW_CANVAS.height}`, maxWidth: `${48 * PREVIEW_CANVAS.width / PREVIEW_CANVAS.height}dvh`, "--preview-ratio": PREVIEW_CANVAS.width / PREVIEW_CANVAS.height } as CSSProperties} aria-label="模板视频预览">
         {/* 播放器与叠加层共用一个按画布比例排布的画面框：全屏时画布撑满屏幕，画面框仍按视频比例居中，字效与选择框随画面缩放而不是按整个屏幕排布。 */}
         <div className="template-preview-frame absolute inset-0 overflow-hidden">
           <div ref={container} className={`template-preview-player absolute inset-0 size-full ${basicFallback ? "invisible" : ""}`} />
-          {basicFallback && media && resolved && <BasicVideoPreview ref={basic} media={media} resolved={resolved} order={videoOrder} layout={draft.split_screen} avatarSource={avatarSource}
+          {basicFallback && media && resolved && <BasicVideoPreview ref={basic} media={media} resolved={resolved} order={videoOrder} layout={draft.split_screen} avatarSource={avatarSource} avatarEffects={draft.avatar_effects} previewCenter={previewCenter}
             onTime={(value) => { if (source === "basic") showTime(value); }}
             onReady={() => { setBasicReady(true); setStatus("基础视频已就绪，点击播放查看效果"); }}
             onPlayingChange={(value) => { if (source !== "basic") return; changePlaying(value); setStatus(value ? "正在播放预览…" : "预览已暂停"); }}
             onError={() => { setFailed(true); setStatus("基础视频预览加载失败，请检查视频编码与跨域访问配置后重试。"); }}
             onEnd={() => { if (source !== "basic") return; changePlaying(false); setStatus("预览结束，点击播放可重播"); }} />}
-          {basicFallback && frameMaskRects(draft.frame_mask, PREVIEW_CANVAS.height).map((rect) => <div key={rect.edge} aria-label={`${rect.edge === "top" ? "上" : "下"}栏蒙版预览`}
-            className="pointer-events-none absolute inset-x-0" style={{ top: `${rect.y / PREVIEW_CANVAS.height * 100}%`, height: `${rect.height / PREVIEW_CANVAS.height * 100}%`, background: rect.color }} />)}
-          {controlsReady && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
+          {showFallbackMask && fallbackMask && <img alt="上下蒙版预览" src={fallbackMask} className="pointer-events-none absolute inset-0 size-full" />}
+          {controlsReady && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft, bilingualClips).has(textKey(item.target, item.language))).map((item) => {
             const interval = resolved?.tracks[item.id];
             if (!interval || time < interval.start || time >= interval.end) return null;
             const role = item.target as "title" | "subtitle";
-            const point = draft.split_screen?.enabled && role === "subtitle" ? draft.split_screen[item.language === "en" ? "subtitleEn" : "subtitle"] : { x: item.editor[`${role}X`], y: item.editor[`${role}Y`] };
+            const point = draft.split_screen?.enabled && role === "subtitle" && time >= openingDuration ? draft.split_screen[item.language === "en" ? "subtitleEn" : "subtitle"] : { x: item.editor[`${role}X`], y: item.editor[`${role}Y`] };
             return <button key={item.id} type="button" aria-label={`选择${item.language === "en" ? "英文" : "中文"}${role === "title" ? "标题" : "字幕"}`} aria-pressed={selectedId === item.id}
               className={`absolute -translate-x-1/2 rounded-sm border border-dashed hover:border-primary focus-visible:ring-2 focus-visible:ring-ring ${selectedId === item.id ? "border-primary" : "border-transparent"}`}
               style={{ left: `${point.x}%`, top: `${point.y}%`, width: "90%", height: `${item.editor[`${role}Size`] * 1.5 / PREVIEW_CANVAS.height * 100}%`, minHeight: 12 }}
@@ -603,6 +659,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           {sprites.length > 0 && <SpriteOverlay ref={overlay} clips={sprites} stageAspect={PREVIEW_CANVAS.width / PREVIEW_CANVAS.height} initialTime={time} selectedId={selectedId} onMove={onSpriteMove} onSelect={onSelect} />}
         </div>
         {!videoReady && !failed && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-white/60"><Spinner className="size-6" /></div>}
+        {maskImages.error && <div role="alert" className="absolute inset-0 z-20 flex items-center justify-center bg-background p-5 text-sm text-destructive">{maskImages.error}</div>}
         <Hint label="全屏预览"><Button type="button" variant="ghost" size="icon-xs" aria-label="全屏预览" onClick={() => { if (stage.current) void stage.current.requestFullscreen(); }} className="template-preview-fullscreen absolute bottom-2 right-2 rounded-[5px] p-0"><Maximize2 className="size-3" aria-hidden="true" /></Button></Hint>
       </div>
       <div className="template-preview-controls flex flex-wrap items-center gap-2.5 py-3">
@@ -614,16 +671,21 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       </div>
       <p role={failed || mediaError ? "alert" : "status"} className={failed || mediaError ? "text-xs text-destructive" : videoReady ? "sr-only" : "text-[11px] text-muted-foreground"}>{mediaError || status}</p>
       {mediaError && !media && <Button type="button" variant="outline" onClick={onRetryMedia}>重试读取视频</Button>}
+      {previewError && <p role="alert" className="text-xs text-destructive">{previewError}</p>}
       {mediaFailures.length > 0 && <div role="alert" className="space-y-1 text-xs text-destructive">{mediaFailures.map((message) => <p key={message}>{message}</p>)}</div>}
       {(failed || mediaFailures.length > 0) && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试预览</Button>}
       {basicFallback && <p className="text-[11px] text-muted-foreground">IMS 渲染暂不可用（{fallbackReason}），已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。</p>}
+      {mattingPreview && <p className="text-[11px] text-muted-foreground">{basicFallback ? "SDK 抠像预览不可用，当前保留原视频背景。" : "SDK 本地人物抠像预览，首次加载模型可能较慢；边缘与云端成片可能不一致。"}</p>}
       {basicFallback && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试 IMS 预览</Button>}
       {notices.length > 0 && <ul aria-label="时间调整说明" className="space-y-1 text-xs text-muted-foreground">{notices.map((notice, index) => <li key={index}>{notice}</li>)}</ul>}
     </div></div>
-    <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2></div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length + (draft.frame_mask ? 1 : 0)} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!controlsReady} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onSeek={(value) => activePlayback().seek(value)} />
+    <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2></div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length + (draft.frame_mask ? 1 : 0) + (draft.avatar_effects?.openingEnabled ? 1 : 0)} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!controlsReady} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onSeek={(value) => activePlayback().seek(value)} />
     </div></div>
   </section>;
 }
 
 /** 默认顺序使用稳定引用，播放器只在实际排序变化时更新时间线。 */
 const defaultVideoOrder = [0, 1, 2];
+
+/** 默认取景使用稳定引用，避免无关重绘重新应用时间线。 */
+const defaultPreviewCenter = { x: 50, y: 50 };

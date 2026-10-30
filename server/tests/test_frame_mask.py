@@ -48,6 +48,78 @@ def test_mask_roundtrip_and_legacy_update(client, template_payload, mask):
     assert {field: saved[field] for field in settings} == settings
 
 
+def test_gradient_roundtrip_and_legacy_bar_update(client, template_payload, mask):
+    """上下渐变独立保存；旧客户端重存纯色栏不丢新字段，显式切回纯色保留参数。"""
+    plain = deepcopy(mask)
+    mask["top"]["gradient"] = {"enabled": True, "endColor": "#aabbcc", "direction": "up", "range": 50}
+    mask["bottom"]["gradient"] = {"enabled": True, "endColor": "#001122", "direction": "down", "range": 100}
+    created = post_template(client, {**template_payload, "frame_mask": mask})
+    assert created.status_code == 201, created.text
+    template_id = saved_template(created)["template_id"]
+    assert detail_template(client.get(f"/template/{template_id}"))["frame_mask"] == mask
+    assert created.json()["template"]["frameMask"]["top"]["gradient"]["endColor"] == "#aabbcc"
+    payload = {**template_payload, "template_id": template_id}
+    updated = post_template(client, {**payload, "frame_mask": plain})
+    assert updated.status_code == 200, updated.text
+    assert saved_template(updated)["frame_mask"] == mask
+    mask["top"]["gradient"]["enabled"] = False
+    disabled = post_template(client, {**payload, "frame_mask": mask})
+    assert disabled.status_code == 200, disabled.text
+    assert saved_template(disabled)["frame_mask"] == mask
+    removed = post_template(client, {**payload, "frame_mask": {}})
+    assert removed.status_code == 200 and "frame_mask" not in saved_template(removed)
+
+
+@pytest.mark.parametrize("field,value", [("direction", "left"), ("endColor", "#11223300"), ("range", 0), ("range", 101), ("enabled", None)])
+def test_invalid_gradient_keeps_saved_template(client, template_payload, mask, field, value):
+    """渐变字段非法或缺少必填开关返回 422，已有模板不变。"""
+    original = saved_template(post_template(client, {**template_payload, "frame_mask": mask}))
+    gradient = {"enabled": True, "endColor": "#aabbcc", "direction": "up", "range": 50}
+    gradient[field] = value
+    mask["top"]["gradient"] = gradient
+    result = post_template(client, {**template_payload, "template_id": original["template_id"], "frame_mask": mask})
+    assert result.status_code == 422
+    assert detail_template(client.get(f"/template/{original['template_id']}"))["frame_mask"] == original["frame_mask"]
+
+
+def test_partial_gradient_rejected_without_changing_saved_settings(client, template_payload, mask):
+    """只发送关闭开关仍缺少三个必填字段，返回 422 且不覆盖已保存的渐变。"""
+    mask["top"]["gradient"] = {"enabled": True, "endColor": "#aabbcc", "direction": "up", "range": 50}
+    original = saved_template(post_template(client, {**template_payload, "frame_mask": mask}))
+    mask["top"]["gradient"] = {"enabled": False}
+    result = post_template(client, {**template_payload, "template_id": original["template_id"], "frame_mask": mask})
+    assert result.status_code == 422
+    assert {tuple(error["loc"]) for error in result.json()["detail"]} == {
+        ("body", "frame_mask", "top", "gradient", field) for field in ("endColor", "direction", "range")
+    }
+    assert detail_template(client.get(f"/template/{original['template_id']}"))["frame_mask"] == original["frame_mask"]
+
+
+@pytest.mark.parametrize("case", CASES["gradient"], ids=lambda case: case["name"])
+def test_gradient_png_matches_browser_pixels(monkeypatch, case):
+    """真实 PNG 与浏览器共用预期像素，覆盖方向、范围、透明中部及单像素边界。"""
+    bar = {"enabled": True, "height": case["barHeight"], "color": case["color"], "gradient": case["gradient"]}
+    images = []
+
+    def upload(files, settings, timeout):
+        """只读取真实生成的 PNG，不访问对象存储。"""
+        with Image.open(files[0][0]) as image:
+            images.append(image.copy())
+        return ["https://media.test/gradient.png"]
+
+    monkeypatch.setattr(frame_mask, "upload_public", upload)
+    result = frame_mask.upload_mask({"top": bar, "bottom": bar}, 80, case["height"], "gradient", None, 1, "imv/playground")
+    if not case["expected"]:
+        assert result is None and not images
+        return
+    assert result == "https://media.test/gradient.png"
+    size = len(case["expected"])
+    for y in range(case["height"]):
+        row = y if y < size else y - (case["height"] - size)
+        expected = tuple(case["expected"][row]) if 0 <= row < size else (0, 0, 0, 0)
+        assert images[0].getpixel((0, y)) == images[0].getpixel((79, y)) == expected
+
+
 def test_empty_mask_removes_saved_configuration(client, template_payload, composition_case, mask):
     """明确空消息移除已保存蒙版，省略字段仍保留；移除后详情与合成均无蒙版。"""
     baseline, _ = build_timeline(**composition_case)
@@ -83,7 +155,7 @@ def test_invalid_mask_rejected(client, template_payload, mask, field, value):
     assert client.get("/template").json()["templates"] == []
 
 
-@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("case", CASES["geometry"])
 def test_png_matches_shared_pixel_cases(monkeypatch, mask, case):
     """与客户端共享尺寸案例，逐行检查栏高、色值与透明中部，并检查上传路径。"""
     mask["top"]["height"], mask["bottom"]["height"] = case["top"], case["bottom"]

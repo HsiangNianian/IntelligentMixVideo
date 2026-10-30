@@ -1,7 +1,7 @@
 /**
  * 加载固定版本阿里云预览 SDK、固定其绘制倍数并读取目录；播放器实例的创建与销毁由预览组件负责。
  * 另把 SDK 内部的媒体元素与公开事件流接到调试日志：素材加载失败、卡顿、播放状态与渲染上下文丢失；
- * 渲染授权改为后台请求，不阻塞也不影响预览播放。
+ * 渲染授权改为后台请求；抠像使用内置 WebGL 后端并监听模型加载失败，交由预览组件明确降级。
  */
 import motions from "./motions.json";
 import bundledCatalog from "../../../../server/src/server/template/sdk_catalog.json";
@@ -79,6 +79,9 @@ declare global {
  * 倍数只影响画布的实际像素，场景尺寸、坐标与字号不变；须在创建播放器之前设置。
  */
 export function loadSDK(target: Document, signal: AbortSignal): Promise<PreviewSDK> {
+  // 5.2.2 的 TensorflowLoader 调用 setBackend("webgpu") 后未等待即加载模型，真实浏览器会报后端未初始化。
+  // 仅在 SDK 独立 iframe 内选择其已有的同步 WebGL 后端，不影响应用窗口或替换官方模型。
+  if (target.defaultView) Object.defineProperty(target.defaultView.navigator, "gpu", { configurable: true, value: undefined });
   return new Promise<PreviewSDK>((resolve, reject) => {
     const script = target.createElement("script");
     const stylesheet = target.createElement("link");
@@ -259,6 +262,36 @@ export function deferLicenseRequest(view: Window): () => void {
   return () => {
     stopped = true;
     if (scope.fetch === wrapper) scope.fetch = original;
+  };
+}
+
+/** SDK 的跨源 TensorFlow 拒绝不总触发窗口事件；在实际模型请求和脚本入口捕获失败，卸载时恢复 fetch。 */
+export function watchMattingFailures(view: Window, onFailure: (error: unknown) => void): () => void {
+  const scope = view as Window & typeof globalThis;
+  const original = scope.fetch, request = original.bind(scope);
+  const wrapper = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(typeof input === "object" && "url" in input ? input.url : input);
+    if (!url.includes("/wasm/starry/model/")) return request(input, init);
+    return request(input, init).then((response) => {
+      if (!response.ok) onFailure(new Error(`抠像模型下载失败：HTTP ${response.status}`));
+      return response;
+    }, (error) => { onFailure(error); throw error; });
+  }) as typeof fetch;
+  // 字体等无关拒绝只记录诊断；模型网络错误由上面的请求 URL 归因，不依赖模糊的 Failed to fetch。
+  const rejected = (event: PromiseRejectionEvent) => {
+    if (/\/starry\/(tensorflow|model)\//.test(String(event.reason?.stack ?? event.reason))) onFailure(event.reason);
+  };
+  const scriptFailed = (event: Event) => {
+    const element = event.target as HTMLScriptElement | null;
+    if (element?.tagName === "SCRIPT" && element.src.includes("/starry/tensorflow/")) onFailure(new Error("抠像脚本加载失败"));
+  };
+  scope.fetch = wrapper;
+  view.addEventListener("unhandledrejection", rejected);
+  view.addEventListener("error", scriptFailed, true);
+  return () => {
+    if (scope.fetch === wrapper) scope.fetch = original;
+    view.removeEventListener("unhandledrejection", rejected);
+    view.removeEventListener("error", scriptFailed, true);
   };
 }
 

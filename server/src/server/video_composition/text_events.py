@@ -1,4 +1,7 @@
-"""IMS 与 Remotion 共用字幕纯文本、关键词继承与绝对区间，样式标记由各渲染器添加。"""
+"""IMS 与 Remotion 共用字幕纯文本、关键词继承与绝对区间，样式标记由各渲染器添加。
+
+双语字效（双语字幕）另由 `bilingual_events` 同时给出每条切片的中文与英文，两种语言一起注入同一个字效。
+"""
 from ..segmentation.segmentation import SUBTITLE_PUNCTUATION
 
 
@@ -60,4 +63,40 @@ def subtitle_blocks(segments, lines: int, max_length: int | None = None, max_spa
             blocks.append([])
         blocks[-1].append(event)
         last = sentence
+    return blocks
+
+
+def bilingual_events(segments):
+    """双语字效的字幕事件 (中文, 中文关键词, 英文, 英文关键词, 开始, 结束)：同一条切片的中英文字幕一起显示。
+
+    已保存的 ``subtitle_parts`` 只有整条切片的译文，无法与每个短句一一对应；双语渲染改用原切片文字和完整区间
+    作为一个事件，避免重复或猜测译文。没有切片级短句时每个切片仍使用自己的译文，缺少译文按翻译失败终止合成。
+    """
+    events = []
+    for item in segments:
+        if not item.text_en or not item.text_en.strip():
+            raise ValueError("缺少英文字幕译文")
+        text = _subtitle_text(item.text)
+        keyword = _subtitle_text(item.keyword) if item.keyword and item.keyword in item.text else ""
+        english = _subtitle_text(item.text_en, "en")
+        english_keyword = _subtitle_text(item.keyword_en, "en") if item.keyword_en and item.keyword_en in item.text_en else ""
+        if text:
+            events.append((text, keyword, english, english_keyword, item.start_time, item.end_time))
+    return events
+
+
+def bilingual_blocks(segments, groups: int, max_length: int | None, english_max_length: int | None, max_span: float):
+    """将同句字幕按原文与译文一起分组；两种语言分别受长度限制，每组保留自己的出现时间。"""
+    blocks = []
+    for item in segments:
+        new_sentence = item.group_id[0] == 1
+        for event in bilingual_events([item]):
+            block = blocks[-1] if blocks else []
+            if (not block or new_sentence or len(block) == groups
+                    or any(limit is not None and len("\n".join(row[index] for row in [*block, event])) > limit
+                           for index, limit in ((0, max_length), (2, english_max_length)))
+                    or event[4] - block[0][4] > max_span):
+                blocks.append([])
+            blocks[-1].append(event)
+            new_sentence = False
     return blocks
