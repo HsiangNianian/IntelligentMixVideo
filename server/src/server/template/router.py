@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import store
 from .schema import Template, TemplateSave
-from .preview_mask import PreviewMask, mask_video
+from .preview_mask import PreviewCircleMask, PreviewMask, circle_mask_video, mask_video
 
 # 静态预览资源必须放在 UUID 详情路径之前，无效果目录接口。
 router = APIRouter(prefix="/template", tags=["模板管理"])
@@ -101,6 +101,17 @@ def preview_mask(params: Annotated[PreviewMask, Query()]) -> Response:
     except (OSError, subprocess.SubprocessError) as exc:
         logging.getLogger(__name__).exception("Preview mask encoding failed")
         raise HTTPException(status_code=503, detail="圆角预览蒙版生成失败，请检查服务端 FFmpeg 后重试") from exc
+    return Response(content, media_type="video/mp4", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@router.get("/preview-circle-mask", response_class=Response)
+def preview_circle_mask(params: Annotated[PreviewCircleMask, Query()]) -> Response:
+    """仅按示意圆形生成预览资源，不检测人脸、不读取源视频或写入模板。"""
+    try:
+        content = circle_mask_video(**params.model_dump())
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.getLogger(__name__).exception("Preview circle mask encoding failed")
+        raise HTTPException(status_code=503, detail="圆形预览蒙版生成失败，请检查服务端 FFmpeg 后重试") from exc
     return Response(content, media_type="video/mp4", headers={"Cache-Control": "public, max-age=86400"})
 
 

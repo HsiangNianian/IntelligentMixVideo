@@ -19,6 +19,7 @@ import { BOUND_TEXT_PARAMETERS, validateClipSlots } from "./clips";
 import { validateFrameMask, type FrameMask } from "./frameMask";
 import { defaultSplitScreen, validateSplitScreen, type SplitScreen } from "./splitScreen";
 import { defaultAvatarEffects, validateAvatarEffects, type AvatarEffects } from "./avatarEffects";
+import { defaultAvatarPreview, validateAvatarPreview } from "./avatarPreview";
 
 /** 还原现有模板视图的字段名称、可空时长及 UTC 时间；`remotion` 轨道拆成独立的片段列表，不进入 IMS 对象。 */
 function toTemplate(record: TemplateRecord): Template {
@@ -34,6 +35,7 @@ function toTemplate(record: TemplateRecord): Template {
     transition_duration_seconds: record.transitionDurationSeconds,
     transition_mode: record.transitionMode as Draft["transition_mode"],
     transition_enabled: record.transitionEnabled ?? true,
+    ...(record.avatarPreview ? { avatar_preview: validateAvatarPreview({ x: record.avatarPreview.x ?? defaultAvatarPreview.x, y: record.avatarPreview.y ?? defaultAvatarPreview.y, source: record.avatarPreview.source ?? defaultAvatarPreview.source }) } : {}),
     ...(record.frameMask ? { frame_mask: validateFrameMask({
       top: { enabled: record.frameMask.top?.enabled, height: record.frameMask.top?.height, color: record.frameMask.top?.color },
       bottom: { enabled: record.frameMask.bottom?.enabled, height: record.frameMask.bottom?.height, color: record.frameMask.bottom?.color },
@@ -221,6 +223,7 @@ export async function saveTemplate(draft: Draft, id?: string, baselineHadMask = 
   if (draft.frame_mask) validateFrameMask(draft.frame_mask);
   if (draft.split_screen) validateSplitScreen(draft.split_screen);
   if (draft.avatar_effects) validateAvatarEffects(draft.avatar_effects);
+  if (draft.avatar_preview) validateAvatarPreview(draft.avatar_preview);
   for (const target of ["title", "subtitle"])
     if (draft.tracks.filter((track) => track.target === target && track.language !== "en").length !== 1)
       throw new Error("保存模板需要标题和底部字幕各一个");
@@ -236,6 +239,7 @@ export async function saveTemplate(draft: Draft, id?: string, baselineHadMask = 
     frameMask: draft.frame_mask ?? (baselineHadMask ? {} : undefined),
     splitScreen: draft.split_screen,
     avatarEffects: draft.avatar_effects,
+    avatarPreview: draft.avatar_preview,
     tracks: {
       tracks: [
         ...draft.tracks.map((track) => ({

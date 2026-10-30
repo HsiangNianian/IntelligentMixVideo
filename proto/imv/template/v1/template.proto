@@ -256,6 +256,14 @@ message FrameMask {
   FrameMaskBar bottom = 2;
 }
 
+// 编辑器记住的取景参数；随模板保存，冻结合成模板时移除。
+message AvatarPreview {
+  optional double x = 1;
+  optional double y = 2;
+  // 三个预览视频的槽位，0～2，不是实际合成的数字人来源。
+  optional uint32 source = 3;
+}
+
 // 创建或完整更新模板；提供 template_id 时更新。
 message SaveTemplateRequest {
   // 模板名称，去除首尾空白后必须有内容。
@@ -280,6 +288,8 @@ message SaveTemplateRequest {
   AvatarEffects avatar_effects = 10;
   // 缺省不添加蒙版；更新时省略保留原配置，空消息移除，关闭两栏仅停用。
   FrameMask frame_mask = 11;
+  // 省略时保留原设置；只供编辑器预览使用。
+  AvatarPreview avatar_preview = 12;
 }
 
 // 已保存的模板及效果快照。
@@ -311,6 +321,7 @@ message TemplateRecord {
   AvatarEffects avatar_effects = 13;
   // 上下纯色蒙版；旧模板省略此字段。
   FrameMask frame_mask = 14;
+  AvatarPreview avatar_preview = 15;
 }
 
 // 模板列表只返回摘要；无效记录保留标识与原因，不能用于预览和合成。

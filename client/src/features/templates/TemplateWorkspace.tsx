@@ -1,7 +1,8 @@
 /** 模板编辑工作区：接收主页选择，展示模板信息，协调效果编辑、保存和未保存切换保护。 */
 import { SplitScreenEditor } from "./SplitScreenEditor";
 import { defaultAvatarEffects } from "./avatarEffects";
-import { AvatarEffectsEditor } from "./AvatarEffectsEditor";
+import { AvatarCircleControls, AvatarEffectsEditor, AvatarMaskCard, AvatarPreviewControls } from "./AvatarEffectsEditor";
+import { defaultAvatarPreview, previewOpeningDuration } from "./avatarPreview";
 import { validateSplitScreen } from "./splitScreen";
 import { useUpdateBlocker } from "@/lib/update-guard";
 import { recovery } from "@/features/updates/recovery";
@@ -97,11 +98,12 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const [transitionRandom, setTransitionRandom] = useState<readonly [number, number]>(() => [Math.random(), Math.random()]);
   const visibleDraft = useMemo(() => draft ? activeDraft(draft) : null, [draft]);
   const previewSelection = useMemo(() => visibleDraft ? previewTransitions(visibleDraft, transitionRandom, spriteCatalog.assets ?? []) : null, [visibleDraft, transitionRandom, spriteCatalog.assets]);
-  const previewDraft = useMemo(() => {
-    const selected = previewSelection?.draft;
-    if (!selected?.avatar_effects?.removeBackground || !selected.split_screen?.enabled) return selected;
-    return { ...selected, split_screen: { ...selected.split_screen, avatar: { ...selected.split_screen.avatar, radius: 0, borderWidth: 0 } } };
-  }, [previewSelection?.draft]);
+  const previewDraft = previewSelection?.draft;
+  const circleAvatar = !!draft?.split_screen?.enabled && draft.split_screen.layout === "circle";
+  const avatarPreview = draft?.avatar_preview ?? defaultAvatarPreview;
+  const avatarPreviewControls = <AvatarPreviewControls source={avatarPreview.source} center={target === "avatar-mask" || circleAvatar ? avatarPreview : undefined}
+    onSourceChange={(source) => { if (draft) editTrack(() => ({ ...draft, avatar_preview: { ...defaultAvatarPreview, source } })); }}
+    onCenterChange={(point) => { if (draft) editTrack(() => ({ ...draft, avatar_preview: { ...avatarPreview, ...point } })); }} />;
   const preview = useMemo(() => {
     if (!previewDraft || !media) return { timeline: undefined, error: "" };
     try {
@@ -138,9 +140,10 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
       boundary: clip.transition_boundary,
       values: text && clip.text_target ? { ...clip.parameters, text: text.editor[clip.text_target], keywords: [exampleKeyword(text.editor, clip.text_target, text.language)].filter(Boolean) } : clip.parameters,
       transform,
+      opening: point ? { end: previewOpeningDuration(previewDraft?.avatar_effects, previewLength), transform: clip.transform } : undefined,
       canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: !point && transformFields(asset.kind).includes("x") } : undefined,
     };
-  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength, previewDraft?.split_screen]);
+  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength, previewDraft?.split_screen, previewDraft?.avatar_effects]);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
   useUpdateBlocker("模板尚未保存或正在处理", dirty || busy || loading || !!openRequest);
   useEffect(() => { recovery.template = current ? { templateId: current.template_id } : null; }, [current]);
@@ -278,6 +281,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     if (timingInputs && [...timingInputs].some((input) => !input.checkValidity())) { setInspectorTab("timing"); return; }
     const transitionInput = form.current?.querySelector<HTMLInputElement>('[aria-label="转场时间设置"] input[type="number"]');
     if (transitionInput && !transitionInput.checkValidity()) { transitionInput.reportValidity(); return; }
+    // 数字人输入有独立字符串草稿；按钮、快捷键和元数据自动保存都不能把未完成输入当成旧有效值保存。
+    const avatarInput = [...(form.current?.querySelectorAll<HTMLInputElement>('input[data-avatar-effect]') ?? [])].find((input) => !input.checkValidity());
+    if (avatarInput) { avatarInput.reportValidity(); return; }
     lock.current = true;
     setBusy(true);
     setError("");
@@ -389,10 +395,13 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                 <div hidden={assetSource !== "masks"}><FrameMaskCard mask={draft.frame_mask} onSelect={() => {
                   if (!draft.frame_mask) editTrack(() => ({ ...draft, frame_mask: newFrameMask() }));
                   setTarget(FRAME_MASK_OBJECT_ID);
+                }} /><AvatarMaskCard onSelect={() => {
+                  if (!draft.avatar_effects?.openingEnabled) editTrack(() => ({ ...draft, avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, openingEnabled: true } }));
+                  setTarget("avatar-mask");
                 }} /></div>
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <TemplatePreview draft={previewDraft!} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={current?.template_id ?? draft.name} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
+                <TemplatePreview draft={previewDraft!} media={media} avatarSource={avatarPreview.source} previewCenter={avatarPreview} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); if (draft.avatar_preview) editTrack(() => ({ ...draft, avatar_preview: { ...avatarPreview, x: 50, y: 50 } })); }} videoInputKey={current?.template_id ?? draft.name} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
                 />
               </main>}
               inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={visibleDraft!} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
@@ -400,10 +409,14 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                 {target === FRAME_MASK_OBJECT_ID && draft.frame_mask && <FrameMaskPanel mask={draft.frame_mask}
                   onChange={(frame_mask) => editTrack(() => ({ ...draft, frame_mask }))}
                   onRemove={() => editTrack(() => removeTrack(draft, FRAME_MASK_OBJECT_ID))} onClose={() => setTarget(null)} />}
-                <SplitScreenEditor value={draft.split_screen} removeBackground={draft.avatar_effects?.removeBackground} onChange={(split_screen) => editTrack(() => ({ ...draft, split_screen,
+                {target === "avatar-mask" && draft.avatar_effects?.openingEnabled && <AvatarEffectsEditor value={draft.avatar_effects} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} onClose={() => setTarget(null)}
+                  onRemove={() => editTrack(() => ({ ...draft, avatar_effects: { ...draft.avatar_effects!, openingEnabled: false } }))}>{avatarPreviewControls}</AvatarEffectsEditor>}
+                <SplitScreenEditor value={draft.split_screen} removeBackground={draft.avatar_effects?.removeBackground} onRemoveBackgroundChange={(removeBackground) => editTrack(() => ({ ...draft, avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground } }))} onChange={(split_screen) => editTrack(() => ({ ...draft, split_screen,
                   ...(split_screen.layout !== (draft.split_screen?.layout ?? "split") ? { avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground: split_screen.layout === "overlay" } } : {}),
-                }))} />
-                <AvatarEffectsEditor value={draft.avatar_effects} sameScreen={!!draft.split_screen?.enabled} circle={!!draft.split_screen?.enabled && draft.split_screen.layout === "circle"} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} />
+                }))}>{target !== "avatar-mask" && draft.split_screen?.enabled && <>
+                  {circleAvatar && <AvatarCircleControls value={draft.avatar_effects} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} />}
+                  {avatarPreviewControls}
+                </>}</SplitScreenEditor>
                 {bilingualTarget && <div className="space-y-2 border-b px-4 py-3">
                   <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!english && english.enabled !== false} onChange={(event) => {
                     const enabled = event.target.checked;

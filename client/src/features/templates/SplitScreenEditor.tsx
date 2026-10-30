@@ -1,9 +1,10 @@
 /** 同屏布局编辑：位置用画布百分比，圆角和内边框用 1080×1920 基准像素。 */
 import { Input } from "@/components/ui/input";
+import type { ReactNode } from "react";
 import { defaultSplitScreen, type SplitScreen, type ScreenWindow } from "./splitScreen";
 
 /** 参数直接保存在草稿；原生表单和保存入口共同阻止无效值提交。 */
-export function SplitScreenEditor({ value, removeBackground = false, onChange }: { value?: SplitScreen; removeBackground?: boolean; onChange: (value: SplitScreen) => void }) {
+export function SplitScreenEditor({ value, removeBackground = false, onChange, onRemoveBackgroundChange, children }: { value?: SplitScreen; removeBackground?: boolean; onChange: (value: SplitScreen) => void; onRemoveBackgroundChange?: (enabled: boolean) => void; children?: ReactNode }) {
   const layout = value ?? defaultSplitScreen();
   const number = (label: string, value: number, onChange: (n: number) => void, max = 100, min = 0) => <label className="space-y-1 text-xs">{label}<Input aria-label={label} type="number" min={min} max={max} step="any" required value={Number.isNaN(value) ? "" : value} onChange={(event) => onChange(event.target.valueAsNumber)} /></label>;
   const window = (role: "material" | "avatar", label: string) => {
@@ -29,6 +30,11 @@ export function SplitScreenEditor({ value, removeBackground = false, onChange }:
       <label className="block space-y-1 text-xs">同屏布局<select aria-label="同屏布局" className="h-8 w-full rounded-md border bg-background px-2" value={layout.layout} onChange={(event) => onChange({ ...layout, layout: event.target.value as SplitScreen["layout"] })}>
         <option value="split">分区同屏</option><option value="overlay">人物叠加</option><option value="circle">圆形头像</option>
       </select></label>
+      {children}
+      {onRemoveBackgroundChange && <div className="space-y-2">
+        <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={removeBackground} disabled={layout.layout === "circle"} onChange={(event) => onRemoveBackgroundChange(event.target.checked)} />同屏时去除数字人背景</label>
+        <p className="text-xs leading-relaxed text-muted-foreground">{layout.layout === "circle" ? "圆形头像保留圆内背景，不使用人物抠像。" : "SDK 本地抠像仅供预览，与云端成片可能不一致；抠像时圆角和矩形边框不生效。"}</p>
+      </div>}
       {layout.layout === "split" ? <>
         <label className="flex items-center justify-between gap-3 text-xs">背景颜色<Input className="w-16" type="color" aria-label="同屏背景颜色" value={layout.backgroundColor} onChange={(event) => onChange({ ...layout, backgroundColor: event.target.value })} /></label>
         {window("material", "素材")}

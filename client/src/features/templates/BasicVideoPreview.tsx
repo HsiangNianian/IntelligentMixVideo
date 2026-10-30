@@ -4,7 +4,9 @@
  */
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import { SplitScreenPreview, type SplitPreviewHandle } from "./SplitScreenPreview";
-import type { SplitScreen } from "./splitScreen";
+import type { ScreenPoint, SplitScreen } from "./splitScreen";
+import type { AvatarEffects } from "./avatarEffects";
+import { previewOpeningDuration } from "./avatarPreview";
 import { previewVideos } from "./media";
 import type { PreviewMedia } from "./model";
 import type { ResolvedTimeline } from "./tracks";
@@ -21,13 +23,15 @@ export function clipAt(clips: ResolvedTimeline["clips"], time: number) {
  * 基础播放器只依赖已读取的媒体与解析后的片段区间，不创建 SDK 或请求授权。
  * 每段一个预加载的静音视频（与 IMS 预览一样不出声），换段时切换显示而不重新加载；每段只播到解析出的段长。
  */
-export function BasicVideoPreview({ ref, media, resolved, order, layout, avatarSource = 0, onTime, onReady, onError, onPlayingChange, onEnd }: {
+export function BasicVideoPreview({ ref, media, resolved, order, layout, avatarSource = 0, avatarEffects, previewCenter, onTime, onReady, onError, onPlayingChange, onEnd }: {
   ref: Ref<PlaybackHandle>;
   media: PreviewMedia;
   resolved: ResolvedTimeline;
   order: number[];
   layout?: SplitScreen;
   avatarSource?: number;
+  avatarEffects?: AvatarEffects;
+  previewCenter?: ScreenPoint;
   /** 播放时每帧回报一次，定位与换段时立即回报。 */
   onTime: (time: number) => void;
   onReady: () => void;
@@ -36,6 +40,7 @@ export function BasicVideoPreview({ ref, media, resolved, order, layout, avatarS
   onEnd: () => void;
 }) {
   const split = useRef<SplitPreviewHandle>(null);
+  const openingDuration = previewOpeningDuration(avatarEffects, resolved.duration);
   const sources = useMemo(() => previewVideos(media), [media]);
   const videos = useRef<(HTMLVideoElement | null)[]>([]);
   const callbacks = useRef({ onTime, onReady, onError, onPlayingChange, onEnd });
@@ -135,7 +140,7 @@ export function BasicVideoPreview({ ref, media, resolved, order, layout, avatarS
     stop(true);
     show(0, 0);
     callbacks.current.onTime(0);
-  }, [media, order, resolved, layout, avatarSource]);
+  }, [media, order, resolved, layout, avatarSource, avatarEffects, previewCenter]);
 
   useEffect(() => () => stop(false), []);
 
@@ -154,5 +159,5 @@ export function BasicVideoPreview({ ref, media, resolved, order, layout, avatarS
         if (state.current.playing) stop(true);
         callbacks.current.onError();
       }} />;
-  })}{layout?.enabled && <SplitScreenPreview ref={split} layout={layout} media={media} source={order[active]} avatar={avatarSource} onError={onError} />}</>;
+  })}{(layout?.enabled || openingDuration > 0) && <SplitScreenPreview ref={split} layout={layout} media={media} source={order[active]} avatar={avatarSource} avatarEffects={avatarEffects} previewCenter={previewCenter} openingDuration={openingDuration} onError={onError} />}</>;
 }

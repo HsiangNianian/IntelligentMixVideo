@@ -1,4 +1,4 @@
-"""SDK 5.2.2 的圆角适配：只生成黑白几何蒙版，不接收或处理用户媒体。"""
+"""SDK 5.2.2 的圆角与圆形羽化蒙版：只处理几何参数，不接收用户媒体。"""
 
 import math
 import subprocess
@@ -28,6 +28,31 @@ class PreviewMask(BaseModel):
         return self
 
 
+class PreviewCircleMask(BaseModel):
+    """圆心按源宽高归一化，半径按源短边归一化；只属于预览资源。"""
+
+    width: int = Field(ge=2, le=32768)
+    height: int = Field(ge=2, le=32768)
+    x: float = Field(ge=0, le=1, allow_inf_nan=False)
+    y: float = Field(ge=0, le=1, allow_inf_nan=False)
+    radius: float = Field(gt=0, le=0.5, allow_inf_nan=False)
+    feather: float = Field(ge=0, le=0.2, allow_inf_nan=False)
+    seconds: int = Field(gt=0, le=2147483647)
+
+
+def circle_mask_image(width: int, height: int, x: float, y: float, radius: float, feather: float) -> Image.Image:
+    """圆内白、圆外黑，软边在圆内线性过渡；与客户端 CSS 使用同一几何，不模拟 IMS 私有算法。"""
+    import numpy as np
+
+    factor = min(1, 1920 / max(width, height))
+    w, h = max(2, math.floor(width * factor / 2) * 2), max(2, math.floor(height * factor / 2) * 2)
+    yy, xx = np.ogrid[:h, :w]
+    r = radius * min(w, h)
+    distance = np.hypot(xx + 0.5 - x * w, yy + 0.5 - y * h)
+    alpha = np.clip((r - distance) / max(1, 2 * r * feather), 0, 1)
+    return Image.fromarray(np.round(alpha * 255).astype("uint8"))
+
+
 def mask_image(width: int, height: int, box_width: int, box_height: int, radius: float) -> Image.Image:
     """蒙版在 SDK 源视频坐标里生效；反算 Cover 的中心裁剪，保持输出圆角像素不变。"""
     factor = min(1, 1920 / max(width, height))
@@ -46,9 +71,20 @@ def mask_image(width: int, height: int, box_width: int, box_height: int, radius:
 @lru_cache(maxsize=32)
 def mask_video(width: int, height: int, box_width: int, box_height: int, radius: float, seconds: int) -> bytes:
     """单帧 MP4 持续整个源区间；有限内存缓存避免拖动位置时重复编码，不留下临时文件。"""
+    return encode_mask(mask_image(width, height, box_width, box_height, radius), seconds)
+
+
+@lru_cache(maxsize=32)
+def circle_mask_video(width: int, height: int, x: float, y: float, radius: float, feather: float, seconds: int) -> bytes:
+    """同一圆形参数复用编码产物；调整圆心或羽化会得到独立的资源缓存键。"""
+    return encode_mask(circle_mask_image(width, height, x, y, radius, feather), seconds)
+
+
+def encode_mask(image: Image.Image, seconds: int) -> bytes:
+    """将两类几何蒙版封装成单帧长时长 MP4，释放临时文件。"""
     with TemporaryDirectory(prefix="imv-preview-mask-") as directory:
         root = Path(directory)
-        mask_image(width, height, box_width, box_height, radius).save(root / "mask.png")
+        image.save(root / "mask.png")
         # 单帧时长是整数秒；固定秒级封装时基，避免长时长乘默认刻度后溢出。
         subprocess.run([
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-framerate", f"1/{seconds}",
