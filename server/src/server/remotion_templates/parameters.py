@@ -146,23 +146,23 @@ def patch_parameters(
 ) -> tuple[TemplateCandidate, TemplateSpec]:
     """Modify only declared controls, preserve code bytes, and update acceptance deterministically.
 
-    字效的关键词选项不能被修订为开启（``keyword_default_issues``）：关键词样式由云端模板按摆放设置。
+    字效修订后的完整默认值中，关键词选项必须保持关闭（``keyword_default_issues``）：关键词样式由云端模板按摆放设置。
     """
     validate_candidate(candidate, spec)
     if spec.schema_version == "2":
         from .tools.schema import merge_parameters, validate_parameters
         from .categories import FONT_PARAMETERS, keyword_default_issues
-        # 关键词样式由云端模板按摆放设置：参数修订不能把关键词选项保存成开启，否则这个版本无法保存到资产。
-        if spec.sprite is not None and spec.sprite.kind == "text" and (issues := keyword_default_issues(patch)):
-            expected = "；".join(f"{name} 应为 {json.dumps(off, ensure_ascii=False)}" for name, off in issues)
-            raise ValueError(f"关键词样式由云端模板按摆放设置，关键词参数的默认值必须保持关闭（{expected}）。"
-                             "本地预览不受影响，请恢复为关闭后再保存配置")
         config = merge_parameters(candidate.default_config, patch)
         try:
             validate_parameters(candidate.config_schema, config)
         except ValidationError as exc:
             # Callers map ValueError to a 422 or a failed job; a raw ValidationError surfaced as an HTTP 500.
             raise ValueError(f"invalid parameter value: {exc.message}") from exc
+        # 检查合并后的完整默认值，不能只检查本次补丁：旧版本未修改的开启值同样会让新版本无法保存到资产。
+        if spec.sprite is not None and spec.sprite.kind == "text" and (issues := keyword_default_issues(config)):
+            expected = "；".join(f"{name} 应为 {json.dumps(off, ensure_ascii=False)}" for name, off in issues)
+            raise ValueError(f"关键词样式由云端模板按摆放设置，关键词参数的默认值必须保持关闭（{expected}）。"
+                             "本地预览不受影响，请恢复为关闭后再保存配置")
         from .fonts import require_family
 
         for name in FONT_PARAMETERS:

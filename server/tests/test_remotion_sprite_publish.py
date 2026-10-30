@@ -24,7 +24,7 @@ from sqlalchemy import Engine, select, update
 
 from server.app import app
 from server.remotion_templates import parameters, sprite_events, sprite_store, sprites
-from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR
+from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, category_problems
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.object_store import ObjectStoreError, ZosObjects
@@ -760,7 +760,7 @@ def test_a_text_version_whose_keyword_options_default_to_on_is_refused(published
 
 
 def test_a_parameter_revision_cannot_turn_a_keyword_option_on(published) -> None:
-    """参数修订把关键词选项保存成开启会被拒绝（否则这个版本无法保存到资产）；恢复关闭或修改其他参数照常保存。"""
+    """参数修订把关键词选项保存成开启会被拒绝（否则这个版本无法保存到资产）；恢复关闭时修改其他参数照常保存。"""
     with pytest.raises(ValueError) as caught:
         parameters.patch_parameters(published.version.candidate, published.version.spec, {"keywordSize": 80})
     assert "关键词样式由云端模板按摆放设置" in str(caught.value) and "keywordSize 应为 0" in str(caught.value)
@@ -769,6 +769,21 @@ def test_a_parameter_revision_cannot_turn_a_keyword_option_on(published) -> None
         published.version.candidate, published.version.spec, {"text": "新标题", "keywordSize": 0},
     )
     assert (candidate.default_config["text"], candidate.default_config["keywordSize"]) == ("新标题", 0)
+
+
+def test_a_parameter_revision_cannot_keep_an_old_keyword_option_on(published) -> None:
+    """旧版本已有开启值、本次只改其他参数也会产生不可发布版本，因此检查合并后的完整默认值而不是补丁。"""
+    base = published.version.model_copy(deep=True)
+    base.candidate.default_config["keywordSize"] = 64
+    base.spec.sprite.default_parameters["keywordSize"] = 64
+    with pytest.raises(ValueError) as caught:
+        parameters.patch_parameters(base.candidate, base.spec, {"text": "新标题"})
+    assert "keywordSize 应为 0" in str(caught.value)
+    fixed, _ = parameters.patch_parameters(
+        base.candidate, base.spec, {"text": "新标题", "keywordSize": 0},
+    )
+    assert fixed.default_config["keywordSize"] == 0
+    assert not category_problems("text", fixed.config_schema, {item.name for item in base.spec.sprite.bindings}, fixed.default_config)
 
 
 def test_a_text_version_must_publish_its_keywords_field(published) -> None:

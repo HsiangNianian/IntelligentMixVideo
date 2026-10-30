@@ -366,6 +366,30 @@ test("保存资产被关键词默认值拒绝时可以请 Agent 修复", async (
   expect(instructions[0]).toContain("保持现有外观");
 });
 
+// 旧版本的关键词默认值未关闭时，即使只修改其他参数也必须先恢复关闭；仅看补丁会漏掉这个不可发布的完整默认值。
+test("旧版本仅修改其他参数时仍要求恢复关键词默认值", async () => {
+  const writes: string[] = [];
+  await history((path, options) => {
+    if (/^\/versions\/version-\d+$/.test(path)) {
+      const version = remotionVersion(path.split("/")[2], { keywordSize: 64 });
+      version.spec.schema_version = "2";
+      version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywordSize", title: "关键词字号" }] };
+      version.candidate.config_schema.properties.keywordSize = { type: "integer", minimum: 0, maximum: 300, title: "关键词字号" };
+      return Response.json(version);
+    }
+    if (path === "/works/work-1/messages") {
+      writes.push(String(options?.body ?? ""));
+      return Response.json(remotionJob("running"));
+    }
+  });
+  const { result } = renderHook(() => useTemplateSession(() => {}));
+  await waitFor(() => expect(result.current.version?.id).toBe("version-2"));
+  act(() => result.current.change("size", 88));
+  act(() => result.current.saveParameters());
+  expect(result.current.error).toContain("keywordSize 应为 0");
+  expect(writes).toHaveLength(0);
+});
+
 // 每次成功关联各自聊天结果；初始折叠，旧版本复制不能读成当前代码，查看版本不写服务端。
 test("成功卡片默认折叠，复制对应版本并切换只读预览", async () => {
   await history((path) =>

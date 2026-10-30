@@ -225,7 +225,15 @@ export function RemotionWorkspace() {
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-sm">
           <p role="alert" className="min-w-0 flex-1 text-destructive">{publishError}</p>
           {!historical && !locked && !session.dirty && publishError.startsWith(KEYWORD_DEFAULTS_ERROR) && (
-            <Button variant="outline" size="sm" onClick={() => { setPublishError(""); session.send(KEYWORD_REPAIR); }}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                // 只有成功开始入队才关闭原发布错误；被会话锁或历史状态拦住时保留原因供用户处理。
+                if (session.send(KEYWORD_REPAIR)) setPublishError("");
+                else setPublishError("现在无法让 Agent 修复，请完成当前任务或先返回最新版本后重试。");
+              }}
+            >
               让 Agent 修复
             </Button>
           )}

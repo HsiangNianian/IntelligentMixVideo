@@ -53,21 +53,30 @@ test("会话核心批量保存并拒绝保存期间的修改", async () => {
     });
   });
   const { result } = renderHook(() => useTemplateSession(() => {}));
-  act(() => result.current.send("静态标题"));
+  let initialSend: boolean | undefined;
+  act(() => {
+    initialSend = result.current.send("静态标题");
+  });
+  expect(initialSend).toBe(true);
   await waitFor(() => expect(result.current.version?.id).toBe("version-1"));
   const code = result.current.code;
+  let dirtySend: boolean | undefined;
   act(() => {
     result.current.change("size", 80);
     result.current.change("size", 96);
-    result.current.send("不能发出的修改");
+    dirtySend = result.current.send("不能发出的修改");
   });
+  expect(dirtySend).toBe(false);
   expect(result.current.values.size).toBe(96);
   expect(edits).toHaveLength(0);
+  let busySend: boolean | undefined;
   act(() => {
     result.current.saveParameters();
+    busySend = result.current.send("保存期间不能发出的修改");
     result.current.saveParameters();
     result.current.change("size", 120);
   });
+  expect(busySend).toBe(false);
   await waitFor(() => expect(edits).toHaveLength(1), { timeout: 2000 });
   expect(edits[0].size).toBe(96);
   await act(async () => finish!(Response.json(remotionJob("failed"))));

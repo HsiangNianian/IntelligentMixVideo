@@ -646,8 +646,8 @@ title/subtitle keyword fields: `keywords`, `keywordBold`/`Italic`/`Underline`/`S
 keeps the text colour) and `keywordSize` (0 keeps the font size, otherwise 12–300; placements refuse 1–11), with `keywords` items holding at least 12
 characters (the segmentation keywords the bus forwards). Their
 defaults must be off (`[]`, `false`, `""`, `0`), checked by `sprite.create` and again at publish. A parameter revision
-(`保存配置`) also refuses to store a keyword option as on, and a refused publication names the options to restore and asks
-for a new version (saved versions are immutable; a previewed historical version is read-only). An older effect can also be
+(`保存配置`) validates the complete merged defaults, so every keyword option must remain off even when an old version
+supplied it untouched; a refused publication names the options to restore and asks for a new version (saved versions are immutable; a previewed historical version is read-only). An older effect can also be
 repaired in chat: the workspace's refusal banner offers to ask the Agent to regenerate it, and `sprite.create` tells the
 Agent to keep the keyword look in the keyword Preset's own style parameters while giving the options their off defaults,
 so an unused keyword option keeps the plain text style. A text Sprite fixes `text_prop` to `text` and `keywords_prop` to `keywords` (text versions now always bind it;
