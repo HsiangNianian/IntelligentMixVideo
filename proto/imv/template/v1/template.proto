@@ -244,6 +244,7 @@ message AvatarEffects {
 }
 
 // 不透明双色渐变；范围表示沿方向完成颜色过渡所占的栏高百分比。
+// 消息一旦提供，四个字段必须完整填写（包括 enabled=false）；不支持仅发送开关。
 message FrameMaskGradient {
   optional bool enabled = 1;
   optional string end_color = 2;
@@ -318,7 +319,7 @@ message TemplateRecord {
   // 缺省为未启用同屏的已有模板。
   SplitScreen split_screen = 12;
   AvatarEffects avatar_effects = 13;
-  // 上下纯色蒙版；旧模板省略此字段。
+  // 上下蒙版，每栏可选纯色或渐变；旧模板省略此字段。
   FrameMask frame_mask = 14;
 }
 

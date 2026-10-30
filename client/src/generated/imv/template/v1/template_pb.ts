@@ -870,6 +870,7 @@ export const AvatarEffectsSchema: GenMessage<AvatarEffects> = /*@__PURE__*/
 
 /**
  * 不透明双色渐变；范围表示沿方向完成颜色过渡所占的栏高百分比。
+ * 消息一旦提供，四个字段必须完整填写（包括 enabled=false）；不支持仅发送开关。
  *
  * @generated from message imv.template.v1.FrameMaskGradient
  */
@@ -1147,7 +1148,7 @@ export type TemplateRecord = Message<"imv.template.v1.TemplateRecord"> & {
   avatarEffects?: AvatarEffects | undefined;
 
   /**
-   * 上下纯色蒙版；旧模板省略此字段。
+   * 上下蒙版，每栏可选纯色或渐变；旧模板省略此字段。
    *
    * @generated from field: imv.template.v1.FrameMask frame_mask = 14;
    */
