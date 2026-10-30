@@ -6,9 +6,10 @@ import { SaveTemplateRequestSchema, SaveTemplateResponseSchema } from "@/generat
 import { ListSpritesResponseSchema, SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { activeDraft, boundText, newDraft, toDraft } from "@/features/templates/model";
+import { defaultAvatarEffects } from "@/features/templates/avatarEffects";
 import { addTrack, previewContext, resolveTemplate, setBilingual, setTrackTiming, trackDraft, updateTrack, validateTemplateTracks } from "@/features/templates/tracks";
 import { addClip, bindClip, setClipParameter, timeClips, validateClipSlots } from "@/features/templates/clips";
-import { buildPreviewRows, mergeSpriteRows, remotionTexts } from "@/features/templates/timeline";
+import { buildPreviewRows, buildTimeline, mergeSpriteRows, remotionTexts } from "@/features/templates/timeline";
 import { resetTextTarget } from "@/features/templates/effects";
 import { saveTemplate } from "@/features/templates/api";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
@@ -32,6 +33,19 @@ test("双语字效绑定中文对象并同时替换中英文字", () => {
   expect(buildTestTimeline(draft, []).SubtitleTracks).toHaveLength(2);
   // 英文已由双语字效显示，不能再给英文对象绑字效。
   expect(() => addClip(draft, bilingual, [bilingual], "subtitle", "en")).toThrow("中英两种语言");
+});
+
+// 场景：数字人预览与双语字效共存时，圆形取景仍使用指定圆心，中英字幕仍统一由字效显示。
+test("数字人取景与双语字幕替换同时生效", () => {
+  const bilingual: SpriteAsset = { ...asset, lines: 4, bilingual: true };
+  let draft = addClip(setBilingual(newDraft(), "subtitle", true), bilingual, [bilingual], "subtitle");
+  draft = { ...draft, avatar_effects: { ...defaultAvatarEffects(), openingEnabled: true, openingDuration: 2 } };
+  const timeline = buildTimeline(draft, [], sampleMedia, resolveTemplate(draft, previewContext(sampleMedia)), undefined, 0,
+    { x: 30, y: 40 }, new Set([draft.clips[0].id]));
+  expect(timeline.SubtitleTracks).toHaveLength(1);
+  const mask = new URL(timeline.openingTracks[1].VideoTrackClips[0].MaskVideoURL!);
+  expect(mask.searchParams.get("x")).toBe("0.3");
+  expect(mask.searchParams.get("y")).toBe("0.4");
 });
 
 // 场景：从未开启没有英文；关闭后保留英文外观与字效，重新开启恢复同一个对象，标题和字幕开关独立。
