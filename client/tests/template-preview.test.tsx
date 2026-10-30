@@ -173,6 +173,28 @@ function timers() {
   };
 }
 
+// 非蒙版修改也会回零；即使新时间线尚未完成，也必须先取消旧定位计时器。
+test("修改标题在重新载入时间线前取消定位超时", async () => {
+  const draft = newDraft();
+  const { view, player } = await mountWithSdk(draft);
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  player.currentTime = 3;
+  await act(async () => player.emit("render"));
+  const { last } = timers();
+  const clear = spyOn(globalThis, "clearTimeout");
+  const changed = { ...draft, tracks: draft.tracks.map((track) => track.target === "title" ? { ...track, editor: { ...track.editor, title: "新的标题" } } : track) };
+  view.rerender(<TemplatePreview {...props(changed)} />);
+  const seekTimer = last(10_000);
+  expect(seekTimer).toBeDefined();
+  await waitFor(() => expect(player.setTimeline).toHaveBeenCalledTimes(2));
+  expect(clear).toHaveBeenCalledWith(seekTimer);
+  expect(screen.queryByText(/已切换基础视频预览/)).toBeNull();
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  expect(screen.getByLabelText<HTMLInputElement>("预览进度").value).toBe("0");
+});
+
 // 连续拖动时按固定间隔绘制最新参数，不能退化为等停止输入才绘制的防抖；卸载取消尾部任务。
 test("降级蒙版每 250ms 更新最新渐变并清理待绘制任务", async () => {
   const context = { fillRect() {}, fillStyle: "" };
