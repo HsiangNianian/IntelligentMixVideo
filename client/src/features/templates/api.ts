@@ -114,7 +114,7 @@ function toTemplate(record: TemplateRecord): Template {
 }
 
 /** 有界云端请求；读取可取消，写入失败由用户确认后重试。 */
-async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal, timeoutMessage = "请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。"): Promise<T> {
   const controller = new AbortController();
   let timedOut = false;
   const timeout = setTimeout(() => {
@@ -129,7 +129,7 @@ async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: Abor
   } catch (error) {
     if (signal?.aborted) throw error;
     if (timedOut)
-      throw new Error("请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。");
+      throw new Error(timeoutMessage);
     if (error instanceof TypeError)
       throw new Error("无法连接服务端，请确认 API 已启动后重试。");
     throw error;
@@ -282,4 +282,9 @@ export function deleteTemplate(id: string): Promise<void> {
   return cloud(async (requestSignal) => {
     await cloudRequest(`/template/${encodeURIComponent(id)}`, "DELETE", requestSignal);
   });
+}
+
+/** 有界、可取消地读取图片；blob 由预览组件负责解码及释放。 */
+export function readFrameMaskImage(imageId: string, signal: AbortSignal): Promise<Blob> {
+  return cloud(async (requestSignal) => (await cloudRequest(`/template/frame-mask-images/${encodeURIComponent(imageId)}`, "GET", requestSignal)).blob(), signal, "蒙版图片读取超时，请刷新预览重试。");
 }

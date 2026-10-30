@@ -383,8 +383,8 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
 }
 
 /** SDK 将专用轨道追加到视频之后；统一传入从下到上的图层，保证文字位于滤镜和 VFX 上方。 */
-export function playerTimeline(timeline: ReturnType<typeof buildTimeline>, transitionFrames: ReadonlyMap<string, string> = new Map()) {
-  const mask = frameMaskImage(timeline.frameMask, timeline.FECanvas.Width, timeline.FECanvas.Height);
+export function playerTimeline(timeline: ReturnType<typeof buildTimeline>, transitionFrames: ReadonlyMap<string, string> = new Map(), maskImages?: ReadonlyMap<string, HTMLImageElement>) {
+  const mask = frameMaskImage(timeline.frameMask, timeline.FECanvas.Width, timeline.FECanvas.Height, maskImages);
   const videos = timeline.VideoTracks[0].VideoTrackClips;
   const transitionTracks = timeline.transitions.map(({ boundary, start, end, effect }) => ({
     VideoTrackClips: [videos[boundary - 1], videos[boundary]].map((video, index) => {
