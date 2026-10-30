@@ -57,8 +57,10 @@ PORT=8010 uv run --locked server
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
 | GET | `/template/preview-mask` | 几何圆角蒙版 MP4，供 SDK 实时预览；不访问用户媒体或数据库 |
 | GET | `/template/preview-circle-mask` | 头部圆形与羽化蒙版 MP4，仅接收预览几何，不分析人脸 |
+| POST | `/template/frame-mask-images` | multipart `file` 上传静态蒙版图片，成功返回 201 与 `{ "imageId": "内容哈希" }` |
+| GET | `/template/frame-mask-images/{image_id}` | 按 64 位小写十六进制引用读取 PNG，不可变缓存；非法引用 422、缺失 404、存储故障 503 |
 
-GET 与 POST 成功响应默认使用 `application/json`，采用 Protobuf JSON 映射：字段为 camelCase（如 `templateId`、`createdAt`、`effectIds`），时间为 UTC RFC 3339 字符串；列表为 `{"templates":[...]}`，空库为 `{"templates":[]}`，详情和保存为 `{"template":{...}}`，轨道保留 `template.tracks.tracks` 结构。空数组、空映射和非 optional 标量默认值保留，未设置的 optional 字段省略。POST 请求仍使用 `application/x-protobuf`，JSON 请求返回 415，损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422；错误响应使用 JSON，删除成功仍为 204 空响应。为兼容旧客户端，单一 `Accept: application/x-protobuf` 仍返回 Protobuf 二进制；其他请求（含省略 Accept、`*/*` 或 `application/json`）默认返回 JSON，成功响应带 `Vary: Accept`。新客户端按响应 `Content-Type` 解析 JSON 或旧服务端的 Protobuf 二进制，JSON 解析忽略未知字段；仅响应格式迁移不要求两端同时升级。
+模板列表、详情与保存的成功响应默认使用 `application/json`，采用 Protobuf JSON 映射：字段为 camelCase（如 `templateId`、`createdAt`、`effectIds`），时间为 UTC RFC 3339 字符串；列表为 `{"templates":[...]}`，空库为 `{"templates":[]}`，详情和保存为 `{"template":{...}}`，轨道保留 `template.tracks.tracks` 结构。空数组、空映射和非 optional 标量默认值保留，未设置的 optional 字段省略。POST 请求仍使用 `application/x-protobuf`，JSON 请求返回 415，损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422；错误响应使用 JSON，删除成功仍为 204 空响应。为兼容旧客户端，单一 `Accept: application/x-protobuf` 仍返回 Protobuf 二进制；其他请求（含省略 Accept、`*/*` 或 `application/json`）默认返回 JSON，成功响应带 `Vary: Accept`。新客户端按响应 `Content-Type` 解析 JSON 或旧服务端的 Protobuf 二进制，JSON 解析忽略未知字段；仅响应格式迁移不要求两端同时升级。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
 
 列表返回逐条校验的 `TemplateSummary`，包含名称、ID、更新时间、有效模板的标题/字幕及对象数量，无效记录通过 `validationError` 说明原因。无效记录的详情读取返回 409，删除仍按 ID 执行，不影响同库有效模板。保存必须包含中文标题和中文字幕各一个；双语模板另有对应的英文对象。列表消息与转场字段需要客户端、服务端一起升级；已有记录不自动转换。
@@ -77,9 +79,15 @@ GET 与 POST 成功响应默认使用 `application/json`，采用 Protobuf JSON 
 
 `SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置（省略的蒙版、同屏和数字人效果字段除外）。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
-上下蒙版单独保存在模板级 `frame_mask`（Protobuf JSON 为 `frameMask`），含 `top`、`bottom`，各自必须提供 `enabled`、`height`（画布高度百分比，有限数 0～50）与 `color`（`#RRGGBB`）。新建省略不启用；旧客户端更新省略该字段时保留原配置，显式关闭两栏仅停用并保留参数；保存请求携带空的 `frame_mask` 消息（无 `top`/`bottom`）明确移除配置，之后详情不再返回此字段。新客户端仅在保存基线已有蒙版、当前草稿已移除时发送空消息；原本无蒙版的普通保存仍省略字段、兼容旧服务端，移除功能需同步升级两端。使用蒙版需升级两端，无新增表或接口。合成按任务快照生成全画布透明 PNG，两栏像素高为 `floor(height * percent / 100 + 0.5)`；在线程池生成并经现有 ZOS 上传/公开读取校验，保存 `frame_mask_url` 供任务恢复复用。两栏全关或像素高度为零不上传；上传失败不提交 IMS。图片通过 `VideoTracks` 的 `Type=Image` 全程叠在主体视频上，后续 Remotion、全局效果和文字仍在其上方，不改视频构图或文字内容。对象路径为 `imv/video_composition/<taskId>-mask.png`，操练场使用 `imv/playground/`。
+上下蒙版单独保存在模板级 `frame_mask`（Protobuf JSON 为 `frameMask`），含 `top`、`bottom`，各自必须提供 `enabled`、`height`（画布高度百分比，有限数 0～50）与 `color`（`#RRGGBB`）。新建省略不启用；旧客户端更新省略该字段时保留原配置，显式关闭两栏仅停用并保留参数；保存请求携带空的 `frame_mask` 消息（无 `top`/`bottom`）明确移除配置，之后详情不再返回此字段。新客户端仅在保存基线已有蒙版、当前草稿已移除时发送空消息；原本无蒙版的普通保存仍省略字段、兼容旧服务端，移除功能需同步升级两端。使用蒙版需升级两端，无新增表。合成按任务快照生成全画布透明 PNG，两栏像素高为 `floor(height * percent / 100 + 0.5)`；在线程池生成并经现有 ZOS 上传/公开读取校验，保存 `frame_mask_url` 供任务恢复复用。两栏全关或像素高度为零不上传；上传失败不提交 IMS。图片通过 `VideoTracks` 的 `Type=Image` 全程叠在主体视频上，后续 Remotion、全局效果和文字仍在其上方，不改视频构图或文字内容。对象路径为 `imv/video_composition/<taskId>-mask.png`，操练场使用 `imv/playground/`。
 
 每栏可选 `gradient`，包含必填的 `enabled`、`endColor`（`#RRGGBB`）、`direction`（`up` / `down`）和 `range`（整数 1～100）。`color` 是起始色；100% 整栏过渡，50% 在前半栏完成、其余保持结束色。缺少 gradient 保持纯色；旧客户端发送栏但省略 gradient 时保留已有值，显式 enabled=false 切回纯色并保存参数。栏内 Alpha=255，中部为 0。栏高 N、行号 y，沿方向距离 d 为 y 或 N-1-y，比例 t=min(1,d/(max(1,N-1)×range/100))，RGB 通道使用 floor(start+(end-start)×t+0.5)，与客户端逐行像素一致；零高度不绘制，单像素用起始色。渐变不改变既有任务快照、上传、恢复或图片轨道。
+
+每栏可选 `image_id`（JSON `imageId`）：非空值优先于颜色和渐变，省略时保留旧客户端未知的已有图片，显式空串清除该栏图片。新客户端保存时显式传值或空串，避免误恢复已清除图片。关闭栏及高度为零仍保存引用；模板保存检查提交的非空引用可读，缺图不写入。
+
+上传只支持静态 PNG、JPEG、WebP，固定限制 10 MiB、2000 万像素，存储请求超时 20 秒；限制定义在 `template/images.py` 的代码常量中，不读取环境变量。文件字节超限返回 413，非法格式、动图、损坏或像素超限返回 422，存储故障返回 503。真实解码后纠正 EXIF 方向、居中裁成 9:16，保留裁剪区原像素及 Alpha，移除元数据，不缩到参考图的 2048 上限。预览与合成把这张 PNG 整图拉伸到单栏宽高，初次上传也允许纵向压扁，透明区域不垫颜色；停用或零像素栏不读取，启用图片缺失必须报错，不能静默输出缺图成片。
+
+蒙版图片复用服务端 ZOS 配置（需完整配置且支持公开读取），以规范化 PNG 的 SHA-256 为引用，路径 `imv/template-mask/<imageId>.png`；GET 仅代理该固定目录并校验内容哈希，不接受外部 URL。相同引用的内容不变，替换生成新引用，模板编辑不改变已冻结任务。上传只返回资源，不自动保存模板；放弃草稿、切换模式、替换或删除模板都不立即删图片。首版不做自动回收，以保留已保存模板、撤销编辑与任务恢复所需资源；不新增数据库表或独立图片素材库。
 
 顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成调用切片时传入请求 `title`，标题局部样式仅作用于返回的 `title_keyword` 首次出现的位置；返回值缺失或为空时保留标题原文，不回退模板 `titleKeyword` 或标题前两个字。旧快照缺少标题词时不高亮；无声模式通过仅标题提词取得关键词；模板预览仍沿用原规则。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
 
