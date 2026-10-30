@@ -1,6 +1,7 @@
 /** 核心测试共用的固定目录和模板响应；纯本地数据，不加载 SDK 或数据库。 */
-import { create, toJson } from "@bufbuild/protobuf";
+import { create, toBinary, toJson } from "@bufbuild/protobuf";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
+import { ListSpritesResponseSchema } from "@/generated/imv/sprite/v1/sprite_pb";
 import {
   GetTemplateResponseSchema, ListTemplatesResponseSchema, SaveTemplateResponseSchema,
   TemplateRecordSchema, type TemplateRecord,
@@ -17,8 +18,8 @@ export const sampleMedia: PreviewMedia = [
 ];
 
 /** 使用真实计算和 SDK 转换函数，验证同一输入经过完整转换的结果。 */
-export function buildTestTimeline(draft: Draft, assets: EffectAsset[], media = sampleMedia, order = [0, 1, 2]) {
-  return buildTimeline(draft, assets, media, resolveTemplate(draft, previewContext(media, order)), order);
+export function buildTestTimeline(draft: Draft, assets: EffectAsset[], media = sampleMedia, order = [0, 1, 2], bilingual?: ReadonlySet<string>) {
+  return buildTimeline(draft, assets, media, resolveTemplate(draft, previewContext(media, order)), order, 0, undefined, bilingual);
 }
 
 /** 从有效模板提取协议规定的列表摘要。 */
@@ -126,4 +127,10 @@ export function jsonTemplateResponse(template: Template, kind: "get" | "save", s
   const schema = kind === "get" ? GetTemplateResponseSchema : SaveTemplateResponseSchema;
   const message = create(schema, { template: record });
   return Response.json(toJson(schema, message, { alwaysEmitImplicit: true }), { status });
+}
+
+/** 空的 AI 资产目录（Protobuf）：选中标题或字幕时右栏会读取目录，与资产无关的用例用它，避免多出一次失败的请求。 */
+export function emptySpriteCatalog(): Response {
+  return new Response(Uint8Array.from(toBinary(ListSpritesResponseSchema, create(ListSpritesResponseSchema, {}))),
+    { headers: { "Content-Type": "application/x-protobuf" } });
 }

@@ -186,6 +186,9 @@ TWO_TIER_DEFAULTS = {
     "line2Color": "#F5B93C", "line2SizeRatio": 1, "line2FontFamily": "Zed Display", "line2FontWeight": 700,
 }
 TIER_NAMES = [f"line{tier}{suffix}" for tier in (1, 2) for suffix in ("Color", "SizeRatio", "FontFamily", "FontWeight")]
+# 双语字效（双语字幕）：双栏之上再声明英文文字 `textEn`，默认文字是中英各一行。
+BILINGUAL = {**TWO_TIER, "textEn": {"type": "string", "minLength": 1, "maxLength": 100}}
+BILINGUAL_DEFAULTS = {**TWO_TIER_DEFAULTS, "text": "今日灵感", "textEn": "Today's idea"}
 
 
 def generated_problems(properties: dict, defaults: dict = TWO_TIER_DEFAULTS) -> list[tuple[str, str]]:
@@ -210,6 +213,26 @@ def test_generated_two_tier_text_uses_the_fixed_tier_parameters():
     # The free-named per-line style of the earlier generations: every fixed tier parameter is missing and the shared ones must go.
     loose = {**MULTI_LINE, "subtitleColor": COLOR}
     assert [name for name, _ in generated_problems(loose, {**MULTI_LINE_DEFAULTS, "subtitleColor": "#FF00FF"})] == [*TIER_NAMES, "color", "fontWeight"]
+
+
+def test_a_bilingual_text_is_two_tiers_with_the_english_line():
+    """双语字效（双语字幕）：声明英文文字 `textEn` 的字效必须是双栏，默认文字是中文一行加英文一行；用户打开「双语字幕」时
+    生成路径要求它，没打开时不要求，普通双栏（两栏都是中文）不声明 textEn。"""
+    def check(properties: dict, values: dict, requested: set[str] = set()) -> list[tuple[str, str]]:
+        """生成路径对给定参数与默认值的分类检查结果。"""
+        return [(item.name, item.reason) for item in category_problems("text", schema(properties), set(properties), values, TIER_LIBRARY, requested)]
+
+    assert check(BILINGUAL, BILINGUAL_DEFAULTS) == []
+    # 打开「双语字幕」：普通双栏字效被拒，双语字效通过。
+    [(name, reason)] = check(TWO_TIER, TWO_TIER_DEFAULTS, {"bilingual"})
+    assert name == "textEn" and "switched on 双语字幕" in reason
+    assert check(BILINGUAL, BILINGUAL_DEFAULTS, {"bilingual"}) == []
+    # 默认文字仍是两行中文（没有英文行）：说明双语默认值应为中英各一行。
+    assert [name for name, _ in check(BILINGUAL, TWO_TIER_DEFAULTS)] == ["text", "textEn"]
+    # 只声明英文文字、没有行起点就不是双栏：说明双语字效是下栏显示英文的两栏字效。
+    single = {name: value for name, value in BILINGUAL.items() if name != "lineStartFrames"}
+    reasons = {item.name: item.reason for item in category_problems("text", schema(single), set(single), BILINGUAL_DEFAULTS, TIER_LIBRARY)}
+    assert "a bilingual text" in reasons["lineStartFrames"]
 
 
 def test_new_chat_switches_are_enforced_when_generating():

@@ -9,7 +9,7 @@ import { SpriteClips } from "@/features/templates/SpritePanels";
 import { SpriteClipInspector } from "@/features/templates/SpriteClipInspector";
 import { getTemplate, saveTemplate } from "@/features/templates/api";
 import { bindClip } from "@/features/templates/clips";
-import { CATALOG_SILENCE_MS, watchCatalog } from "@/features/sprites/api";
+import { CATALOG_SILENCE_MS, listSprites, watchCatalog } from "@/features/sprites/api";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { newDraft, toDraft, type RemotionClip } from "@/features/templates/model";
 import { EffectTemplateEditorSchema, GetTemplateResponseSchema, SaveTemplateRequestSchema, SaveTemplateResponseSchema } from "@/generated/imv/template/v1/template_pb";
@@ -350,7 +350,7 @@ test("字效作用于文字对象并可改为字幕", async () => {
 test("所作用文字不在预览内时字效标为未应用", () => {
   const asset: SpriteAsset = { id: "sprite-t", name: "金色标题", kind: SpriteKind.TEXT, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30, box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [] };
   const clip: RemotionClip = { id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {}, text_target: "title" };
-  const props: Parameters<typeof SpriteClips>[0] = { clips: [clip], catalog: { assets: [asset], error: "", refresh: () => {} }, duration: 30, selected: null, onSelect: () => {}, onRemove: () => {} };
+  const props: Parameters<typeof SpriteClips>[0] = { clips: [clip], catalog: { assets: [asset], error: "", refresh: () => {}, peek: () => {} }, duration: 30, selected: null, onSelect: () => {}, onRemove: () => {} };
   const { rerender } = render(<SpriteClips {...props} />);
   expect(screen.getByRole("listitem", { name: "AI 资产：金色标题" }).textContent).toContain("顶部标题字效 · 0～3 秒");
   rerender(<SpriteClips {...props} hidden={new Set([clip.id])} />);
@@ -618,6 +618,53 @@ test("多行字效作用于字幕或标题时逐行填写示例文字", () => {
   expect(screen.getByLabelText("示例文字")).toBeTruthy();
 });
 
+// 场景：英文标题和字幕固定单行——即使选中双栏字效，示例文字也只填一行（既有换行按空格合并），并说明下栏设置不参与；
+// 中英双语因此不会出现中文两栏加英文两栏的四行。
+test("英文字幕绑定双栏字效时只填一行示例文字", () => {
+  const asset: SpriteAsset = { id: "sprite-t", name: "两行花字", kind: SpriteKind.TEXT, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30, box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [], lines: 2 };
+  const clip: RemotionClip = { id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {}, text_target: "subtitle", language: "en" };
+  const [, subtitle] = newDraft().tracks;
+  const english = { ...subtitle!, language: "en" as const, editor: { ...subtitle!.editor, subtitle: "First line\nSecond line" } };
+  const samples: string[] = [];
+  const noop = () => {};
+  render(<SpriteClipInspector asset={asset} clip={clip} textTrack={english} duration={10} onSample={(value) => samples.push(value)}
+    onTextTiming={noop} onParameter={noop} onTransform={noop} onStart={noop} onBind={noop} onRemove={noop} onClose={noop} />);
+  expect(screen.queryByLabelText("示例文字第 1 行")).toBeNull();
+  expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("First line Second line");
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "One row" } });
+  expect(samples).toEqual(["One row"]);
+  expect(screen.getByText(/英文字幕固定单行/)).toBeTruthy();
+});
+
+// 场景：双语字效（双语字幕）的示例文字中英各一行——中文取自中文字幕、英文取自同一用途的英文对象；
+// 作用对象只列中文（英文已由双语字效显示），并说明两种语言同时显示。
+test("双语字效的示例文字中英各一行", () => {
+  const asset: SpriteAsset = { id: "sprite-b", name: "双语字幕", kind: SpriteKind.TEXT, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30, box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [], lines: 2, bilingual: true };
+  const clip: RemotionClip = { id: "clip-b", sprite_id: "sprite-b", start: 0, duration: 3, parameters: {}, transform: {}, text_target: "subtitle" };
+  const [title, subtitle] = newDraft().tracks;
+  const english = { ...subtitle!, id: "subtitle-en", language: "en" as const, editor: { ...subtitle!.editor, subtitle: "Today is a good day" } };
+  const samples: [string, string | undefined][] = [];
+  const noop = () => {};
+  render(<SpriteClipInspector asset={asset} clip={clip} textTrack={subtitle} textTracks={[title!, subtitle!, english]} duration={10}
+    onSample={(value) => samples.push([value, undefined])} onEnglishSample={(value) => samples.push([value, "en"])}
+    onTextTiming={noop} onParameter={noop} onTransform={noop} onStart={noop} onBind={noop} onRemove={noop} onClose={noop} />);
+  expect(screen.getByLabelText<HTMLInputElement>("示例文字（中文）").value).toBe(subtitle!.editor.subtitle);
+  expect(screen.getByLabelText<HTMLInputElement>("示例文字（英文）").value).toBe("Today is a good day");
+  fireEvent.change(screen.getByLabelText("示例文字（英文）"), { target: { value: "Another day" } });
+  expect(samples).toEqual([["Another day", "en"]]);
+  expect(screen.queryByText("英文字幕")).toBeNull();
+  expect(screen.getByText(/中英两种语言/)).toBeTruthy();
+});
+
+// 场景：目录里声明英文文字参数 textEn 的资产是双语字效，界面据此把它与普通双栏字效区分开。
+test("目录把声明英文文字的资产标记为双语字效", async () => {
+  const bilingual = textAsset("sprite-b");
+  bilingual.parameters = [...bilingual.parameters, { key: "textEn", label: "英文文字", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "stringValue", value: "Today" } }, minLength: 1, maxLength: 100 }];
+  fetchMock.mockImplementation((async (_url, _init) => new Response(Uint8Array.from(toBinary(ListSpritesResponseSchema, create(ListSpritesResponseSchema, { sprites: [bilingual] }))), { headers: HEADERS })) as typeof fetch);
+  const [asset] = await listSprites();
+  expect(asset.bilingual).toBe(true);
+});
+
 // 场景：资产库里的资产可确认后删除；仍被模板使用时弹窗显示服务端列出的模板并保留资产，确认删除成功后目录刷新不再显示它。
 test("确认后删除资产，被模板使用时说明原因", async () => {
   const catalog = [summary("sprite-1"), summary("sprite-2", SpriteKind.VIDEO_OVERLAY)];
@@ -690,7 +737,8 @@ test("删除失败后刷新目录，资产已不存在时按删除完成处理",
   expect(deletes).toBe(2);
 });
 
-// 场景（回归）：资产库共享，资产在别处被删除后，本窗口目录原先要手动刷新才更新；现在窗口重新聚焦时重新读取，目录未展开时不读取。
+// 场景（回归）：资产库共享，资产在别处被删除后，本窗口目录原先要手动刷新才更新；现在窗口重新聚焦时重新读取。
+// 右栏的字效入口也需要目录，进入页面时读一次，但资产区未展开时不订阅推送、聚焦也不再重读。
 test("窗口重新聚焦时刷新 AI 资产目录", async () => {
   const catalog = [summary("sprite-1"), summary("sprite-2", SpriteKind.VIDEO_OVERLAY)];
   catalog[1].name = "冷色光斑";
@@ -703,8 +751,9 @@ test("窗口重新聚焦时刷新 AI 资产目录", async () => {
   }) as typeof fetch);
   render(<TemplateWorkspace selection={{ templateId: null, name: "新模板", description: "" }} onHome={() => {}} />);
   await screen.findByRole("tab", { name: "AI 资产" });
+  await waitFor(() => expect(listings).toBe(1));
   fireEvent.focus(window);
-  expect(listings).toBe(0);
+  expect(listings).toBe(1);
   const region = await openAssets();
   await within(region).findByRole("button", { name: "添加 AI 资产：霓虹标题" });
   // 其他人或其他窗口删除了资产。

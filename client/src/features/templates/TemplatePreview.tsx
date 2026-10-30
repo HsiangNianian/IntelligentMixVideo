@@ -53,6 +53,8 @@ function TimelineMark() {
 
 /** 有效修改全量更新时间线并回到开头；无效输入保留预览，快速修改只应用最新有效草稿。 */
 export function TemplatePreview({ draft: editingDraft, media, resolved, mediaError, onRetryMedia, onMediaChange, videoInputKey, onCatalog, selectedId, selectionTargets, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder, avatarSource = 0, previewCenter = defaultPreviewCenter }: Props) {
+  // 双语片段在验证草稿和应用 SDK 时间线时都替换中英文字，保留数字人预览的取景坐标。
+  const bilingualClips = useMemo(() => new Set(sprites.filter((clip) => clip.bilingual).map((clip) => clip.id)), [sprites]);
   // 沿用时间轴构建的校验结果；有效草稿只缓存给预览，父组件保存的仍是当前编辑值。
   const [catalog, setCatalog] = useState<EffectAsset[]>(readCatalog);
   const latestCatalog = useRef(catalog);
@@ -61,13 +63,13 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
     const empty = { media, draft: editingDraft, rows: [] as ReturnType<typeof buildPreviewRows>, notices: [] as string[] };
     if (!media || !resolved) return { ...empty, previewError: "" };
     try {
-      const timeline = buildTimeline(editingDraft, catalog, media, resolved, videoOrder, avatarSource, previewCenter);
+      const timeline = buildTimeline(editingDraft, catalog, media, resolved, videoOrder, avatarSource, previewCenter, bilingualClips);
       lastValid.current = { media, draft: editingDraft, rows: buildPreviewRows(timeline), notices: timeline.notices };
       return { ...lastValid.current, previewError: "" };
     } catch (error) {
       return { ...(lastValid.current.media === media ? lastValid.current : empty), previewError: `预览参数无效：${error instanceof Error ? error.message : "请检查输入"}。修正后自动更新预览。` };
     }
-  }, [editingDraft, catalog, media, resolved, videoOrder, avatarSource, previewCenter]);
+  }, [editingDraft, catalog, media, resolved, videoOrder, avatarSource, previewCenter, bilingualClips]);
   const latestPreviewError = useRef(previewError);
   latestPreviewError.current = previewError;
   const latestCenter = useRef(previewCenter);
@@ -77,8 +79,8 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
   const duration = resolved?.duration ?? 0;
   const openingDuration = previewOpeningDuration(draft.avatar_effects, duration);
   const mattingPreview = draft.split_screen?.enabled && draft.split_screen.layout !== "circle" && draft.avatar_effects?.removeBackground;
-  // 改由 Remotion 字效显示的文字变化时，SDK 需要重新应用时间线以隐藏或恢复 IMS 文字。
-  const replacedTexts = [...remotionTexts(draft)].sort().join();
+  // 改由 Remotion 字效显示的文字变化时，SDK 需要重新应用时间线以隐藏或恢复 IMS 文字；双语字效还替换英文文字。
+  const replacedTexts = [...remotionTexts(draft, bilingualClips)].sort().join();
   const stage = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const latest = useRef(draft);
@@ -86,6 +88,7 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
   const latestOrder = useRef(videoOrder);
   const latestResolved = useRef(resolved);
   const latestTexts = useRef(replacedTexts);
+  const latestBilingual = useRef(bilingualClips);
   const apply = useRef<(() => void) | null>(null);
   const catalogCallback = useRef(onCatalog);
   // IMS 播放器的播放入口，播放器就绪后才使用。
@@ -141,6 +144,7 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
   latestOrder.current = videoOrder;
   latestResolved.current = resolved;
   latestTexts.current = replacedTexts;
+  latestBilingual.current = bilingualClips;
   latestCatalog.current = catalog;
   catalogCallback.current = onCatalog;
 
@@ -318,11 +322,12 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
           const currentMedia = latestMedia.current;
           const currentOrder = latestOrder.current;
           const currentTexts = latestTexts.current;
+          const currentBilingual = latestBilingual.current;
           const currentResolved = latestResolved.current;
           if (!currentMedia || !currentResolved) { instance.pause(); return; }
           const applyStarted = performance.now();
           const currentCenter = latestCenter.current;
-          const timeline = buildTimeline(currentDraft, latestCatalog.current, currentMedia, currentResolved, currentOrder, latestAvatar.current, currentCenter);
+          const timeline = buildTimeline(currentDraft, latestCatalog.current, currentMedia, currentResolved, currentOrder, latestAvatar.current, currentCenter, currentBilingual);
           if (disposed) return;
           instance.pause();
           instance.aspectRatio = timeline.AspectRatio;
@@ -631,7 +636,7 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
             onError={() => { setFailed(true); setStatus("基础视频预览加载失败，请检查视频编码与跨域访问配置后重试。"); }}
             onEnd={() => { if (source !== "basic") return; changePlaying(false); setStatus("预览结束，点击播放可重播"); }} />}
           {showFallbackMask && fallbackMask && <img alt="上下蒙版预览" src={fallbackMask} className="pointer-events-none absolute inset-0 size-full" />}
-          {controlsReady && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
+          {controlsReady && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft, bilingualClips).has(textKey(item.target, item.language))).map((item) => {
             const interval = resolved?.tracks[item.id];
             if (!interval || time < interval.start || time >= interval.end) return null;
             const role = item.target as "title" | "subtitle";

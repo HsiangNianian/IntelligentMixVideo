@@ -412,8 +412,8 @@ class ToolSession:
         # A new work must last exactly as long as the user chose; an edit starts from an accepted version
         # and keeps deriving its length from the instances.
         self.target_frames = None if spec else (request.get("composition") or {}).get("duration_in_frames")
-        # The new-chat switches the user turned on (双栏, keyword effect) bind a new work; edits follow the accepted base.
-        self.requested = set() if spec else {name for name in ("two_tier", "keyword_effect") if request.get(name) is True}
+        # The new-chat switches the user turned on (双栏, keyword effect, 双语字幕) bind a new work; edits follow the accepted base.
+        self.requested = set() if spec else {name for name in ("two_tier", "keyword_effect", "bilingual") if request.get(name) is True}
         self.kind = spec.sprite_kind if spec else request.get("sprite_kind")
         self.catalog = CatalogStore()
         self.latest_sprite_id: str | None = None
@@ -981,7 +981,8 @@ class ToolSession:
     async def _compose_text(self, request) -> SpriteComposeOutput:
         """Compose a text effect from its text block: one tier or an upper and a lower tier, each drawn by a text-role
         Preset, an optional keyword-role Preset for the keyword hit and effect-role Presets wrapping positions of the
-        block. The host owns the configuration parameters."""
+        block. The host owns the configuration parameters. A bilingual block (双语字幕) keeps the Chinese line in
+        `text` and its English translation in `textEn`, so templates and the bus show both languages in one effect."""
         block = request.text
         if request.kind != "text":
             raise ToolFault("INVALID_ARGUMENT", "Only a text effect (kind text) has a text block.", field="/kind")
@@ -998,6 +999,14 @@ class ToolSession:
                 raise ToolFault("INVALID_ARGUMENT", f"preview_keywords names words of the default text; {word!r} is not in it.", field=f"/text/preview_keywords/{index}")
         if "two_tier" in self.requested and tiers != 2:
             raise ToolFault("INVALID_ARGUMENT", "The user switched on 双栏 (original_request.two_tier): give the text block two tiers, upper and lower.", field="/text/tiers")
+        if block.bilingual and tiers != 2:
+            raise ToolFault("INVALID_ARGUMENT", "A bilingual text (双语字幕) is two tiers: the upper one the Chinese line, the lower one its English translation.", field="/text/tiers")
+        if block.bilingual and any("一" <= char <= "鿿" for char in lines[1]):
+            raise ToolFault("INVALID_ARGUMENT", "A bilingual text (双语字幕) is \"<Chinese>\\n<English>\": the second line is the English translation of the first, "
+                            "not more Chinese text.", field="/text/text")
+        if "bilingual" in self.requested and not block.bilingual:
+            raise ToolFault("INVALID_ARGUMENT", "The user switched on 双语字幕 (original_request.bilingual): add bilingual: true to the text block, two tiers whose "
+                            "upper tier is the Chinese line and whose lower tier is its English translation, so one effect shows both languages.", field="/text/bilingual")
         if "keyword_effect" in self.requested and block.keyword is None:
             raise ToolFault("INVALID_ARGUMENT", "The user switched on the keyword effect (original_request.keyword_effect): give the text block a keyword-role Preset.", field="/text/keyword")
         if tiers == 2:
@@ -1104,6 +1113,7 @@ class ToolSession:
                   **({"keyword": block.keyword.instance_id} if block.keyword else {}),
                   "effects": [{"instance_id": item.instance_id, "title": item.title, "slot": item.slot, **({"builtin": item.builtin} if item.builtin else {})} for item in block.effects],
                   **({"preview_keywords": block.preview_keywords} if block.preview_keywords else {}),
+                  **({"bilingual": True} if block.bilingual else {}),
                   **({"still": True} if self.still_text else {})},
         ), summaries)
 

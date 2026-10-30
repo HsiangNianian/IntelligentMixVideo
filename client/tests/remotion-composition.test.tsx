@@ -42,19 +42,20 @@ test("新会话钉死固定画布并发送固定初始配置", async () => {
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "图片" }).disabled).toBe(true);
 });
 
-// 新会话打开「关键词字效」与「双栏」后首次请求携带 keyword_effect 与 two_tier（关闭时不携带，见上一用例）；
-// 会话创建后两个开关随预览时长一起消失。
-test("打开关键词字效与双栏后首次请求携带这两个选择", async () => {
+// 新会话打开「关键词字效」「双栏」「双语字幕」后首次请求携带 keyword_effect、two_tier 与 bilingual（关闭时不携带，见上一用例）；
+// 会话创建后三个开关随预览时长一起消失。
+test("打开关键词字效、双栏与双语字幕后首次请求携带这三个选择", async () => {
   remotionServer(path => path === "/works"
     ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") })
     : undefined);
   await act(async () => { render(<RemotionWorkspace />); });
   fireEvent.click(screen.getByRole("switch", { name: "关键词字效" }));
   fireEvent.click(screen.getByRole("switch", { name: "双栏" }));
+  fireEvent.click(screen.getByRole("switch", { name: "双语字幕" }));
   fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "生成标题" } });
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "发送" })); });
   await waitFor(() => expect(creations()).toHaveLength(1));
-  expect(creations()[0]).toMatchObject({ description: "生成标题", keyword_effect: true, two_tier: true });
+  expect(creations()[0]).toMatchObject({ description: "生成标题", keyword_effect: true, two_tier: true, bilingual: true });
   await waitFor(() => expect(screen.queryAllByRole("switch").length).toBe(0));
 });
 

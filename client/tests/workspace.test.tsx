@@ -10,7 +10,7 @@ import { fetchMock } from "./setup";
 import { apiBase, setApiBase } from "@/lib/api-base";
 import { recovery, restoreRecovery } from "@/features/updates/recovery";
 import { updateBlockers } from "@/lib/update-guard";
-import { jsonListResponse, jsonTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
+import { emptySpriteCatalog, jsonListResponse, jsonTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
 
 /** 生成独立的主页新建输入，不包含服务端响应或存储数据。 */
 function creation(name = "旅行模板"): TemplateSelection {
@@ -380,6 +380,8 @@ test("更新后旧本地模板位置按云端 ID 读取并可重试", async () =
   const requests: string[] = [];
   let found = false;
   fetchMock.mockImplementation((async (url) => {
+    // 选中标题时右栏会读取一次 AI 资产目录，与这里的模板读取无关，只记录模板请求。
+    if (String(url).includes("/api/sprites")) return emptySpriteCatalog();
     requests.push(String(url));
     return found ? jsonTemplateResponse(template, "get") : Response.json({ detail: "模板不存在" }, { status: 404 });
   }) as typeof fetch);
@@ -595,8 +597,11 @@ test.each(["current", "pending"] as const)("切换读取期间删除 %s 模板�
   const pending = { ...current, template_id: "00000000-0000-4000-8000-000000000002", name: "另一模板" };
   let finish!: (response: Response) => void;
   const response = new Promise<Response>((resolve) => { finish = resolve; });
-  fetchMock.mockImplementation((async (url) => String(url).endsWith(current.template_id)
-    ? jsonTemplateResponse(current, "get") : response) as typeof fetch);
+  fetchMock.mockImplementation((async (url) => {
+    // 选中标题时右栏会读取一次 AI 资产目录，不参与这里的读取与删除。
+    if (String(url).includes("/api/sprites")) return emptySpriteCatalog();
+    return String(url).endsWith(current.template_id) ? jsonTemplateResponse(current, "get") : response;
+  }) as typeof fetch);
   const currentSelection = { templateId: current.template_id };
   const nextSelection = { ...currentSelection, templateId: pending.template_id };
   const view = render(<TemplateWorkspace selection={currentSelection} onHome={() => {}} />);

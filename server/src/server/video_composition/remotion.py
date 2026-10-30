@@ -18,7 +18,7 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 from pydantic import TypeAdapter
 
 from ..remotion_templates import sprites
-from ..remotion_templates.categories import LINE_START_MAX_FRAMES, line_count
+from ..remotion_templates.categories import LINE_START_MAX_FRAMES, bilingual as is_bilingual, line_count
 from ..remotion_templates.placement import resolve as resolve_placement
 from ..template.split_screen import SplitScreen
 from ..template.schema import EffectTrack, RemotionTrackEditor, active_tracks
@@ -33,7 +33,7 @@ from . import execution_log
 from .errors import CompositionError
 from .schema import CompositionRequest, Segment
 from .settings import ZosSettings
-from .text_events import subtitle_blocks, subtitle_events
+from .text_events import bilingual_events, subtitle_blocks, subtitle_events
 from .transitions import keyword_transitions
 from .zos import object_prefix, upload_public
 
@@ -172,6 +172,13 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                     intervals.append((a, b))
     english_subtitle = any(track.get("target") == "subtitle" and track.get("language") == "en" and track.get("enabled", True)
                            for track in template.get("tracks", []))
+    # 双语字效（双语字幕）自己显示中英两种语言，它所作用对象的英文字效不再单独渲染，否则英文会出现两次。
+    bilingual_targets = {item["text_target"] for item in placements if item.get("text_target")
+                         and item.get("language", "zh") != "en" and item.get("sprite_id") in publications
+                         and is_bilingual(json.loads(publications[item["sprite_id"]].config_schema_json))}
+    if bilingual_targets:
+        placements = [item for item in placements
+                      if not (item.get("language") == "en" and item.get("text_target") in bilingual_targets)]
     if template.get("transition_enabled") is False:
         placements = [item for item in placements if item.get("transition_boundary") is None]
     use_keywords = data.get("keyword_transitions", False)
@@ -236,45 +243,72 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                 if length_seconds < 0.1:
                     continue
             start = max(0, clips[boundary - 1]["TimelineOut"] - length_seconds / 2)
-        lines = line_count(json.loads(sprite.config_schema_json)) if sprite.kind == pb.SPRITE_KIND_TEXT else 1
-        # 英文标题和字幕的字效按单行设计：译文过长时排版预检缩到能单行显示的最大字号，避免换行压到另一语言的文字。
-        one_line = lines == 1 and language == "en" and target in {"title", "subtitle"}
+        schema = json.loads(sprite.config_schema_json)
+        lines = line_count(schema) if sprite.kind == pb.SPRITE_KIND_TEXT else 1
+        # 双语字效（双语字幕）自己显示中英两种语言：一个实例里上栏中文、下栏同一句的英文，不按行分组也不要求单行。
+        bilingual_text = dynamic and is_bilingual(schema)
+        # 英文标题和字幕固定单行：双栏字效作用到英文时只用它的上栏（内容只有一行，下栏没有文字不显示），
+        # 中英双语因此不会出现中文两栏加英文两栏的四行；译文过长时排版预检缩到能单行显示的最大字号。
+        single_row = language == "en" and target in {"title", "subtitle"}
+        rows = 1 if single_row or bilingual_text else lines
+        one_line = single_row
         # 字幕轨的文字换行时朝远离另一语言字幕的方向展开：英文向下，中文字幕在启用英文字幕时向上，两条字幕因此不会
-        # 互相压住；没有启用英文字幕时中文保持原本的居中展开（上下同时长）。
+        # 互相压住；没有启用英文字幕时中文保持原本的居中展开（上下同时长）。双语字效的两种语言在同一个字效里上下叠放，
+        # 不需要朝任何方向展开。
         grow = None
-        if lines == 1 and target == "subtitle":
+        if rows == 1 and target == "subtitle" and not bilingual_text:
             grow = "down" if language == "en" else "up" if english_subtitle else None
-        # 每项内容是 (各行文字, 各行关键词, 各行出现的秒数, 开始, 结束)；单行字效只有一行。
+        # 每项内容是 (各行文字, 各行关键词, 各行出现的秒数, 开始, 结束, 英文, 英文关键词)；单行只有一行，
+        # 双语字效的英文是下栏。
         if target == "subtitle":
-            # 多行字效把同一句里最多 lines 个连续切片合成一组：逐行出现，整组在最后一个切片结束时清空。
-            text_schema = json.loads(sprite.config_schema_json).get("properties", {}).get(sprite.text_prop or "text", {})
+            # 多行字效把同一句里最多 rows 个连续切片合成一组：逐行出现，整组在最后一个切片结束时清空；英文固定单行，不分组。
+            text_schema = schema.get("properties", {}).get(sprite.text_prop or "text", {})
             language_events = subtitle_events(segments, language) if spoken else []
-            blocks = subtitle_blocks(segments, lines, text_schema.get("maxLength"), (LINE_START_MAX_FRAMES - 1) / fps, language=language) \
-                if spoken and lines > 1 else [[event] for event in language_events]
+            blocks = subtitle_blocks(segments, rows, text_schema.get("maxLength"), (LINE_START_MAX_FRAMES - 1) / fps, language=language) \
+                if spoken and rows > 1 else [[event] for event in language_events]
             low, high = (start, start + length_seconds) if text_target else (0, duration)
             contents = []
-            for block in blocks:
-                # 新槽位只显示文字对象区间内的部分，区间外的切片（行）丢弃。
-                shown = [(text, keyword, max(begin, low), min(end, high)) for text, keyword, begin, end in block]
-                shown = [event for event in shown if min(duration, event[3]) > max(0, event[2])]
-                if shown:
-                    contents.append(([item[0] for item in shown], [item[1] for item in shown], [item[2] for item in shown],
-                                     shown[0][2], shown[-1][3]))
+            if bilingual_text:
+                # 双语字效：每条切片一个实例，中文与同一句的英文同时出现，区间仍按文字对象裁剪。
+                try:
+                    paired = bilingual_events(segments) if spoken else []
+                except ValueError as exc:
+                    raise ContentError(str(exc)) from exc
+                for text, keyword, english, english_keyword, begin, end in paired:
+                    begin, end = max(begin, low), min(end, high)
+                    if min(duration, end) > max(0, begin):
+                        contents.append(([text], [keyword], [begin], begin, end, english, english_keyword))
+            else:
+                for block in blocks:
+                    # 新槽位只显示文字对象区间内的部分，区间外的切片（行）丢弃。
+                    shown = [(text, keyword, max(begin, low), min(end, high)) for text, keyword, begin, end in block]
+                    shown = [event for event in shown if min(duration, event[3]) > max(0, event[2])]
+                    if shown:
+                        contents.append(([item[0] for item in shown], [item[1] for item in shown], [item[2] for item in shown],
+                                         shown[0][2], shown[-1][3], "", ""))
         elif target == "title":
             # 多行字效按标题里的换行分行（空行忽略，多出的并入最后一行），所有行同时出现；没有换行时整段放在第一行，
-            # 其余行没有文字、不显示。
+            # 其余行没有文字、不显示。英文固定单行：换行按空格合并，整段显示在上栏。
             title = data.get("segmentation", {}).get("title_en") if language == "en" else request.title
             keyword = data.get("segmentation", {}).get("title_keyword_en", "") if language == "en" else title_keyword
             if language == "en" and request.title and request.title.strip() and not (title and title.strip()):
                 raise ContentError("缺少英文标题译文")
-            parts = [part for part in title.split("\n") if part.strip()] if lines > 1 and title else []
-            texts = parts[:lines - 1] + [" ".join(parts[lines - 1:])] if len(parts) > lines else parts or [title]
-            contents = [(texts, [keyword], [start] * len(texts), start, start + length_seconds)] if request.title and request.title.strip() else []
+            if bilingual_text:
+                # 双语字效的标题同样上下两栏：上栏中文标题，下栏它的英文译文，换行按空格合并到各自一行。
+                english = data.get("segmentation", {}).get("title_en")
+                if request.title and request.title.strip() and not (english and english.strip()):
+                    raise ContentError("缺少英文标题译文")
+                contents = [([title.replace("\n", " ")], [keyword], [start], start, start + length_seconds,
+                             (english or "").replace("\n", " "), "")] if request.title and request.title.strip() else []
+            else:
+                parts = [part for part in title.split("\n") if part.strip()] if rows > 1 and title else []
+                texts = parts[:rows - 1] + [" ".join(parts[rows - 1:])] if len(parts) > rows else parts or [title.replace("\n", " ") if single_row else title]
+                contents = [(texts, [keyword], [start] * len(texts), start, start + length_seconds, "", "")] if request.title and request.title.strip() else []
         else:
-            if sprite.kind == pb.SPRITE_KIND_TEXT or roles(json.loads(sprite.config_schema_json))["text"]:
+            if sprite.kind == pb.SPRITE_KIND_TEXT or roles(schema)["text"]:
                 raise ContentError("文字资产必须选择标题或字幕，不能作为装饰渲染示例文案")
-            contents = [([""], [""], [start], start, start + length_seconds)]
-        for texts, keywords, starts, start, end in contents:
+            contents = [([""], [""], [start], start, start + length_seconds, "", "")]
+        for texts, keywords, starts, start, end, english, _english_keyword in contents:
             start, end = max(0, start), min(duration, end)
             if end <= start:
                 continue
@@ -282,7 +316,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             last = min(frames, max(first + 1, to_frames(end, fps)))
             count = last - first
             # 多行字效的换行只用来分行：每一行自己的文字不能再含换行，否则会挤进下一行的样式里。
-            text = "\n".join(item.replace("\n", " ") for item in texts) if lines > 1 else texts[0]
+            text = "\n".join(item.replace("\n", " ") for item in texts) if rows > 1 else texts[0]
             # 各行出现的帧，从实例起点算起；固定时钟资产读到的是预览时钟，按宿主同样的线性映射换算，
             # 两帧以内会被定格，所有行同时显示。
             offsets = [min(count - 1, max(0, to_frames(item, fps) - first)) for item in starts]
@@ -290,7 +324,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             clock = [round(item * (preview - 1) / (count - 1)) if count > 2 else 0 for item in offsets] if fixed_clock else offsets
             values = resolve_config(sprite, text, keywords, preview if fixed_clock else count,
                                     placement.get("text_prop", ""), placement.get("keywords_prop", ""), config=config,
-                                    line_starts=clock) if dynamic else config
+                                    line_starts=clock, english=english if bilingual_text else None) if dynamic else config
             code = sprite.tsx_code
             if fixed_clock:
                 if sprite.sprite_id not in timed_sources:
@@ -301,7 +335,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             # 资产与实际正文供渲染前的排版预检：正文可能写入多个参数路径，这里给出唯一的显示文字。
             # 多行字效在最后一行出现后才完整，排版预检只测量这之后的帧。
             instance = {"sprite_id": placement["sprite_id"], **({"text": text} if dynamic else {}),
-                              **({"reveal_frame": offsets[-1]} if dynamic and lines > 1 else {}),
+                              **({"reveal_frame": offsets[-1]} if dynamic and rows > 1 else {}),
                               **({"one_line": True} if one_line else {}),
                               **({"grow": grow} if grow else {}),
                               "code": code, "config": values, "host": host, "start_frame": first,

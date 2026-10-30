@@ -749,10 +749,12 @@ class TextComposition(ContractModel):
     特效交给 effect Preset 包住它们的位置。"""
 
     layout: TextLayout
-    # 默认文字：单栏一行，双栏为「上栏\n下栏」。
+    # 默认文字：单栏一行，双栏为「上栏\n下栏」；双语字效为「中文\n同一句的英文译文」（英文由总线按切片注入 `textEn`）。
     text: Annotated[StrictStr, StringConstraints(min_length=1, max_length=100)]
     font_size: Annotated[FiniteNumber, Field(ge=24, le=240)]
     tiers: list[TextTier] = Field(min_length=1, max_length=2)
+    # 双语字效（双语字幕）：两栏是同一句的中文与英文，宿主暴露英文文字参数 `textEn`，模板与合成同时注入两种语言。
+    bilingual: Omittable[Literal[True]]
     # 只有双栏使用：两栏的排布（stack 上下排列，省略时如此；overlap 两栏叠在同一处、彼此居中、下栏在上层）、
     # 两栏之间的距离（像素，可为负数以让下栏上移叠住上栏，最低 -600；重叠排布时不用，可省略）与各栏出现的帧（首项为 0，不递减）。
     arrangement: Omittable[Literal["stack", "overlap"]]
@@ -785,6 +787,8 @@ class TextBlock(ContractModel):
     # 宿主把各栏定格在中间帧显示、文字块的动画都由特效 Preset 画（有可配置特效之后的作品；关键词命中照常播放）；
     # 更早的字效没有这一项，它们的 text Preset 自己画的动画照常播放。
     still: Omittable[Literal[True]]
+    # 双语字效（双语字幕）：下栏是同一句的英文，编辑时保留，重新组合仍按两种语言注入。
+    bilingual: Omittable[Literal[True]]
     # 默认文字里的示例关键词，见 TextComposition.preview_keywords。
     preview_keywords: Omittable[list[NonEmptyString]]
 

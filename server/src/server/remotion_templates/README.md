@@ -478,7 +478,14 @@ measurement it only applies to generation, and already published versions are no
 
 A text effect can show a fixed number of lines (2 to 4, `categories.MAX_LINES`), for example a small lead line above
 a large headline. Generation only makes two-tier texts (双栏, `categories.TIERS`, a two-tier text block): the
-Executor rules define 双栏 as two rows stacked in one column (never side-by-side columns, bars or a frame). Each
+Executor rules define 双栏 as two rows stacked in one column (never side-by-side columns, bars or a frame). A
+bilingual text block (双语字幕, `bilingual: true` in the block, `categories.BILINGUAL_PROP`) is a two-tier text
+whose tiers are one language each: its default text is `"<Chinese>\n<English>"`, the host keeps the Chinese line in
+`text` and the English translation of the same sentence in `textEn` (configuration, titled 英文文字) and takes the
+lower tier from `textEn` instead of the second line of `text`, so one effect shows both languages; keyword hits are
+searched per line. It needs two tiers, a non-empty English second line, `textEn` whose schema is a 1-to-100 character
+string, and default `text`/`textEn` of one line each, and the new-chat switch `bilingual` makes a new work produce it
+(a plain 双栏 text, both tiers in one language, has no `textEn`). Each
 tier's font, weight and size ratio (exactly 0.4 to 2; the tier renders at `fontSize` times it, so the host's shrink
 scales both) and the tier gap are host configuration, each tier's colour `line1Color`/`line2Color` an Agent style
 parameter; a two-tier text exposes no top-level `color`, `fontWeight` or `fontFamily`. On the generation path

@@ -4,7 +4,7 @@ import { fromBinary } from "@bufbuild/protobuf";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SaveTemplateRequestSchema, type SaveTemplateRequest } from "@/generated/imv/template/v1/template_pb";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
-import { jsonTemplateResponse, savedTemplate } from "./fixtures";
+import { emptySpriteCatalog, jsonTemplateResponse, savedTemplate } from "./fixtures";
 import { fetchMock } from "./setup";
 
 /** 可读取的云端持久化副本；断言实际消息中的 ID，失败不改副本。 */
@@ -19,6 +19,8 @@ function storage(failFirst = false) {
     return stored;
   };
   fetchMock.mockImplementation((async (url, init) => {
+    // 选中标题时右栏会读取一次 AI 资产目录（「用 Remotion 字效显示」），与模板保存无关。
+    if (String(url).includes("/api/sprites")) return emptySpriteCatalog();
     if (!String(url).includes("/template")) throw new Error("未配置此请求");
     if (init?.method !== "POST") return jsonTemplateResponse(stored, "get");
     try { return jsonTemplateResponse(save(new Uint8Array(init.body as Uint8Array)), "save"); }

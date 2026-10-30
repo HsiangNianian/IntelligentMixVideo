@@ -124,12 +124,12 @@ export function upload(
   form.append("file", image);
   return request("/assets", { method: "POST", body: form, signal });
 }
-/** 首次发送才创建作品；尚未收到 ID 的请求不自动重试。「关键词字效」「双栏」只在打开时携带，关闭时沿用服务端默认值。 */
+/** 首次发送才创建作品；尚未收到 ID 的请求不自动重试。「关键词字效」「双栏」「双语字幕」只在打开时携带，关闭时沿用服务端默认值。 */
 export function create(
   description: string,
   assets: string[] = [],
   composition?: Composition,
-  switches: { keywordEffect?: boolean; twoTier?: boolean } = {},
+  switches: { keywordEffect?: boolean; twoTier?: boolean; bilingual?: boolean } = {},
 ): Promise<{
   work: { id: string; current_version_id: string | null; created_at: string; request: { description?: string | null } };
   job: Job;
@@ -142,6 +142,7 @@ export function create(
       ...(composition ? { composition } : {}),
       ...(switches.keywordEffect ? { keyword_effect: true } : {}),
       ...(switches.twoTier ? { two_tier: true } : {}),
+      ...(switches.bilingual ? { bilingual: true } : {}),
     }),
   });
 }

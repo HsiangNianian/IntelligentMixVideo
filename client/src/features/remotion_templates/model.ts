@@ -41,11 +41,12 @@ export interface Control {
 }
 /** 效果分类：字效、滤镜、视频特效、转场（后两者在界面上合为「转场与视频特效」）。 */
 export type SpriteKindName = "text" | "filter_overlay" | "video_overlay" | "transition_overlay";
-/** 新会话首条消息附带的生成选择：预览时长（整帧）与「关键词字效」「双栏」两个开关。 */
+/** 新会话首条消息附带的生成选择：预览时长（整帧）与「关键词字效」「双栏」「双语字幕」三个开关。 */
 export interface NewWork {
   durationInFrames: number;
   keywordEffect: boolean;
   twoTier: boolean;
+  bilingual: boolean;
 }
 /** 成功版本提供代码、参数默认值、控件和画布信息。 */
 export interface Version {
@@ -66,7 +67,7 @@ export interface Version {
     composition: Composition;
     text_layers: { id: string; text: string }[];
     /** 组合版本的分类与顶层参数绑定，字效的文字组合另有各栏、关键词与特效的实例 ID（特效带中文名称）；更早的版本没有。 */
-    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string; targets?: { instance_id: string; parameter: string }[] }[]; text?: { tiers: string[]; keyword?: string; effects?: { instance_id: string; title: string }[]; preview_keywords?: string[] } };
+    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string; targets?: { instance_id: string; parameter: string }[] }[]; text?: { tiers: string[]; keyword?: string; effects?: { instance_id: string; title: string }[]; preview_keywords?: string[]; bilingual?: true } };
   };
 }
 
@@ -107,12 +108,14 @@ export function schemaField(key: string, control: Control): ParameterField | nul
 
 /** 多行字效的行起点参数名，与服务端 `categories.LINE_STARTS_PROP` 一致。 */
 const LINE_STARTS_KEY = "lineStartFrames";
+/** 双语字效（双语字幕）的英文文字参数名，与服务端 `categories.BILINGUAL_PROP` 一致。 */
+const BILINGUAL_KEY = "textEn";
 
 /**
  * 字效的配置参数：名称、Schema 与中文标题由宿主固定（服务端 `categories.FIXED_TITLES`），是文字、字体与字号、双栏排版、
  * 关键词这些「写什么、怎么排」的设置；其余顶层参数是 Agent 为这个字效设计的样式（颜色、发光、描边、动画、关键词字效的外观）。
  */
-const CONFIG_PARAMETERS = new Set(["text", ...TEXT_LAYOUT_PARAMETERS, ...TEMPLATE_KEYWORD_PARAMETERS, "keywordEffect"]);
+const CONFIG_PARAMETERS = new Set(["text", BILINGUAL_KEY, ...TEXT_LAYOUT_PARAMETERS, ...TEMPLATE_KEYWORD_PARAMETERS, "keywordEffect"]);
 
 /**
  * 组合版本的参数分组：顶层参数分为配置（见 `CONFIG_PARAMETERS`）与样式，以及各实例的内部参数；

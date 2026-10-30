@@ -1,4 +1,7 @@
-"""IMS 与 Remotion 共用字幕纯文本、关键词继承与绝对区间，样式标记由各渲染器添加。"""
+"""IMS 与 Remotion 共用字幕纯文本、关键词继承与绝对区间，样式标记由各渲染器添加。
+
+双语字效（双语字幕）另由 `bilingual_events` 同时给出每条切片的中文与英文，两种语言一起注入同一个字效。
+"""
 from ..segmentation.segmentation import SUBTITLE_PUNCTUATION
 
 
@@ -61,3 +64,25 @@ def subtitle_blocks(segments, lines: int, max_length: int | None = None, max_spa
         blocks[-1].append(event)
         last = sentence
     return blocks
+
+
+def bilingual_events(segments):
+    """双语字效的字幕事件 (中文, 中文关键词, 英文, 英文关键词, 开始, 结束)：同一条切片的中英文字幕一起显示。
+
+    一个原切片被拆成多条短句（已保存的 ``subtitle_parts``）时，每条短句配同一条切片的英文译文，英文随中文一起
+    换行出现；缺少英文译文按翻译失败终止合成。
+    """
+    events = []
+    for item in segments:
+        if not item.text_en or not item.text_en.strip():
+            raise ValueError("缺少英文字幕译文")
+        english = _subtitle_text(item.text_en, "en")
+        english_keyword = _subtitle_text(item.keyword_en, "en") if item.keyword_en and item.keyword_en in item.text_en else ""
+        used = False
+        for part in item.subtitle_parts or [item]:
+            text = _subtitle_text(part.text)
+            keyword = _subtitle_text(item.keyword) if not used and item.keyword and item.keyword in part.text else ""
+            used = used or bool(keyword)
+            if text:
+                events.append((text, keyword, english, english_keyword, part.start_time, part.end_time))
+    return events
