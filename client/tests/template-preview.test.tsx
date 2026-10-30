@@ -233,7 +233,26 @@ test("工作区传入预览圆心和羽化后刷新 SDK 并暂停回零，不改
   expect(JSON.stringify(draft)).toBe(original);
 });
 
-// SDK 未处理的模型加载拒绝需要切换基础播放器并明确说明抠像不可用。
+// 开启抠像也不能把字体、埋点或不明网络错误误判成模型故障；后续合法参数仍可更新同一 SDK。
+test("无关 Promise 拒绝不使抠像和 IMS 时间线降级", async () => {
+  const draft = { ...newDraft(), split_screen: { ...defaultSplitScreen(), enabled: true, layout: "overlay" as const }, avatar_effects: { ...defaultAvatarEffects(), removeBackground: true } };
+  const { view, player } = await mountWithSdk(draft);
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  const frame = screen.getByTitle<HTMLIFrameElement>("模板预览播放器");
+  for (const reason of [new TypeError("Failed to fetch https://g.alicdn.com/font/x.woff2"), new Error("analytics request failed"), new TypeError("Failed to fetch")]) {
+    await act(async () => frame.contentWindow!.dispatchEvent(Object.assign(new Event("unhandledrejection"), { reason })));
+    expect(screen.queryByText(/已切换基础视频预览/)).toBeNull();
+  }
+  view.rerender(<TemplatePreview {...props({ ...draft, avatar_effects: { ...draft.avatar_effects, feather: 0.1 } })} />);
+  await waitFor(() => expect(player.setTimeline).toHaveBeenCalledTimes(2));
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  expect(player.destroy).not.toHaveBeenCalled();
+  expect(screen.getByText("预览已就绪，点击播放查看效果")).toBeTruthy();
+});
+
+// 可归因于模型的拒绝仍需切换基础播放器并明确说明抠像不可用。
 test("SDK 抠像模型未处理的拒绝明确降级，保留原背景并提示差异", async () => {
   const draft = { ...newDraft(), split_screen: { ...defaultSplitScreen(), enabled: true, layout: "overlay" as const }, avatar_effects: { ...defaultAvatarEffects(), removeBackground: true } };
   const { player } = await mountWithSdk(draft);
@@ -241,7 +260,7 @@ test("SDK 抠像模型未处理的拒绝明确降级，保留原背景并提示�
   const frame = screen.getByTitle<HTMLIFrameElement>("模板预览播放器");
   await act(async () => {
     const event = new Event("unhandledrejection");
-    Object.defineProperty(event, "reason", { value: new Error("model unavailable") });
+    Object.defineProperty(event, "reason", { value: new Error("model unavailable: https://g.alicdn.com/sdk/wasm/starry/model/v_tfmodel/model.json") });
     frame.contentWindow!.dispatchEvent(event);
   });
   expect(screen.getByText(/SDK 抠像预览不可用，当前保留原视频背景/)).toBeTruthy();

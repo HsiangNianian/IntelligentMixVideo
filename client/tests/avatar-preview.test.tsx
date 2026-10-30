@@ -26,12 +26,36 @@ test("模型 HTTP 错误和断网直接报告，其他资源不误报，卸载�
   expect(failure).not.toHaveBeenCalled();
   expect((await view.fetch(model)).status).toBe(503);
   expect(failure).toHaveBeenCalledTimes(1);
-  const offline = new Error("offline");
+  const offline = new TypeError("Failed to fetch");
   fetch.mockRejectedValueOnce(offline);
   await expect(view.fetch(model)).rejects.toBe(offline);
   expect(failure).toHaveBeenLastCalledWith(offline);
   stop();
   expect(view.fetch).toBe(originalFetch);
+});
+
+// 全局拒绝须有明确抠像来源，脚本加载失败仍按资源 URL 捕获；卸载后不再回调。
+test("抠像监听区分无关拒绝、TensorFlow 运行错误及脚本加载失败", () => {
+  const view = Object.assign(new EventTarget(), { fetch: mock() }) as unknown as Window & typeof globalThis;
+  const failure = mock(), stop = watchMattingFailures(view, failure);
+  for (const reason of [new TypeError("Failed to fetch"), new Error("font unavailable"), "analytics failed"])
+    view.dispatchEvent(Object.assign(new Event("unhandledrejection"), { reason }));
+  expect(failure).not.toHaveBeenCalled();
+  const runtime = new Error("TensorFlow runtime failed");
+  runtime.stack = "at segment (https://g.alicdn.com/sdk/wasm/starry/tensorflow/tensorflowLoader.js:1:2)";
+  view.dispatchEvent(Object.assign(new Event("unhandledrejection"), { reason: runtime }));
+  expect(failure).toHaveBeenLastCalledWith(runtime);
+  const script = document.createElement("script");
+  script.src = "https://g.alicdn.com/sdk/wasm/starry/tensorflow/tensorflowLoader.js";
+  const event = new Event("error");
+  Object.defineProperty(event, "target", { value: script });
+  view.dispatchEvent(event);
+  expect(failure).toHaveBeenCalledTimes(2);
+  expect(failure.mock.calls[1][0].message).toBe("抠像脚本加载失败");
+  stop();
+  view.dispatchEvent(event);
+  view.dispatchEvent(Object.assign(new Event("unhandledrejection"), { reason: runtime }));
+  expect(failure).toHaveBeenCalledTimes(2);
 });
 
 // 固定示意头部基准按源短边计算，越界圆心仍保持完整圆形。

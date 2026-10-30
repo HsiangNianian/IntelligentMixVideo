@@ -277,7 +277,10 @@ export function watchMattingFailures(view: Window, onFailure: (error: unknown) =
       return response;
     }, (error) => { onFailure(error); throw error; });
   }) as typeof fetch;
-  const rejected = (event: PromiseRejectionEvent) => onFailure(event.reason);
+  // 字体等无关拒绝只记录诊断；模型网络错误由上面的请求 URL 归因，不依赖模糊的 Failed to fetch。
+  const rejected = (event: PromiseRejectionEvent) => {
+    if (/\/starry\/(tensorflow|model)\//.test(String(event.reason?.stack ?? event.reason))) onFailure(event.reason);
+  };
   const scriptFailed = (event: Event) => {
     const element = event.target as HTMLScriptElement | null;
     if (element?.tagName === "SCRIPT" && element.src.includes("/starry/tensorflow/")) onFailure(new Error("抠像脚本加载失败"));
