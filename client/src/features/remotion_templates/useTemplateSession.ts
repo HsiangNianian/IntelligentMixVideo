@@ -11,6 +11,7 @@ import { briefly, debugLog, oneLine } from "@/lib/diagnostics";
 import * as local from "./localSessions";
 import { defaultComposition } from "./composition";
 import {
+  keywordDefaultProblem,
   sameValues,
   sameJson,
   validValue,
@@ -550,8 +551,9 @@ export function useTemplateSession(onHistoryChange: () => void) {
     }
   }
   /**
-   * 每条消息可附多张图片，按顺序先上传再提交；后续输入绑定最近成功版本，澄清明确绑定提问任务。
-   * 预览时长与「关键词字效」「双栏」选择（`start`）只随创建作品的首条消息提交。
+   * 尝试把聊天消息入队；每条消息可附多张图片，按顺序先上传再提交，后续输入绑定最近成功版本，
+   * 澄清明确绑定提问任务。预览时长与「关键词字效」「双栏」选择（`start`）只随首条消息提交；
+   * 同步守卫或提交锁不允许时返回 false，调用方据此保留提示。
    */
   function send(text: string, images: File[] = [], start?: NewWork) {
     const s = latest.current;
@@ -564,7 +566,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       dirty() ||
       (!text.trim() && !images.length)
     )
-      return;
+      return false;
     const messageId = crypto.randomUUID();
     publish({
       messages: [
@@ -617,6 +619,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
           : { base_version_id: s.version?.id }),
       });
     });
+    return true;
   }
   /** 尚未验收的参数与成功默认值不同，提交和复制维持锁定。 */
   function dirty() {
@@ -670,6 +673,12 @@ export function useTemplateSession(onHistoryChange: () => void) {
         ([name, value]) => !sameJson(value, s.version!.candidate.default_config[name]),
       ),
     );
+    // 关键词样式由云端模板按摆放设置：旧版本未改动但仍保持开启的值也会进入新版本，因此检查完整草稿。
+    const keywordProblem = s.version.spec.sprite?.kind === "text" ? keywordDefaultProblem(s.values) : null;
+    if (keywordProblem) {
+      publish({ error: keywordProblem, retryMode: null });
+      return false;
+    }
     parameterSave.current = true;
     void execute("parameters", () =>
       api.message(s.workId!, {

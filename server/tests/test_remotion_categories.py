@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, category_problems, line_count, parameter_problems
+from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, agent_message, category_problems, line_count, parameter_problems
 from server.remotion_templates.fonts import FontStore
 from server.remotion_templates.models import TemplateCandidate
 from server.remotion_templates.provider import Budget
@@ -108,6 +108,18 @@ def test_keyword_parameters_must_default_to_off():
     assert [item.name for item in category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), {**OFF, "keywordBold": 0, "keywordSize": 0.0, "keywordColor": None})] == ["keywordBold", "keywordColor"]
     missing = {key: value for key, value in OFF.items() if key != "keywords"}
     assert [item.name for item in category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), missing)] == ["keywords"]
+
+
+def test_the_agent_is_told_how_to_repair_keyword_defaults():
+    """默认值不合规时给 Agent 的说明要能指导修复旧字效：关键词外观留在键词 Preset 的样式参数里，七个选项恢复关闭默认值；
+    其他分类问题不带这段修复说明。"""
+    on = {**OFF, "keywordSize": 80}
+    problems = category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), on)
+    message = agent_message("text", problems)
+    assert "keyword Preset" in message and "keywordEffect..." in message and "keywordSize 0" in message
+    missing = {name: TEXT_PROPERTIES[name] for name in BASE_TEXT}
+    other = agent_message("text", category_problems("text", schema(missing), set(missing), OFF))
+    assert "keyword Preset" not in other and "must default to" not in other
 
 
 LINE_STARTS = {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600}, "minItems": 2, "maxItems": 2}
