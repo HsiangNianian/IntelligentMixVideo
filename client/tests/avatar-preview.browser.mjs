@@ -217,16 +217,18 @@ window.mount();
   // 超过防抖窗口的空值/越界值应保留有效画面和轨道，不能降级或把缓存草稿保存出去。
   evidence.inputRecovery = [];
   await page.evaluate(() => { window.editingFrame = document.querySelector('iframe[title="模板预览播放器"]'); });
-  for (const [label, invalid, valid] of [["圆边羽化", "", "0"], ["头部圆形留量（倍）", "", "1.8"], ["开场时长（秒）", "", "3"], ["圆边羽化", "0.3", "0.2"]]) {
+  for (const [label, invalid, valid] of [["圆边羽化", "", "0"], ["头部圆形留量（倍）", "", "1.8"], ["开场时长（秒）", "", "3"], ["圆边羽化", "0.105", "0.1"], ["圆边羽化", "0.3", "0.2"]]) {
     const input = inspector.getByLabel(label, { exact: true });
     const before = await page.evaluate(() => window.pixels([[540,806],[828,806],[80,900]]));
     const rows = await page.getByLabel("时间轴轨道标签").innerText();
+    const object = await inspector.getByRole("button", { name: "编辑圆形蒙版" }).innerText();
     await input.fill(invalid);
     await page.getByRole("alert").filter({ hasText: "预览参数无效" }).waitFor();
     await page.waitForTimeout(400); // 特意跨过 250ms，复现 review 中的输入停顿。
     assert.equal(await input.inputValue(), invalid);
     assert.deepEqual(await page.evaluate(() => window.pixels([[540,806],[828,806],[80,900]])), before);
     assert.equal(await page.getByLabel("时间轴轨道标签").innerText(), rows);
+    assert.equal(await inspector.getByRole("button", { name: "编辑圆形蒙版" }).innerText(), object);
     assert.equal(await page.getByText(/已切换基础视频预览/).count(), 0);
     await page.getByRole("button", { name: "保存模板", exact: true }).click();
     assert.equal(await input.evaluate((element) => element.checkValidity()), false);
@@ -240,6 +242,7 @@ window.mount();
     assert.equal(await page.getByRole("button", { name: "播放", exact: true }).count(), 1);
     assert.equal(await page.getByText(/已切换基础视频预览/).count(), 0);
     // canplay 先于画布绘制完成；按实际像素等待新几何，不能读上一帧来判断更新是否成功。
+    await page.waitForFunction(() => { const p=window.pixels([[540,806],[80,900]]);return p[0][0]>70 && p[1][0]<10; });
     if (label === "圆边羽化" && valid === "0") await page.waitForFunction((edge) => window.pixels([[828,806]])[0][0] > edge[0] * .9, hardEdge);
     if (label === "头部圆形留量（倍）") await page.waitForFunction(() => window.pixels([[828,806]])[0][0] < 10);
     const after = await page.evaluate(() => window.pixels([[540,806],[828,806],[80,900]]));
@@ -253,7 +256,29 @@ window.mount();
   await inspector.getByLabel("开场时长（秒）").fill("2");
   await page.getByText("正在应用效果并加载媒体…", { exact: true }).waitFor();
   await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
-  console.log("工作区：四组无效输入自动恢复，保存校验与 SDK 实例保留");
+  // 无效编辑值留在输入框，换媒体仍以有效配置重建 SDK 与时间轴，不能回到只有转场的空状态。
+  await inspector.getByLabel("开场时长（秒）").fill("");
+  await page.getByRole("button", { name: "加载预览视频", exact: true }).click();
+  await page.getByLabel("视频 1 URL", { exact: true }).fill("/node_modules/.cache/avatar-preview-tests/material.mp4?review-media=1");
+  await page.getByRole("button", { name: "加载", exact: true }).click();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
+  assert(await page.evaluate(() => window.editingFrame !== document.querySelector('iframe[title="模板预览播放器"]')));
+  assert.equal(await inspector.getByLabel("开场时长（秒）").inputValue(), "");
+  assert((await inspector.getByRole("button", { name: "编辑圆形蒙版" }).innerText()).includes("2 秒"));
+  assert.equal(await page.getByText("3 个对象", { exact: true }).count(), 1);
+  assert.equal(await page.getByLabel("时间轴轨道标签").locator('[data-object="video"]').count(), 3);
+  assert.equal(await page.getByText(/NaN/).count(), 0);
+  await inspector.getByLabel("预览取景 Y（%）").fill("42");
+  await page.getByText("正在应用效果并加载媒体…", { exact: true }).waitFor();
+  await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
+  await page.waitForFunction(() => { const p=window.pixels([[540,806],[80,900]]); return p[0][0]>70 && p[1][0]<10; });
+  await page.screenshot({ path: resolve(cache, "ui-invalid-input-new-media.png") });
+  await inspector.getByLabel("开场时长（秒）").fill("2");
+  await page.getByText("正在应用效果并加载媒体…", { exact: true }).waitFor();
+  await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
+  evidence.invalidInputMediaChange = { retainedObject: true, videoRows: 3, sdkReady: true };
+  console.log("工作区：五组无效输入恢复与换媒体通过，包含真实小数步长校验");
   // 从时间轴重选仍保留参数，移除对象同时移除轨道与设置。
   await page.getByRole("button", { name: "关闭圆形蒙版设置" }).click();
   assert.equal(await page.getByLabel("预览取景 X（%）").count(), 0);
@@ -297,6 +322,22 @@ window.mount();
   await inspector.evaluate((el) => { el.scrollTop = 0; });
   await page.screenshot({ path: resolve(cache, "ui-05-matting.png") });
   console.log("工作区：抠像就绪");
+  // 在真实 SDK iframe 注入与抠像无关的异步拒绝，分割像素和播放仍需可用。
+  const rejectionStart = evidence.errors.length;
+  await page.evaluate(() => {
+    const view = document.querySelector('iframe[title="模板预览播放器"]').contentWindow;
+    for (const message of ["Failed to fetch https://g.alicdn.com/font/review.woff2", "review analytics failed", "Failed to fetch"])
+      view.Promise.reject(new view.TypeError(message));
+  });
+  await page.waitForTimeout(400);
+  assert.equal(await page.getByText(/已切换基础视频预览/).count(), 0);
+  await page.getByRole("button", { name: "播放", exact: true }).click();
+  await page.waitForFunction(() => Number(document.querySelector('input[aria-label="预览进度"]').value) > 0.5);
+  await page.getByRole("button", { name: "暂停", exact: true }).click();
+  const unaffected = await page.evaluate(() => window.pixels([[300,650],[540,900]]));
+  assert(unaffected[0][2]>200 && unaffected[0][0]<20 && unaffected[1][0]>80, "无关拒绝后 SDK 仍显示抠像人物及下层素材");
+  evidence.unrelatedRejections = { errors: evidence.errors.splice(rejectionStart), pixels: unaffected, sdkStillPlaying: true };
+  assert.equal(evidence.unrelatedRejections.errors.length, 3);
   await page.route("**/wasm/starry/model/**", (route) => route.fulfill({ status: 503, body: "model unavailable" }));
   await page.getByRole("button", { name: "刷新预览", exact: true }).click();
   await page.getByText("SDK 抠像预览不可用，当前保留原视频背景。", { exact: true }).waitFor();
