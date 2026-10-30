@@ -4,7 +4,7 @@
  * 播放按钮、进度条、时间轴、文字选择框与 AI 资产都只跟随这个位置，不等 IMS。卸载时清理订阅和异步任务。
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { frameMaskRects } from "./frameMask";
+import { frameMaskImage, frameMaskRects } from "./frameMask";
 import { Maximize2, Pause, Play, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { previewOpeningDuration } from "./avatarPreview";
@@ -105,6 +105,18 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [basicFallback, setBasicFallback] = useState(false);
+  const [fallbackMask, setFallbackMask] = useState<string>();
+  const maskPaintedAt = useRef(0);
+  const showFallbackMask = basicFallback && frameMaskRects(draft.frame_mask, PREVIEW_CANVAS.height).length > 0;
+  // 按上次绘制时间节流，持续拖动也每 250ms 使用最新配置；关闭、移除或退出降级时取消待绘制任务。
+  useEffect(() => {
+    if (!showFallbackMask) { setFallbackMask(undefined); return; }
+    const timer = setTimeout(() => {
+      maskPaintedAt.current = performance.now();
+      setFallbackMask(frameMaskImage(draft.frame_mask, PREVIEW_CANVAS.width, PREVIEW_CANVAS.height));
+    }, Math.max(0, 250 - (performance.now() - maskPaintedAt.current)));
+    return () => clearTimeout(timer);
+  }, [showFallbackMask, draft.frame_mask]);
   const [basicReady, setBasicReady] = useState(false);
   // 切换基础视频的原因，显示在预览下方说明里。
   const [fallbackReason, setFallbackReason] = useState("");
@@ -585,8 +597,12 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
 
   // 无效输入暂停并保留当前帧；有效修改回到开头，IMS 随后重新应用时间线。
   useEffect(() => {
-    activePlayback().pause();
-    if (!previewError) clock.seek(0);
+    if (previewError) activePlayback().pause();
+    else {
+      // 同时定位画面来源，避免延迟刷新前的旧 SDK 帧把已回零的游标拉回原位置。
+      activePlayback().seek(0);
+      clock.seek(0);
+    }
   }, [media, videoOrder, resolved, draft.frame_mask, draft.split_screen, draft.avatar_effects, previewCenter, avatarSource, previewError]);
 
   // 换画面来源（IMS 就绪或开始应用修改、切换基础视频、基础视频可以播放）时交接：新来源从当前位置接着走，
@@ -614,8 +630,7 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
             onPlayingChange={(value) => { if (source !== "basic") return; changePlaying(value); setStatus(value ? "正在播放预览…" : "预览已暂停"); }}
             onError={() => { setFailed(true); setStatus("基础视频预览加载失败，请检查视频编码与跨域访问配置后重试。"); }}
             onEnd={() => { if (source !== "basic") return; changePlaying(false); setStatus("预览结束，点击播放可重播"); }} />}
-          {basicFallback && frameMaskRects(draft.frame_mask, PREVIEW_CANVAS.height).map((rect) => <div key={rect.edge} aria-label={`${rect.edge === "top" ? "上" : "下"}栏蒙版预览`}
-            className="pointer-events-none absolute inset-x-0" style={{ top: `${rect.y / PREVIEW_CANVAS.height * 100}%`, height: `${rect.height / PREVIEW_CANVAS.height * 100}%`, background: rect.color }} />)}
+          {showFallbackMask && fallbackMask && <img alt="上下蒙版预览" src={fallbackMask} className="pointer-events-none absolute inset-0 size-full" />}
           {controlsReady && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
             const interval = resolved?.tracks[item.id];
             if (!interval || time < interval.start || time >= interval.end) return null;

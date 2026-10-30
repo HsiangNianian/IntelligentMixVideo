@@ -160,7 +160,7 @@ test.each([["开场时长（秒）", ""], ["头部圆形留量（倍）", ""], [
   }
 });
 
-test("只修改蒙版也刷新 SDK，失败降级保留相同几何，关闭即移除", async () => {
+test("修改渐变暂停回零并刷新 SDK，降级复用 PNG，关闭即移除", async () => {
   spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ fillRect() {}, fillStyle: "" } as unknown as CanvasRenderingContext2D);
   spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,mask");
   const draft = newDraft();
@@ -171,19 +171,31 @@ test("只修改蒙版也刷新 SDK，失败降级保留相同几何，关闭即�
   const mask = newFrameMask();
   view.rerender(<TemplatePreview {...stable} draft={{ ...draft, frame_mask: mask }} />);
   await waitFor(() => expect(player.setTimeline).toHaveBeenCalledTimes(2));
-  expect(screen.queryByLabelText("上栏蒙版预览")).toBeNull();
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  player.currentTime = 3;
+  await act(async () => player.emit("render"));
+  expect(screen.getByLabelText<HTMLInputElement>("预览进度").value).toBe("3");
+  const pauses = player.pause.mock.calls.length;
+  const gradientMask = { ...mask, top: { ...mask.top, gradient: { enabled: true, endColor: "#ffffff", direction: "up" as const, range: 50 } } };
+  view.rerender(<TemplatePreview {...stable} draft={{ ...draft, frame_mask: gradientMask }} />);
+  // 250ms 合并更新期间 SDK 仍可能上报旧帧，不能把界面和随后交接的位置拉回 3 秒。
+  await act(async () => player.emit("render"));
+  expect(screen.getByLabelText<HTMLInputElement>("预览进度").value).toBe("0");
+  await waitFor(() => expect(player.setTimeline).toHaveBeenCalledTimes(3));
+  expect(player.pause.mock.calls.length).toBeGreaterThan(pauses);
+  expect(screen.getByLabelText<HTMLInputElement>("预览进度").value).toBe("0");
+  expect(screen.queryByAltText("上下蒙版预览")).toBeNull();
   await act(async () => player.failTimeline(new Error("SDK 出错")));
-  expect(screen.getByLabelText("上栏蒙版预览").style.height).toBe(`${353 / 1920 * 100}%`);
-  expect(screen.getByLabelText("下栏蒙版预览").style.top).toBe(`${1601 / 1920 * 100}%`);
+  expect((await screen.findByAltText<HTMLImageElement>("上下蒙版预览")).src).toBe("data:image/png;base64,mask");
   view.rerender(<TemplatePreview {...stable} draft={{ ...draft, frame_mask: {
     top: { ...mask.top, enabled: false }, bottom: { ...mask.bottom, enabled: false },
   } }} />);
-  expect(screen.queryByLabelText("上栏蒙版预览")).toBeNull();
-  expect(screen.queryByLabelText("下栏蒙版预览")).toBeNull();
+  expect(screen.queryByAltText("上下蒙版预览")).toBeNull();
   expect(rowObjects()).toContain("frame-mask");
   view.rerender(<TemplatePreview {...stable} draft={draft} />);
   expect(rowObjects()).not.toContain("frame-mask");
-  expect(screen.queryByLabelText("上栏蒙版预览")).toBeNull();
+  expect(screen.queryByAltText("上下蒙版预览")).toBeNull();
 });
 
 // 回归：SDK 的动态媒体路径忽略 Timeline 蒙版字段，须从媒体回调一起交给原视频节点；不降级花字和滤镜。
@@ -288,19 +300,86 @@ afterEach(() => {
 });
 
 /**
- * 记录 setTimeout，用例取出指定时长的最后一个回调立即执行；计时器照常登记，卸载时由预览清理。
+ * 记录 setTimeout 及句柄，用例可立即执行回调或核对取消；计时器照常登记，卸载时由预览清理。
  * 用普通包装而不是 spyOn：Testing Library 见到 mock 的 setTimeout 会当成 Jest 假计时器，waitFor 随之出错。
  */
 function timers() {
-  const calls: [unknown, number | undefined][] = [];
+  const calls: [unknown, number | undefined, number][] = [];
   const original = globalThis.setTimeout;
   realSetTimeout = original;
   globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...rest: unknown[]) => {
-    calls.push([handler, delay]);
-    return original(handler, delay, ...rest);
+    const timer = original(handler, delay, ...rest);
+    calls.push([handler, delay, timer]);
+    return timer;
   }) as typeof setTimeout;
-  return { fire: (delay: number) => act(async () => { ([...calls].reverse().find(([, ms]) => ms === delay)![0] as () => void)(); }) };
+  return {
+    last: (delay: number) => [...calls].reverse().find(([, ms]) => ms === delay)?.[2],
+    fire: (delay: number) => act(async () => {
+      const [handler, , timer] = [...calls].reverse().find(([, ms]) => ms === delay)!;
+      clearTimeout(timer);
+      (handler as () => void)();
+    }),
+  };
 }
+
+// 非蒙版修改也会回零；即使新时间线尚未完成，也必须先取消旧定位计时器。
+test("修改标题在重新载入时间线前取消定位超时", async () => {
+  const draft = newDraft();
+  const { view, player } = await mountWithSdk(draft);
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  player.currentTime = 3;
+  await act(async () => player.emit("render"));
+  const { last } = timers();
+  const clear = spyOn(globalThis, "clearTimeout");
+  const changed = { ...draft, tracks: draft.tracks.map((track) => track.target === "title" ? { ...track, editor: { ...track.editor, title: "新的标题" } } : track) };
+  view.rerender(<TemplatePreview {...props(changed)} />);
+  const seekTimer = last(10_000);
+  expect(seekTimer).toBeDefined();
+  await waitFor(() => expect(player.setTimeline).toHaveBeenCalledTimes(2));
+  expect(clear).toHaveBeenCalledWith(seekTimer);
+  expect(screen.queryByText(/已切换基础视频预览/)).toBeNull();
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  expect(screen.getByLabelText<HTMLInputElement>("预览进度").value).toBe("0");
+});
+
+// 连续拖动时按固定间隔绘制最新参数，不能退化为等停止输入才绘制的防抖；卸载取消尾部任务。
+test("降级蒙版每 250ms 更新最新渐变并清理待绘制任务", async () => {
+  const context = { fillRect() {}, fillStyle: "" };
+  spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+  const encode = spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,mask");
+  const mask = newFrameMask();
+  mask.bottom.enabled = false;
+  mask.top.gradient = { enabled: true, endColor: "#ffffff", direction: "down", range: 100 };
+  const draft = { ...newDraft(), frame_mask: mask }, stable = props(draft);
+  const { view, player } = await mountWithSdk(draft, { resolved: stable.resolved });
+  const setNow = clockAt();
+  const { fire, last } = timers();
+  const clear = spyOn(globalThis, "clearTimeout");
+  setNow(1000);
+  encode.mockClear();
+  await act(async () => player.failTimeline(new Error("SDK 出错")));
+  await fire(0);
+  expect(encode).toHaveBeenCalledTimes(1);
+  for (const start of [1000, 1250]) {
+    for (let step = 1; step <= 3; step++) {
+      setNow(start + step);
+      view.rerender(<TemplatePreview {...stable} draft={{ ...draft, frame_mask: { ...mask, top: { ...mask.top, gradient: { ...mask.top.gradient, endColor: "#123456", range: step * 20 } } } }} />);
+    }
+    expect(encode).toHaveBeenCalledTimes((start - 1000) / 250 + 1);
+    setNow(start + 250);
+    await fire(247);
+    expect(encode).toHaveBeenCalledTimes((start - 1000) / 250 + 2);
+    expect(context.fillStyle).toBe("rgb(18,52,86)");
+  }
+  setNow(1501);
+  view.rerender(<TemplatePreview {...stable} draft={{ ...draft, frame_mask: { ...mask } }} />);
+  const pending = last(249);
+  expect(pending).toBeDefined();
+  view.unmount();
+  expect(clear).toHaveBeenCalledWith(pending);
+});
 
 /** 预览下方的降级说明。 */
 const fallbackNote = (reason: string) => `IMS 渲染暂不可用（${reason}），已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。`;

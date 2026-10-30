@@ -348,13 +348,24 @@ class EffectTrack(BaseModel):
         return self
 
 
+class FrameMaskGradient(BaseModel):
+    """不透明双色渐变；沿方向在指定百分比内过渡至结束色，剩余部分保持结束色。"""
+
+    model_config = ConfigDict(extra="forbid", alias_generator=to_camel, populate_by_name=True)
+    enabled: StrictBool
+    end_color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+    direction: Literal["up", "down"]
+    range: int = Field(ge=1, le=100, strict=True)
+
+
 class FrameMaskBar(BaseModel):
-    """贴住画布边缘的全宽纯色栏；两栏各最多半屏，不改变视频构图。"""
+    """贴住画布边缘的全宽色栏；color 为纯色或渐变起始色，缺省 gradient 保持旧样式。"""
 
     model_config = ConfigDict(extra="forbid")
     enabled: StrictBool
     height: float = Field(ge=0, le=50, allow_inf_nan=False)
     color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+    gradient: FrameMaskGradient | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class FrameMask(BaseModel):

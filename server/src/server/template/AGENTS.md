@@ -21,7 +21,7 @@
 - 列表逐条校验：无效记录带 `validation_error`，其详情返回 409，不影响同库的有效模板。列表消息与转场字段要求客户端、服务端一起升级。
 - `split_screen`、`avatar_effects`、`frame_mask`、`avatar_preview` 等后加的配置缺省为关闭；旧客户端省略这些字段重存时保留已有配置。
 - 省略配置必须保留旧客户端的已有蒙版，因此删除不能沿用省略语义。保存请求中空的 `frame_mask` 消息表示明确移除，路由转换为显式 `None`；只有省略字段才保留已有配置，缺少单栏的非空配置仍按非法输入拒绝。详情省略被移除的配置。
-- 模板级 `frame_mask` 保存上下纯色蒙版：`top`/`bottom` 各有 `enabled`、`height`（画布高度百分比 0～50）与 `color`（`#RRGGBB`）。它不是 `tracks` 里的对象，使用它需要客户端与服务端一起升级。
+- 模板级 `frame_mask` 保存上下蒙版：`top`/`bottom` 各有 `enabled`、`height`（画布高度百分比 0～50）与 `color`（`#RRGGBB`）。可选 `gradient` 含必填的 enabled、endColor（`#RRGGBB`）、direction（up/down）与 range（整数 1～100），color 作为起始色；缺省为纯色，旧客户端按栏省略渐变时保留已有值，显式 false 关闭但保留参数。它不是 `tracks` 里的对象，使用它需要客户端与服务端一起升级。
 
 ## 字体与效果目录
 

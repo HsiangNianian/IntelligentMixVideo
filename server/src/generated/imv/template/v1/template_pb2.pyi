@@ -270,15 +270,29 @@ class AvatarEffects(_message.Message):
     remove_background: bool
     def __init__(self, opening_enabled: _Optional[bool] = ..., opening_duration: _Optional[float] = ..., circle_scale: _Optional[float] = ..., feather: _Optional[float] = ..., remove_background: _Optional[bool] = ...) -> None: ...
 
+class FrameMaskGradient(_message.Message):
+    __slots__ = ("enabled", "end_color", "direction", "range")
+    ENABLED_FIELD_NUMBER: _ClassVar[int]
+    END_COLOR_FIELD_NUMBER: _ClassVar[int]
+    DIRECTION_FIELD_NUMBER: _ClassVar[int]
+    RANGE_FIELD_NUMBER: _ClassVar[int]
+    enabled: bool
+    end_color: str
+    direction: str
+    range: int
+    def __init__(self, enabled: _Optional[bool] = ..., end_color: _Optional[str] = ..., direction: _Optional[str] = ..., range: _Optional[int] = ...) -> None: ...
+
 class FrameMaskBar(_message.Message):
-    __slots__ = ("enabled", "height", "color")
+    __slots__ = ("enabled", "height", "color", "gradient")
     ENABLED_FIELD_NUMBER: _ClassVar[int]
     HEIGHT_FIELD_NUMBER: _ClassVar[int]
     COLOR_FIELD_NUMBER: _ClassVar[int]
+    GRADIENT_FIELD_NUMBER: _ClassVar[int]
     enabled: bool
     height: float
     color: str
-    def __init__(self, enabled: _Optional[bool] = ..., height: _Optional[float] = ..., color: _Optional[str] = ...) -> None: ...
+    gradient: FrameMaskGradient
+    def __init__(self, enabled: _Optional[bool] = ..., height: _Optional[float] = ..., color: _Optional[str] = ..., gradient: _Optional[_Union[FrameMaskGradient, _Mapping]] = ...) -> None: ...
 
 class FrameMask(_message.Message):
     __slots__ = ("top", "bottom")

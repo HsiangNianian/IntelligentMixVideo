@@ -1,7 +1,21 @@
-[
-  {"height": 1920, "top": 18.4, "bottom": 16.6, "expected": [[0, 353], [1601, 319]]},
-  {"height": 1280, "top": 18.4, "bottom": 16.6, "expected": [[0, 236], [1068, 212]]},
-  {"height": 101, "top": 50, "bottom": 0, "expected": [[0, 51]]},
-  {"height": 1280, "top": 0, "bottom": 10, "expected": [[1152, 128]]},
-  {"height": 100, "top": 0.01, "bottom": 0, "expected": []}
-]
+{
+  "geometry": [
+    {"height":1920,"top":18.4,"bottom":16.6,"expected":[[0,353],[1601,319]]},
+    {"height":1280,"top":18.4,"bottom":16.6,"expected":[[0,236],[1068,212]]},
+    {"height":101,"top":50,"bottom":0,"expected":[[0,51]]},
+    {"height":1280,"top":0,"bottom":10,"expected":[[1152,128]]},
+    {"height":100,"top":0.01,"bottom":0,"expected":[]}
+  ],
+  "gradient": [
+    {"name":"向下全栏","height":10,"barHeight":50,"color":"#000000","gradient":{"enabled":true,"endColor":"#ffffff","direction":"down","range":100},"expected":[[0,0,0,255],[64,64,64,255],[128,128,128,255],[191,191,191,255],[255,255,255,255]]},
+    {"name":"向上全栏","height":10,"barHeight":50,"color":"#000000","gradient":{"enabled":true,"endColor":"#ffffff","direction":"up","range":100},"expected":[[255,255,255,255],[191,191,191,255],[128,128,128,255],[64,64,64,255],[0,0,0,255]]},
+    {"name":"双色半栏","height":20,"barHeight":25,"color":"#102030","gradient":{"enabled":true,"endColor":"#f0b000","direction":"down","range":50},"expected":[[16,32,48,255],[128,104,24,255],[240,176,0,255],[240,176,0,255],[240,176,0,255]]},
+    {"name":"向上半栏","height":20,"barHeight":25,"color":"#102030","gradient":{"enabled":true,"endColor":"#f0b000","direction":"up","range":50},"expected":[[240,176,0,255],[240,176,0,255],[240,176,0,255],[128,104,24,255],[16,32,48,255]]},
+    {"name":"最小范围","height":10,"barHeight":50,"color":"#102030","gradient":{"enabled":true,"endColor":"#f0b000","direction":"down","range":1},"expected":[[16,32,48,255],[240,176,0,255],[240,176,0,255],[240,176,0,255],[240,176,0,255]]},
+    {"name":"单像素向上","height":10,"barHeight":10,"color":"#102030","gradient":{"enabled":true,"endColor":"#f0b000","direction":"up","range":50},"expected":[[16,32,48,255]]},
+    {"name":"单像素向下","height":10,"barHeight":10,"color":"#102030","gradient":{"enabled":true,"endColor":"#f0b000","direction":"down","range":100},"expected":[[16,32,48,255]]},
+    {"name":"相同颜色","height":10,"barHeight":20,"color":"#102030","gradient":{"enabled":true,"endColor":"#102030","direction":"up","range":100},"expected":[[16,32,48,255],[16,32,48,255]]},
+    {"name":"渐变关闭","height":10,"barHeight":20,"color":"#102030","gradient":{"enabled":false,"endColor":"#f0b000","direction":"down","range":100},"expected":[[16,32,48,255],[16,32,48,255]]},
+    {"name":"零高度","height":10,"barHeight":0,"color":"#102030","gradient":{"enabled":true,"endColor":"#f0b000","direction":"down","range":100},"expected":[]}
+  ]
+}
