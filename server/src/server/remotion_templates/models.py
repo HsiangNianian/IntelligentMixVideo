@@ -86,6 +86,8 @@ class GenerateTemplateRequest(Contract):
     keyword_effect: StrictBool = False
     # The user asked in the new-chat form for a two-tier text (双栏); a new work's sprite.create refuses a single-line text then.
     two_tier: StrictBool = False
+    # The user asked for a bilingual subtitle (双语字幕): the two tiers show the Chinese line and its English translation.
+    bilingual: StrictBool = False
 
     @model_validator(mode="before")
     @classmethod

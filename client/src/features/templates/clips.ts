@@ -5,7 +5,7 @@
 import type { ParameterValue } from "@/components/ParameterControl";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
-import type { ClipTransform, TransformField } from "@/features/sprites/parameters";
+import { BILINGUAL_PROP, type ClipTransform, type TransformField } from "@/features/sprites/parameters";
 import { boundText, textKey, textRoles, type Draft, type RemotionClip, type TextRole, type TextLanguage } from "./model";
 import type { ResolvedTimeline } from "./tracks";
 import { compactTransitions, nextTransitionBoundary } from "./transitions";
@@ -16,8 +16,8 @@ const maxTracks = 100;
 /** 片段在模板里占用的对象，与 IMS 对象的时间轴行一致。 */
 export type ClipSlot = "title" | "subtitle" | "transition" | "vfx" | "filter";
 
-/** 字效作用于文字时，这两个参数由该文字对象提供（合成时由总线填入），摆放不再单独覆盖。 */
-export const BOUND_TEXT_PARAMETERS = ["text", "keywords"];
+/** 字效作用于文字时，这些参数由该文字对象提供（合成时由总线填入），摆放不再单独覆盖；双语字效的英文同样来自它的英文对象。 */
+export const BOUND_TEXT_PARAMETERS = ["text", "keywords", BILINGUAL_PROP];
 
 /** 画布描述，用于提示：宽×高 @ 帧率。 */
 function canvasLabel(asset: SpriteAsset): string {
@@ -70,6 +70,8 @@ export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], 
   };
   if (asset.kind === SpriteKind.TEXT) {
     if (role === "bubble") throw new Error("Remotion 字效只能作用于标题或底部字幕，请先在左侧选择标题或字幕");
+    // 双语字效自己同时显示中英两种语言，只能绑定中文对象；否则英文文字对象里没有中文可取。
+    if (asset.bilingual && language === "en") throw new Error(`「${asset.name}」是双语字效，已同时显示中英两种语言，请作用于中文${role === "title" ? "标题" : "字幕"}`);
     const existing = textClip(draft, role, undefined, language);
     if (existing) throw new Error(`${textRoles[role]}已有 Remotion 字效，请先移除再添加`);
     clip.text_target = role;

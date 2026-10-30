@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from ..categories import (
-    DEFAULT_EFFECT_SECONDS, EFFECT_DELAY, EFFECT_PARAMETER, EFFECT_SECONDS, EFFECT_SLOTS, EFFECT_TARGETS, FIXED_TITLES, GLYPH_TARGETS,
+    BILINGUAL, BILINGUAL_PROP, DEFAULT_EFFECT_SECONDS, EFFECT_DELAY, EFFECT_PARAMETER, EFFECT_SECONDS, EFFECT_SLOTS, EFFECT_TARGETS, FIXED_TITLES, GLYPH_TARGETS,
     KEYWORD_EFFECT_PROP, KEYWORD_GLYPH_TARGET,
-    LINE_GAP, LINE_STARTS, REQUIRED, TEXT_KEYWORDS, TIER_LAYOUT, TIER_LAYOUTS, TIER_SIZE_RATIO,
+    LINE_GAP, LINE_STARTS, REQUIRED, TEXT_KEYWORDS, TIER_LAYOUT, TIER_LAYOUTS, TIER_SIZE_RATIO, TRANSLATION_GAP,
 )
 from .registry import ToolFault
 
@@ -107,7 +107,9 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
     defaults the Agent chose in ``block`` (a `TextComposition`) and the font library ``fonts`` as the font enum.
 
     One tier exposes `fontFamily`/`fontWeight`; two tiers expose each tier's font, weight and size ratio plus
-    `tierLayout` (stacked, or overlapping, which needs no gap and defaults it to 0), `lineGap` and `lineStartFrames`. Both expose `text`, `fontSize` and the seven keyword parameters (off by
+    `tierLayout` (stacked, or overlapping, which needs no gap and defaults it to 0), `lineGap` and `lineStartFrames`. A
+    bilingual text (双语字幕) puts the Chinese line in `text` and the English translation of the same sentence in
+    `textEn`, the lower tier's content. Both expose `text`, `fontSize` and the seven keyword parameters (off by
     default), a block with a keyword Preset also its `keywordEffect` switch (on by default), and effect k (from 1, in
     the block's order) its switch `effect{k}`, its position `effect{k}Target`, unless it loops its length
     `effect{k}Seconds`, entering or at the lower tier's cue its start delay `effect{k}Delay`, and placed at a glyph
@@ -118,10 +120,14 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
     font = {"type": "string", "enum": fonts}
     weight = rules["fontWeight"].example
     tiers = block["tiers"]
+    # 双语字效的默认文字是「中文\n英文」两行：上栏取第一行，下栏的英文另以 `textEn` 交给宿主，合成时按切片注入。
+    lines = block["text"].split("\n") if block.get("bilingual") else None
     entries: list[tuple[str, dict[str, Any], Any]] = [
-        ("text", rules["text"].example, block["text"]),
-        ("fontSize", rules["fontSize"].example, block["font_size"]),
+        ("text", rules["text"].example, "\n".join(lines[::2]) if lines else block["text"]),
     ]
+    if lines:
+        entries.append((BILINGUAL_PROP, BILINGUAL.example, "\n".join(lines[1::2])))
+    entries.append(("fontSize", rules["fontSize"].example, block["font_size"]))
     if len(tiers) == 1:
         entries += [("fontFamily", font, tiers[0]["font_family"]), ("fontWeight", weight, tiers[0]["font_weight"])]
     else:
@@ -133,11 +139,18 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
                 (f"line{index}SizeRatio", {"type": "number", "minimum": low, "maximum": high}, tier["size_ratio"]),
             ]
         entries += [(TIER_LAYOUT, {"type": "string", "enum": list(TIER_LAYOUTS)}, block.get("arrangement", "stack")), (LINE_GAP.name, LINE_GAP.example, block.get("line_gap", 0)),
-                    (LINE_STARTS.name, LINE_STARTS.example, block["line_starts"])]
+                    (LINE_STARTS.name, {**LINE_STARTS.example, "minItems": len(tiers), "maxItems": len(tiers)}, block["line_starts"])]
+    if len(tiers) == 4:
+        entries.append((TRANSLATION_GAP.name, TRANSLATION_GAP.example, block.get("translation_gap", 8)))
     entries += [(rule.name, rule.example, rule.off) for rule in TEXT_KEYWORDS]
     if block.get("keyword") is not None:
         entries.append((KEYWORD_EFFECT_PROP, {"type": "boolean"}, True))
     titles = dict(FIXED_TITLES)
+    if len(tiers) == 4:
+        # 四个物理行分成上下两组，面板明确每行的语言，避免将英文误称为第二组。
+        for index, name in enumerate(("上栏中文", "上栏英文", "下栏中文", "下栏英文"), 1):
+            for suffix, label in (("FontFamily", "字体"), ("FontWeight", "字重"), ("SizeRatio", "字号比例")):
+                titles[f"line{index}{suffix}"] = name + label
     low, high = EFFECT_SECONDS
     for index, effect in enumerate(block.get("effects", []), start=1):
         name, title = f"effect{index}", effect["title"]
@@ -204,7 +217,8 @@ def compose_text_source(
     """Generate a text block Sprite: its TSX, parameter schema, complete defaults and the host's configuration bindings.
 
     ``tiers``, ``keyword`` and ``effects`` are the resolved text, keyword and effect instances (effects in the block's
-    order); ``bindings`` are the Agent's style parameters over them. The configuration parameters come first in the
+    order); ``bindings`` are the Agent's style parameters over them. A bilingual block hands the bundler its flag, so
+    the generated host takes the lower tier from `textEn` instead of the second line of `text`. The configuration parameters come first in the
     schema, bound to the block itself (`TEXT_BLOCK_ID`); a style parameter may not take a configuration name, nor the
     name of a later effect's configuration. ``still`` holds each tier on its middle frame, so only the effects move it.
     The glyph positions need every tier's text Preset to draw the host's line (`children`), and `keywordChars` also a
@@ -229,6 +243,7 @@ def compose_text_source(
         return {"instance_id": item["instance_id"], "code": item["preset"]["code"], "bindings": targets.get(item["instance_id"], [])}
     answer = _bundle({"text": {
         "layout": block["layout"], "tiers": [source(item) for item in tiers], "keyword": source(keyword) if keyword else None,
+        "bilingual": block.get("bilingual") is True,
         "effects": [{**source(item), "slot": effect["slot"]} for item, effect in zip(effects, block.get("effects", []))], "still": still,
     }, "defaults": defaults})
     drawn = [item["instance_id"] for item, line in zip(tiers, answer["children"]) if not line]

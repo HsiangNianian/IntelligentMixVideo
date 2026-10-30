@@ -6,7 +6,7 @@
 from copy import deepcopy
 import json
 import math
-from ..remotion_templates.categories import LINE_STARTS_PROP, TEXT_MAX_LENGTH, line_count
+from ..remotion_templates.categories import BILINGUAL_PROP, LINE_STARTS_PROP, TEXT_MAX_LENGTH, content_line_count, content_line_starts, line_count
 from ..remotion_templates.fonts import open_font_schema
 from ..remotion_templates.tools.schema import validate_parameters
 
@@ -70,11 +70,12 @@ def first_range(text: str, keyword: str) -> list[list[int]]:
 
 def resolve_config(sprite, text: str, keyword: str | list[str], frames: int,
                    text_prop: str = "", keywords_prop: str = "", *, config: dict | None = None,
-                   line_starts: list[int] | None = None) -> dict:
+                   line_starts: list[int] | None = None, english: str | None = None) -> dict:
     """克隆资产默认值并覆盖全部业务字段；空关键词覆盖示例，源码和样式保留。
 
     多行字效的 ``text`` 用换行分隔各行，``keyword`` 是各行关键词的列表，``line_starts`` 是各行出现的帧：
     资产声明了 `lineStartFrames` 时写入并补足到它的固定项数（补的项沿用最后一行，没有文字的行不会显示）。
+    ``english`` 是双语字效下栏的英文：声明了 `textEn` 的资产同时写入，两种语言一起显示。
     """
     schema = json.loads(sprite.config_schema_json)
     mapping = roles(schema)
@@ -104,9 +105,13 @@ def resolve_config(sprite, text: str, keyword: str | list[str], frames: int,
             # 上游新分类契约使用词列表；旧区间数组仍按其显式 Schema 注入。
             value = hits
         set_path(config, path, value)
-    if (count := line_count(schema)) > 1:
-        starts = (line_starts or [0])[:count]
-        set_path(config, LINE_STARTS_PROP, starts + [starts[-1]] * (count - len(starts)))
+    if line_count(schema) > 1:
+        set_path(config, LINE_STARTS_PROP, content_line_starts(schema, line_starts or [0]))
+    if english is not None:
+        # 双语字效的下栏是同一句的英文：只有声明了 `textEn` 的资产收得下，其他字效不能当双语的用。
+        if definitions.get(BILINGUAL_PROP, {}).get("type") != "string":
+            raise ContentError("资产尚未适配双语文字：" + BILINGUAL_PROP)
+        set_path(config, BILINGUAL_PROP, english)
     for path in mapping["duration"]:
         set_path(config, path, frames)
     try:
@@ -130,7 +135,8 @@ def capacity_samples(sprite, config: dict, frames: int) -> tuple[int, list[dict]
     keyword_paths = list(dict.fromkeys([*mapping["keywords"], *([sprite.keywords_prop] if sprite.keywords_prop else [])]))
     if not text_paths:
         raise ContentError("资产尚未适配业务文字，请声明正文参数")
-    lines = line_count(schema)
+    # 双语每组占中英两行，容量按中文内容组数测量，避免将译文行误算成额外中文。
+    lines = content_line_count(schema)
     maximum = min(TEXT_MAX_LENGTH, *(definitions[path].get("maxLength", TEXT_MAX_LENGTH) for path in text_paths))
     minimum = max(definitions[path].get("minLength", 1) for path in text_paths)
     keyword_length, keyword_count = TEXT_MAX_LENGTH, lines

@@ -106,11 +106,18 @@ export interface SpriteClip {
   opening?: { end: number; transform?: ClipTransform };
   /** 资产画布与内容区域，用于在预览上拖动位置；movable 为 false 的分类只能调整强度。 */
   canvas?: { width: number; height: number; box: ContentBox; movable: boolean };
+  /** 双语字效（双语字幕）：它同时显示中英两种语言，所作用对象的英文文字也不交给 IMS。 */
+  bilingual?: boolean;
 }
 
-/** 作用于文字的 Remotion 字效所替换的 IMS 文字对象。 */
-export function remotionTexts(draft: Pick<Draft, "clips">): Set<string> {
-  return new Set(draft.clips.flatMap((clip) => clip.text_target ? [textKey(clip.text_target, clip.language)] : []));
+/**
+ * 作用于文字的 Remotion 字效所替换的 IMS 文字对象；`bilingual` 里的片段是双语字效，它同时替换该对象的英文文字
+ * （上栏中文、下栏英文都在同一个字效里）。
+ */
+export function remotionTexts(draft: Pick<Draft, "clips">, bilingual?: ReadonlySet<string>): Set<string> {
+  return new Set(draft.clips.flatMap((clip) => clip.text_target
+    ? [textKey(clip.text_target, clip.language), ...(bilingual?.has(clip.id) ? [textKey(clip.text_target, "en")] : [])]
+    : []));
 }
 
 /**
@@ -262,7 +269,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
 }
 
 /** 母版、文字和全画面效果从同一份实例数据生成，SDK 自动转换后端 Timeline 格式。 */
-export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: PreviewMedia, resolvedTimeline: ResolvedTimeline, order = [0, 1, 2], avatarSource = 0, previewCenter?: ScreenPoint) {
+export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: PreviewMedia, resolvedTimeline: ResolvedTimeline, order = [0, 1, 2], avatarSource = 0, previewCenter?: ScreenPoint, bilingual?: ReadonlySet<string>) {
   const previewRows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [];
   const EffectTracks: { EffectTrackItems: Effect[] }[] = [];
   const transitions: { boundary: number; start: number; end: number; effect: Effect }[] = [];
@@ -334,8 +341,8 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
     openingTracks.push({ VideoTrackClips: clips });
   }
   const seen = new Set<string>();
-  // 改由 Remotion 字效显示的文字仍保留时间轴行，但不交给 SDK 渲染。
-  const replaced = remotionTexts(draft);
+  // 改由 Remotion 字效显示的文字仍保留时间轴行，但不交给 SDK 渲染；双语字效连它所作用对象的英文文字一起替换。
+  const replaced = remotionTexts(draft, bilingual);
   for (const source of [...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target])) {
     if (source.enabled === false || (layout && source.target === "transition")) continue;
     const applied = resolvedTimeline.tracks[source.id];

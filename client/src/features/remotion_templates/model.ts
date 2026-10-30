@@ -41,11 +41,12 @@ export interface Control {
 }
 /** 效果分类：字效、滤镜、视频特效、转场（后两者在界面上合为「转场与视频特效」）。 */
 export type SpriteKindName = "text" | "filter_overlay" | "video_overlay" | "transition_overlay";
-/** 新会话首条消息附带的生成选择：预览时长（整帧）与「关键词字效」「双栏」两个开关。 */
+/** 新会话首条消息附带的生成选择：预览时长（整帧）与「关键词字效」「双栏」「双语字幕」三个开关。 */
 export interface NewWork {
   durationInFrames: number;
   keywordEffect: boolean;
   twoTier: boolean;
+  bilingual: boolean;
 }
 /** 成功版本提供代码、参数默认值、控件和画布信息。 */
 export interface Version {
@@ -66,7 +67,7 @@ export interface Version {
     composition: Composition;
     text_layers: { id: string; text: string }[];
     /** 组合版本的分类与顶层参数绑定，字效的文字组合另有各栏、关键词与特效的实例 ID（特效带中文名称）；更早的版本没有。 */
-    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string; targets?: { instance_id: string; parameter: string }[] }[]; text?: { tiers: string[]; keyword?: string; effects?: { instance_id: string; title: string }[]; preview_keywords?: string[] } };
+    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string; targets?: { instance_id: string; parameter: string }[] }[]; text?: { tiers: string[]; keyword?: string; effects?: { instance_id: string; title: string }[]; preview_keywords?: string[]; bilingual?: true } };
   };
 }
 
@@ -74,7 +75,8 @@ export interface Version {
 export function instanceTitle(version: Version, id: string): string {
   const block = version.spec.sprite?.text;
   const tier = block?.tiers.indexOf(id) ?? -1;
-  if (block && tier >= 0) return block.tiers.length === 1 ? "正文" : ["上栏", "下栏"][tier];
+  if (block && tier >= 0) return block.tiers.length === 1 ? "正文" : block.bilingual && block.tiers.length === 4
+    ? ["第一组中文", "第一组英文", "第二组中文", "第二组英文"][tier] : ["上栏", "下栏"][tier];
   if (block?.keyword === id) return "关键词字效";
   const effect = block?.effects?.find((item) => item.instance_id === id);
   return effect ? `特效 · ${effect.title}` : `实例 · ${id}`;
@@ -107,12 +109,14 @@ export function schemaField(key: string, control: Control): ParameterField | nul
 
 /** 多行字效的行起点参数名，与服务端 `categories.LINE_STARTS_PROP` 一致。 */
 const LINE_STARTS_KEY = "lineStartFrames";
+/** 双语字效（双语字幕）的英文文字参数名，与服务端 `categories.BILINGUAL_PROP` 一致。 */
+const BILINGUAL_KEY = "textEn";
 
 /**
  * 字效的配置参数：名称、Schema 与中文标题由宿主固定（服务端 `categories.FIXED_TITLES`），是文字、字体与字号、双栏排版、
  * 关键词这些「写什么、怎么排」的设置；其余顶层参数是 Agent 为这个字效设计的样式（颜色、发光、描边、动画、关键词字效的外观）。
  */
-const CONFIG_PARAMETERS = new Set(["text", ...TEXT_LAYOUT_PARAMETERS, ...TEMPLATE_KEYWORD_PARAMETERS, "keywordEffect"]);
+const CONFIG_PARAMETERS = new Set(["text", BILINGUAL_KEY, ...TEXT_LAYOUT_PARAMETERS, ...TEMPLATE_KEYWORD_PARAMETERS, "keywordEffect"]);
 
 /**
  * 组合版本的参数分组：顶层参数分为配置（见 `CONFIG_PARAMETERS`）与样式，以及各实例的内部参数；
@@ -127,12 +131,13 @@ export function schemaGroups(properties: Record<string, Control>): {
   const style: ParameterField[] = [];
   const instances: { id: string; fields: ParameterField[] | null }[] = [];
   // 多行字效每行出现的帧由宿主按字幕切片注入，不在参数面板编辑；它的项数就是文字的固定行数。
-  const lines = properties[LINE_STARTS_KEY]?.maxItems;
+  const physicalLines = properties[LINE_STARTS_KEY]?.maxItems ?? 1;
+  const lines = properties[BILINGUAL_KEY] ? Math.max(1, Math.floor(physicalLines / 2)) : physicalLines;
   for (const [key, control] of Object.entries(properties)) {
     if (key === LINE_STARTS_KEY) continue;
     if (control.type !== "object") {
       const field = schemaField(key, control);
-      if (field) (CONFIG_PARAMETERS.has(key) ? config : style).push(key === "text" && field.kind === "string" && lines && lines > 1 ? { ...field, lines } : field);
+      if (field) (CONFIG_PARAMETERS.has(key) ? config : style).push((key === "text" || key === BILINGUAL_KEY) && field.kind === "string" && lines > 1 ? { ...field, lines } : field);
       else instances.push({ id: key, fields: null });
       continue;
     }
@@ -194,7 +199,8 @@ export function textSections(version: Version): {
   const text: ParameterField[] = [];
   const keyword: ParameterField[] = [];
   const instances: InstanceFields[] = [];
-  const lines = properties[LINE_STARTS_KEY]?.maxItems;
+  const physicalLines = properties[LINE_STARTS_KEY]?.maxItems ?? 1;
+  const lines = block.bilingual ? Math.max(1, Math.floor(physicalLines / 2)) : physicalLines;
   for (const [key, control] of Object.entries(properties)) {
     if (carded.has(key)) continue;
     if (control.type === "object") {
@@ -204,7 +210,7 @@ export function textSections(version: Version): {
     const item = schemaField(key, control);
     if (!item) instances.push({ id: key, fields: null });
     else if (TEMPLATE_KEYWORD_PARAMETERS.includes(key)) keyword.push(item);
-    else text.push(key === "text" && item.kind === "string" && lines && lines > 1 ? { ...item, lines } : item);
+    else text.push((key === "text" || key === BILINGUAL_KEY) && item.kind === "string" && lines > 1 ? { ...item, lines } : item);
   }
   return { text, keyword, instances, effects };
 }

@@ -1,5 +1,6 @@
 # MySQL 模板存储：列表保留每条记录的校验结果，详情只返回有效模板，事务保护写入。
 
+import json
 from datetime import UTC, datetime
 from threading import Lock
 from uuid import UUID, uuid4
@@ -15,6 +16,7 @@ from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
 
 from ..database import get_engine
 from ..remotion_templates import placement, sprite_store, sprites
+from ..remotion_templates.categories import BILINGUAL_PROP, bilingual as is_bilingual
 from ..remotion_templates.store import Conflict
 from .schema import EffectTrack, Template, TemplateSave, TemplateSummary, completeness_error, effect_catalog
 
@@ -124,7 +126,7 @@ def check_slot(track: EffectTrack, kind: int) -> None:
         if track.text_target is None and legacy_target not in {"title", "subtitle"}:
             raise HTTPException(422, f"Remotion 字效「{track.id}」须作用于标题或底部字幕")
         overrides = {item.key for item in track.editor.remotion.parameters} if track.editor.remotion else set()
-        if bound := sorted(overrides & {sprites.TEXT_PROP, sprites.KEYWORDS_PROP}):
+        if bound := sorted(overrides & {sprites.TEXT_PROP, sprites.KEYWORDS_PROP, BILINGUAL_PROP}):
             raise HTTPException(422, f"Remotion 字效「{track.id}」的文字与关键词取自所作用的对象，不能覆盖 {'、'.join(bound)}")
     elif track.text_target is not None or legacy_target in {"title", "subtitle"}:
         raise HTTPException(422, f"Remotion 片段「{track.id}」不是字效，不能作用于文字")
@@ -133,6 +135,23 @@ def check_slot(track: EffectTrack, kind: int) -> None:
             raise HTTPException(422, f"Remotion 转场「{track.id}」须指定视频交界处")
     elif track.transition_boundary is not None:
         raise HTTPException(422, f"Remotion 片段「{track.id}」不是转场，不能占用视频交界处")
+
+
+def check_bilingual(track: EffectTrack, published: sprite_pb.PublishedSprite, tracks: list[EffectTrack]) -> None:
+    """双语字效（双语字幕）自己同时显示中英两种语言：它必须作用于中文对象、该对象的英文文字已开启，且不能另有英文字效。
+
+    合成时按切片把同一句的英文译文注入字效的下栏，所以缺少英文文字就取不到译文，英文字效又会把英文再显示一遍（422）。
+    """
+    if not is_bilingual(json.loads(published.config_schema_json or "{}")):
+        return
+    if track.text_target is None or track.language == "en":
+        raise HTTPException(422, f"Remotion 字效「{track.id}」是双语字效，已同时显示中英两种语言，须作用于中文标题或中文字幕")
+    role = "标题" if track.text_target == "title" else "字幕"
+    english = next((item for item in tracks if item.target == track.text_target and item.language == "en"), None)
+    if english is None or not english.enabled:
+        raise HTTPException(422, f"Remotion 字效「{track.id}」是双语字效，需要同时开启中英双语：合成时用英文{role}的译文显示下栏")
+    if any(item.target == "remotion" and item.text_target == track.text_target and item.language == "en" for item in tracks):
+        raise HTTPException(422, f"Remotion 字效「{track.id}」是双语字效，已显示英文{role}，请移除额外的英文{role}字效")
 
 
 def save_template(data: TemplateSave) -> Template:
@@ -169,6 +188,7 @@ def save_template(data: TemplateSave) -> Template:
             except ValueError as exc:
                 raise HTTPException(422, f"Remotion 片段「{track.id}」：{exc}") from None
             check_slot(track, published[str(track.sprite_id)].kind)
+            check_bilingual(track, published[str(track.sprite_id)], data.tracks)
         effects = sum(published[str(track.sprite_id)].kind in VFX_KINDS for track in clips)
         if effects + sum(track.target == "vfx" for track in data.tracks) > 1:
             raise HTTPException(422, "VFX 最多一个，Remotion 视频特效也占用这个名额")

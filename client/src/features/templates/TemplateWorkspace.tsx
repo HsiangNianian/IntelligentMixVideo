@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import * as api from "./api";
 import { readCatalog } from "./sdk";
-import { activeDraft, boundText, newDraft, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
+import { activeDraft, boundText, newDraft, singleRowText, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
 import { addTrack, previewContext, resolveTemplate, removeTrack, setBilingual, setTrackTiming, trackDraft, updateTrack } from "./tracks";
@@ -32,7 +32,7 @@ import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
 import { addClip, bindClip, clipSlot, hiddenTextClips, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
 import { exampleKeyword } from "./timeline";
-import { transformFields } from "@/features/sprites/parameters";
+import { BILINGUAL_PROP, contentLines, transformFields } from "@/features/sprites/parameters";
 import { useSpriteCatalog } from "./useSpriteCatalog";
 import type { TemplateSelection } from "./TemplateHome";
 import "./template-workspace.css";
@@ -122,8 +122,10 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const draftTracks = draft?.tracks;
   const spriteClips = useMemo(() => previewClips.map((clip) => {
     const asset = spriteCatalog.assets?.find((item) => item.id === clip.sprite_id);
-    // 作用于文字的字效显示该文字对象的示例文字与关键词，合成时由总线换成实际标题或切片。
+    // 作用于文字的字效显示该文字对象的示例文字与关键词，合成时由总线换成实际标题或切片；英文固定单行，双栏字效只用上栏。
     const text = boundText(draftTracks ?? [], clip);
+    // 双语字效（双语字幕）的下栏是所作用对象英文文字对象的示例译文，与合成注入同一句译文一致。
+    const english = asset?.bilingual && clip.text_target ? draftTracks?.find((track) => track.target === clip.text_target && track.language === "en") : undefined;
     const point = previewDraft?.split_screen?.enabled && clip.text_target === "subtitle" ? previewDraft.split_screen[text?.language === "en" ? "subtitleEn" : "subtitle"] : undefined;
     const transform = point && asset ? { ...clip.transform, x: point.x * asset.width / 100, y: point.y * asset.height / 100 + asset.box.height * (clip.transform?.scale ?? 1) / 2 } : clip.transform;
     return {
@@ -138,9 +140,16 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
       slot: clipSlot(clip, asset),
       textTrackId: text?.id,
       boundary: clip.transition_boundary,
-      values: text && clip.text_target ? { ...clip.parameters, text: text.editor[clip.text_target], keywords: [exampleKeyword(text.editor, clip.text_target, text.language)].filter(Boolean) } : clip.parameters,
+      values: text && clip.text_target ? {
+        ...clip.parameters,
+        text: text.language === "en" ? singleRowText(text.editor[clip.text_target]) : text.editor[clip.text_target],
+        keywords: [exampleKeyword(text.editor, clip.text_target, text.language)].filter(Boolean),
+        ...(asset?.bilingual && clip.text_target ? { [BILINGUAL_PROP]: english ? contentLines(asset) > 1 ? english.editor[clip.text_target] : singleRowText(english.editor[clip.text_target]) : "",
+          lineStartFrames: Array(asset.lines ?? 2).fill(0) } : {}),
+      } : clip.parameters,
       transform,
       opening: point ? { end: previewOpeningDuration(previewDraft?.avatar_effects, previewLength), transform: clip.transform } : undefined,
+      bilingual: asset?.bilingual === true,
       canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: !point && transformFields(asset.kind).includes("x") } : undefined,
     };
   }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength, previewDraft?.split_screen, previewDraft?.avatar_effects]);
@@ -391,7 +400,12 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 }, true)} /></div>
-                <div hidden={assetSource !== "ai"}><SpriteCatalog catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} /></div>
+                <div hidden={assetSource !== "ai"}><SpriteCatalog catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => {
+                  // 双语字效（双语字幕）的下栏是同一句的英文：添加时开启所作用对象的中英双语，合成才有译文可注入。
+                  const role = textTarget === "title" || textTarget === "subtitle" ? textTarget : undefined;
+                  const prepared = asset.bilingual && role ? setBilingual(draft, role, true) : draft;
+                  return addClip(prepared, asset, spriteCatalog.assets ?? [], textTarget, prepared.tracks.find((track) => track.id === lastTextTrack.current)?.language);
+                }, true)} /></div>
                 <div hidden={assetSource !== "masks"}><FrameMaskCard mask={draft.frame_mask} onSelect={() => {
                   if (!draft.frame_mask) editTrack(() => ({ ...draft, frame_mask: newFrameMask() }));
                   setTarget(FRAME_MASK_OBJECT_ID);
@@ -439,6 +453,14 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                     const edit = trackDraft(draft, clipText);
                     return updateTrack(draft, clipText.id, { ...edit, editor: { ...edit.editor, [role]: value, ...(role === "title" ? { titleKeyword: "" } : {}) } });
                   })}
+                  onEnglishSample={(value) => clipText && editTrack(() => {
+                    // 双语字效下栏的英文示例写进同一用途的英文文字对象，合成时同样由切片译文替换。
+                    const role = clipText.target as "title" | "subtitle";
+                    const english = draft.tracks.find((track) => track.target === role && track.language === "en");
+                    if (!english) throw new Error("还没有英文文字对象，请先开启中英双语");
+                    const edit = trackDraft(draft, english);
+                    return updateTrack(draft, english.id, { ...edit, editor: { ...edit.editor, [role]: value, ...(role === "title" ? { titleKeyword: "" } : {}) } });
+                  })}
                   onTextTiming={(timing) => clipText && editTrack(() => setTrackTiming(draft, clipText.id, timing))}
                   onParameter={(key, value) => editTrack(() => setClipParameter(draft, selectedClip.id, key, value))}
                   onTransform={(patch) => editTrack(() => setClipTransform(draft, selectedClip.id, patch))}
@@ -477,7 +499,17 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   onMode={(mode) => { setTransitionRandom([Math.random(), Math.random()]); editTrack(() => ({ ...draft, transition_mode: mode })); }}
                   onEnabled={(enabled) => editTrack(() => ({ ...draft, transition_enabled: enabled }))}
                   onSelect={selectTarget} />}
-                {selectedTrack && !selectedClip && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
+                {selectedTrack && !selectedClip && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} sprites={spriteCatalog.assets} onNeedSprites={spriteCatalog.peek} onBindSprite={(spriteId) => editTrack(() => {
+                  const asset = spriteCatalog.assets?.find((item) => item.id === spriteId);
+                  if (!asset) return draft;
+                  const role = selectedTrack.target === "title" ? "title" : "subtitle";
+                  // 绑定后右栏改由字效设置接管，用户随即在「外观与位置」里换字体。
+                  const next = addClip(draft, asset, spriteCatalog.assets ?? [], role, selectedTrack.language);
+                  setTarget(next.clips.at(-1)!.id);
+                  setTextTarget(role);
+                  lastTextTrack.current = selectedTrack.id;
+                  return next;
+                }, true)} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
               </aside>}
             />
           </fieldset>

@@ -1514,6 +1514,45 @@ M.config_schema_json = json.dumps({**json.loads(T.config_schema_json), "properti
 M.default_config_json = json.dumps({**json.loads(T.default_config_json), "text": "一\n二", "lineStartFrames": [0, 30]}, ensure_ascii=False)
 
 
+# 双语字效（双语字幕）：两栏两行之外再声明英文文字 `textEn`，默认文字是中英各一行。
+BL = pb.PublishedSprite()
+BL.CopyFrom(M)
+BL.config_schema_json = json.dumps({**json.loads(M.config_schema_json), "properties": {
+    **json.loads(M.config_schema_json)["properties"],
+    "textEn": {"type": "string", "minLength": 1, "maxLength": 40},
+}})
+BL.default_config_json = json.dumps({**json.loads(M.default_config_json), "text": "看新闻", "textEn": "Watch the news", "lineStartFrames": [0, 0]}, ensure_ascii=False)
+PUBLICATIONS["bl"] = BL
+
+
+# 场景：双语字效（双语字幕）在这个请求里只收到中文切片：按单行逐条显示，英文下栏清空，既不会把中文当第二行，
+# 也不会显示发布时的示例英文（两种语言由视频合成按切片同时注入）。
+def test_bilingual_sprite_render_keeps_one_cue_per_instance_without_english() -> None:
+    """两条切片各占一个实例，文字只放中文，textEn 为空；不注入行起点与最后一行帧。"""
+    message = render_input(sprite_id="bl", text="", keywords=[], effect_total_frames=200,
+                           cues=[cue("看新闻了吗", 0, 60, "新闻"), cue("AI把数学圈", 70, 130)])
+    overlay = plan_sprite_render(message, BL)
+    assert [(item["start_frame"], item["duration_frames"], item["config"]["text"], item["config"]["textEn"], item["config"]["keywords"])
+            for item in overlay.instances] == [(0, 60, "看新闻了吗", "", ["新闻"]), (70, 60, "AI把数学圈", "", [])]
+    assert all("reveal_frame" not in item for item in overlay.instances)
+
+
+def test_bilingual_two_group_bus_render_keeps_both_chinese_rows_without_example_english() -> None:
+    """总线不带译文时保留两组中文及配对起点，同时清空发布时的全部英文示例。"""
+    sprite = pb.PublishedSprite()
+    sprite.CopyFrom(BL)
+    schema = json.loads(sprite.config_schema_json)
+    schema["properties"]["lineStartFrames"].update(minItems=4, maxItems=4)
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**json.loads(sprite.default_config_json), "lineStartFrames": [0, 0, 0, 0]})
+    message = render_input(sprite_id="bl", text="", keywords=[], effect_total_frames=200,
+                           cues=[cue("看新闻了吗", 0, 60, "新闻"), cue("AI把数学圈", 70, 130)])
+    item, = plan_sprite_render(message, sprite).instances
+    assert item["config"]["text"] == "看新闻了吗\nAI把数学圈"
+    assert item["config"]["textEn"] == "" and item["config"]["lineStartFrames"] == [0, 0, 70, 70]
+    assert item["reveal_frame"] == 70
+
+
 def sentence_cue(text: str, start: int, end: int, sentence: int, *keywords: str) -> pb.SpriteCue:
     """一条带句子序号的字幕切片。"""
     return pb.SpriteCue(text=text, start_frame=start, end_frame=end, sentence=sentence, keywords=list(keywords))

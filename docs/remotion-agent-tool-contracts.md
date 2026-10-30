@@ -715,7 +715,7 @@ EffectSlot = Literal["enter", "exit", "loop", "cue"]
 # 特效作用的位置：block 整个文字块，tiers 各栏（各自从出现的帧起），line1、line2 上栏或下栏（只有双栏），逐字位置 chars 每个字、
 # keywordChars 关键词里的每个字、plainChars 关键词以外的每个字（依次分享入场、出场进度；只有画 children 的栏有，关键词逐字还要
 # 关键词 Preset 画 children），keyword 每个关键词命中。
-EffectTarget = Literal["block", "tiers", "line1", "line2", "chars", "keywordChars", "plainChars", "keyword"]
+EffectTarget = Literal["block", "tiers", "line1", "line2", "line3", "line4", "chars", "keywordChars", "plainChars", "keyword"]
 # 特效的中文名称，如「淡入」「发光」：宿主据此写它的开关、位置与时长参数的标题。
 EffectTitle = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=8)]
 # 宿主内置特效的名字：模型只写名字，宿主自己画，不必写 effect Preset。
@@ -745,16 +745,21 @@ class TextEffect(ContractModel):
 
 
 class TextComposition(ContractModel):
-    """字效的文字组合：宿主按配置把文字切成一栏或上下两栏，各栏交给 text Preset 画，关键词命中交给 keyword Preset 画，
+    """字效的文字组合：单行、普通双栏或一至两组双语，各物理行交给 text Preset 画，关键词命中交给 keyword Preset 画，
     特效交给 effect Preset 包住它们的位置。"""
 
     layout: TextLayout
-    # 默认文字：单栏一行，双栏为「上栏\n下栏」。
+    # 默认文字：单栏一行，双栏为「上栏\n下栏」；双语字效为「中文\n同一句的英文译文」（英文由总线按切片注入 `textEn`）。
     text: Annotated[StrictStr, StringConstraints(min_length=1, max_length=100)]
     font_size: Annotated[FiniteNumber, Field(ge=24, le=240)]
-    tiers: list[TextTier] = Field(min_length=1, max_length=2)
+    tiers: list[TextTier] = Field(min_length=1, max_length=4)
+    # 双语每组为中文及其英文译文，宿主分别用 text 与 textEn 保存各组原文、译文（多组用换行连接）。
+    bilingual: Omittable[Literal[True]]
+    # 双栏双语用四行「中文1\n英文1\n中文2\n英文2」；组内中英间距与两组之间的 line_gap 分开，省略为 8 像素。
+    translation_gap: Omittable[Annotated[FiniteNumber, Field(ge=0, le=100)]]
     # 只有双栏使用：两栏的排布（stack 上下排列，省略时如此；overlap 两栏叠在同一处、彼此居中、下栏在上层）、
-    # 两栏之间的距离（像素，可为负数以让下栏上移叠住上栏，最低 -600；重叠排布时不用，可省略）与各栏出现的帧（首项为 0，不递减）。
+    # 两栏之间的距离（像素，可为负数以让下栏上移叠住上栏，最低 -600；重叠排布时不用，可省略）与各行出现的帧（首项为 0，不递减）。
+    # 四行双语的排布与 line_gap 作用于整组；line_starts 同组中英相同，如 [0, 0, 30, 30]。
     arrangement: Omittable[Literal["stack", "overlap"]]
     line_gap: Omittable[Annotated[FiniteNumber, Field(ge=-600, le=300)]]
     line_starts: Omittable[list[Annotated[Integer, Field(ge=0, le=3600)]]]
@@ -779,12 +784,14 @@ class TextBlock(ContractModel):
     """组合后记录的文字块结构：区域、各栏实例、关键词实例与特效；配置的默认值在 Sprite 的默认参数里。"""
 
     layout: TextLayout
-    tiers: list[NonEmptyString] = Field(min_length=1, max_length=2)
+    tiers: list[NonEmptyString] = Field(min_length=1, max_length=4)
     keyword: Omittable[NonEmptyString]
     effects: list[TextBlockEffect] = Field(default_factory=list)
     # 宿主把各栏定格在中间帧显示、文字块的动画都由特效 Preset 画（有可配置特效之后的作品；关键词命中照常播放）；
     # 更早的字效没有这一项，它们的 text Preset 自己画的动画照常播放。
     still: Omittable[Literal[True]]
+    # 双语每组的第二行是同一句的英文；编辑保留双语标记与全部原文、译文。
+    bilingual: Omittable[Literal[True]]
     # 默认文字里的示例关键词，见 TextComposition.preview_keywords。
     preview_keywords: Omittable[list[NonEmptyString]]
 

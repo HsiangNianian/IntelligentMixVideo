@@ -101,6 +101,7 @@ export function ChatPanel({
   const [frames, setFrames] = useState<number | null>(FIXED_COMPOSITION.duration_in_frames);
   const [keywordEffect, setKeywordEffect] = useState(false);
   const [twoTier, setTwoTier] = useState(false);
+  const [bilingual, setBilingual] = useState(false);
   const switchId = useId();
   useUpdateBlocker("聊天中还有未发送的内容或参考图", !!text || images.length > 0);
   const [dragging, setDragging] = useState(false);
@@ -170,7 +171,7 @@ export function ChatPanel({
   /** 按钮与 Enter 共用防重复入口；等待期间保留文字草稿。 */
   function send() {
     if (disabled || (!text.trim() && !images.length) || (first && frames === null)) return;
-    onSend(text, images, first ? { durationInFrames: frames!, keywordEffect, twoTier } : undefined);
+    onSend(text, images, first ? { durationInFrames: frames!, keywordEffect, twoTier, bilingual } : undefined);
     setText("");
     setImages([]);
     setError("");
@@ -465,6 +466,15 @@ export function ChatPanel({
               >
                 <Switch id={`${switchId}-tiers`} checked={twoTier} disabled={disabled} onCheckedChange={setTwoTier} />
                 <label htmlFor={`${switchId}-tiers`}>双栏</label>
+              </div>
+            )}
+            {first && (
+              <div
+                title="每组文字带中文与英文；同时开启双栏时生成上下两组、共四行，保留各组样式；未打开时由 Agent 按描述与参考图判断"
+                className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground"
+              >
+                <Switch id={`${switchId}-bilingual`} checked={bilingual} disabled={disabled} onCheckedChange={setBilingual} />
+                <label htmlFor={`${switchId}-bilingual`}>双语字幕</label>
               </div>
             )}
           </div>

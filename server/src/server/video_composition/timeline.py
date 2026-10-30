@@ -1,5 +1,6 @@
 """由业务快照生成 IMS Timeline；纯素材按序裁尾，标题沿用模板区间，字幕使用切片正文与时间。"""
 
+import json
 from math import floor
 from typing import Literal
 
@@ -7,6 +8,7 @@ from pydantic import TypeAdapter
 
 from .text_events import subtitle_events
 from .transitions import keyword_transitions
+from ..remotion_templates.categories import bilingual as is_bilingual
 from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template, active_tracks
 from ..template.timing import ClipContext, TimelineContext, resolve_template, resolve_track
 from ..template.transitions import select_transitions
@@ -43,6 +45,17 @@ def validate_matches(segments: list[Segment], matches: list[MatchedSegment]) -> 
 def format_subtitle_keyword(content: str, keyword: str, config: EffectTemplateEditor) -> str:
     """按模板选项为本段首次出现的关键词生成 IMS 局部样式指令。"""
     return format_keyword(content, keyword, config, "subtitle")
+
+
+def _bilingual_asset(assets: dict, sprite_id) -> bool:
+    """该片段引用的字效是否是双语字效：声明了英文文字参数 `textEn`，同时显示中英两种语言。"""
+    published = assets.get(str(sprite_id))
+    if not isinstance(published, dict):
+        return False
+    try:
+        return is_bilingual(json.loads(published.get("config_schema_json") or "{}"))
+    except (TypeError, ValueError):
+        return False
 
 
 def format_keyword(content: str, keyword: str, config: EffectTemplateEditor, role: str) -> str:
@@ -262,7 +275,11 @@ def build_timeline(
     effects = []
     # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验；
     # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。
+    # 双语字效（双语字幕）自己显示中英两种语言，它所作用对象的英文文字也不交给 IMS。
     remotion_texts = {(track.text_target, track.language) for track in template.tracks if track.text_target is not None}
+    remotion_texts |= {(track.text_target, "en") for track in template.tracks
+                       if track.target == "remotion" and track.text_target is not None and track.language != "en"
+                       and _bilingual_asset(remotion_assets or {}, track.sprite_id)}
     tracks = [track for track in template.tracks if track.target != "remotion" and (track.target, track.language) not in remotion_texts]
     if not template.transition_enabled or layout:
         tracks = [track for track in tracks if track.target != "transition"]
