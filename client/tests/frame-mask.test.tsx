@@ -4,6 +4,7 @@ import { fromBinary } from "@bufbuild/protobuf";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SaveTemplateRequestSchema, type SaveTemplateRequest } from "@/generated/imv/template/v1/template_pb";
 import { AppliedEffects } from "@/features/templates/EffectAssets";
+import { FrameMaskCard } from "@/features/templates/FrameMaskPanel";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { PreviewTimeline } from "@/features/templates/PreviewTimeline";
 import { frameMaskRects, newFrameMask, validateFrameMask, type FrameMask } from "@/features/templates/frameMask";
@@ -23,6 +24,21 @@ test.each(cases.geometry)("蒙版按成片高度 $height 生成相同整数边�
   mask.top.height = top;
   mask.bottom.height = bottom;
   expect(frameMaskRects(mask, height).map((rect) => [rect.y, rect.height])).toEqual(expected);
+});
+
+// 素材卡片反映两栏独立的方向与范围；切回纯色后恢复单色，对象说明不再限定纯色。
+test("蒙版卡片随渐变设置更新，切回纯色保留起始色", () => {
+  const mask = newFrameMask();
+  mask.top.gradient = { enabled: true, endColor: "#abcdef", direction: "up", range: 50 };
+  mask.bottom.gradient = { enabled: true, endColor: "#123456", direction: "down", range: 100 };
+  const view = render(<FrameMaskCard mask={mask} onSelect={() => {}} />);
+  const bars = screen.getByRole("button", { name: "选择上下蒙版" }).querySelectorAll<HTMLElement>("[style]");
+  expect(bars[0].style.background).toBe("linear-gradient(to top, #0E2C42 0%, #abcdef 50%)");
+  expect(bars[1].style.background).toBe("linear-gradient(to bottom, #0E2C42 0%, #123456 100%)");
+  view.rerender(<FrameMaskCard mask={{ ...mask, top: { ...mask.top, gradient: { ...mask.top.gradient, enabled: false } } }} onSelect={() => {}} />);
+  expect(bars[0].style.background).toBe("#0E2C42");
+  render(<AppliedEffects draft={{ ...newDraft(), frame_mask: mask }} catalog={[]} selected={null} onSelect={() => {}} />);
+  expect(screen.getByRole("button", { name: "编辑上下蒙版对象" }).textContent).toContain("上下色栏 · 贯穿全片");
 });
 
 test("旧模板默认无蒙版，选择后编辑、保存、重读及关闭保留样式", async () => {

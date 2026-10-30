@@ -17,11 +17,14 @@ export function FrameMaskCard({ mask, onSelect }: { mask?: FrameMask; onSelect: 
     <button type="button" aria-label="选择上下蒙版" onClick={onSelect}
       className="w-full rounded-lg border bg-background p-3 text-left transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring">
       <div className="relative mx-auto mb-3 h-28 w-20 overflow-hidden rounded bg-muted" aria-hidden="true">
-        <div className="absolute inset-x-0 top-0 h-[18.4%]" style={{ background: mask?.top.color ?? "#0E2C42" }} />
-        <div className="absolute inset-x-0 bottom-0 h-[16.6%]" style={{ background: mask?.bottom.color ?? "#0E2C42" }} />
+        {(["top", "bottom"] as const).map((edge) => {
+          const bar = mask?.[edge], gradient = bar?.gradient;
+          return <div key={edge} className={`absolute inset-x-0 ${edge === "top" ? "top-0 h-[18.4%]" : "bottom-0 h-[16.6%]"}`}
+            style={{ background: gradient?.enabled ? `linear-gradient(to ${gradient.direction === "up" ? "top" : "bottom"}, ${bar!.color} 0%, ${gradient.endColor} ${gradient.range}%)` : bar?.color ?? "#0E2C42" }} />;
+        })}
       </div>
       <span className="text-sm font-medium">上下蒙版</span>
-      <span className="mt-1 block text-xs text-muted-foreground">{mask ? "点击设置高度、颜色与开关" : "点击添加，整段显示"}</span>
+      <span className="mt-1 block text-xs text-muted-foreground">{mask ? "点击设置高度、纯色 / 渐变与开关" : "点击添加，整段显示"}</span>
     </button>
   </div>;
 }
