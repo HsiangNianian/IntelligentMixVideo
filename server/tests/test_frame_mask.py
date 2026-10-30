@@ -82,6 +82,19 @@ def test_invalid_gradient_keeps_saved_template(client, template_payload, mask, f
     assert detail_template(client.get(f"/template/{original['template_id']}"))["frame_mask"] == original["frame_mask"]
 
 
+def test_partial_gradient_rejected_without_changing_saved_settings(client, template_payload, mask):
+    """只发送关闭开关仍缺少三个必填字段，返回 422 且不覆盖已保存的渐变。"""
+    mask["top"]["gradient"] = {"enabled": True, "endColor": "#aabbcc", "direction": "up", "range": 50}
+    original = saved_template(post_template(client, {**template_payload, "frame_mask": mask}))
+    mask["top"]["gradient"] = {"enabled": False}
+    result = post_template(client, {**template_payload, "template_id": original["template_id"], "frame_mask": mask})
+    assert result.status_code == 422
+    assert {tuple(error["loc"]) for error in result.json()["detail"]} == {
+        ("body", "frame_mask", "top", "gradient", field) for field in ("endColor", "direction", "range")
+    }
+    assert detail_template(client.get(f"/template/{original['template_id']}"))["frame_mask"] == original["frame_mask"]
+
+
 @pytest.mark.parametrize("case", CASES["gradient"], ids=lambda case: case["name"])
 def test_gradient_png_matches_browser_pixels(monkeypatch, case):
     """真实 PNG 与浏览器共用预期像素，覆盖方向、范围、透明中部及单像素边界。"""
