@@ -75,7 +75,8 @@ export interface Version {
 export function instanceTitle(version: Version, id: string): string {
   const block = version.spec.sprite?.text;
   const tier = block?.tiers.indexOf(id) ?? -1;
-  if (block && tier >= 0) return block.tiers.length === 1 ? "正文" : ["上栏", "下栏"][tier];
+  if (block && tier >= 0) return block.tiers.length === 1 ? "正文" : block.bilingual && block.tiers.length === 4
+    ? ["上栏中文", "上栏英文", "下栏中文", "下栏英文"][tier] : ["上栏", "下栏"][tier];
   if (block?.keyword === id) return "关键词字效";
   const effect = block?.effects?.find((item) => item.instance_id === id);
   return effect ? `特效 · ${effect.title}` : `实例 · ${id}`;
@@ -130,12 +131,13 @@ export function schemaGroups(properties: Record<string, Control>): {
   const style: ParameterField[] = [];
   const instances: { id: string; fields: ParameterField[] | null }[] = [];
   // 多行字效每行出现的帧由宿主按字幕切片注入，不在参数面板编辑；它的项数就是文字的固定行数。
-  const lines = properties[LINE_STARTS_KEY]?.maxItems;
+  const physicalLines = properties[LINE_STARTS_KEY]?.maxItems ?? 1;
+  const lines = properties[BILINGUAL_KEY] ? Math.max(1, Math.floor(physicalLines / 2)) : physicalLines;
   for (const [key, control] of Object.entries(properties)) {
     if (key === LINE_STARTS_KEY) continue;
     if (control.type !== "object") {
       const field = schemaField(key, control);
-      if (field) (CONFIG_PARAMETERS.has(key) ? config : style).push(key === "text" && field.kind === "string" && lines && lines > 1 ? { ...field, lines } : field);
+      if (field) (CONFIG_PARAMETERS.has(key) ? config : style).push((key === "text" || key === BILINGUAL_KEY) && field.kind === "string" && lines > 1 ? { ...field, lines } : field);
       else instances.push({ id: key, fields: null });
       continue;
     }
@@ -197,7 +199,8 @@ export function textSections(version: Version): {
   const text: ParameterField[] = [];
   const keyword: ParameterField[] = [];
   const instances: InstanceFields[] = [];
-  const lines = properties[LINE_STARTS_KEY]?.maxItems;
+  const physicalLines = properties[LINE_STARTS_KEY]?.maxItems ?? 1;
+  const lines = block.bilingual ? Math.max(1, Math.floor(physicalLines / 2)) : physicalLines;
   for (const [key, control] of Object.entries(properties)) {
     if (carded.has(key)) continue;
     if (control.type === "object") {
@@ -207,7 +210,7 @@ export function textSections(version: Version): {
     const item = schemaField(key, control);
     if (!item) instances.push({ id: key, fields: null });
     else if (TEMPLATE_KEYWORD_PARAMETERS.includes(key)) keyword.push(item);
-    else text.push(key === "text" && item.kind === "string" && lines && lines > 1 ? { ...item, lines } : item);
+    else text.push((key === "text" || key === BILINGUAL_KEY) && item.kind === "string" && lines > 1 ? { ...item, lines } : item);
   }
   return { text, keyword, instances, effects };
 }

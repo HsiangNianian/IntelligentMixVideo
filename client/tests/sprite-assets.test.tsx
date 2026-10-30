@@ -656,6 +656,25 @@ test("双语字效的示例文字中英各一行", () => {
   expect(screen.getByText(/中英两种语言/)).toBeTruthy();
 });
 
+// 场景：双栏双语的两组中英示例分别填写；修改第二组译文保留第一组，避免界面再次合并或漏行。
+test("双栏双语按两组填写原文与译文", () => {
+  const asset: SpriteAsset = { id: "four", name: "双栏双语", kind: SpriteKind.TEXT, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30,
+    box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [], lines: 4, bilingual: true };
+  const clip: RemotionClip = { id: "clip", sprite_id: "four", start: 0, duration: 3, parameters: {}, transform: {}, text_target: "subtitle" };
+  const original = newDraft().tracks[1]!;
+  const chinese = { ...original, editor: { ...original.editor, subtitle: "第一组\n第二组" } };
+  const english = { ...original, id: "en", language: "en" as const, editor: { ...original.editor, subtitle: "First\nSecond" } };
+  const changes: string[] = [];
+  const noop = () => {};
+  render(<SpriteClipInspector asset={asset} clip={clip} textTrack={chinese} textTracks={[chinese, english]} duration={10}
+    onSample={noop} onEnglishSample={(value) => changes.push(value)} onTextTiming={noop} onParameter={noop} onTransform={noop}
+    onStart={noop} onBind={noop} onRemove={noop} onClose={noop} />);
+  expect(screen.getByLabelText<HTMLInputElement>("示例文字（中文）第 2 行").value).toBe("第二组");
+  expect(screen.getByLabelText<HTMLInputElement>("示例文字（英文）第 1 行").value).toBe("First");
+  fireEvent.change(screen.getByLabelText("示例文字（英文）第 2 行"), { target: { value: "Changed" } });
+  expect(changes).toEqual(["First\nChanged"]);
+});
+
 // 场景：目录里声明英文文字参数 textEn 的资产是双语字效，界面据此把它与普通双栏字效区分开。
 test("目录把声明英文文字的资产标记为双语字效", async () => {
   const bilingual = textAsset("sprite-b");

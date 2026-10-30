@@ -53,8 +53,8 @@ export const TEMPLATE_KEYWORD_PARAMETERS = ["keywords", "keywordBold", "keywordI
  * 字效工作区的「配置」组与模板编辑的「外观与位置」共用这份清单，两处能调的排版项相同。
  */
 export const TEXT_LAYOUT_PARAMETERS = [
-  "fontSize", "fontFamily", "fontWeight", "tierLayout", "lineGap",
-  ...[1, 2].flatMap((tier) => [`line${tier}SizeRatio`, `line${tier}FontFamily`, `line${tier}FontWeight`]),
+  "fontSize", "fontFamily", "fontWeight", "tierLayout", "lineGap", "translationGap",
+  ...[1, 2, 3, 4].flatMap((tier) => [`line${tier}SizeRatio`, `line${tier}FontFamily`, `line${tier}FontWeight`]),
 ];
 
 /**
@@ -69,6 +69,12 @@ export const EFFECT_PARAMETER = /^effect[1-9][0-9]*(?:Target|Seconds|Delay|Stagg
  * 模板把它按所绑定文字对象的英文（菜单里开启中英双语）填给资产，合成时由切片译文注入。
  */
 export const BILINGUAL_PROP = "textEn";
+
+/** 内容组数：双语每组有原文和译文两行；普通字效按其声明的行数填写。 */
+export function contentLines(asset: { lines?: number; bilingual?: boolean } | undefined): number {
+  const lines = asset?.lines ?? 1;
+  return asset?.bilingual ? Math.max(1, Math.floor(lines / 2)) : lines;
+}
 
 /**
  * 模板编辑里开放的资产参数：字效的排版参数、特效的开关、位置与时长以及关键词样式；颜色、特效与关键词效果的外观等属于资产本身，

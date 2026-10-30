@@ -745,13 +745,16 @@ async function textFitCheck(page) {
       await page.evaluate(() => window.__imvTool.setFrame(0));
     }
   };
-  const lines = request.parameter_schema?.properties?.lineStartFrames?.maxItems;
+  const physicalLines = request.parameter_schema?.properties?.lineStartFrames?.maxItems;
+  const bilingual = request.parameter_schema?.properties?.textEn?.type === "string";
+  // 原文的长度在内容组之间分配；英文占自己的物理行，不能把四行资产误填成四组中文。
+  const lines = bilingual ? Math.max(1, Math.floor(physicalLines / 2)) : physicalLines;
   const multi = Number.isInteger(lines) && lines > 1;
   // Every line is shown from frame 0, so the measurement sees the complete text.
   // Only the host supplies this patch for composed still text. A cue may intentionally remove a tier;
   // enter/exit and loop effects stay on so an inverted or permanently hidden transition still fails.
   const layout = request.text_fit_parameters ?? {};
-  const allLines = { ...layout, ...(multi ? { lineStartFrames: Array(lines).fill(0) } : {}) };
+  const allLines = { ...layout, ...(physicalLines > 1 ? { lineStartFrames: Array(physicalLines).fill(0) } : {}) };
   // The N lines share maxLength with their N - 1 line breaks: the first lines take one more character each when it
   // does not divide evenly, so the joined sample is exactly maxLength long.
   const characters = multi ? Math.max(lines, length - (lines - 1)) : length;
@@ -775,6 +778,12 @@ async function textFitCheck(page) {
         + "for long text at render time. Keep text maxLength exactly 100; if 100 characters still do not fit at the smallest fontSize, adjust the layout and wrapping instead of lowering maxLength or clipping.",
     };
   const shortText = request.parameters?.text;
+  // 双语的译文同样必须完整可见；只检查中文会让漏掉第二组英文的组件通过。
+  if (bilingual && typeof request.parameters?.textEn === "string" && request.parameters.textEn.trim()) {
+    const english = await measureSample(allLines, request.parameters.textEn);
+    if (english.error || !english.shown || !english.fits)
+      return { name: "text_fit", status: "failed", message: `The default English text is not shown in full: ${english.error || english.problems.join("; ") || "missing translation"}. Keep every bilingual group visible.` };
+  }
   let shortNote = "";
   if (typeof shortText === "string" && shortText.trim()) {
     const preview = await measureSample(allLines, shortText);
@@ -791,14 +800,14 @@ async function textFitCheck(page) {
     const defaultLines = shortText.split("\n");
     // The host's composed tiers can have independent effects. Legacy components must still prove shared timing;
     // every component must keep the earlier tier in place when a later tier appears.
-    const sync = multi && defaultLines.length === lines
+    const sync = !bilingual && multi && defaultLines.length === lines
       ? (request.text_fit_parameters === undefined ? await lineSyncProblem(page, defaultLines) : null)
         ?? (await lineJumpProblem(page, defaultLines, layout)) : null;
     if (sync) return { name: "text_fit", status: "failed", message: sync };
     // The patch switches the cue wrappers off for the layout measurement, so the hold they run over is measured with
     // every effect on: a cue that is already transformed at progress 0 would hide its tier for the whole hold. Only the
     // first line waits the whole hold, so a text that opens with an empty line has no tier to measure here.
-    const hold = multi && defaultLines.length === lines && request.text_fit_parameters !== undefined && defaultLines[0].trim()
+    const hold = !bilingual && multi && defaultLines.length === lines && request.text_fit_parameters !== undefined && defaultLines[0].trim()
       ? await cueHoldProblem(page, defaultLines[0]) : null;
     if (hold) return { name: "text_fit", status: "failed", message: hold };
     // Templates pass keywords at render time, so the keyword hit (and any keyword effect drawn on it) must keep the text

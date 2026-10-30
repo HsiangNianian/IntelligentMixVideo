@@ -6,7 +6,7 @@
 from copy import deepcopy
 import json
 import math
-from ..remotion_templates.categories import BILINGUAL_PROP, LINE_STARTS_PROP, TEXT_MAX_LENGTH, bilingual as is_bilingual, line_count
+from ..remotion_templates.categories import BILINGUAL_PROP, LINE_STARTS_PROP, TEXT_MAX_LENGTH, content_line_count, content_line_starts, line_count
 from ..remotion_templates.fonts import open_font_schema
 from ..remotion_templates.tools.schema import validate_parameters
 
@@ -105,9 +105,8 @@ def resolve_config(sprite, text: str, keyword: str | list[str], frames: int,
             # 上游新分类契约使用词列表；旧区间数组仍按其显式 Schema 注入。
             value = hits
         set_path(config, path, value)
-    if (count := line_count(schema)) > 1:
-        starts = (line_starts or [0])[:count]
-        set_path(config, LINE_STARTS_PROP, starts + [starts[-1]] * (count - len(starts)))
+    if line_count(schema) > 1:
+        set_path(config, LINE_STARTS_PROP, content_line_starts(schema, line_starts or [0]))
     if english is not None:
         # 双语字效的下栏是同一句的英文：只有声明了 `textEn` 的资产收得下，其他字效不能当双语的用。
         if definitions.get(BILINGUAL_PROP, {}).get("type") != "string":
@@ -136,8 +135,8 @@ def capacity_samples(sprite, config: dict, frames: int) -> tuple[int, list[dict]
     keyword_paths = list(dict.fromkeys([*mapping["keywords"], *([sprite.keywords_prop] if sprite.keywords_prop else [])]))
     if not text_paths:
         raise ContentError("资产尚未适配业务文字，请声明正文参数")
-    # 双语字效（双语字幕）的每条切片只放一行中文，英文由 `textEn` 单独注入：容量按单行中文测量，不按两栏分行。
-    lines = 1 if is_bilingual(schema) else line_count(schema)
+    # 双语每组占中英两行，容量按中文内容组数测量，避免将译文行误算成额外中文。
+    lines = content_line_count(schema)
     maximum = min(TEXT_MAX_LENGTH, *(definitions[path].get("maxLength", TEXT_MAX_LENGTH) for path in text_paths))
     minimum = max(definitions[path].get("minLength", 1) for path in text_paths)
     keyword_length, keyword_count = TEXT_MAX_LENGTH, lines

@@ -470,7 +470,7 @@ export function ChatPanel({
             )}
             {first && (
               <div
-                title="生成双语字幕字效：上栏中文、下栏同一句的英文，模板里一个资产同时显示中英两种语言；未打开时由 Agent 按描述与参考图判断"
+                title="每组文字带中文与英文；同时开启双栏时生成上下两组、共四行，保留各组样式；未打开时由 Agent 按描述与参考图判断"
                 className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground"
               >
                 <Switch id={`${switchId}-bilingual`} checked={bilingual} disabled={disabled} onCheckedChange={setBilingual} />

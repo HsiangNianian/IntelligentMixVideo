@@ -36,6 +36,7 @@ from server.remotion_templates.tools.contracts import (
     RenderValidationReport,
     SpriteComposeInput,
     SpriteCreateInput,
+    TestScript,
 )
 from server.remotion_templates.tools.registry import ToolFault
 from server.remotion_templates.tools.schema import validate_component_contract
@@ -596,6 +597,99 @@ def test_a_bilingual_text_block_injects_both_languages():
     assert {"line1SizeRatio", "line2FontFamily", "lineGap"} <= set(schemas) and "fontFamily" not in schemas
 
 
+def bilingual_groups(tier: str) -> SpriteComposeInput:
+    """参考图的两组中英字幕：四行各自配色，译文较小，第二组稍后出现。"""
+    source = {"kind": "stored", "preset_id": tier}
+    rows = [
+        {"instance_id": f"row{i + 1}", "source": source, "parameters": {"color": "#FFFFFF" if i < 2 else "#B01224"},
+         "font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1 if i % 2 == 0 else 0.5}
+        for i in range(4)
+    ]
+    return SpriteComposeInput.model_validate({
+        "description": "两组中英字幕", "kind": "text",
+        "text": {"layout": {"x": 54, "y": 600, "width": 972, "height": 700}, "text": "做清洁不是因为妆\nNot because of makeup\n而是因为脏\nBut because of dirt",
+                 "bilingual": True, "font_size": 80, "tiers": rows, "line_gap": 60, "translation_gap": 6,
+                 "line_starts": [0, 0, 15, 15], "duration_frames": 60},
+        "parameters": [{"name": f"line{i + 1}Color", "title": f"第{i + 1}行颜色", "targets": [{"instance_id": row["instance_id"], "parameter": "color"}]}
+                       for i, row in enumerate(rows)],
+    })
+
+
+@needs_bundler
+def test_two_tier_bilingual_keeps_both_groups_and_the_edit_snapshot(tmp_path, monkeypatch):
+    """同时开启双栏与双语时拒绝只做第一组；四行可保存，参数调整后的编辑快照仍保留两组译文和样式。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+
+    async def run():
+        """组合、验收并从已接受版本重新编辑，断言最终业务参数不丢行。"""
+        current = session(tmp_path / "create", {"original_request": {"two_tier": True, "bilingual": True}})
+        tier, _, _ = await stored(current)
+        with pytest.raises(ToolFault) as refused:
+            await current.execute("sprite.compose", two_tiers(tier, None, bilingual=True, text="中文\nEnglish", line_starts=[0, 0]), available())
+        assert refused.value.error.field == "/text/tiers"
+        request = bilingual_groups(tier)
+        composed = await current.execute("sprite.compose", request, available())
+        sprite = current.sprite_drafts[composed["draft_id"]]
+        config = sprite.default_parameters
+        assert (config["text"], config["textEn"]) == ("做清洁不是因为妆\n而是因为脏", "Not because of makeup\nBut because of dirt")
+        assert config["line1Color"] == "#FFFFFF" and config["line3Color"] == "#B01224"
+        assert config["translationGap"] == 6 and config["lineStartFrames"] == [0, 0, 15, 15]
+        # 保存和发布都不能接受缺少第二组译文或组内错开时序的版本。
+        for patch in ({"textEn": "Not because of makeup"}, {"lineStartFrames": [0, 1, 15, 15]}):
+            assert category_problems("text", sprite.parameter_schema, set(config), {**config, **patch})
+        saved = await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
+        assert saved["validation"]["passed"]
+        base = TemplateCandidate(tsx_code=sprite.code, config_schema=sprite.parameter_schema, default_config={**config, "translationGap": 10})
+        edit = session(tmp_path / "edit", spec=SimpleNamespace(sprite=sprite, sprite_kind="text"), base=base)
+        snapshot = edit.snapshot()["base"]
+        assert snapshot["text"]["text"] == request.text.text
+        assert snapshot["text"]["bilingual"] is True and snapshot["text"]["translation_gap"] == 10
+        again = await edit.execute("sprite.compose", SpriteComposeInput.model_validate({"description": "编辑", "kind": "text", "text": snapshot["text"], "parameters": snapshot["parameters"]}), available())
+        assert edit.sprite_drafts[again["draft_id"]].default_parameters["textEn"] == config["textEn"]
+
+    asyncio.run(run())
+
+
+@needs_browser
+def test_real_bilingual_groups_keep_all_four_default_rows(tmp_path, monkeypatch):
+    """真实浏览器检查两组中英全文、四行独立样式和中英排版；100 字原文按两组测量，不能丢第二组。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: ["Noto Sans CJK SC"]))
+
+    async def run():
+        """用真实组合源码运行生成路径的类型、透明度和两种语言排版检查。"""
+        current = session(tmp_path / "compose")
+        tier, _, _ = await stored(current)
+        composed = await current.execute("sprite.compose", bilingual_groups(tier), available())
+        sprite = current.sprite_drafts[composed["draft_id"]]
+        component = ComponentDefinition(code=sprite.code, parameter_schema=sprite.parameter_schema, default_parameters=sprite.default_parameters)
+        checker = validator(tmp_path)
+        assert (await checker.validate_code(component)).passed
+        script = TestScript(name="两组中英配对且样式独立", code='''export default async function(ctx) {
+          await ctx.set_frame(0);
+          const before = await ctx.query_all('[data-imv-tier]');
+          ctx.assert_equal(before.map(row => row.styles.opacity), ["1", "1", "0", "0"], "中英同帧出现");
+          await ctx.set_frame(20);
+          const rows = await ctx.query_all('[data-imv-tier]');
+          ctx.assert_equal(rows.map(row => row.text), ["做清洁不是因为妆", "Not because of makeup", "而是因为脏", "But because of dirt"], "完整保留四行");
+          ctx.assert_equal(rows.map(row => row.styles.opacity), ["1", "1", "1", "1"], "第二组出现后保留第一组");
+          ctx.assert_equal(rows.map(row => row.box.y), before.map(row => row.box.y), "下组出现不挤动上组");
+          ctx.assert(rows.every((row, i) => row.box.height < (i % 2 ? 55 : 100)), "默认文字不意外折行");
+          const text = await ctx.query_all('[data-imv-tier] > div');
+          ctx.assert_equal(text.map(row => row.styles.color), ["rgb(255, 255, 255)", "rgb(255, 255, 255)", "rgb(176, 18, 36)", "rgb(176, 18, 36)"], "上组白色下组红色");
+        }''')
+        report = await checker.validate_render(RenderValidationInput(component=component, duration_frames=60, tests=[script]), transparency=True, text_fit=True,
+                                               text_fit_parameters={})
+        assert report.passed, [*report.checks, *report.tests]
+        # 模拟原故障的变种：只显示第一组英文，原文仍完整；中文测量通过也必须拒绝保存。
+        broken = component.model_copy(update={"code": component.code.replace("props.textEn", 'String(props.textEn).split("\\n")[0]')})
+        assert broken.code != component.code
+        return await checker.validate_render(RenderValidationInput(component=broken, duration_frames=60), text_fit=True, text_fit_parameters={})
+
+    report = asyncio.run(run())
+    assert not report.passed
+    assert any(check.name == "text_fit" and check.status == "failed" and "English" in check.message for check in report.checks)
+
+
 @needs_bundler
 def test_a_bilingual_text_block_takes_the_lower_tier_from_the_english_line(tmp_path, monkeypatch):
     """组合出的源码把 textEn 当下栏：两行不再靠 text 里的换行分开，所以合成时能按切片同时注入中文与译文。"""
@@ -929,6 +1023,17 @@ def test_review_frames_preserve_the_failed_examples_exit_and_use_tier_clocks():
                                      (62, "half way into the effects played when the lower tier appears"),
                                      (65, "end of the effects played when the lower tier appears"),
                                      (67, "half way into the entrance 下栏入场 (lower tier)"), (89, "last frame of the preview")]
+
+
+def test_bilingual_group_review_uses_the_second_groups_clock():
+    """四行双语回看第二组出现前及其特效，不能误用第一组英文的第 0 帧。"""
+    from server.remotion_templates.tools.session import review_frames
+
+    sprite = SimpleNamespace(composition=SimpleNamespace(duration_frames=90, fps=30),
+        text=SimpleNamespace(effects=[SimpleNamespace(slot="enter", title="译文入场")]),
+        default_parameters={"text": "第一组\n第二组", "textEn": "First\nSecond", "lineStartFrames": [0, 0, 60, 60],
+                            "effect1Target": "line4", "effect1Seconds": 0.4})
+    assert [frame for frame, _ in review_frames(sprite)] == [44, 59, 66, 89]
 
 
 @needs_bundler

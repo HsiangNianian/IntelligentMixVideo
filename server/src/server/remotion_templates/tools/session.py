@@ -10,6 +10,7 @@ import logging
 import re
 from copy import deepcopy
 from datetime import UTC, datetime
+from itertools import zip_longest
 from uuid import uuid4
 
 import jieba
@@ -101,17 +102,22 @@ def review_frames(sprite: SpriteDraft) -> list[tuple[int, str]]:
         again: dict[int, str] = {}
         lines = str(config["text"]).split("\n") if "text" in config else None
         starts = list(config.get("lineStartFrames") or [0])
+        paired = "textEn" in config and len(starts) == 4
+        if lines is not None and "textEn" in config:
+            lines = [part for pair in zip_longest(lines, str(config["textEn"]).split("\n"), fillvalue="") for part in pair]
         if lines is not None:
             # Only the tiers that draw text play frames of their own.
             starts = starts[:len(lines)]
-            if len(starts) > 1 and not lines[1].strip():
+            if not paired and len(starts) > 1 and not lines[1].strip():
                 starts = starts[:1]
-        cue = starts[1] if len(starts) > 1 else None
+        cue_index = 2 if paired else 1
+        cue = starts[cue_index] if len(starts) > cue_index and (lines is None or lines[cue_index].strip()) else None
         for index, effect in enumerate(sprite.text.effects, start=1):
             if effect.slot == "loop" or config.get(f"effect{index}") is False:
                 continue
             target = config.get(f"effect{index}Target", "block")
-            origins = [0] if target == "block" else starts[:1] if target == "line1" else starts[1:2] if target == "line2" else starts
+            tier_index = int(target[-1]) - 1 if target in {"line1", "line2", "line3", "line4"} else None
+            origins = [0] if target == "block" else starts[tier_index:tier_index + 1] if tier_index is not None else starts
             for tier, origin in enumerate(origins):
                 if origin > last:
                     continue
@@ -269,10 +275,13 @@ def _validation_fault(summary: str, report: CodeValidationReport) -> ToolFault:
     return ToolFault("CODE_VALIDATION_FAILED", "\n".join(lines), details=details)
 
 
-def _titled(parameters) -> list[dict]:
+def _titled(parameters, tiers: int = 2) -> list[dict]:
     """The Agent's bindings as data; fixed-name parameters carry the host's Chinese titles, not the Agent's wording."""
+    titles = dict(FIXED_TITLES)
+    if tiers == 4:
+        titles.update({f"line{i}Color": f"{name}颜色" for i, name in enumerate(("上栏中文", "上栏英文", "下栏中文", "下栏英文"), 1)})
     return [
-        item.model_dump(mode="json") | ({"title": FIXED_TITLES[item.name]} if item.name in FIXED_TITLES else {})
+        item.model_dump(mode="json") | ({"title": titles[item.name]} if item.name in titles else {})
         for item in parameters
     ]
 
@@ -303,7 +312,7 @@ def _text_block(sprite: SpriteDraft, config: dict) -> dict:
     """The accepted base's text block as sprite_compose takes it, over base_* drafts, with the current configuration
     values (``config`` is the base's defaults, user parameter revisions included)."""
     parameters = _instance_parameters(sprite, config)
-    two = len(sprite.text.tiers) == 2
+    two = len(sprite.text.tiers) > 1
 
     def tier(index: int, instance_id: str) -> dict:
         """One tier with its fonts read from the configuration."""
@@ -322,6 +331,13 @@ def _text_block(sprite: SpriteDraft, config: dict) -> dict:
         **({"arrangement": config["tierLayout"]} if two and "tierLayout" in config else {}),
         "duration_frames": sprite.composition.duration_frames,
     }
+    if sprite.text.bilingual:
+        # 还原交错的原文/译文及双语标记，编辑不能丢掉译文或第二组。
+        chinese = config.get("text", "").split("\n")
+        english = config.get("textEn", "").split("\n")
+        block.update(bilingual=True, text="\n".join(part for pair in zip_longest(chinese, english, fillvalue="") for part in pair))
+        if len(sprite.text.tiers) == 4:
+            block["translation_gap"] = config.get("translationGap", 8)
     if sprite.text.preview_keywords:
         block["preview_keywords"] = list(sprite.text.preview_keywords)
     if sprite.text.keyword is not None:
@@ -991,17 +1007,19 @@ class ToolSession:
             raise ToolFault("INVALID_ARGUMENT", "A text effect is its text block alone: draw decorations inside the tier Presets or as effects of the block and leave instances empty.", field="/instances")
         lines = block.text.split("\n")
         tiers = len(block.tiers)
+        if tiers not in (1, 2) and not (block.bilingual and tiers == 4):
+            raise ToolFault("INVALID_ARGUMENT", "Use one or two tiers, or four tiers for 双栏 + 双语字幕 (Chinese, English, Chinese, English).", field="/text/tiers")
         if len(lines) != tiers or not all(line.strip() for line in lines):
             raise ToolFault("INVALID_ARGUMENT", f"text has {len(lines)} lines for {tiers} tiers: a one-tier text is one non-empty line and a two-tier "
                             "text (双栏) is exactly \"<upper>\\n<lower>\", both non-empty.", field="/text/text")
         for index, word in enumerate(block.preview_keywords or []):
             if word not in block.text:
                 raise ToolFault("INVALID_ARGUMENT", f"preview_keywords names words of the default text; {word!r} is not in it.", field=f"/text/preview_keywords/{index}")
-        if "two_tier" in self.requested and tiers != 2:
-            raise ToolFault("INVALID_ARGUMENT", "The user switched on 双栏 (original_request.two_tier): give the text block two tiers, upper and lower.", field="/text/tiers")
-        if block.bilingual and tiers != 2:
+        if "two_tier" in self.requested and tiers != (4 if block.bilingual else 2):
+            raise ToolFault("INVALID_ARGUMENT", "The user switched on 双栏 (original_request.two_tier): keep two content groups; with bilingual: true use four tiers (Chinese, English, Chinese, English), otherwise two.", field="/text/tiers")
+        if block.bilingual and tiers not in (2, 4):
             raise ToolFault("INVALID_ARGUMENT", "A bilingual text (双语字幕) is two tiers: the upper one the Chinese line, the lower one its English translation.", field="/text/tiers")
-        if block.bilingual and any("一" <= char <= "鿿" for char in lines[1]):
+        if block.bilingual and any("一" <= char <= "鿿" for line in lines[1::2] for char in line):
             raise ToolFault("INVALID_ARGUMENT", "A bilingual text (双语字幕) is \"<Chinese>\\n<English>\": the second line is the English translation of the first, "
                             "not more Chinese text.", field="/text/text")
         if "bilingual" in self.requested and not block.bilingual:
@@ -1009,17 +1027,21 @@ class ToolSession:
                             "upper tier is the Chinese line and whose lower tier is its English translation, so one effect shows both languages.", field="/text/bilingual")
         if "keyword_effect" in self.requested and block.keyword is None:
             raise ToolFault("INVALID_ARGUMENT", "The user switched on the keyword effect (original_request.keyword_effect): give the text block a keyword-role Preset.", field="/text/keyword")
-        if tiers == 2:
+        if block.translation_gap is not None and tiers != 4:
+            raise ToolFault("INVALID_ARGUMENT", "translation_gap separates the languages inside each of two bilingual groups (four tiers).", field="/text/translation_gap")
+        if tiers > 1:
             # Overlapping tiers keep no gap between them.
             for name, value in (("line_gap", 0 if block.arrangement == "overlap" else block.line_gap), ("line_starts", block.line_starts)):
                 if value is None:
                     raise ToolFault("INVALID_ARGUMENT", f"A two-tier text needs {name}.", field=f"/text/{name}")
             starts = block.line_starts
-            if len(starts) != 2 or starts[0] != 0 or starts[1] < starts[0]:
-                raise ToolFault("INVALID_ARGUMENT", "line_starts has two frames, the first 0 and the second not earlier (for example [0, 30]).", field="/text/line_starts")
+            if len(starts) != tiers or starts[0] != 0 or any(a > b for a, b in zip(starts, starts[1:])):
+                raise ToolFault("INVALID_ARGUMENT", f"line_starts has {tiers} non-decreasing frames, the first 0.", field="/text/line_starts")
+            if tiers == 4 and (starts[0] != starts[1] or starts[2] != starts[3]):
+                raise ToolFault("INVALID_ARGUMENT", "Each bilingual group starts together, for example [0, 0, 30, 30].", field="/text/line_starts")
             # The preview plays the default starts; a lower tier starting at the end would never be seen there.
-            if starts[1] >= block.duration_frames:
-                raise ToolFault("INVALID_ARGUMENT", f"The lower tier starts at frame {starts[1]} but the block lasts {block.duration_frames} frames: "
+            if starts[-1] >= block.duration_frames:
+                raise ToolFault("INVALID_ARGUMENT", f"The lower tier starts at frame {starts[-1]} but the block lasts {block.duration_frames} frames: "
                                 "start it before the end so it shows.", field="/text/line_starts")
             for index, tier in enumerate(block.tiers):
                 if tier.size_ratio is None:
@@ -1034,7 +1056,7 @@ class ToolSession:
             if effect.target not in EFFECT_TARGETS[tiers]:
                 raise ToolFault("INVALID_ARGUMENT", f"A one-tier text has no {effect.target} position: an effect wraps {' or '.join(EFFECT_TARGETS[1])} "
                                 "(tiers, line1 and line2 are positions of a two-tier text).", field=f"/text/effects/{index}/target")
-            if effect.slot == "cue" and tiers != 2:
+            if effect.slot == "cue" and tiers == 1:
                 raise ToolFault("INVALID_ARGUMENT", "A cue effect plays when the lower tier appears, so only a two-tier text has one.", field=f"/text/effects/{index}/slot")
             if effect.stagger is not None and (effect.slot == "loop" or effect.target not in GLYPH_TARGETS):
                 raise ToolFault("INVALID_ARGUMENT", "stagger spreads an entrance, exit or cue over the glyphs, so only such an effect at chars, keywordChars "
@@ -1093,7 +1115,7 @@ class ToolSession:
             resolved.append({"instance_id": slot.instance_id, "preset": preset, "parameters": parameters, "layout": layout, "timing": timing})
             summaries.append(InstanceSummary(instance_id=slot.instance_id, **origin, parameter_names=_parameter_names(preset["parameter_schema"]),
                                              layout=layout, timing=timing))
-        bindings = _titled(request.parameters)
+        bindings = _titled(request.parameters, tiers)
         drawn = tiers + (1 if block.keyword else 0)
         code, schema, defaults, host = await asyncio.to_thread(
             compose_text_source, block.model_dump(mode="json", exclude_none=True), resolved[:tiers], resolved[tiers] if block.keyword else None,

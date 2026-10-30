@@ -1224,6 +1224,53 @@ def test_bilingual_sprite_fails_without_the_english_translation(composition_case
         remotion.plan(data, 120)
 
 
+def grouped_bilingual_case(composition_case, *, target="subtitle"):
+    """四行双栏双语资产：两组正文、译文及四个物理行起点，其他合成设置复用真实流程夹具。"""
+    data = bilingual_sprite_case(composition_case, target=target)
+    sprite = next(iter(data["remotion"]["assets"].values()))
+    schema = json.loads(sprite["config_schema_json"])
+    schema["properties"]["lineStartFrames"].update(minItems=4, maxItems=4)
+    sprite["config_schema_json"] = json.dumps(schema)
+    defaults = json.loads(sprite["default_config_json"])
+    defaults.update(text="第一组\n第二组", textEn="First\nSecond", lineStartFrames=[0, 0, 0, 0])
+    sprite["default_config_json"] = json.dumps(defaults)
+    return data
+
+
+def test_two_bilingual_groups_pair_translations_and_cue_times(composition_case):
+    """连续切片组成上下两组；每组译文与原文同帧出现，换句或最后不足两组时不带旧示例。"""
+    result = remotion.plan(grouped_bilingual_case(composition_case), 120)
+    assert [item["config"]["text"] for item in result.instances] == ["甲乙\n丙丁", "戊己", "庚辛"]
+    assert [item["config"]["textEn"] for item in result.instances] == ["Don't stop\nKeep going", "One more", "Last line"]
+    first = result.instances[0]
+    starts = first["config"]["lineStartFrames"]
+    assert starts[0] == starts[1] == 0 and starts[2] == starts[3] > 0
+    assert first["reveal_frame"] > 0 and "one_line" not in first
+
+
+def test_bilingual_groups_respect_both_languages_length_limits(composition_case):
+    """拼接译文超过契约长度时分组退回单组；不能因为中文较短就提交过长英文。"""
+    data = grouped_bilingual_case(composition_case)
+    sprite = next(iter(data["remotion"]["assets"].values()))
+    schema = json.loads(sprite["config_schema_json"])
+    schema["properties"]["textEn"]["maxLength"] = 14
+    sprite["config_schema_json"] = json.dumps(schema)
+    result = remotion.plan(data, 120)
+    assert [item["config"]["textEn"] for item in result.instances] == ["Don't stop", "Keep going", "One more", "Last line"]
+
+
+def test_bilingual_title_groups_keep_matching_line_breaks(composition_case):
+    """标题中的两组原文与译文按换行一一对应；无法对应时明确失败，不省略整组文字。"""
+    data = grouped_bilingual_case(composition_case, target="title")
+    data["request"] = {**data["request"], "title": "第一组\n第二组"}
+    data["segmentation"]["title_en"] = "First group\nSecond group"
+    item, = remotion.plan(data, 120).instances
+    assert (item["config"]["text"], item["config"]["textEn"], item["config"]["lineStartFrames"]) == ("第一组\n第二组", "First group\nSecond group", [0, 0, 0, 0])
+    data["segmentation"]["title_en"] = "Only one translation"
+    with pytest.raises(ContentError, match="一一对应"):
+        remotion.plan(data, 120)
+
+
 def test_single_line_subtitles_are_still_one_instance_per_cue(composition_case):
     """单行字效不分组：每个切片一个实例，不注入行起点（回归）。"""
     data = multi_line_case(composition_case)

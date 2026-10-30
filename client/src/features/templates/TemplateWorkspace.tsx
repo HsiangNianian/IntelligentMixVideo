@@ -32,7 +32,7 @@ import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
 import { addClip, bindClip, clipSlot, hiddenTextClips, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
 import { exampleKeyword } from "./timeline";
-import { BILINGUAL_PROP, transformFields } from "@/features/sprites/parameters";
+import { BILINGUAL_PROP, contentLines, transformFields } from "@/features/sprites/parameters";
 import { useSpriteCatalog } from "./useSpriteCatalog";
 import type { TemplateSelection } from "./TemplateHome";
 import "./template-workspace.css";
@@ -144,7 +144,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
         ...clip.parameters,
         text: text.language === "en" ? singleRowText(text.editor[clip.text_target]) : text.editor[clip.text_target],
         keywords: [exampleKeyword(text.editor, clip.text_target, text.language)].filter(Boolean),
-        ...(asset?.bilingual && clip.text_target ? { [BILINGUAL_PROP]: english ? singleRowText(english.editor[clip.text_target]) : "" } : {}),
+        ...(asset?.bilingual && clip.text_target ? { [BILINGUAL_PROP]: english ? contentLines(asset) > 1 ? english.editor[clip.text_target] : singleRowText(english.editor[clip.text_target]) : "",
+          lineStartFrames: Array(asset.lines ?? 2).fill(0) } : {}),
       } : clip.parameters,
       transform,
       opening: point ? { end: previewOpeningDuration(previewDraft?.avatar_effects, previewLength), transform: clip.transform } : undefined,

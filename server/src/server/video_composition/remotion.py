@@ -18,7 +18,7 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 from pydantic import TypeAdapter
 
 from ..remotion_templates import sprites
-from ..remotion_templates.categories import LINE_START_MAX_FRAMES, bilingual as is_bilingual, line_count
+from ..remotion_templates.categories import LINE_START_MAX_FRAMES, bilingual as is_bilingual, content_line_count, line_count
 from ..remotion_templates.placement import resolve as resolve_placement
 from ..template.split_screen import SplitScreen
 from ..template.schema import EffectTrack, RemotionTrackEditor, active_tracks
@@ -33,7 +33,7 @@ from . import execution_log
 from .errors import CompositionError
 from .schema import CompositionRequest, Segment
 from .settings import ZosSettings
-from .text_events import bilingual_events, subtitle_blocks, subtitle_events
+from .text_events import bilingual_blocks, subtitle_blocks, subtitle_events
 from .transitions import keyword_transitions
 from .zos import object_prefix, upload_public
 
@@ -250,7 +250,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
         # 英文标题和字幕固定单行：双栏字效作用到英文时只用它的上栏（内容只有一行，下栏没有文字不显示），
         # 中英双语因此不会出现中文两栏加英文两栏的四行；译文过长时排版预检缩到能单行显示的最大字号。
         single_row = language == "en" and target in {"title", "subtitle"}
-        rows = 1 if single_row or bilingual_text else lines
+        rows = 1 if single_row else content_line_count(schema) if bilingual_text else lines
         one_line = single_row
         # 字幕轨的文字换行时朝远离另一语言字幕的方向展开：英文向下，中文字幕在启用英文字幕时向上，两条字幕因此不会
         # 互相压住；没有启用英文字幕时中文保持原本的居中展开（上下同时长）。双语字效的两种语言在同一个字效里上下叠放，
@@ -269,15 +269,20 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             low, high = (start, start + length_seconds) if text_target else (0, duration)
             contents = []
             if bilingual_text:
-                # 双语字效：每条切片一个实例，中文与同一句的英文同时出现，区间仍按文字对象裁剪。
+                # 按双语内容组数组织切片，每组原文、译文同时出现，区间仍按文字对象裁剪。
                 try:
-                    paired = bilingual_events(segments) if spoken else []
+                    paired = bilingual_blocks(segments, rows, text_schema.get("maxLength"),
+                                              schema.get("properties", {}).get("textEn", {}).get("maxLength"),
+                                              (LINE_START_MAX_FRAMES - 1) / fps) if spoken else []
                 except ValueError as exc:
                     raise ContentError(str(exc)) from exc
-                for text, keyword, english, english_keyword, begin, end in paired:
-                    begin, end = max(begin, low), min(end, high)
-                    if min(duration, end) > max(0, begin):
-                        contents.append(([text], [keyword], [begin], begin, end, english, english_keyword))
+                for block in paired:
+                    shown = [(text, keyword, english, max(begin, low), min(end, high))
+                             for text, keyword, english, _english_keyword, begin, end in block]
+                    shown = [event for event in shown if min(duration, event[4]) > max(0, event[3])]
+                    if shown:
+                        contents.append(([item[0] for item in shown], [item[1] for item in shown], [item[3] for item in shown],
+                                         shown[0][3], shown[-1][4], "\n".join(item[2] for item in shown), ""))
             else:
                 for block in blocks:
                     # 新槽位只显示文字对象区间内的部分，区间外的切片（行）丢弃。
@@ -298,8 +303,16 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                 english = data.get("segmentation", {}).get("title_en")
                 if request.title and request.title.strip() and not (english and english.strip()):
                     raise ContentError("缺少英文标题译文")
-                contents = [([title.replace("\n", " ")], [keyword], [start], start, start + length_seconds,
-                             (english or "").replace("\n", " "), "")] if request.title and request.title.strip() else []
+                texts = [part.strip() for part in (title or "").split("\n") if part.strip()]
+                translations = [part.strip() for part in (english or "").split("\n") if part.strip()]
+                if rows > 1 and len(texts) != len(translations):
+                    raise ContentError("双栏双语标题的中英文分行必须一一对应")
+                if len(texts) > rows:
+                    texts = texts[:rows - 1] + [" ".join(texts[rows - 1:])]
+                if len(translations) > rows:
+                    translations = translations[:rows - 1] + [" ".join(translations[rows - 1:])]
+                contents = [(texts, [keyword], [start] * len(texts), start, start + length_seconds,
+                             "\n".join(translations), "")] if request.title and request.title.strip() else []
             else:
                 parts = [part for part in title.split("\n") if part.strip()] if rows > 1 and title else []
                 texts = parts[:rows - 1] + [" ".join(parts[rows - 1:])] if len(parts) > rows else parts or [title.replace("\n", " ") if single_row else title]

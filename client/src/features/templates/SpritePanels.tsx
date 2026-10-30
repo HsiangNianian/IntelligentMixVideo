@@ -109,7 +109,7 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
                 <Hint label="删除资产" disabled={inUse}><Button type="button" variant="secondary" size="icon" className="size-6" disabled={inUse} aria-describedby={inUse ? `sprite-in-use-${asset.id}` : undefined} aria-label={`删除 AI 资产：${asset.name}`} onClick={() => { setDeleting(asset); setRemoveError(""); }}><Trash2 className="size-3.5" aria-hidden="true" /></Button></Hint>
               </>,
               // 画布规格必须一致才能叠加，所以每张卡片都标出预览长度与画布；双语字效额外标明中英两行。
-              note: <span className="block px-1 pt-1 text-[10px] tabular-nums text-muted-foreground">预览 {Number(asset.seconds.toFixed(1))} 秒 · {asset.width}×{asset.height} @ {asset.fps} FPS{asset.bilingual && <span className="block">双语字效：上栏中文、下栏英文</span>}{inUse && <span id={`sprite-in-use-${asset.id}`} className="block">当前模板正在使用，移除片段后才能删除</span>}</span>,
+              note: <span className="block px-1 pt-1 text-[10px] tabular-nums text-muted-foreground">预览 {Number(asset.seconds.toFixed(1))} 秒 · {asset.width}×{asset.height} @ {asset.fps} FPS{asset.bilingual && <span className="block">{asset.lines === 4 ? "双栏双语：上下两组，每组中文与英文" : "双语字效：上栏中文、下栏英文"}</span>}{inUse && <span id={`sprite-in-use-${asset.id}`} className="block">当前模板正在使用，移除片段后才能删除</span>}</span>,
             };
           }}
         />

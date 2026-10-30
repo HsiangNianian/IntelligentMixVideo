@@ -27,7 +27,7 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 from pydantic import ValidationError
 
 from ..template.schema import RemotionTrackEditor
-from .categories import BILINGUAL_PROP, LINE_START_MAX_FRAMES, LINE_STARTS_PROP, bilingual as is_bilingual, line_count
+from .categories import BILINGUAL_PROP, LINE_START_MAX_FRAMES, LINE_STARTS_PROP, bilingual as is_bilingual, content_line_count, content_line_starts
 from .overlay_render import Overlay, OverlayError, chunk_ranges, overlay_ranges, render_overlay, to_frames
 from .settings import Settings
 from .placement import resolve
@@ -79,7 +79,7 @@ def _contents(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, total: 
     if bool(message.text) == bool(message.cues):
         raise OverlayError("content_invalid", "字效必须提供 text 或 cues 之一")
     schema = json.loads(sprite.config_schema_json or "{}")
-    lines = 1 if is_bilingual(schema) else line_count(schema)
+    lines = content_line_count(schema)
     if message.text:
         if lines > 1 and message.text.count("\n") >= lines:
             raise OverlayError("content_invalid", f"这个字效最多显示 {lines} 行")
@@ -157,9 +157,9 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
     preview = max(1, canvas.preview_frames)
     instances = []
     schema = json.loads(sprite.config_schema_json or "{}")
-    # 双语字效的下栏是同一句的英文，这个请求只带中文：按单行注入并清空英文，避免显示发布时的示例英文。
+    # 此请求只有原文，按内容组数注入并清空英文，避免显示发布时的示例译文。
     bilingual = sprite.kind == pb.SPRITE_KIND_TEXT and is_bilingual(schema)
-    lines = 1 if bilingual else line_count(schema) if sprite.kind == pb.SPRITE_KIND_TEXT else 1
+    lines = content_line_count(schema) if sprite.kind == pb.SPRITE_KIND_TEXT else 1
     for start, length, text, keywords, starts in _contents(message, sprite, total):
         try:
             config, host = resolve(sprite, _editor(message, sprite, text, keywords))
@@ -173,7 +173,7 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
             starts = [0]
         if lines > 1:
             # Content the host injects (not an operator parameter), padded with the last line's start for absent lines.
-            config[LINE_STARTS_PROP] = starts + [starts[-1]] * (lines - len(starts))
+            config[LINE_STARTS_PROP] = content_line_starts(schema, starts)
             instance["reveal_frame"] = starts[-1]
         instances.append(instance)
     return Overlay(canvas.width, canvas.height, fps, total, instances)

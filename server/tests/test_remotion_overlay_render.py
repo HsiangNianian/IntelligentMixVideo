@@ -1537,6 +1537,22 @@ def test_bilingual_sprite_render_keeps_one_cue_per_instance_without_english() ->
     assert all("reveal_frame" not in item for item in overlay.instances)
 
 
+def test_bilingual_two_group_bus_render_keeps_both_chinese_rows_without_example_english() -> None:
+    """总线不带译文时保留两组中文及配对起点，同时清空发布时的全部英文示例。"""
+    sprite = pb.PublishedSprite()
+    sprite.CopyFrom(BL)
+    schema = json.loads(sprite.config_schema_json)
+    schema["properties"]["lineStartFrames"].update(minItems=4, maxItems=4)
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**json.loads(sprite.default_config_json), "lineStartFrames": [0, 0, 0, 0]})
+    message = render_input(sprite_id="bl", text="", keywords=[], effect_total_frames=200,
+                           cues=[cue("看新闻了吗", 0, 60, "新闻"), cue("AI把数学圈", 70, 130)])
+    item, = plan_sprite_render(message, sprite).instances
+    assert item["config"]["text"] == "看新闻了吗\nAI把数学圈"
+    assert item["config"]["textEn"] == "" and item["config"]["lineStartFrames"] == [0, 0, 70, 70]
+    assert item["reveal_frame"] == 70
+
+
 def sentence_cue(text: str, start: int, end: int, sentence: int, *keywords: str) -> pb.SpriteCue:
     """一条带句子序号的字幕切片。"""
     return pb.SpriteCue(text=text, start_frame=start, end_frame=end, sentence=sentence, keywords=list(keywords))

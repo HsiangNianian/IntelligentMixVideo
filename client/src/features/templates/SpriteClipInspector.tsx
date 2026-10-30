@@ -16,7 +16,7 @@ import { Hint } from "@/components/Hint";
 import { ParameterControl, withLine, type ParameterValue } from "@/components/ParameterControl";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
-import { CATEGORIES, EFFECT_PARAMETER, TEMPLATE_KEYWORD_PARAMETERS, categoryOf, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
+import { CATEGORIES, EFFECT_PARAMETER, TEMPLATE_KEYWORD_PARAMETERS, categoryOf, contentLines, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
 import { textKey, textRoles, singleRowText, type EffectTrack, type RemotionClip } from "./model";
 import { BOUND_TEXT_PARAMETERS, type bindClip } from "./clips";
 import { TrackTiming } from "./TrackTiming";
@@ -110,7 +110,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   // 双语字效的下栏取所作用对象的英文文字对象：它的示例译文在这里填写，合成时同样由切片译文替换。
   const englishTrack = bilingual && sampleRole ? textTracks?.find((track) => track.target === sampleRole && track.language === "en") : undefined;
   // 多行字效逐行填写示例：字幕的连续切片逐行出现，标题按其中的换行分栏，与合成一致。
-  const sampleLines = sampleRole && isText && !bilingual ? (singleRow ? 1 : asset?.lines ?? 1) : 1;
+  const sampleLines = sampleRole && isText ? (singleRow ? 1 : contentLines(asset)) : 1;
   /** 参数当前值：本次摆放的覆盖优先，否则取发布默认值。 */
   const valueOf = ({ field, defaultValue }: NonNullable<typeof asset>["parameters"][number]) => clip.parameters[field.key] ?? defaultValue;
   /** 写入参数覆盖；与发布默认值相同时清除覆盖。 */
@@ -178,13 +178,18 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
         <legend className="sr-only">当前模板参数覆盖</legend>
         <div><h3 className="text-xs font-medium">当前模板参数覆盖</h3><p className="mt-0.5 text-[11px] text-muted-foreground">只影响这次摆放，不改资产默认值，也不影响其他模板。</p></div>
         {sampleRole && textTrack && (bilingual ? <fieldset className="space-y-1.5">
-          <legend className="text-xs">示例文字（中文、英文各一行）</legend>
-          <Input aria-label="示例文字（中文）" placeholder="中文" value={singleRowText(textTrack.editor[sampleRole])} maxLength={SAMPLE_MAX_LENGTH[sampleRole]}
-            onChange={(event) => onSample(event.target.value)} />
-          <Input aria-label="示例文字（英文）" placeholder="English" value={englishTrack ? singleRowText(englishTrack.editor[sampleRole]) : ""}
-            maxLength={SAMPLE_MAX_LENGTH[sampleRole]} disabled={!englishTrack || !onEnglishSample}
-            onChange={(event) => onEnglishSample?.(event.target.value)} />
-          <p className="text-[11px] text-muted-foreground">双语字效上下两栏是同一句的中文与英文：上栏取中文{sampleRole === "title" ? "标题" : "字幕"}、下栏取英文{sampleRole === "title" ? "标题" : "字幕"}的示例文字，合成时换成每条切片的中文与译文，两种语言同时出现。</p>
+          <legend className="text-xs">{sampleLines > 1 ? "示例文字（两组中英字幕）" : "示例文字（中文、英文各一行）"}</legend>
+          {Array.from({ length: sampleLines }, (_, index) => <div key={index} className="space-y-1.5">
+            <Input aria-label={sampleLines > 1 ? `示例文字（中文）第 ${index + 1} 行` : "示例文字（中文）"} placeholder="中文"
+              value={sampleLines > 1 ? textTrack.editor[sampleRole].split("\n")[index] ?? "" : singleRowText(textTrack.editor[sampleRole])}
+              maxLength={Math.floor((SAMPLE_MAX_LENGTH[sampleRole] - sampleLines + 1) / sampleLines)}
+              onChange={(event) => onSample(sampleLines > 1 ? withLine(textTrack.editor[sampleRole], sampleLines, index, event.target.value) : event.target.value)} />
+            <Input aria-label={sampleLines > 1 ? `示例文字（英文）第 ${index + 1} 行` : "示例文字（英文）"} placeholder="English"
+              value={englishTrack ? sampleLines > 1 ? englishTrack.editor[sampleRole].split("\n")[index] ?? "" : singleRowText(englishTrack.editor[sampleRole]) : ""}
+              maxLength={Math.floor((SAMPLE_MAX_LENGTH[sampleRole] - sampleLines + 1) / sampleLines)} disabled={!englishTrack || !onEnglishSample}
+              onChange={(event) => onEnglishSample?.(sampleLines > 1 ? withLine(englishTrack?.editor[sampleRole] ?? "", sampleLines, index, event.target.value) : event.target.value)} />
+          </div>)}
+          <p className="text-[11px] text-muted-foreground">{sampleLines > 1 ? "上下两组各有中文与对应英文，保留各组样式。合成时按同句的连续切片成组，每组中英文同步出现。" : "双语字效上下两栏是同一句的中文与英文：合成时换成每条切片的中文与译文，两种语言同时出现。"}</p>
           {!englishTrack && <p className="text-[11px] text-destructive">还没有英文{sampleRole === "title" ? "标题" : "字幕"}：请在下方开启中英双语并填写英文示例文字，否则保存时会被拒绝。</p>}
         </fieldset> : sampleLines > 1 ? <fieldset className="space-y-1.5">
           <legend className="text-xs">示例文字（{sampleLines} 行）</legend>
@@ -245,7 +250,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
           onValueChange={(value) => { const option = textOptions.find((item) => item.value === value); if (option) onBind({ text_target: option.target, ...(option.language ? { language: option.language } : {}) }); }}>
           {textOptions.map((option) => <ToggleGroupItem key={option.value} value={option.value} className="flex-1 text-xs">{option.label}</ToggleGroupItem>)}
         </ToggleGroup>
-        <p className="text-[11px] text-muted-foreground">{clip.text_target ? `由这个字效显示${textRoles[clip.text_target]}${bilingual ? "的中英两行（上栏中文、下栏英文）" : ""}：文字与关键词取自${textRoles[clip.text_target]}${bilingual ? "和它的英文译文" : ""}，时间跟随它。` : legacyTextTarget ? `当前与 IMS ${textRoles[legacyTextTarget]}同时显示。重新选择作用对象后，将改为仅显示 Remotion 字效。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
+        <p className="text-[11px] text-muted-foreground">{clip.text_target ? `由这个字效显示${textRoles[clip.text_target]}${bilingual ? sampleLines > 1 ? "的两组中英字幕" : "的中英两行（上栏中文、下栏英文）" : ""}：文字与关键词取自${textRoles[clip.text_target]}${bilingual ? "和它的英文译文" : ""}，时间跟随它。` : legacyTextTarget ? `当前与 IMS ${textRoles[legacyTextTarget]}同时显示。重新选择作用对象后，将改为仅显示 Remotion 字效。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
         {bilingual && <p className="text-[11px] text-muted-foreground">双语字效自己显示中英两种语言，所以中英文的 IMS 文字都不再显示，也只能作用于中文对象；英文{clip.text_target === "title" ? "标题" : "字幕"}的启用与文字由下方「中英双语」与英文示例文字提供。</p>}
       </div> : isTransition ? <div className="space-y-2">
         <h3 className="text-xs font-medium">转场 {clip.transition_boundary}</h3>

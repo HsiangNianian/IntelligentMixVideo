@@ -103,6 +103,8 @@ function textEntry() {
   const tiers = block.tiers.length;
   // 双语字效（双语字幕）：上栏是 `text` 的中文、下栏是 `textEn` 里同一句的英文，合成与模板按摆放注入两种语言。
   const bilingual = block.bilingual === true;
+  // Four rows form two bilingual groups; each group keeps its own alignment, styles and shared start.
+  const paired = bilingual && tiers === 4;
   const keyword = block.keyword ? modules.indexOf(block.keyword.code) : -1;
   const effect = block.keyword ? `{...props[${JSON.stringify(block.keyword.instance_id)}], ...${boundProps(block.keyword)}}` : "{}";
   const effects = (block.effects ?? []).map((item, index) => {
@@ -125,11 +127,14 @@ function textEntry() {
     const line = children[index] ? `{__line(__segments(__lineText, __found[${index}]), __glyphs)}` : "";
     return `(() => { const __lineText = __lines[${index}]; if (!__lineText) return null; const __start = ${start}; const __waiting = __frame < __start; `
       // A negative `lineGap` pulls a lower tier up over the upper one; CSS `gap` cannot be negative, so the spacing is a margin.
-      + `return <div key={${JSON.stringify(item.instance_id)}} style={{width: "100%", gridArea: __overlap ? "1 / 1" : undefined, marginTop: ${index === 0 ? 0 : "__overlap ? 0 : props.lineGap"}, fontSize: ${size}, opacity: __waiting ? 0 : 1}}>`
+      + `return <div key={${JSON.stringify(item.instance_id)}} data-imv-tier={${index}} style={{width: "100%", gridArea: ${paired ? "undefined" : '__overlap ? "1 / 1" : undefined'}, marginTop: ${paired ? (index % 2 ? "props.translationGap" : 0) : index === 0 ? 0 : "__overlap ? 0 : props.lineGap"}, fontSize: ${size}, opacity: __waiting ? 0 : 1}}>`
       + `<Freeze frame={__start} active={__waiting}><Sequence from={__start} durationInFrames={Math.max(1, __total - __start)} layout="none"><__Origin.Provider value={__start}>`
       + `<__Effects at={${at(index)}} index={${index}} count={${tiers}}>${hold(`<Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]}${bound(item)} {...{text: __lineText, segments: __segments(__lineText, __found[${index}]), Keyword: __Keyword, ${font}}}>${line}</Preset${modules.indexOf(item.code)}>`)}</__Effects>`
       + `</__Origin.Provider></Sequence></Freeze></div>; })()`;
   };
+  // Stack or overlap whole bilingual groups, keeping each translation directly under its own Chinese line.
+  const content = paired ? [0, 2].map((start) => `{(__lines[${start}] || __lines[${start + 1}]) && <div data-imv-group={${start / 2}} style={{width: "100%", gridArea: __overlap ? "1 / 1" : undefined, marginTop: ${start ? "__overlap ? 0 : props.lineGap" : 0}}}>{${tier(block.tiers[start], start)}}{${tier(block.tiers[start + 1], start + 1)}}</div>}`).join("")
+    : block.tiers.map((item, index) => `{${tier(item, index)}}`).join("");
   const { x, y, width, height } = block.layout;
   return [
     'import React from "react";',
@@ -195,14 +200,14 @@ function textEntry() {
     `function __Keyword({text, glyphs}) { const {props, effect} = React.useContext(__Context); const style = {fontWeight: props.keywordBold ? 700 : undefined, fontStyle: props.keywordItalic ? "italic" : undefined, textDecorationLine: [props.keywordUnderline && "underline", props.keywordStrikeout && "line-through"].filter(Boolean).join(" ") || undefined, color: props.keywordColor || undefined, fontSize: props.keywordSize > 0 ? props.keywordSize : undefined}; const content = glyphs ?? text; const live = React.useContext(__Live); `
       + `const inner = <__Effects at={["keyword"]} inline>{${keyword >= 0 ? `props.keywordEffect !== false ? <Preset${keyword} {...effect} text={text}>${keywordChildren ? "{content}" : ""}</Preset${keyword}> : content` : "content"}}</__Effects>; return <span data-imv-keyword="" style={style}>{live === null ? inner : <Freeze frame={live}>{inner}</Freeze>}</span>; }`,
     `export default function Sprite(inputProps = {}) { const props = __merge(__defaults, inputProps); const __frame = useCurrentFrame(); const {durationInFrames: __total} = useVideoConfig(); `
-      + `const __glyphs = __glyphsOn(props); const __text = typeof props.text === "string" ? props.text : ""; const __lines = ${bilingual ? "[__text, typeof props.textEn === \"string\" ? props.textEn : \"\"]" : tiers === 1 ? "[__text]" : "__text.split(\"\\n\").slice(0, 2)"}; `
+      + `const __glyphs = __glyphsOn(props); const __text = typeof props.text === "string" ? props.text : ""; const __english = typeof props.textEn === "string" ? props.textEn : ""; const __lines = ${paired ? '[0, 1].flatMap(i => [__text.split("\\n")[i] || "", __english.split("\\n")[i] || ""])' : bilingual ? "[__text, __english]" : tiers === 1 ? "[__text]" : "__text.split(\"\\n\").slice(0, 2)"}; `
       // 每行自己的关键词命中：双语字效的两行是两种语言，互不重叠。
       + `const __found = __lines.map((line) => __hits(line, props.keywords)); `
       // The block frame the lower tier appears at, for cue effects; none while the lower tier has no text.
-      + `const __overlap = __lines.length > 1 && props.tierLayout === "overlap"; const __cue = __lines[1] ? (Array.isArray(props.lineStartFrames) && Number.isFinite(props.lineStartFrames[1]) ? props.lineStartFrames[1] : 0) : null; `
+      + `const __overlap = __lines.length > 1 && props.tierLayout === "overlap"; const __cue = __lines[${paired ? 2 : 1}] ? (Array.isArray(props.lineStartFrames) && Number.isFinite(props.lineStartFrames[${paired ? 2 : 1}]) ? props.lineStartFrames[${paired ? 2 : 1}] : 0) : null; `
       + `return <__Context.Provider value={{props, effect: ${effect}, cue: __cue}}><AbsoluteFill><div data-imv-instance="text" style={{position: "absolute", left: ${x}, top: ${y}, width: ${width}, height: ${height}, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center"}}>`
       + `<__Effects at={["block"]}><div style={__overlap ? {width: "100%", display: "grid", alignItems: "center", justifyItems: "center"} : {width: "100%", display: "flex", flexDirection: "column", alignItems: "center"}}>`
-      + `${block.tiers.map((item, index) => `{${tier(item, index)}}`).join("")}</div></__Effects></div></AbsoluteFill></__Context.Provider>; }`,
+      + `${content}</div></__Effects></div></AbsoluteFill></__Context.Provider>; }`,
   ].join("\n");
 }
 

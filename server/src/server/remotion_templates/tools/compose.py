@@ -15,7 +15,7 @@ from typing import Any
 from ..categories import (
     BILINGUAL, BILINGUAL_PROP, DEFAULT_EFFECT_SECONDS, EFFECT_DELAY, EFFECT_PARAMETER, EFFECT_SECONDS, EFFECT_SLOTS, EFFECT_TARGETS, FIXED_TITLES, GLYPH_TARGETS,
     KEYWORD_EFFECT_PROP, KEYWORD_GLYPH_TARGET,
-    LINE_GAP, LINE_STARTS, REQUIRED, TEXT_KEYWORDS, TIER_LAYOUT, TIER_LAYOUTS, TIER_SIZE_RATIO,
+    LINE_GAP, LINE_STARTS, REQUIRED, TEXT_KEYWORDS, TIER_LAYOUT, TIER_LAYOUTS, TIER_SIZE_RATIO, TRANSLATION_GAP,
 )
 from .registry import ToolFault
 
@@ -123,10 +123,10 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
     # 双语字效的默认文字是「中文\n英文」两行：上栏取第一行，下栏的英文另以 `textEn` 交给宿主，合成时按切片注入。
     lines = block["text"].split("\n") if block.get("bilingual") else None
     entries: list[tuple[str, dict[str, Any], Any]] = [
-        ("text", rules["text"].example, lines[0] if lines else block["text"]),
+        ("text", rules["text"].example, "\n".join(lines[::2]) if lines else block["text"]),
     ]
     if lines:
-        entries.append((BILINGUAL_PROP, BILINGUAL.example, lines[1]))
+        entries.append((BILINGUAL_PROP, BILINGUAL.example, "\n".join(lines[1::2])))
     entries.append(("fontSize", rules["fontSize"].example, block["font_size"]))
     if len(tiers) == 1:
         entries += [("fontFamily", font, tiers[0]["font_family"]), ("fontWeight", weight, tiers[0]["font_weight"])]
@@ -139,11 +139,18 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
                 (f"line{index}SizeRatio", {"type": "number", "minimum": low, "maximum": high}, tier["size_ratio"]),
             ]
         entries += [(TIER_LAYOUT, {"type": "string", "enum": list(TIER_LAYOUTS)}, block.get("arrangement", "stack")), (LINE_GAP.name, LINE_GAP.example, block.get("line_gap", 0)),
-                    (LINE_STARTS.name, LINE_STARTS.example, block["line_starts"])]
+                    (LINE_STARTS.name, {**LINE_STARTS.example, "minItems": len(tiers), "maxItems": len(tiers)}, block["line_starts"])]
+    if len(tiers) == 4:
+        entries.append((TRANSLATION_GAP.name, TRANSLATION_GAP.example, block.get("translation_gap", 8)))
     entries += [(rule.name, rule.example, rule.off) for rule in TEXT_KEYWORDS]
     if block.get("keyword") is not None:
         entries.append((KEYWORD_EFFECT_PROP, {"type": "boolean"}, True))
     titles = dict(FIXED_TITLES)
+    if len(tiers) == 4:
+        # 四个物理行分成上下两组，面板明确每行的语言，避免将英文误称为第二组。
+        for index, name in enumerate(("上栏中文", "上栏英文", "下栏中文", "下栏英文"), 1):
+            for suffix, label in (("FontFamily", "字体"), ("FontWeight", "字重"), ("SizeRatio", "字号比例")):
+                titles[f"line{index}{suffix}"] = name + label
     low, high = EFFECT_SECONDS
     for index, effect in enumerate(block.get("effects", []), start=1):
         name, title = f"effect{index}", effect["title"]
