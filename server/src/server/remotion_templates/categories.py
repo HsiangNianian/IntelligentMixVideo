@@ -40,6 +40,9 @@ LINE_GAP_PROP = "lineGap"
 # 双栏的排布参数与取值：stack 上下排列，overlap 两栏叠在同一处、彼此居中、下栏在上层。
 TIER_LAYOUT = "tierLayout"
 TIER_LAYOUTS = ("stack", "overlap")
+# 双语字效（双语字幕）：双栏的上栏是中文、下栏是同一句的英文，英文以 `textEn` 单独交给宿主，合成时与中文一起注入；
+# 它和普通双栏（上下两栏都是中文）是不同的字效，模板据此让字效同时显示中英两种语言。
+BILINGUAL_PROP = "textEn"
 # 生成只做双栏：新的多行字效固定上下两栏；更早发布的 3～MAX_LINES 行资产仍按自己封存的行数显示。
 TIERS = 2
 # 双栏字效每栏的字号是两栏共用的 fontSize 乘以该栏的比例，比例范围固定。
@@ -147,6 +150,11 @@ def line_count(schema: dict) -> int:
     return definition["maxItems"] if isinstance(definition, dict) and _line_starts(definition) else 1
 
 
+def bilingual(schema: dict) -> bool:
+    """字效是否是双语字效：声明了英文文字参数 `textEn` 的字效下栏是同一句的英文，模板与合成据此注入两种语言。"""
+    return isinstance(_properties(schema).get(BILINGUAL_PROP), dict)
+
+
 def _keyword_color(definition: dict) -> bool:
     """关键词颜色参数：字符串且使用允许空串的 pattern。"""
     return definition.get("type") == "string" and definition.get("pattern") == KEYWORD_COLOR
@@ -211,6 +219,11 @@ LINE_GAP = Rule(
     "多行字效相邻两行之间的距离（像素），数字，下界可在 -600～0 之间（负值让下栏上移叠住上栏）、上界在 200～600 之间",
     _between(-600, 600, 0, 200),
 )
+# 双语字效的英文文字：可选，绑定了才是双语字效（下栏是中文那一句的英文译文，由总线按切片注入）。
+BILINGUAL = Rule(
+    BILINGUAL_PROP, {"type": "string", "minLength": 1, "maxLength": TEXT_MAX_LENGTH},
+    f"双语字效的英文文字，非空字符串且 maxLength 必须为 {TEXT_MAX_LENGTH}", _text,
+)
 _COLOR = {"type": "string", "pattern": HEX_COLOR}
 REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
     "text": (
@@ -241,7 +254,7 @@ FIXED_TITLES = {
     "text": "文字", "fontSize": "字号", "fontWeight": "字重", "fontFamily": "字体",
     "keywords": "关键词", "keywordBold": "关键词加粗", "keywordItalic": "关键词斜体", "keywordUnderline": "关键词下划线",
     "keywordStrikeout": "关键词删除线", "keywordColor": "关键词颜色", "keywordSize": "关键词字号", KEYWORD_EFFECT_PROP: "关键词字效",
-    LINE_GAP_PROP: "栏间距", LINE_STARTS_PROP: "各栏出现帧", TIER_LAYOUT: "双栏排布",
+    LINE_GAP_PROP: "栏间距", LINE_STARTS_PROP: "各栏出现帧", TIER_LAYOUT: "双栏排布", BILINGUAL_PROP: "英文文字",
     **{
         f"line{tier}{suffix}": f"{name}{label}"
         for tier, name in ((1, "上栏"), (2, "下栏"))
@@ -383,13 +396,15 @@ def category_problems(
     多行字效在生成路径必须恰好两栏，并以每栏固定的颜色、字号比例、字体与字重（`TIER_STYLES`）代替整段共用的
     颜色、字重与字体；画了关键词字效的字效必须暴露默认开启的 `keywordEffect` 开关，文字颜色还必须不透明（透明由带可调
     数字参数的 `role=effect` 特效实现）。``requested`` 是新会话里用户打开的
-    开关（`two_tier`、`keyword_effect`），生成路径据此要求双栏或关键词字效。发布更早的版本时都不传，不要求这些参数；
-    多行字效在两条路径上都不要求整段共用的颜色与字重。
+    开关（`two_tier`、`keyword_effect`、`bilingual`），生成路径据此要求双栏、关键词字效或双语字效。发布更早的版本时都不传，
+    不要求这些参数；多行字效在两条路径上都不要求整段共用的颜色与字重。
     """
     if kind not in REQUIRED:
         return [Problem("kind", None, f"kind must be one of {', '.join(KINDS)}")]
     properties = _properties(schema)
     tiered = kind == "text" and LINE_STARTS_PROP in bound
+    # 双语字效：下栏是中文那一句的英文，英文以 `textEn` 单独注入，所以它必须同时是双栏。
+    bilingual_sprite = kind == "text" and BILINGUAL_PROP in bound
     problems = []
     for rule in REQUIRED[kind]:
         if tiered and rule.name in SHARED_STYLES:
@@ -407,6 +422,18 @@ def category_problems(
         if "two_tier" in requested and not tiered:
             problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, "missing: the user switched on 双栏 (original_request.two_tier), so make a two-tier "
                                     f"text whose default text has exactly {TIERS} lines and bind {LINE_STARTS_PROP}, {LINE_GAP_PROP} and the tier parameters"))
+        if "bilingual" in requested and not bilingual_sprite:
+            problems.append(Problem(BILINGUAL_PROP, BILINGUAL, "missing: the user switched on 双语字幕 (original_request.bilingual), so make a two-tier "
+                                    f"text whose upper tier is the Chinese line and whose lower tier is its English translation (default text "
+                                    f"\"<Chinese>\\n<English>\"), and bind {BILINGUAL_PROP} (the English line the bus injects), {LINE_STARTS_PROP}, "
+                                    f"{LINE_GAP_PROP} and the tier parameters"))
+        if bilingual_sprite and not tiered:
+            problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, "missing: a bilingual text (双语字幕) is a two-tier text whose lower tier shows the "
+                                    f"English line, so bind {LINE_STARTS_PROP} (minItems and maxItems {TIERS}), {LINE_GAP_PROP} and the tier parameters"))
+    if bilingual_sprite and tiered:
+        definition = properties.get(BILINGUAL_PROP)
+        if not isinstance(definition, dict) or not BILINGUAL.accepts(definition):
+            problems.append(Problem(BILINGUAL_PROP, BILINGUAL, "has the wrong schema"))
     if tiered:
         problems += _line_problems(properties, bound, defaults)
     elif kind == "text" and isinstance(defaults.get("text"), str) and "\n" in defaults["text"]:
@@ -476,7 +503,7 @@ def _tier_problems(properties: dict, bound: set[str], defaults: dict, fonts: Col
 
 def _line_problems(properties: dict, bound: set[str], defaults: dict) -> list[Problem]:
     """多行字效的行起点与行间距：默认文字恰好 N 个非空行，默认行起点首项为 0 且不递减，预览才能逐行显示每一行；
-    行间距必须作为顶层参数暴露。"""
+    行间距必须作为顶层参数暴露。双语字效的两栏是同一句的中文与英文，默认值分别是单行的 `text` 与 `textEn`。"""
     problems = []
     if LINE_GAP_PROP not in bound or LINE_GAP_PROP not in properties:
         problems.append(Problem(LINE_GAP_PROP, LINE_GAP, "missing"))
@@ -493,6 +520,14 @@ def _line_problems(properties: dict, bound: set[str], defaults: dict) -> list[Pr
         and all(left <= right for left, right in zip(starts, starts[1:]))
     ):
         problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, f"has the wrong default: {count} non-decreasing frames starting at 0"))
+    if BILINGUAL_PROP in bound:
+        # 双语的默认文字是中英各一行：上栏中文来自 text，下栏英文来自 textEn，各一行且都不能为空。
+        for name, rule in (("text", REQUIRED["text"][0]), (BILINGUAL_PROP, BILINGUAL)):
+            value = defaults.get(name)
+            if not isinstance(value, str) or not value.strip() or "\n" in value:
+                problems.append(Problem(name, rule, "has the wrong default: a bilingual text (双语字幕) defaults to one non-empty Chinese line "
+                                        "and one non-empty English line, each without \\n"))
+        return problems
     text = defaults.get("text")
     if not isinstance(text, str) or len(lines := text.split("\n")) != count or not all(line.strip() for line in lines):
         problems.append(Problem("text", REQUIRED["text"][0], f"has the wrong default: a multi-line text defaults to {count} non-empty lines separated by \\n"))

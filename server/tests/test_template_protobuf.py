@@ -634,3 +634,81 @@ def test_only_remotion_tracks_carry_remotion_overrides(client: TestClient, templ
     track["editor"] = {**track["editor"], "remotion": {"transform": {"opacity": 0.5}}}
     response = _post(client, {**template_payload, "tracks": [track]})
     assert response.status_code == 422 and "只有 Remotion 片段可以设置参数覆盖与宿主变换" in response.text
+
+
+def seed_bilingual_sprite(sprite_id: str = SPRITE_ID) -> str:
+    """双语字效（双语字幕）的发布记录：在标准字效参数上另加英文文字 `textEn`。需先启用 template_db。"""
+    from datetime import UTC, datetime
+
+    from google.protobuf.json_format import MessageToDict
+
+    from generated.imv.sprite.v1 import sprite_pb2 as pb_sprite
+    from server.remotion_templates import sprite_store
+    from .conftest import published_sprite
+
+    sprite = published_sprite(sprite_id)
+    schema = json.loads(sprite.config_schema_json)
+    schema["properties"]["textEn"] = {"type": "string", "minLength": 1, "maxLength": 100}
+    sprite.config_schema_json = json.dumps(schema)
+    defaults = json.loads(sprite.default_config_json)
+    sprite.default_config_json = json.dumps({**defaults, "textEn": "English sample"}, ensure_ascii=False)
+    sprite.parameters.add(key="textEn", label="英文文字", access=pb_sprite.OPERATOR_ACCESS_VISIBLE_EDITABLE,
+                          default_value=pb_sprite.ScalarValue(string_value="English sample"), min_length=1, max_length=100)
+    sprite_store.insert(sprite_id=sprite_id, source_version_id=str(uuid4()), kind=1, text_prop="", keywords_prop="",
+                        published_at=datetime.now(UTC), data=MessageToDict(sprite, preserving_proto_field_name=True))
+    return sprite_id
+
+
+def english_subtitle(enabled: bool = True) -> dict:
+    """同一用途的英文文字对象（时间跟随中文）；双语字效需要它提供切片译文。"""
+    return {**template_track("subtitle", subtitle="English sample"), "id": "subtitle-en", "language": "en", "enabled": enabled}
+
+
+def test_a_bilingual_sprite_shows_both_languages_of_the_chinese_object(client: TestClient, template_payload: dict) -> None:
+    """双语字效（双语字幕）绑定中文对象、并已开启英文字幕时可以保存；普通字效仍可分别绑定中英文对象，两种字效都要有。"""
+    seed_bilingual_sprite()
+    tracks = [template_track("title"), template_track("subtitle"), english_subtitle(), remotion_track("bilingual", text_target="subtitle")]
+    created = _post(client, {**template_payload, "effect_ids": [], "tracks": tracks})
+    assert created.status_code == 201, created.text
+    record = ParseDict(created.json(), pb.SaveTemplateResponse()).template
+    assert [(item.id, item.text_target) for item in record.tracks.tracks if item.target == "remotion"] == [("bilingual", "subtitle")]
+    # 普通双栏字效照常分别绑定中文与英文对象。
+    plain = seed_sprite(str(uuid4()))
+    both = [template_track("title"), template_track("subtitle"), english_subtitle(),
+            remotion_track("clip-zh", sprite_id=plain, text_target="subtitle"),
+            remotion_track("clip-en", sprite_id=plain, text_target="subtitle", language="en")]
+    assert _post(client, {**template_payload, "name": "双语对照", "effect_ids": [], "tracks": both}).status_code == 201
+
+
+@pytest.mark.parametrize(("tracks", "reason"), [
+    ([template_track("title"), template_track("subtitle"), remotion_track("bilingual", text_target="subtitle")],
+     "需要同时开启中英双语"),
+    ([template_track("title"), template_track("subtitle"), english_subtitle(enabled=False), remotion_track("bilingual", text_target="subtitle")],
+     "需要同时开启中英双语"),
+    ([template_track("title"), template_track("subtitle"), english_subtitle(), remotion_track("bilingual", text_target="subtitle"),
+      remotion_track("bilingual-en", text_target="subtitle", language="en")], "已显示英文字幕"),
+], ids=["no-english-object", "english-switched-off", "second-english-effect"])
+def test_a_bilingual_sprite_needs_its_english_object(
+    client: TestClient, template_payload: dict, tracks: list[dict], reason: str,
+) -> None:
+    """双语字效的下栏是英文译文：缺少英文对象、英文对象停用、另有英文字效时保存即 422 并说明原因，且不写库。"""
+    seed_bilingual_sprite()
+    response = _post(client, {**template_payload, "effect_ids": [], "tracks": tracks})
+    assert response.status_code == 422 and reason in response.text
+    assert ParseDict(client.get("/template").json(), pb.ListTemplatesResponse()).templates == []
+
+
+def test_a_bilingual_sprite_only_binds_chinese_objects_and_never_its_english_line(
+    client: TestClient, template_payload: dict,
+) -> None:
+    """双语字效只能作用于中文对象，也不能由模板覆盖它自己按切片注入的英文文字。"""
+    seed_bilingual_sprite()
+    rejected = _post(client, {**template_payload, "effect_ids": [], "tracks": [
+        template_track("title"), template_track("subtitle"), english_subtitle(),
+        remotion_track("bilingual", text_target="subtitle", language="en")]})
+    assert rejected.status_code == 422 and "须作用于中文标题或中文字幕" in rejected.text
+    override = remotion_track("bilingual", text_target="subtitle",
+                              editor={"remotion": {"parameters": [{"key": "textEn", "stringValue": "Old line"}]}})
+    rejected = _post(client, {**template_payload, "effect_ids": [], "tracks": [
+        template_track("title"), template_track("subtitle"), english_subtitle(), override]})
+    assert rejected.status_code == 422 and "不能覆盖 textEn" in rejected.text

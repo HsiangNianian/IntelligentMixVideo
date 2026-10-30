@@ -1,12 +1,13 @@
 """合成时间线的确定性、音视频时序、效果与对象规则测试；执行 uv run --locked pytest -v。"""
 
+import json
 from copy import deepcopy
 
 import pytest
 from server.template.schema import EffectTemplateEditor, TemplateSave, effect_catalog
 from server.video_composition.timeline import build_timeline, format_subtitle_keyword
 
-from .conftest import remotion_track, template_track
+from .conftest import SPRITE_ID, remotion_track, template_track
 
 
 @pytest.mark.parametrize("title_on,subtitle_on", [(True, True), (True, False), (False, True), (False, False)])
@@ -489,6 +490,27 @@ def test_remotion_tracks_do_not_enter_the_ims_timeline(composition_case):
     expected = build_timeline(**deepcopy(composition_case))
     composition_case["template"]["tracks"] += [remotion_track("clip-a", start=2), remotion_track("clip-b", duration=1.5)]
     assert build_timeline(**composition_case) == expected
+
+
+@pytest.mark.parametrize("bilingual", [True, False])
+def test_a_bilingual_text_effect_also_replaces_the_english_text(composition_case, bilingual):
+    """双语字效（双语字幕）自己显示中英两种语言：中英文字幕都不交给 IMS；普通字效只替换它自己绑定的那一个文字对象。"""
+    english = {**composition_case["template"]["tracks"][0], "id": "subtitle-en", "language": "en"}
+    composition_case["template"]["tracks"].append(english)
+    # 英文字幕取自切片的译文。
+    for item, text in zip(composition_case["segments"], ["Alpha.", "Beta."]):
+        item.update(text_en=text, keyword_en="")
+    schema = {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 100}, "keywords": {"type": "array", "items": {"type": "string"}}}}
+    if bilingual:
+        schema["properties"]["textEn"] = {"type": "string", "minLength": 1, "maxLength": 100}
+    asset = {"sprite_id": SPRITE_ID, "kind": "SPRITE_KIND_TEXT", "config_schema_json": json.dumps(schema)}
+    composition_case["template"]["tracks"].append(remotion_track("clip", text_target="subtitle"))
+    plain = {**deepcopy(composition_case), "template": {**composition_case["template"],
+             "tracks": [track for track in composition_case["template"]["tracks"] if track["target"] != "remotion"]}}
+    composition_case["remotion_assets"] = {SPRITE_ID: asset}
+    replaced = len(build_timeline(**plain)[0]["SubtitleTracks"]) - len(build_timeline(**composition_case)[0]["SubtitleTracks"])
+    # 双语字效连英文文字一起替换，普通字效只替换它自己绑定的中文字幕。
+    assert replaced == (2 if bilingual else 1)
 
 
 @pytest.mark.parametrize(("role", "layer"), [("title", 0), ("subtitle", 1)])

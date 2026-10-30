@@ -194,6 +194,11 @@ export function englishEditor(editor: Editor, target: "title" | "subtitle"): Edi
     [`${target}Y`]: Math.min(95, editor[`${target}Y`] + 6) };
 }
 
+/** 英文标题和字幕固定单行：即使字效是双栏，也只显示上栏一行（合成时同样只注入一行），示例文字里的换行按空格合并。 */
+export function singleRowText(text: string): string {
+  return text.split("\n").map((line) => line.trim()).filter(Boolean).join(" ");
+}
+
 /** 仅供展示使用；保存始终使用完整草稿，停用的英文及其资产绑定也保留。 */
 export function activeDraft(draft: Draft): Draft {
   return {

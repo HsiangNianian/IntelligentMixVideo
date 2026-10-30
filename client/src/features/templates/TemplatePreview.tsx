@@ -52,8 +52,9 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const latestAvatar = useRef(avatarSource);
   latestAvatar.current = avatarSource;
   const duration = resolved?.duration ?? 0;
-  // 改由 Remotion 字效显示的文字变化时，SDK 需要重新应用时间线以隐藏或恢复 IMS 文字。
-  const replacedTexts = [...remotionTexts(draft)].sort().join();
+  // 改由 Remotion 字效显示的文字变化时，SDK 需要重新应用时间线以隐藏或恢复 IMS 文字；双语字效还替换英文文字。
+  const bilingualClips = useMemo(() => new Set(sprites.filter((clip) => clip.bilingual).map((clip) => clip.id)), [sprites]);
+  const replacedTexts = [...remotionTexts(draft, bilingualClips)].sort().join();
   const stage = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const latest = useRef(draft);
@@ -61,6 +62,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const latestOrder = useRef(videoOrder);
   const latestResolved = useRef(resolved);
   const latestTexts = useRef(replacedTexts);
+  const latestBilingual = useRef(bilingualClips);
   const apply = useRef<(() => void) | null>(null);
   const catalogCallback = useRef(onCatalog);
   // IMS 播放器的播放入口，播放器就绪后才使用。
@@ -79,13 +81,13 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const { rows, notices } = useMemo((): { rows: ReturnType<typeof buildPreviewRows>; notices: string[] } => {
     if (!media || !resolved) return { rows: [], notices: [] };
     try {
-      const timeline = buildTimeline(draft, catalog, media, resolved, videoOrder, avatarSource);
+      const timeline = buildTimeline(draft, catalog, media, resolved, videoOrder, avatarSource, bilingualClips);
       return { rows: buildPreviewRows(timeline), notices: timeline.notices };
     } catch {
       // 生成失败时 SDK 应用同一份时间线也会失败，原因在那里提示与记录。
       return { rows: [], notices: [] };
     }
-  }, [draft, catalog, media, resolved, videoOrder, avatarSource]);
+  }, [draft, catalog, media, resolved, videoOrder, avatarSource, bilingualClips]);
   const timelineRows = useMemo(() => mergeSpriteRows(rows, sprites).map((row) => ({ ...row,
     actions: row.actions.map((clip) => ({ ...clip, targetId: clip.targetId ? selectionTargets?.get(clip.targetId) ?? clip.targetId : undefined })),
   })), [rows, sprites, selectionTargets]);
@@ -118,6 +120,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   latestOrder.current = videoOrder;
   latestResolved.current = resolved;
   latestTexts.current = replacedTexts;
+  latestBilingual.current = bilingualClips;
   latestCatalog.current = catalog;
   catalogCallback.current = onCatalog;
 
@@ -292,10 +295,11 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           const currentMedia = latestMedia.current;
           const currentOrder = latestOrder.current;
           const currentTexts = latestTexts.current;
+          const currentBilingual = latestBilingual.current;
           const currentResolved = latestResolved.current;
           if (!currentMedia || !currentResolved) { instance.pause(); return; }
           const applyStarted = performance.now();
-          const timeline = buildTimeline(currentDraft, latestCatalog.current, currentMedia, currentResolved, currentOrder, latestAvatar.current);
+          const timeline = buildTimeline(currentDraft, latestCatalog.current, currentMedia, currentResolved, currentOrder, latestAvatar.current, currentBilingual);
           if (disposed) return;
           instance.pause();
           instance.aspectRatio = timeline.AspectRatio;
@@ -590,7 +594,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             onEnd={() => { if (source !== "basic") return; changePlaying(false); setStatus("预览结束，点击播放可重播"); }} />}
           {basicFallback && frameMaskRects(draft.frame_mask, PREVIEW_CANVAS.height).map((rect) => <div key={rect.edge} aria-label={`${rect.edge === "top" ? "上" : "下"}栏蒙版预览`}
             className="pointer-events-none absolute inset-x-0" style={{ top: `${rect.y / PREVIEW_CANVAS.height * 100}%`, height: `${rect.height / PREVIEW_CANVAS.height * 100}%`, background: rect.color }} />)}
-          {controlsReady && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
+          {controlsReady && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft, bilingualClips).has(textKey(item.target, item.language))).map((item) => {
             const interval = resolved?.tracks[item.id];
             if (!interval || time < interval.start || time >= interval.end) return null;
             const role = item.target as "title" | "subtitle";

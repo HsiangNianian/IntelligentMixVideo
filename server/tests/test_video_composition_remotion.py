@@ -1115,6 +1115,115 @@ def test_multi_line_title_splits_the_title_at_its_line_breaks(composition_case, 
     assert item["config"]["lineStartFrames"] == [0, 0] and item["reveal_frame"] == 0
 
 
+def bilingual_multi_line_case(composition_case):
+    """中英双语各自绑定同一个双栏字效：中文按句分组两行，英文固定单行，英文内容取自译文。"""
+    from .conftest import remotion_track
+
+    data = multi_line_case(composition_case)
+    data["template"] = deepcopy(composition_case["template"])
+    subtitle = next(track for track in data["template"]["tracks"] if track["target"] == "subtitle")
+    data["template"]["tracks"].append({**deepcopy(subtitle), "id": "subtitle-en", "language": "en"})
+    placement = data["remotion"]["placements"][0]
+    for language in ("zh", "en"):
+        data["template"]["tracks"].append(remotion_track(f"effect-{language}", sprite_id=placement["sprite_id"],
+                                                         text_target="subtitle", language=language))
+    data["remotion"]["placements"] = [{**deepcopy(placement), "id": f"text-{language}", "text_target": "subtitle",
+                                       "language": language, "editor": {}} for language in ("zh", "en")]
+    data["segmentation"].update(title_en="Business title", title_keyword_en="")
+    for item, text in zip(data["segmentation"]["segments"], ["Don't stop!", "Keep going.", "One more.", "Last line."]):
+        item.update(text_en=text, keyword_en="")
+    return data
+
+
+def test_english_text_uses_only_the_upper_tier_of_a_two_tier_effect(composition_case):
+    """英文标题和字幕固定单行：绑定的双栏字效只用上栏，中英双语因此不会出现中文两栏加英文两栏的四行。"""
+    result = remotion.plan(bilingual_multi_line_case(composition_case), 120)
+    # 中文仍按句两行一组，英文每个切片各占一行、不注入多行。
+    assert [item["config"]["text"] for item in result.instances] == [
+        "甲乙\n丙丁", "戊己", "庚辛", "Don't stop", "Keep going", "One more", "Last line"]
+    english = result.instances[3:]
+    assert [item["config"]["lineStartFrames"] for item in english] == [[0, 0]] * 4
+    # 排版预检按单行测量，最后一行出现的帧不再有意义。
+    assert all(item["one_line"] and "reveal_frame" not in item for item in english)
+
+
+def test_english_title_with_a_line_break_stays_on_one_row(composition_case):
+    """英文标题在双栏字效里也只占上栏：译文里的换行按空格合并，不把后面的行放进下栏。"""
+    data = multi_line_case(composition_case, target="title")
+    data["template"] = deepcopy(composition_case["template"])
+    title = next(track for track in data["template"]["tracks"] if track["target"] == "title")
+    data["template"]["tracks"].append({**deepcopy(title), "id": "title-en", "language": "en"})
+    data["remotion"]["placements"][0].update(text_target="title", language="en", editor={})
+    data["segmentation"].update(title_en="Lead line\nMain headline", title_keyword_en="")
+    item, = remotion.plan(data, 120).instances
+    assert (item["config"]["text"], item["text"]) == ("Lead line Main headline", "Lead line Main headline")
+    assert item["config"]["lineStartFrames"] == [0, 0]
+    assert item["one_line"] is True and "reveal_frame" not in item
+
+
+def bilingual_sprite_case(composition_case, *, target="subtitle"):
+    """双语字效（声明英文文字 `textEn`）绑定中文对象：同一句的中文与译文由同一个字效同时显示。"""
+    data = multi_line_case(composition_case, target=target)
+    sprite = next(iter(data["remotion"]["assets"].values()))
+    schema = json.loads(sprite["config_schema_json"])
+    schema["properties"]["textEn"] = {"type": "string", "minLength": 1, "maxLength": 100}
+    sprite["config_schema_json"] = json.dumps(schema)
+    defaults = {**json.loads(sprite["default_config_json"]), "text": "中文示例", "textEn": "English sample", "lineStartFrames": [0, 0]}
+    sprite["default_config_json"] = json.dumps(defaults)
+    data["segmentation"].update(title_en="Business title", title_keyword_en="")
+    for item, text in zip(data["segmentation"]["segments"], ["Don't stop!", "Keep going.", "One more.", "Last line."]):
+        item.update(text_en=text, keyword_en="")
+    return data
+
+
+def test_bilingual_sprite_shows_chinese_and_english_together_per_cue(composition_case):
+    """双语字效：每条切片一个实例，上栏中文、下栏同一句的译文同时出现，不按行分组也不要求单行字号。"""
+    result = remotion.plan(bilingual_sprite_case(composition_case), 120)
+    assert [item["config"]["text"] for item in result.instances] == ["甲乙", "丙丁", "戊己", "庚辛"]
+    assert [item["config"]["textEn"] for item in result.instances] == ["Don't stop", "Keep going", "One more", "Last line"]
+    assert [item["config"]["lineStartFrames"] for item in result.instances] == [[0, 0]] * 4
+    # 两种语言在同一个字效里上下叠放：关键词仍取自中文切片，不缩成单行、不朝任何方向展开。
+    assert [item["config"]["keywords"] for item in result.instances] == [["甲乙"], ["丁"], [], ["庚"]]
+    assert all("one_line" not in item and "grow" not in item and "reveal_frame" not in item for item in result.instances)
+
+
+def test_bilingual_sprite_is_not_shown_twice_with_an_english_effect(composition_case):
+    """双语字效已显示英文：绑定英文对象的另一个字效不再渲染，否则英文会出现两次。"""
+    from .conftest import remotion_track
+
+    data = bilingual_sprite_case(composition_case)
+    data["template"] = deepcopy(composition_case["template"])
+    subtitle = next(track for track in data["template"]["tracks"] if track["target"] == "subtitle")
+    data["template"]["tracks"].append({**deepcopy(subtitle), "id": "subtitle-en", "language": "en"})
+    placement = data["remotion"]["placements"][0]
+    for language in ("zh", "en"):
+        data["template"]["tracks"].append(remotion_track(f"effect-{language}", sprite_id=placement["sprite_id"],
+                                                         text_target="subtitle", language=language))
+    data["remotion"]["placements"] = [{**deepcopy(placement), "id": f"text-{language}", "text_target": "subtitle",
+                                       "language": language, "editor": {}} for language in ("zh", "en")]
+    result = remotion.plan(data, 120)
+    assert [item["config"]["text"] for item in result.instances] == ["甲乙", "丙丁", "戊己", "庚辛"]
+
+
+def test_bilingual_sprite_title_puts_the_translation_under_the_title(composition_case):
+    """双语字效绑定标题：上栏中文标题、下栏它的英文译文，换行都按空格合并到各自一行。"""
+    data = bilingual_sprite_case(composition_case, target="title")
+    data["request"] = {**data["request"], "title": "业务标题\n保留换行"}
+    data["segmentation"].update(title_en="Business title", title_keyword_en="")
+    item, = remotion.plan(data, 120).instances
+    assert (item["config"]["text"], item["config"]["textEn"]) == ("业务标题 保留换行", "Business title")
+    assert item["config"]["lineStartFrames"] == [0, 0]
+    assert "one_line" not in item and "reveal_frame" not in item
+
+
+def test_bilingual_sprite_fails_without_the_english_translation(composition_case):
+    """缺少译文时按内容错误终止，不能悄悄只显示中文。"""
+    data = bilingual_sprite_case(composition_case)
+    data["segmentation"]["segments"][1]["text_en"] = ""
+    with pytest.raises(ContentError):
+        remotion.plan(data, 120)
+
+
 def test_single_line_subtitles_are_still_one_instance_per_cue(composition_case):
     """单行字效不分组：每个切片一个实例，不注入行起点（回归）。"""
     data = multi_line_case(composition_case)

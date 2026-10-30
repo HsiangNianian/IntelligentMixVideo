@@ -22,4 +22,6 @@ export interface SpriteAsset {
   parameters: AssetParameter[];
   /** 字效的固定行数：多行字效为 2～4，示例文字按行分别填写，字幕的连续切片逐行显示；缺省或 1 为单行。 */
   lines?: number;
+  /** 双语字效（双语字幕）：两栏是同一句的中文与英文，模板里同时显示中英两种语言，只需绑定中文的文字对象。 */
+  bilingual?: boolean;
 }

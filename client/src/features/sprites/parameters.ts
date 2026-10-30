@@ -65,6 +65,12 @@ export const TEXT_LAYOUT_PARAMETERS = [
 export const EFFECT_PARAMETER = /^effect[1-9][0-9]*(?:Target|Seconds|Delay|Stagger)?$/;
 
 /**
+ * 双语字效（双语字幕）的英文文字参数，与服务端 `categories.BILINGUAL_PROP` 一致：上栏是中文、下栏是同一句的英文，
+ * 模板把它按所绑定文字对象的英文（菜单里开启中英双语）填给资产，合成时由切片译文注入。
+ */
+export const BILINGUAL_PROP = "textEn";
+
+/**
  * 模板编辑里开放的资产参数：字效的排版参数、特效的开关、位置与时长以及关键词样式；颜色、特效与关键词效果的外观等属于资产本身，
  * 回字效工作区改出新版本。已有覆盖不受影响。
  */

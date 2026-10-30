@@ -13,7 +13,7 @@ import {
   type SpriteSummary,
 } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "./model";
-import { assetParameter } from "./parameters";
+import { assetParameter, BILINGUAL_PROP } from "./parameters";
 
 /** 一次发布选择：文字类型必须指明接收业务文字（和可选关键词）的参数字段。 */
 export interface PublishChoice {
@@ -85,6 +85,8 @@ function toAsset(summary: SpriteSummary): SpriteAsset {
       : { x: 0, y: 0, width: summary.canvas?.width ?? 0, height: summary.canvas?.height ?? 0 },
     parameters: summary.parameters.map(assetParameter).filter((item) => item !== null),
     lines: summary.lineCount,
+    // 双语字效（双语字幕）另把英文文字作为参数 `textEn` 发布：模板与合成都按它注入同一句的译文。
+    bilingual: summary.parameters.some((item) => item.key === BILINGUAL_PROP),
   };
 }
 

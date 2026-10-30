@@ -108,8 +108,8 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
                 <Hint label="重命名资产"><Button type="button" variant="secondary" size="icon" className="size-6" aria-label={`重命名 AI 资产：${asset.name}`} onClick={() => { setRenaming(asset); setNewName(asset.name); setRenameError(""); }}><Pencil className="size-3.5" aria-hidden="true" /></Button></Hint>
                 <Hint label="删除资产" disabled={inUse}><Button type="button" variant="secondary" size="icon" className="size-6" disabled={inUse} aria-describedby={inUse ? `sprite-in-use-${asset.id}` : undefined} aria-label={`删除 AI 资产：${asset.name}`} onClick={() => { setDeleting(asset); setRemoveError(""); }}><Trash2 className="size-3.5" aria-hidden="true" /></Button></Hint>
               </>,
-              // 画布规格必须一致才能叠加，所以每张卡片都标出预览长度与画布。
-              note: <span className="block px-1 pt-1 text-[10px] tabular-nums text-muted-foreground">预览 {Number(asset.seconds.toFixed(1))} 秒 · {asset.width}×{asset.height} @ {asset.fps} FPS{inUse && <span id={`sprite-in-use-${asset.id}`} className="block">当前模板正在使用，移除片段后才能删除</span>}</span>,
+              // 画布规格必须一致才能叠加，所以每张卡片都标出预览长度与画布；双语字效额外标明中英两行。
+              note: <span className="block px-1 pt-1 text-[10px] tabular-nums text-muted-foreground">预览 {Number(asset.seconds.toFixed(1))} 秒 · {asset.width}×{asset.height} @ {asset.fps} FPS{asset.bilingual && <span className="block">双语字效：上栏中文、下栏英文</span>}{inUse && <span id={`sprite-in-use-${asset.id}`} className="block">当前模板正在使用，移除片段后才能删除</span>}</span>,
             };
           }}
         />
@@ -159,7 +159,7 @@ export function SpriteClips({ clips, catalog, duration, hidden, selected, onSele
           const timing = end === undefined ? "等待预览时间" : end <= clip.start || hidden?.has(clip.id) ? "当前视频未应用" : `${Number(clip.start.toFixed(1))}～${Number(end.toFixed(1))} 秒`;
           const edited = Object.keys(clip.parameters).length + Object.keys(clip.transform).length > 0;
           const slot = clipSlot(clip, asset);
-          const place = slot === "title" || slot === "subtitle" ? `${clip.language === "en" ? slot === "title" ? "英文标题" : "英文字幕" : textRoles[slot]}字效` : slot === "transition" ? `镜头转场 ${clip.transition_boundary ?? ""}`.trim() : slot ? effectTargets[slot] : asset ? "未选择作用对象" : "";
+          const place = slot === "title" || slot === "subtitle" ? `${clip.language === "en" ? slot === "title" ? "英文标题" : "英文字幕" : `${textRoles[slot]}${asset?.bilingual ? "（中英双语）" : ""}`}字效` : slot === "transition" ? `镜头转场 ${clip.transition_boundary ?? ""}`.trim() : slot ? effectTargets[slot] : asset ? "未选择作用对象" : "";
           return <li key={clip.id} aria-label={`AI 资产：${name}`} className={cn("flex items-center justify-between gap-2 rounded-md border px-2 py-1.5", selected === clip.id && "border-primary ring-1 ring-primary/20")}>
             <button type="button" className="min-w-0 flex-1 text-left" aria-pressed={selected === clip.id} aria-label={`设置 AI 资产：${name}`} onClick={() => onSelect(clip.id)}><span className="block truncate text-[12px] font-medium">{name}</span><span className="block text-[11px] tabular-nums text-muted-foreground">{place && `${place} · `}{timing}{edited && " · 已调整参数"}{assets && !asset && " · 资产已不可用，保存前请移除"}</span></button>
             <Button type="button" variant="ghost" size="icon" className="size-6" aria-label={`移除 AI 资产：${name}`} onClick={() => onRemove(clip.id)}><Trash2 className="size-3.5" aria-hidden="true" /></Button>

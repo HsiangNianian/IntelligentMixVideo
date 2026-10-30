@@ -583,6 +583,86 @@ def test_two_tiers_stack_or_overlap(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+def test_a_bilingual_text_block_injects_both_languages():
+    """双语字效（双语字幕）：默认文字是「中文\\n英文」，宿主把中文留在 text、英文单独放进 textEn（标题「英文文字」），
+    两栏仍是双栏配置（逐栏字体、栏间距、行起点），所以一个字效同时显示中英两种语言。"""
+    block = {"text": "今日灵感\nToday's idea", "font_size": 96, "bilingual": True, "line_gap": 12, "line_starts": [0, 0],
+             "tiers": [{"font_family": "Zed Display", "font_weight": 700, "size_ratio": 1},
+                       {"font_family": "Noto Sans CJK SC", "font_weight": 400, "size_ratio": 0.6}]}
+    schemas, defaults = text_configuration(block, LIBRARY)
+    assert list(schemas)[:3] == ["text", "textEn", "fontSize"]
+    assert schemas["textEn"]["title"] == "英文文字" and schemas["textEn"]["maxLength"] == 100
+    assert (defaults["text"], defaults["textEn"], defaults["lineStartFrames"]) == ("今日灵感", "Today's idea", [0, 0])
+    assert {"line1SizeRatio", "line2FontFamily", "lineGap"} <= set(schemas) and "fontFamily" not in schemas
+
+
+@needs_bundler
+def test_a_bilingual_text_block_takes_the_lower_tier_from_the_english_line(tmp_path, monkeypatch):
+    """组合出的源码把 textEn 当下栏：两行不再靠 text 里的换行分开，所以合成时能按切片同时注入中文与译文。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+
+    async def run():
+        """Compose a bilingual block and read the generated host's lines and keyword hits."""
+        current = session(tmp_path)
+        tier, glow, fade = await stored(current)
+        request = two_tiers(tier, glow, fade).model_dump(mode="json", exclude_none=True)
+        request["text"] = {**request["text"], "text": "今日灵感\nToday's idea", "bilingual": True, "line_starts": [0, 0]}
+        composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
+        sprite = current.sprite_drafts[composed["draft_id"]]
+        assert sprite.text.bilingual is True
+        assert (sprite.default_parameters["text"], sprite.default_parameters["textEn"]) == ("今日灵感", "Today's idea")
+        # 下栏的英文来自 textEn，每行各自找关键词命中。
+        assert "props.textEn" in sprite.code and "__hits(line, props.keywords)" in sprite.code
+
+    asyncio.run(run())
+
+
+@needs_bundler
+def test_a_bilingual_text_block_needs_two_tiers_and_an_english_second_line(tmp_path, monkeypatch):
+    """双语字效的第二行必须是英文译文：仍是中文、或只给一栏时按字段拒绝，说明上栏中文下栏英文。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+
+    async def run():
+        """Refuse a Chinese second line and a single tier in a bilingual block."""
+        current = session(tmp_path)
+        tier, glow, fade = await stored(current)
+        request = two_tiers(tier, glow, fade).model_dump(mode="json", exclude_none=True)
+        chinese = {**request["text"], "bilingual": True, "text": "今日灵感\n明天也灵感"}
+        with pytest.raises(ToolFault) as refused:
+            await current.execute("sprite.compose", SpriteComposeInput.model_validate({**request, "text": chinese}), available())
+        assert refused.value.error.field == "/text/text" and "English translation" in refused.value.error.message
+        single = {key: value for key, value in request["text"].items() if key not in {"line_gap", "line_starts"}}
+        single.update({"bilingual": True, "text": "今日灵感", "tiers": [request["text"]["tiers"][0]]})
+        single["tiers"][0] = {key: value for key, value in single["tiers"][0].items() if key != "size_ratio"}
+        single["effects"][0]["target"] = "block"
+        with pytest.raises(ToolFault) as refused:
+            await current.execute("sprite.compose", SpriteComposeInput.model_validate({**request, "text": single,
+                "parameters": [{"name": "color", "title": "颜色", "targets": [{"instance_id": "upper", "parameter": "color"}]}, *request["parameters"][2:]]}), available())
+        assert refused.value.error.field == "/text/tiers" and "two tiers" in refused.value.error.message
+
+    asyncio.run(run())
+
+
+@needs_bundler
+def test_the_bilingual_switch_makes_a_new_work_bilingual(tmp_path, monkeypatch):
+    """新会话打开「双语字幕」时，普通双栏字效被拒（要 bilingual: true），双语字效本身照常组合。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+
+    async def run():
+        """Compose a plain two-tier block under the bilingual switch, then the bilingual one."""
+        current = session(tmp_path, {"original_request": {"description": "双语字幕", "bilingual": True}})
+        tier, glow, fade = await stored(current)
+        with pytest.raises(ToolFault) as refused:
+            await current.execute("sprite.compose", two_tiers(tier, glow, fade), available())
+        assert refused.value.error.field == "/text/bilingual" and "双语字幕" in refused.value.error.message
+        request = two_tiers(tier, glow, fade).model_dump(mode="json", exclude_none=True)
+        request["text"] = {**request["text"], "text": "今日灵感\nToday's idea", "bilingual": True, "line_starts": [0, 0]}
+        composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
+        assert current.sprite_drafts[composed["draft_id"]].text.bilingual is True
+
+    asyncio.run(run())
+
+
 @needs_bundler
 def test_a_new_works_text_block_keeps_only_the_requested_effects(tmp_path, monkeypatch):
     """回归（PR #283 评审）：宿主曾给没写入场或出场的新作品文字块自动补内置 fade 入场与出场，违反以用户需求为准。
