@@ -186,6 +186,22 @@ def test_capacity_samples_keep_nested_roles_and_legacy_keyword_ranges():
     assert config["layer"]["text"] == "旧示例文字"
 
 
+def test_capacity_samples_measure_one_chinese_line_for_a_bilingual_text():
+    """双语字效（双语字幕）：每条切片只放一行中文，英文由 `textEn` 注入，所以容量按单行中文测量，不按两栏分行。"""
+    sprite = browser_sprite("export default function Text() {return null;}", tiers=True)
+    schema = json.loads(sprite.config_schema_json)
+    config = json.loads(sprite.default_config_json)
+    schema["properties"]["textEn"] = {"type": "string", "minLength": 1, "maxLength": 40}
+    config["textEn"] = "Watch the news"
+    sprite.config_schema_json, sprite.default_config_json = json.dumps(schema), json.dumps(config)
+    lines, samples = capacity_samples(sprite, config, 90)
+    assert lines == 1
+    # 每个样本只有一行中文，字号与双语默认值不变。
+    assert all("\n" not in sample["text"] for sample in samples)
+    assert all(plain["textEn"] == "Watch the news" for sample in samples for plain in sample["values"])
+    assert [sample["chars"] for sample in samples] == list(range(1, 41))
+
+
 @pytest.fixture
 def measuring_runtime(tmp_path, monkeypatch):
     """共享渲染名额与 worker 的替身：断言字体及测量都在准入内，暴露请求和清理状态。"""
