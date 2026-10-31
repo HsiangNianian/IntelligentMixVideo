@@ -20,11 +20,12 @@ from .fonts import FontStore
 from .settings import ClientSettings, Settings
 from .harness import Harness
 from .overlay_service import FINISHED_RETENTION, OverlayRenders, prune_finished
-from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, MessageImage, TaskMessage
+from .context import OUTCOME_PREFIX
+from .models import DialogueOutput, EditTemplateRequest, GenerationJob, JobError, JobInput, MessageImage, TaskMessage
 from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure, Provider
 from .publication import revisable
-from .store import LEASE_RENEW, Conflict, Store, now
+from .store import LEASE_RENEW, Conflict, NotFound, Store, now
 from .tool_validation import ToolValidator, ValidationUnavailable
 from .tools.catalog_store import CatalogStore
 from .tools.contracts import CodeValidationReport, ComponentDefinition
@@ -49,7 +50,45 @@ REFERENCE_MEANINGS = {
     "work_original": "Attached to the request that created this work; it describes the original goal.",
     "message": "Attached by the user to the current instruction as a reference for this change.",
     "clarification_answer": "Attached by the user as their answer (or part of it) to clarifications[clarification].",
+    "earlier_message": "Attached by the user to an earlier instruction of this work; it shows what they meant then, not a new requirement.",
 }
+# How many images a free-form task gets in all: the work's original ones, this message's, then the most recent earlier ones.
+MAX_REFERENCE_IMAGES = 8
+
+
+def earlier_images(context, references: list[dict]) -> list[dict]:
+    """Images the user attached to earlier messages of this work, newest first, as the free-form path re-sends them.
+
+    They come from the earlier requests in the Outer window (the work's original images are always sent already), up to
+    `MAX_REFERENCE_IMAGES` in all; the asset records of a work keep them while the work exists.
+    """
+    seen = {entry["asset_id"] for entry in references}
+    found: list[dict] = []
+    for message in reversed(context.messages()):
+        if message.get("role") != "user" or not isinstance(message.get("content"), str):
+            continue
+        try:
+            request = json.loads(message["content"])
+        except ValueError:
+            continue
+        for entry in request.get("reference_images", []) if isinstance(request, dict) else []:
+            identifier = entry.get("asset_id") if isinstance(entry, dict) else None
+            if identifier and identifier not in seen and entry.get("source") in {"message", "clarification_answer"}:
+                seen.add(identifier)
+                found.append({"asset_id": identifier, "source": "earlier_message", "meaning": REFERENCE_MEANINGS["earlier_message"]})
+    return found[:max(0, MAX_REFERENCE_IMAGES - len(references))]
+
+
+def outcome_record(job: GenerationJob) -> dict:
+    """The Outer window entry recording how a free-form task ended: its reply, questions or failure."""
+    outcome = {"status": job.status}
+    if job.reply is not None:
+        outcome |= job.reply.model_dump(mode="json")
+    if job.questions:
+        outcome["questions"] = list(job.questions)
+    if job.error is not None:
+        outcome["error"] = job.error.message
+    return {"role": "user", "content": OUTCOME_PREFIX + json.dumps({"task_outcome": outcome}, ensure_ascii=False)}
 
 
 def reference_images(project, inputs: JobInput) -> list[dict]:
@@ -435,6 +474,16 @@ class Runtime:
                 self.active, self.active_id, self.active_done = None, None, None
                 done.set()
 
+    def _earlier_paths(self, entries: list[dict]) -> list[tuple[dict, Path]]:
+        """Local copies of earlier messages' images; one that can no longer be read is left out, since it is only context."""
+        found = []
+        for entry in entries:
+            try:
+                found.append((entry, self.store.asset_path(UUID(entry["asset_id"]))))
+            except (NotFound, FileNotFoundError, ValueError, KeyError) as exc:
+                logger.warning("Earlier reference image %s is unavailable: %s", entry.get("asset_id"), exc)
+        return found
+
     async def _execute(self, job_id: UUID) -> None:
         """Resolve intent, run a bounded harness and atomically publish only accepted evidence."""
         settings = self.client_configs.pop(job_id, self.settings)
@@ -446,6 +495,8 @@ class Runtime:
             on_round=lambda record: self.store.round(job_id, record),
         )
         context = self.store.conversation(job.project_id)
+        free = getattr(settings, "remotion_agent", "presets") == "autonomous"
+        model_task = False
         try:
             async with asyncio.timeout(settings.job_timeout_seconds):
                 job = self.store.job(job_id)
@@ -457,6 +508,10 @@ class Runtime:
                 images = await asyncio.to_thread(
                     lambda: [self.store.asset_path(UUID(entry["asset_id"])) for entry in references]
                 )
+                if free:
+                    earlier = await asyncio.to_thread(self._earlier_paths, earlier_images(context, references))
+                    references += [entry for entry, _path in earlier]
+                    images += [path for _entry, path in earlier]
                 base = (
                     self.store.version(job.base_version_id)
                     if job.base_version_id
@@ -485,6 +540,7 @@ class Runtime:
                         ),
                     }
                 # Manual edits are already durable job inputs; only model tasks enter its sliding window.
+                model_task = patch is None
                 if patch is None:
                     context.append(
                         [
@@ -513,6 +569,8 @@ class Runtime:
                     parameter_patch=patch,
                     context=context,
                     intent=intent,
+                    # A free-form edit can go back to any earlier version of the work.
+                    **({"versions": await asyncio.to_thread(self.store.versions, job.project_id)} if free and patch is None else {}),
                 )
                 if isinstance(result, DialogueOutput):
                     self.store.update(
@@ -527,7 +585,7 @@ class Runtime:
                     )
                     return
                 candidate, spec, report, attempt_dir = result
-                self.store.update(job_id, usage=budget.summary())
+                self.store.update(job_id, usage=budget.summary(), **({"reply": budget.reply} if budget.reply else {}))
                 budget.progress("preparing")
                 version = await asyncio.to_thread(self.store.publish, job_id, candidate, spec, report, attempt_dir)
                 if patch is None:
@@ -582,8 +640,10 @@ class Runtime:
         finally:
             # Candidates and renders are scratch; the audit log lives outside the job folder until it expires.
             shutil.rmtree(self.store.job_dir(job_id), ignore_errors=True)
-            self.store.save_conversation(job.project_id, context)
             final = self.store.job(job_id)
+            if free and model_task:
+                context.append([outcome_record(final)])
+            self.store.save_conversation(job.project_id, context)
             budget.record(
                 "run_finished",
                 status=final.status,

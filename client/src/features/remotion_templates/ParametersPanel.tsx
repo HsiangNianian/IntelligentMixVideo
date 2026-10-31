@@ -23,6 +23,7 @@ import {
   numericRules,
   schemaGroups,
   textSections,
+  effectSections,
   validValue,
   type Control,
   type EffectCard,
@@ -325,7 +326,7 @@ function ComposedParameters({version, values, disabled, onChange, onValidity}: {
   version: Version; values: Values; disabled: boolean;
   onChange: (key: string, value: JsonValue) => void; onValidity: (key: string, invalid: boolean) => void;
 }) {
-  const text = textSections(version);
+  const text = textSections(version) ?? effectSections(version);
   if (text) return <TextBlockParameters sections={text} title={(id) => instanceTitle(version, id)} values={values} disabled={disabled} onChange={onChange} onValidity={onValidity} />;
   const groups = schemaGroups(version.candidate.config_schema.properties ?? {});
   const sections = [["配置", groups.config], ["样式", groups.style]] as const;
@@ -391,7 +392,7 @@ function TextBlockParameters({sections, title, values, disabled, onChange, onVal
   };
   return <div className="space-y-5 py-3">
     <p className="text-xs text-muted-foreground">「文字」是文字本身的内容、字号、字体、排版与外观；「特效」可以逐个选择是否应用，并调整它的位置、时长与外观。云端模板按摆放调整字号、字体、字重、栏间距与逐栏字号比例、特效的开关、位置与时长以及关键词，其余在这里修改。保存只检查参数范围，立即生成新版本；布局修改请通过聊天描述。</p>
-    <fieldset className="space-y-3">
+    {(sections.text.length > 0 || sections.keyword.length > 0 || sections.instances.length > 0) && <fieldset className="space-y-3">
       <legend className="text-sm font-medium">文字</legend>
       <div className="grid gap-4 @min-[420px]:grid-cols-2">{sections.text.map(control)}</div>
       {sections.instances.filter(({id}) => values[id] !== undefined).map((instance) => instance.fields ? (
@@ -404,7 +405,7 @@ function TextBlockParameters({sections, title, values, disabled, onChange, onVal
         <h4 className="text-sm">关键词</h4>
         <div className="grid gap-4 @min-[420px]:grid-cols-2">{sections.keyword.map(control)}</div>
       </div>}
-    </fieldset>
+    </fieldset>}
     <fieldset className="space-y-3">
       <legend className="text-sm font-medium">特效</legend>
       {sections.effects.length ? sections.effects.map(effect) : <p className="text-xs text-muted-foreground">这个字效没有特效。</p>}

@@ -62,7 +62,7 @@ class ScalarValue(_message.Message):
     def __init__(self, string_value: _Optional[str] = ..., number_value: _Optional[float] = ..., bool_value: _Optional[bool] = ..., string_list_value: _Optional[_Union[StringList, _Mapping]] = ...) -> None: ...
 
 class SpriteParameter(_message.Message):
-    __slots__ = ("key", "label", "access", "default_value", "minimum", "maximum", "allowed_values", "format", "min_length", "max_length", "max_items")
+    __slots__ = ("key", "label", "access", "default_value", "minimum", "maximum", "allowed_values", "format", "min_length", "max_length", "max_items", "group")
     KEY_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
     ACCESS_FIELD_NUMBER: _ClassVar[int]
@@ -74,6 +74,7 @@ class SpriteParameter(_message.Message):
     MIN_LENGTH_FIELD_NUMBER: _ClassVar[int]
     MAX_LENGTH_FIELD_NUMBER: _ClassVar[int]
     MAX_ITEMS_FIELD_NUMBER: _ClassVar[int]
+    GROUP_FIELD_NUMBER: _ClassVar[int]
     key: str
     label: str
     access: OperatorAccess
@@ -85,7 +86,8 @@ class SpriteParameter(_message.Message):
     min_length: int
     max_length: int
     max_items: int
-    def __init__(self, key: _Optional[str] = ..., label: _Optional[str] = ..., access: _Optional[_Union[OperatorAccess, str]] = ..., default_value: _Optional[_Union[ScalarValue, _Mapping]] = ..., minimum: _Optional[float] = ..., maximum: _Optional[float] = ..., allowed_values: _Optional[_Iterable[_Union[ScalarValue, _Mapping]]] = ..., format: _Optional[_Union[SpriteParameterFormat, str]] = ..., min_length: _Optional[int] = ..., max_length: _Optional[int] = ..., max_items: _Optional[int] = ...) -> None: ...
+    group: str
+    def __init__(self, key: _Optional[str] = ..., label: _Optional[str] = ..., access: _Optional[_Union[OperatorAccess, str]] = ..., default_value: _Optional[_Union[ScalarValue, _Mapping]] = ..., minimum: _Optional[float] = ..., maximum: _Optional[float] = ..., allowed_values: _Optional[_Iterable[_Union[ScalarValue, _Mapping]]] = ..., format: _Optional[_Union[SpriteParameterFormat, str]] = ..., min_length: _Optional[int] = ..., max_length: _Optional[int] = ..., max_items: _Optional[int] = ..., group: _Optional[str] = ...) -> None: ...
 
 class SpriteBox(_message.Message):
     __slots__ = ("x", "y", "width", "height")

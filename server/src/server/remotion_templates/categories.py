@@ -344,9 +344,11 @@ def _properties(schema: dict) -> dict:
     return properties if isinstance(properties, dict) else {}
 
 
+# 自由组件样式参数的面板分组（字符串，同组参数在参数面板里成一张卡片）；和 title 一样只是说明，不约束取值。
+PARAMETER_GROUP = "x-imv-group"
 # 顶层参数允许的 Schema 关键字：发布时的边界抽样只认识这些约束，其他约束（如 multipleOf、exclusiveMaximum、
-# 非颜色 pattern）会让两端取值不合 Schema 而漏抽。title、description 与 default 只是说明。
-_LABELS = {"type", "title", "description", "default"}
+# 非颜色 pattern）会让两端取值不合 Schema 而漏抽。title、description、default 与面板分组只是说明。
+_LABELS = {"type", "title", "description", "default", PARAMETER_GROUP}
 _ALLOWED = {
     "number": _LABELS | {"minimum", "maximum", "enum"},
     "integer": _LABELS | {"minimum", "maximum", "enum"},

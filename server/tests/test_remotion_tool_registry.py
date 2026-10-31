@@ -85,7 +85,7 @@ def test_visibility_follows_implementation_and_dispatch_accepts_wire_names():
 def test_generation_tools_are_declared_on_the_registry():
     """The host's 'generation started' signal comes from registration, not a hardcoded set."""
     assert {item.name for item in registered_tools() if item.starts_generation} == {
-        "preset.create", "sprite.compose", "sprite.create",
+        "preset.create", "sprite.compose", "sprite.create", "workspace.write", "workspace.edit", "effect.save",
     }
 
 

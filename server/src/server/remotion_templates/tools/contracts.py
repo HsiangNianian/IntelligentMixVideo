@@ -492,7 +492,7 @@ class TextBlock(ContractModel):
 
 
 class SpriteDraft(ComponentDefinition):
-    """组合生成的源码、参数契约和实例快照；字效的文字组合另记文字块结构。"""
+    """组合生成的源码、参数契约和实例快照；字效的文字组合另记文字块结构，自由组件另记它的清单（effect.json）。"""
 
     description: Description
     composition: Composition
@@ -500,6 +500,8 @@ class SpriteDraft(ComponentDefinition):
     kind: Omittable[SpriteKindName]
     bindings: list[SpriteParameterBinding] = Field(default_factory=list)
     text: Omittable[TextBlock]
+    # 自由组件（Agent 写的 Effect.tsx）的清单：编辑时据此和唯一实例的源码还原工作区。
+    effect: Omittable[JsonObject]
 
 
 class SpriteRecord(SpriteDraft):
@@ -574,6 +576,178 @@ class SpriteCreateOutput(ContractModel):
     composition: Composition
     validation: CodeValidationReport
     review: Omittable[SpriteReview]
+
+
+# 自由组件字效：Agent 在工作区里写 Effect.tsx（默认导出组件，可从 "imv" 导入内容运行时）与 effect.json（清单），宿主据清单
+# 生成配置参数、打包成唯一实例的 Sprite 并检查行为；不再有 tiers/keyword/effect 角色组合。
+WorkspacePath = Literal["Effect.tsx", "effect.json"]
+
+
+class EffectFont(ContractModel):
+    """一行文字的字体库家族名、字重（400 或 700）与相对 font_size 的字号比例（多行才用，0.4～2）。"""
+
+    family: NonEmptyString
+    weight: Integer = 400
+    size_ratio: Omittable[FiniteNumber]
+
+
+class EffectText(ContractModel):
+    """字效的示例内容与配置默认值。sample 是预览用的示例文字：一行；双栏两行；双语为中英交替的两行或四行。
+    keywords 是示例里要当关键词显示的词，line_starts 是各行出现的帧（多行才用），keyword_look 表示组件给关键词画了自己的外观。"""
+
+    sample: NonEmptyString
+    keywords: list[NonEmptyString] = Field(default_factory=list, max_length=5)
+    line_starts: Omittable[list[NonNegativeInteger]]
+    bilingual: StrictBool = False
+    keyword_look: StrictBool = False
+    font_size: FiniteNumber = 96.0
+    fonts: list[EffectFont] = Field(min_length=1, max_length=4)
+    line_gap: Omittable[FiniteNumber]
+    arrangement: Literal["stack", "overlap"] = "stack"
+    translation_gap: Omittable[FiniteNumber]
+
+
+class EffectParameter(ContractModel):
+    """组件自己的一个样式参数：名称、JSON Schema、默认值、面板标题与分组（同组参数在面板里成一张卡片）。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False, populate_by_name=True)
+
+    name: ParameterName
+    definition: JsonObject = Field(alias="schema")
+    default: JsonValue
+    title: Omittable[Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]]
+    group: Omittable[Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=16)]]
+
+
+class EffectManifest(ContractModel):
+    """effect.json：效果分类、描述、内容区域（画布上的框，宿主的整体变换围绕它）、字效的示例内容与配置，以及样式参数。"""
+
+    kind: SpriteKindName
+    description: Description
+    layout: TextLayout
+    text: Omittable[EffectText]
+    params: list[EffectParameter] = Field(default_factory=list, max_length=32)
+
+
+# 只读的运行时源码：Agent 可以读 `imv` 的类型与实现，但不能改它。
+RuntimePath = Literal["imv-runtime.tsx"]
+
+
+class WorkspaceReadInput(ContractModel):
+    """读取工作区里的一个文件，或只读的内容运行时源码 imv-runtime.tsx；给出 version 时读该历史版本的文件（序号见快照的 versions）。"""
+
+    path: WorkspacePath | RuntimePath
+    version: Omittable[PositiveInteger]
+
+
+class WorkspaceFile(ContractModel):
+    """文件内容与行数。"""
+
+    path: WorkspacePath | RuntimePath
+    content: str
+    lines: NonNegativeInteger
+
+
+class WorkspaceWriteInput(ContractModel):
+    """整份写入一个文件。"""
+
+    path: WorkspacePath
+    content: Annotated[StrictStr, Field(min_length=1, max_length=200_000)]
+
+
+class WorkspaceEditInput(ContractModel):
+    """按顺序精确替换一个文件里的片段：每个 old_str 从文件当前内容原样复制，且恰好出现一次。"""
+
+    path: WorkspacePath
+    edits: list[CodeEdit] = Field(min_length=1, max_length=32)
+
+
+class WorkspaceWriteOutput(ContractModel):
+    """写入后的行数、相对写入前删去与新增的行数，以及宿主的说明（例如清单的自动修正）。"""
+
+    path: WorkspacePath
+    lines: NonNegativeInteger
+    lines_removed: NonNegativeInteger
+    lines_added: NonNegativeInteger
+    notes: list[str] = Field(default_factory=list)
+
+
+PreviewVariant = Literal["default", "long", "short", "long_duration"]
+
+
+class PreviewRenderInput(ContractModel):
+    """渲染工作区当前的效果：要看的帧（省略时宿主按画面变化挑选关键帧，并含首尾可见帧与中间帧）、内容变体（long 把文字填到 100 字，
+    short 按 1.5 秒、long_duration 按 120 秒的长度挂载）与要当关键词显示的词（省略时用清单的示例关键词）。"""
+
+    frames: Omittable[Annotated[list[NonNegativeInteger], Field(min_length=1, max_length=8)]]
+    variant: PreviewVariant = "default"
+    keywords: Omittable[Annotated[list[NonEmptyString], Field(max_length=5)]]
+
+
+class PreviewRenderOutput(ContractModel):
+    """这次挂载的长度、从运行中的代码量出的运动事实，与截到的帧（附在后续轮次的图片里，灰底不是内容）。"""
+
+    duration_frames: PositiveInteger
+    motion: list[str] = Field(default_factory=list)
+    frames: list[ReviewFrame]
+    keywords: Omittable[list[str]]
+    notes: list[str] = Field(default_factory=list)
+
+
+class EffectProblem(ContractModel):
+    """门禁发现的一个问题：哪项检查、说明与修复方向，能定位时附源码行号与该行内容。"""
+
+    check: NonEmptyString
+    message: str
+    line: Omittable[PositiveInteger]
+    excerpt: Omittable[str]
+
+
+class EffectCheckInput(ContractModel):
+    """检查工作区当前的效果，不保存。"""
+
+
+class EffectCheckOutput(ContractModel):
+    """门禁结论、问题清单与宿主的说明。"""
+
+    passed: StrictBool
+    problems: list[EffectProblem] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class EffectSaveInput(ContractModel):
+    """检查并保存工作区当前的效果为本任务的候选。"""
+
+
+class EffectSaveOutput(ContractModel):
+    """保存的候选、从运行中的代码量出的运动事实，与它的中间帧（附在后续轮次的图片里）。"""
+
+    sprite_id: SpriteId
+    created_at: Timestamp
+    composition: Composition
+    motion: list[str] = Field(default_factory=list)
+    review: SpriteReview
+    notes: list[str] = Field(default_factory=list)
+
+
+class ImageInspectInput(ContractModel):
+    """放大查看一张参考图（序号从 1 起）的局部：x、y、width、height 是 0～1 的比例，省略时看整张。"""
+
+    image: PositiveInteger
+    x: Annotated[FiniteNumber, Field(ge=0, le=1)] = 0.0
+    y: Annotated[FiniteNumber, Field(ge=0, le=1)] = 0.0
+    width: Annotated[FiniteNumber, Field(gt=0, le=1)] = 1.0
+    height: Annotated[FiniteNumber, Field(gt=0, le=1)] = 1.0
+
+
+class ImageInspectOutput(ContractModel):
+    """裁出的局部在后续轮次图片里的序号与像素尺寸，以及原图尺寸。"""
+
+    image: PositiveInteger
+    width: PositiveInteger
+    height: PositiveInteger
+    source_width: PositiveInteger
+    source_height: PositiveInteger
 
 
 
@@ -682,6 +856,8 @@ ToolName = Literal[
     "preset.search", "preset.create", "preset.modify",
     "validate.code", "validate.render", "sprite.compose", "sprite.create",
     "tools.inspect", "tools.plan_execute", "tools.report_step",
+    "workspace.read", "workspace.write", "workspace.edit", "preview.render", "validate.check", "effect.save",
+    "library.search", "image.inspect",
 ]
 
 

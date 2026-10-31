@@ -12,9 +12,13 @@
  */
 import { build } from "esbuild";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
+// The content runtime a free-form effect imports as "imv"; bundling inlines it into the Sprite.
+const RUNTIME = path.join(path.dirname(fileURLToPath(import.meta.url)), "imv-runtime.tsx");
 const block = input.text ?? null;
 const instances = block ? [...block.tiers, ...(block.keyword ? [block.keyword] : []), ...(block.effects ?? [])] : Array.isArray(input.instances) ? input.instances : [];
 // Instances of the same Preset share one bundled module, so repeated instances do not repeat its source.
@@ -234,6 +238,8 @@ const result = await build({
     name: "imv-preset-modules",
     setup(plugin) {
       plugin.onResolve({ filter: /^imv:preset\// }, (args) => ({ path: args.path, namespace: "imv-preset" }));
+      // A free-form effect imports the content runtime; it is inlined, so the Sprite still imports only React and Remotion.
+      plugin.onResolve({ filter: /^imv$/ }, () => ({ path: RUNTIME }));
       plugin.onResolve({filter: /.*/}, args => { if (["react", "react/jsx-runtime", "react/jsx-dev-runtime", "remotion"].includes(args.path)) return {path:args.path,external:true}; throw new Error("Unsupported module: " + args.path); });
       plugin.onLoad({ filter: /.*/, namespace: "imv-preset" }, (args) => {
         const index = Number(args.path.split("/").pop());

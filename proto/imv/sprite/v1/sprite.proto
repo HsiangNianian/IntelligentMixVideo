@@ -96,6 +96,9 @@ message SpriteParameter {
   optional uint32 max_length = 10;
   // 可选字符串列表的最大项数。
   optional uint32 max_items = 11;
+  // 自由组件样式参数的面板分组（Schema 的 x-imv-group，例如「入场·上浮」）；空串表示不分组。
+  // 模板编辑把同组参数放进一张卡片，并允许按摆放调整。
+  string group = 12;
 }
 
 // 画布上的矩形区域，单位为画布像素，原点在左上角。

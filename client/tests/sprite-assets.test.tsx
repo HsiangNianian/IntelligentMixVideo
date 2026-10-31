@@ -428,6 +428,20 @@ test("字效特效的开关、位置与时长在模板里按摆放调整", async
   expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.boolValue ?? item.numberValue]))).toEqual([[["effect1", false], ["effect1Seconds", 1.2]]]);
 });
 
+// 场景：自由组件的样式参数带分组（发布时的 group）：模板编辑按分组成卡片（以分组名为标题）并按这次摆放调整，不列入资产默认参数，随模板保存。
+test("自由组件按分组声明的样式参数在模板里成卡片并按摆放调整", async () => {
+  const grouped: MessageInitShape<typeof SpriteParameterSchema>[] = [
+    { key: "riseDistance", label: "上浮距离", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 0.6 } }, minimum: 0, maximum: 2, group: "入场·上浮" },
+  ];
+  const { inspector, saved } = await openTextClip({ text_target: "title" }, 1, grouped);
+  const card = within(inspector).getByRole("region", { name: "入场·上浮" });
+  expect(within(inspector).getByRole("heading", { name: "资产默认参数" }).closest("fieldset")!.textContent).not.toContain("上浮距离");
+  fireEvent.change(within(card).getByLabelText("上浮距离"), { target: { value: "1.5" } });
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.numberValue]))).toEqual([[["riseDistance", 1.5]]]);
+});
+
 // 场景：资产库按字效、滤镜、转场与视频特效分类，显示各类数量，默认打开第一个有资产的分类。
 test("AI 资产目录按三类分栏", async () => {
   sprites({ catalog: [textAsset(), summary("sprite-f", SpriteKind.FILTER_OVERLAY), summary("sprite-v"), summary("sprite-x", SpriteKind.TRANSITION_OVERLAY)] });

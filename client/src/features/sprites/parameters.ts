@@ -77,11 +77,11 @@ export function contentLines(asset: { lines?: number; bilingual?: boolean } | un
 }
 
 /**
- * 模板编辑里开放的资产参数：字效的排版参数、特效的开关、位置与时长以及关键词样式；颜色、特效与关键词效果的外观等属于资产本身，
- * 回字效工作区改出新版本。已有覆盖不受影响。
+ * 模板编辑里开放的资产参数：字效的排版参数、特效的开关、位置与时长以及关键词样式，以及自由组件按分组（`group`）声明的样式参数；
+ * 组合字效的颜色、特效与关键词效果的外观等属于资产本身，回字效工作区改出新版本。已有覆盖不受影响。
  */
-export function isInstanceParameter(kind: SpriteKind, key: string): boolean {
-  return kind === SpriteKind.TEXT && (TEXT_LAYOUT_PARAMETERS.includes(key) || TEMPLATE_KEYWORD_PARAMETERS.includes(key) || EFFECT_PARAMETER.test(key));
+export function isInstanceParameter(kind: SpriteKind, key: string, group = ""): boolean {
+  return !!group || (kind === SpriteKind.TEXT && (TEXT_LAYOUT_PARAMETERS.includes(key) || TEMPLATE_KEYWORD_PARAMETERS.includes(key) || EFFECT_PARAMETER.test(key)));
 }
 
 /** 画布像素换算为 0～100 的百分比（一位小数），与 IMS 文字位置同样的表示。 */
@@ -106,11 +106,12 @@ export function transformField(field: TransformField, kind: SpriteKind, width: n
   }[field] as ParameterField & { fallback: (box: ContentBox) => number };
 }
 
-/** 资产对外的一个参数：控件描述、是否可改与发布默认值。 */
+/** 资产对外的一个参数：控件描述、是否可改、发布默认值，以及自由组件样式参数的面板分组（空串表示不分组）。 */
 export interface AssetParameter {
   field: ParameterField;
   editable: boolean;
   defaultValue: ParameterValue;
+  group?: string;
 }
 
 /** 把发布时的参数声明转换为控件；内部参数与无法识别的值不展示。 */
@@ -130,15 +131,16 @@ export function assetParameter(parameter: SpriteParameter): AssetParameter | nul
     ...(parameter.maxItems !== undefined ? { maxItems: parameter.maxItems } : {}),
   };
   const editable = parameter.access === OperatorAccess.VISIBLE_EDITABLE;
+  const group = parameter.group ? { group: parameter.group } : {};
   switch (value.case) {
     case "stringListValue":
-      return { field: { ...base, kind: "keywords" }, editable, defaultValue: [...value.value.values] };
+      return { field: { ...base, kind: "keywords" }, editable, defaultValue: [...value.value.values], ...group };
     case "stringValue":
-      return { field: { ...base, kind: parameter.format === SpriteParameterFormat.COLOR ? "color" : "string" }, editable, defaultValue: value.value };
+      return { field: { ...base, kind: parameter.format === SpriteParameterFormat.COLOR ? "color" : "string" }, editable, defaultValue: value.value, ...group };
     case "boolValue":
-      return { field: { ...base, kind: "boolean" }, editable, defaultValue: value.value };
+      return { field: { ...base, kind: "boolean" }, editable, defaultValue: value.value, ...group };
     case "numberValue":
-      return { field: { ...base, kind: parameter.format === SpriteParameterFormat.INTEGER ? "integer" : "number" }, editable, defaultValue: value.value };
+      return { field: { ...base, kind: parameter.format === SpriteParameterFormat.INTEGER ? "integer" : "number" }, editable, defaultValue: value.value, ...group };
     default:
       return null;
   }

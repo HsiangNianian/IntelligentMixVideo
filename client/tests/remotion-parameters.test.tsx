@@ -209,6 +209,39 @@ test("文字组合的字效分为文字与特效两块，每个特效的开关�
   expect(changes).toEqual([["effect1", false], ["shine", { amount: 0.5 }], ["keywordEffect", false]]);
 });
 
+// 场景：自由组件版本（Agent 写的 Effect.tsx）没有文字块：宿主的配置与分组为「文字」的样式在「文字」里，其余样式按 Agent 声明的分组各成一张
+// 特效卡片，组里的开关是卡片的应用开关；关键词字效开关 keywordEffect 放进「关键词字效」那张卡片。
+test("自由组件的样式参数按 Agent 声明的分组成卡片", () => {
+  const version = composedVersion();
+  version.spec.sprite = { kind: "text", effect: { kind: "text", text: { keywords: ["灵感"] } } };
+  const color = { type: "string" as const, pattern: "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$" };
+  version.candidate.config_schema.properties = {
+    text: { type: "string", title: "文字", minLength: 1, maxLength: 100 },
+    fontSize: { type: "number", title: "字号", minimum: 24, maximum: 240 },
+    keywords: { type: "array", title: "关键词", items: { type: "string", maxLength: 12 }, maxItems: 20 },
+    keywordEffect: { type: "boolean", title: "关键词字效" },
+    color: { ...color, title: "文字颜色", "x-imv-group": "文字" },
+    riseOn: { type: "boolean", title: "启用", "x-imv-group": "入场·上浮" },
+    riseDistance: { type: "number", title: "上浮距离", minimum: 0, maximum: 2, "x-imv-group": "入场·上浮" },
+    keywordEffectColor: { ...color, title: "关键词颜色", "x-imv-group": "关键词字效" },
+    effect: { type: "object", properties: {} },
+  };
+  version.candidate.default_config = { text: "今日灵感", fontSize: 96, keywords: [], keywordEffect: true, color: "#FFFFFF", riseOn: true, riseDistance: 0.6, keywordEffectColor: "#FFD54A", effect: {} };
+  const changes: [string, JsonValue][] = [];
+  render(<ParametersPanel version={version} values={version.candidate.default_config} disabled={false} pending={false} dirty={false} saving={false}
+    onChange={(key, value) => changes.push([key, value])} onSave={() => {}} onDiscard={() => {}} />);
+  const text = screen.getByRole("group", { name: "文字" });
+  for (const label of ["文字", "字号", "文字颜色", "关键词"]) expect(within(text).getByLabelText(label)).toBeTruthy();
+  expect(within(text).queryByLabelText("上浮距离")).toBeNull();
+  const rise = within(screen.getByRole("group", { name: "特效" })).getByRole("region", { name: "入场·上浮" });
+  fireEvent.click(within(rise).getByRole("switch", { name: "应用：入场·上浮" }));
+  fireEvent.change(within(rise).getByLabelText("上浮距离"), { target: { value: "1" } });
+  const keyword = screen.getByRole("region", { name: "关键词字效" });
+  expect(within(keyword).getByLabelText("关键词颜色")).toBeTruthy();
+  fireEvent.click(within(keyword).getByRole("switch", { name: "应用：关键词字效" }));
+  expect(changes).toEqual([["riseOn", false], ["riseDistance", 1], ["keywordEffect", false]]);
+});
+
 // 场景：特效放在逐字位置（每个字依次显现，如打字机）时，位置显示中文名称（这里是「关键词逐字」），推迟开始的延迟和位置一样在这个特效的卡片里；
 // 双栏的排布（重叠）是「文字」里的排版参数，显示中文名称。
 test("特效的逐字位置、延迟与双栏的重叠排布显示中文名称", () => {
