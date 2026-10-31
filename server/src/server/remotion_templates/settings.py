@@ -2,6 +2,7 @@
 
 import shutil
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from pydantic_settings import SettingsConfigDict
@@ -98,6 +99,9 @@ class Settings(ClientSettings, CommonSettings):
     # Stop a run that keeps producing no new observation after bounded steering.
     enforce_no_progress: bool = True
     max_no_progress_turns: int = Field(default=6, ge=2, le=20)
+    # 字效 Agent 的产出形态：presets 组合角色 Preset（文字块）；autonomous 由 Agent 在工作区自由编写 Effect.tsx，宿主只提供内容
+    # 运行时、生成配置参数并检查行为。它只决定新作品与自由组件版本的修改，更早的组合版本仍按 Preset 组合修改。
+    remotion_agent: Literal["presets", "autonomous"] = "presets"
     # Execution batches and actual tool calls remain bounded even without model quotas.
     max_steps: int = Field(default=8, ge=1, le=32)
     max_tooluse: int = Field(default=10, ge=1, le=32)

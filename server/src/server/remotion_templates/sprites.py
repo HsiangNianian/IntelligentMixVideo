@@ -29,7 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
 from . import boundary, sprite_store
-from .categories import FONT_PARAMETERS, HEX_COLOR, LINE_STARTS_PROP, category_problems, line_count, operator_message
+from .categories import FONT_PARAMETERS, HEX_COLOR, LINE_STARTS_PROP, PARAMETER_GROUP, category_problems, line_count, operator_message
 from .fonts import open_font_schema
 from .publication import current_bundle
 from .models import TemplateVersion
@@ -137,6 +137,9 @@ def _parameter(key: str, definition: dict, default) -> pb.SpriteParameter | None
             setattr(parameter, field, lengths[bound])
     if kind == "array" and isinstance(definition.get("maxItems"), int):
         parameter.max_items = definition["maxItems"]
+    if isinstance(definition.get(PARAMETER_GROUP), str):
+        # A free-form effect's style parameter: templates show its group as one card and adjust it per placement.
+        parameter.group = definition[PARAMETER_GROUP][:16]
     if definition.get("pattern") == HEX_COLOR:
         parameter.format = pb.SPRITE_PARAMETER_FORMAT_COLOR
     elif kind == "integer":

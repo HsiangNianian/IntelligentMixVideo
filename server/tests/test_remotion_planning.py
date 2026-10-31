@@ -55,8 +55,8 @@ def test_rejected_references_report_the_accepted_forms(refs):
             goal="组合", steps=[step("first", ["user_intent"]), step("second", refs)]
         )
     assert (
-        "Inputs must reference user_intent, accepted_base, steps.<earlier_id>.outputs.sprite "
-        "or steps.<earlier_id>.outputs.presets"
+        "Inputs must reference user_intent, accepted_base, steps.<earlier_id>.outputs.sprite, "
+        "steps.<earlier_id>.outputs.presets or steps.<earlier_id>.outputs.effect"
         in str(failure.value)
     )
 

@@ -41,11 +41,13 @@ from .contracts import (
 )
 from ..categories import EFFECT_PARAMETER, EFFECT_TARGETS, FIXED_TITLES, GLYPH_TARGETS, agent_message, category_problems, parameter_problems
 from ..builtin_effects import BUILTINS
-from ..fonts import FontStore, open_font_schema
+from ..fonts import DEFAULT_FAMILY, FontStore, open_font_schema
 from .catalog_store import CatalogStore
 from .registry import ToolFault
 from .schema import merge_parameters, validate_component_contract, validate_parameters
 from .compose import TEXT_BLOCK_ID, compose_source, compose_text_source
+from .effect_tools import PREVIEW_RENDERS, EffectTools
+from .workspace import restore_files, starter_files
 
 
 # 四个搜索回执需共享 240 KB 会话交换，留出调用参数与消息封装的空间。
@@ -416,13 +418,21 @@ def _line_changes(old: str, new: str) -> tuple[int, int]:
     return removed, added
 
 
-class ToolSession:
-    """Keep renderer candidates task-local while PR76 Preset/Sprite records remain immutable."""
+class ToolSession(EffectTools):
+    """Keep renderer candidates task-local while PR76 Preset/Sprite records remain immutable.
+
+    A free-form task works on its workspace through `EffectTools`; the other tasks compose role Presets.
+    """
 
     def __init__(
-        self, harness, spec, base, budget, directory, images, on_stage, intent
+        self, harness, spec, base, budget, directory, images, on_stage, intent, *, free: bool = False, versions: list | None = None
     ):
-        """Bind host services without creating another model loop or search role."""
+        """Bind host services without creating another model loop or search role.
+
+        ``free`` gives the task a free-form effect workspace (`Effect.tsx` and `effect.json`): a starter for a new work,
+        or the accepted free-form version's files for an edit. Without it the task composes role Presets as before.
+        ``versions`` are the work's accepted versions, the free-form ones of which `workspace.read` can go back to.
+        """
         self.harness, self.budget = harness, budget
         self.spec = spec
         self.directory, self.images = directory, images
@@ -454,6 +464,19 @@ class ToolSession:
         # Frames of the latest saved Sprite the Executor looks at (path, frame, label), and how many reviews this task had.
         self.review_frames: list[tuple] = []
         self.review_rounds = 0
+        self.files = None
+        if free:
+            self.files = (restore_files(base_sprite, base.default_config) if base_sprite is not None and base_sprite.effect is not None
+                          else starter_files(self.kind, self.requested, (FontStore.active.families() if FontStore.active is not None else [DEFAULT_FAMILY])[0]))
+        self.versions = {item.number: (item.spec.sprite, item.candidate.default_config) for item in versions or []
+                         if item.spec.sprite is not None and item.spec.sprite.effect is not None}
+        self.observations: list[tuple] = []
+        # Whether the observations have yet to reach the Executor's window, and the accepted version's frames of an edit.
+        self.observations_fresh = False
+        self.base_frames: list[tuple] = []
+        self.base_motion: list[str] = []
+        self.pending_sheet = self.sheet_seen = self.saved_hash = self.checked_hash = None
+        self.renders_left = PREVIEW_RENDERS
         self.catalog_backend = "unset"
         self.operation = ""
         self.validator = None
@@ -467,17 +490,23 @@ class ToolSession:
 
     def snapshot(self) -> dict:
         """What Outer and Plan see on each turn: the current state and the accepted base without its source."""
+        if self.files is not None:
+            return self._workspace_snapshot()
         return {**self.turn_state(), "base": self._base_summary(False)}
 
     def task_facts(self) -> dict:
         """What stays the same for the whole task, handed to the Executor once at the start of its window: the accepted
         base with its Preset source, largest sources first omitted when they and the request would exceed the snapshot budget."""
+        if self.files is not None:
+            return self._workspace_facts()
         return _bounded_snapshot({"base": self._base_summary(True)}, _snapshot_bytes(self.intent)) if self.base is not None else {}
 
     def turn_state(self) -> dict:
         """Expose task-local observations as IDs and summaries; the Executor gets only this after its window, so the
         rest of the request stays cached. Saved Sprites and drafts are never repeated here: their handles are what the tools take.
         """
+        if self.files is not None:
+            return self._workspace_turn_state()
         return {
             "latest_sprite_id": self.latest_sprite_id,
             **({"target_duration_frames": self.target_frames} if self.target_frames else {}),
@@ -506,6 +535,33 @@ class ToolSession:
                 break
             kept.append((key, data))
         return dict(reversed(kept))
+
+    def _workspace_snapshot(self) -> dict:
+        """A free-form task's facts and its current state, for the layers that see the whole snapshot on each turn."""
+        return {**self._workspace_turn_state(), **self._workspace_facts()}
+
+    def _workspace_turn_state(self) -> dict:
+        """What changes from turn to turn in a free-form task."""
+        digest = self.workspace_hash()
+        return {
+            "workspace": {name: {"lines": len(content.splitlines())} for name, content in self.files.items()},
+            "checked": digest == self.checked_hash,
+            "latest_sprite_id": self.latest_sprite_id,
+            "saved_unchanged": self.latest_sprite_id is not None and digest == self.saved_hash,
+            "previews_left": self.renders_left,
+            "feedback": list(self.feedback),
+        }
+
+    def _workspace_facts(self) -> dict:
+        """What stays the same for the whole free-form task."""
+        sprite = self.spec.sprite if self.spec is not None else None
+        return {
+            # The newest versions an edit can go back to with workspace_read {version}.
+            **({"versions": [{"number": number, "description": self.versions[number][0].description[:200]} for number in sorted(self.versions)[-10:]]} if self.versions else {}),
+            **({"target_duration_frames": self.target_frames} if self.target_frames else {}),
+            **({"base": {"description": sprite.description, "kind": sprite.kind, "duration_frames": sprite.composition.duration_frames,
+                         **({"motion": self.base_motion} if self.base_motion else {})}} if sprite is not None else {}),
+        }
 
     def _base_summary(self, with_code: bool) -> dict | None:
         """Describe the accepted base as instances over base_* Preset drafts, each source listed once.
@@ -663,7 +719,7 @@ class ToolSession:
 
     async def validate_render(
         self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
-        capture=None, text_fit_parameters: dict[str, bool] | None = None,
+        capture=None, text_fit_parameters: dict[str, bool] | None = None, effect_contract: dict | None = None,
     ) -> RenderValidationReport:
         """Run the isolated component behavior runner and cache the exact report.
 
@@ -680,6 +736,7 @@ class ToolSession:
                 **({"transparency": True} if transparency else {}), **({"lengths": lengths} if lengths else {}),
                 **({"text_fit": True} if text_fit else {}), **({"capture": capture} if capture else {}),
                 **({"text_fit_parameters": text_fit_parameters} if text_fit and text_fit_parameters is not None else {}),
+                **({"effect_contract": effect_contract} if effect_contract is not None else {}),
             }
             report = await self.validator.validate_render(request, **options)
         except ValidationUnavailable as exc:

@@ -48,6 +48,10 @@ class AssistantMessage(Contract):
         return data
 
 
+# The Outer window entry the runtime adds when a free-form task ends, so later turns know what was built and how it ended.
+OUTCOME_PREFIX = "Host record (data): "
+
+
 class Conversation:
     """Keep eight complete exchanges within a UTF-8 budget, with no generated summaries."""
 
@@ -118,3 +122,8 @@ class StepWindow(Conversation):
 
     def _evict(self) -> None:
         """Keep every exchange: only the compaction in `AgentRun` shortens this window."""
+
+    def exceeds(self, size: int, images: int) -> bool:
+        """Whether the window has outgrown ``size`` bytes (images by path count little) or ``images`` images."""
+        count = sum(item.get("type") == "image_path" for message in self.messages() if isinstance(message.get("content"), list) for item in message["content"])
+        return count > images or len(self.serialize().encode()) > size

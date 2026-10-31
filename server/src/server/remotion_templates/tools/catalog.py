@@ -12,6 +12,19 @@ from ..planning import PlanAction, StepResult
 from .contracts import (
     CodeValidationInput,
     CodeValidationReport,
+    EffectCheckInput,
+    EffectCheckOutput,
+    EffectSaveInput,
+    EffectSaveOutput,
+    ImageInspectInput,
+    ImageInspectOutput,
+    PreviewRenderInput,
+    PreviewRenderOutput,
+    WorkspaceEditInput,
+    WorkspaceFile,
+    WorkspaceReadInput,
+    WorkspaceWriteInput,
+    WorkspaceWriteOutput,
     ImageCropInput,
     ImageInfo,
     ImageInfoInput,
@@ -280,6 +293,137 @@ async def validate_render(owner, request: RenderValidationInput) -> ToolResult[R
     """Run the four base checks and any supplied assertion scripts."""
     return await _deferred("validate.render")(owner, request)
 
+# Free-form effects: the Executor writes Effect.tsx and effect.json in its workspace; the host checks, previews and saves them.
+@tool(
+    "workspace.read",
+    constraints=["Reads Effect.tsx (the component) or effect.json (its manifest) as they stand in this task's workspace."],
+    side_effects=["task workspace read only"],
+    error_codes=["INVALID_ARGUMENT"],
+    examples=[{"input": {"path": "effect.json"}, "output": {"ok": True, "data": {"path": "effect.json", "content": "{}", "lines": 1}}}],
+)
+async def workspace_read(owner, request: WorkspaceReadInput) -> ToolResult[WorkspaceFile]:
+    """Read Effect.tsx or effect.json from the workspace."""
+    try:
+        return _success(owner.read_file(request))
+    except Exception as exc:
+        return _failure(exc, "INVALID_ARGUMENT")
+
+
+@tool(
+    "workspace.write",
+    constraints=["Replaces the whole file. effect.json must parse as the manifest, otherwise nothing is written and the error names the field."],
+    side_effects=["task workspace write"],
+    error_codes=["INVALID_ARGUMENT"],
+    starts_generation=True,
+    examples=[{"input": {"path": "Effect.tsx", "content": "export default function Effect() { return null; }"}, "output": {"ok": True, "data": {"path": "Effect.tsx", "lines": 1, "lines_removed": 20, "lines_added": 1, "notes": []}}}],
+)
+async def workspace_write(owner, request: WorkspaceWriteInput) -> ToolResult[WorkspaceWriteOutput]:
+    """Write a whole workspace file: Effect.tsx (a default-exported React component, importing only react, remotion and the content runtime "imv") or effect.json (the manifest)."""
+    try:
+        return _success(owner.write_file(request))
+    except Exception as exc:
+        return _failure(exc, "INVALID_ARGUMENT")
+
+
+@tool(
+    "workspace.edit",
+    constraints=["Each old_str is copied exactly from the file as the earlier edits left it and occurs there exactly once; otherwise nothing changes and the error names the edit."],
+    side_effects=["task workspace write"],
+    error_codes=["INVALID_ARGUMENT"],
+    starts_generation=True,
+    examples=[{"input": {"path": "Effect.tsx", "edits": [{"old_str": "opacity: 0.35", "new_str": "opacity: 0.5"}]}, "output": {"ok": False, "error": {"code": "INVALID_ARGUMENT", "message": "example", "field": "/edits/0/old_str"}}}],
+)
+async def workspace_edit(owner, request: WorkspaceEditInput) -> ToolResult[WorkspaceWriteOutput]:
+    """Change part of a workspace file with exact replacements [{old_str, new_str}], applied in order; prefer this to rewriting a file."""
+    try:
+        return _success(owner.edit_file(request))
+    except Exception as exc:
+        return _failure(exc, "INVALID_ARGUMENT")
+
+
+@tool(
+    "preview.render",
+    constraints=[
+        "Mounts the workspace as it stands in the isolated browser and captures frames, without the save checks; a component that throws or does not compile is reported.",
+        "The frames reach the next turn as a message of the conversation (on neutral #808080 gray, which is not content).",
+        "A task has a limited number of previews (previews_left in the snapshot).",
+    ],
+    side_effects=["isolated browser execution of the workspace"],
+    error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "COMPOSITION_FAILED", "VALIDATION_UNAVAILABLE", "RESOURCE_LIMIT_EXCEEDED"],
+    examples=[{"input": {"frames": [10, 75], "variant": "default"}, "output": {"ok": False, "error": {"code": "CODE_VALIDATION_FAILED", "message": "example"}}}],
+)
+async def preview_render(owner, request: PreviewRenderInput) -> ToolResult[PreviewRenderOutput]:
+    """Look at the effect when numbers cannot answer: motion lists what each line and keyword does, measured from your running code; the frames are for appearance. Render chosen frames (default: keyframes the host picks where the picture changes most, plus the first and last visible and the middle), optionally with 100-character text (long), at 1.5 s (short) or 120 s (long_duration), with sample keywords."""
+    try:
+        return _success(await owner.render_preview(request))
+    except Exception as exc:
+        return _failure(exc, "VALIDATION_UNAVAILABLE")
+
+
+@tool(
+    "validate.check",
+    constraints=["Runs every check effect.save runs on the workspace as it stands and lists the problems with their fixes; it saves nothing."],
+    side_effects=["isolated TypeScript service and browser execution of the workspace"],
+    error_codes=["VALIDATION_UNAVAILABLE"],
+    examples=[{"input": {}, "output": {"ok": True, "data": {"passed": False, "problems": [{"check": "text_fit", "message": "example"}], "notes": []}}}],
+)
+async def validate_check(owner, request: EffectCheckInput) -> ToolResult[EffectCheckOutput]:
+    """Check the workspace without saving: TypeScript, required parameters, a see-through canvas, 1.5 s and 120 s renders, 100-character text fit, and that the effect shows injected text and keywords, keeps its lines whole on the middle frame, shrinks with fontSize and uses every parameter."""
+    try:
+        return _success(await owner.check_effect(request))
+    except Exception as exc:
+        return _failure(exc, "VALIDATION_UNAVAILABLE")
+
+
+@tool(
+    "effect.save",
+    constraints=[
+        "Runs the checks of validate.check; a failure saves nothing and lists every problem.",
+        "A success saves the workspace as this task's latest candidate, which the host publishes when the plan finishes, and returns the measured motion and sends the middle frame to the next turn.",
+    ],
+    side_effects=["code validation, one browser mount with frame capture, task candidate record"],
+    error_codes=["CODE_VALIDATION_FAILED", "COMPOSITION_FAILED", "INVALID_ARGUMENT", "VALIDATION_UNAVAILABLE"],
+    starts_generation=True,
+    examples=[{"input": {}, "output": {"ok": False, "error": {"code": "CODE_VALIDATION_FAILED", "message": "example"}}}],
+)
+async def effect_save(owner, request: EffectSaveInput) -> ToolResult[EffectSaveOutput]:
+    """Check and save the workspace as this task's candidate. The reply's motion lists what each line and keyword does, measured from your running code: compare it with the request before reporting. The middle frame follows in the next turn, to check what cannot be measured (colours, fills, doubled text)."""
+    try:
+        return _success(await owner.save_effect(request))
+    except Exception as exc:
+        return _failure(exc, "VALIDATION_UNAVAILABLE")
+
+
+@tool(
+    "library.search",
+    constraints=["Read-only access to the code earlier works built (the Preset library), ranked as preset.search ranks it; give preset_id to read one record's full code. Reuse means copying what helps into Effect.tsx."],
+    side_effects=["read-only catalog listing"],
+    error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "PRESET_STORE_FAILED", "RESOURCE_LIMIT_EXCEEDED"],
+    examples=[{"input": {"query": "裂开 揭示"}, "output": {"ok": True, "data": {"presets": []}}}],
+)
+async def library_search(owner, request: PresetSearchInput) -> ToolResult[PresetSearchOutput]:
+    """Search code earlier works built, by Chinese words naming a look or motion (or read one by preset_id), to borrow techniques for Effect.tsx."""
+    try:
+        return _success(await asyncio.to_thread(owner.search_presets, request))
+    except Exception as exc:
+        return _failure(exc, "PRESET_STORE_FAILED")
+
+
+@tool(
+    "image.inspect",
+    constraints=["Crops a region of a reference image (fractions of its width and height) and enlarges it as the next observation image."],
+    side_effects=["local reference image read and PNG write"],
+    error_codes=["INVALID_ARGUMENT", "IMAGE_DECODE_FAILED"],
+    examples=[{"input": {"image": 1, "x": 0.1, "y": 0.6, "width": 0.8, "height": 0.2}, "output": {"ok": True, "data": {"image": 3, "width": 1024, "height": 256, "source_width": 1080, "source_height": 1920}}}],
+)
+async def image_inspect(owner, request: ImageInspectInput) -> ToolResult[ImageInspectOutput]:
+    """Zoom into part of a reference image (to read a stroke, a gradient or a keyword's colour); the enlarged region follows in the next turn."""
+    try:
+        return _success(await asyncio.to_thread(owner.inspect_image, request))
+    except Exception as exc:
+        return _failure(exc, "IMAGE_DECODE_FAILED")
+
+
 @dataclass(frozen=True)
 class HostTool:
     """Host-owned control exposed as a provider function; inspectable, never in the business registry."""
@@ -338,7 +482,8 @@ REPORT_TOOL = HostTool(
     description=(
         "Executor: report the current step as step_done, blocked or needs_input; call it alone. The host checks "
         "the step really produced its output (a sprite_create success in a step with the sprite module, a ready "
-        "Preset in a preset step) and then starts the next step or publishes the Sprite. needs_input routes a genuine, "
+        "Preset in a preset step; for a free-form effect an effect_save whose acceptance sheet you saw, or a passing "
+        "validate_check in a workspace step) and then starts the next step or publishes the Sprite. needs_input routes a genuine, "
         "blocking question to Outer, which asks the user and resumes the work; what the request leaves open is otherwise "
         "chosen sensibly and changed afterwards."
     ),

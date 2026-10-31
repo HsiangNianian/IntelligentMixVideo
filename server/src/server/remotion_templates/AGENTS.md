@@ -12,6 +12,7 @@
 | Preset 库与 `preset.search` 的返回限制 | README「Preset storage」 |
 | 工具目录、未实现的工具、参考图 | README「Tool catalog」 |
 | 文字组合、特效与逐字时序、关键词字效、双栏与关键词开关 | README「Text effects are composed from role Presets」 |
+| 自由组件字效（`IMV_REMOTION_AGENT=autonomous`）：工作区、`imv` 运行时、契约探针、观察图、多轮记录 | README「Free-form effects」 |
 | 字体库：预装、上传与归卡、沙箱字体、Agent 的字体枚举 | README「Font library」 |
 | 隔离环境、503 预检、macOS 无沙箱开发、即时保存的参数修订 | README「Font library」之后的几段 |
 | `sprite.create` 的透明度检查、`text_fit`、回看帧、多行字效 | README「Creating a Sprite」 |
@@ -83,6 +84,17 @@
 - `SpriteRenderInput` 已删除的 `effect_offset_frames`、`render_frame_count` 保留字段号，不能复用。
 - 宿主生成的 `still` 文字块只按内容区域核对排版：`text_fit` 经仅宿主可用的 `text_fit_parameters` 临时关掉 `cue` 包裹，入场、出场与持续特效仍参与测量，`cue` 另在停留期初态测量，藏起该栏即拒绝；各栏可独立时序，旧自带动画组件保持同进同出。该补丁不写入资产与渲染参数，真实运行、透明度、不同时长与回看保留原动画。运行通过不等于视觉正确，完成说明要引用回看帧核对要求。
 - 调整生成规则（如 `text` 的长度、提示词示例）不追溯已发布资产与任务快照，它们保留各自的封存 Schema；要更新资产需生成新版本。
+
+## 自由组件字效
+
+- `IMV_REMOTION_AGENT=autonomous` 时新作品与自由组件版本的修改走自由组件：Agent 写 `Effect.tsx` 与 `effect.json`，宿主只提供内容运行时 `imv`（`server/src/server/remotion/imv-runtime.tsx`，不含任何特效）、按清单生成配置参数并检查行为；更早的组合版本仍按 Preset 组合修改。不为某种效果往运行时、规则或门禁里加原语与配方；新增的通用能力也不能改变配置参数的名称与语义，否则模板、总线与合成要一起改。
+- 配置参数只经 `text_configuration` 生成（名称、Schema、标题与文字块一致），Agent 在 `params` 里写到配置名时由宿主去掉并说明，不拒绝；清单里宿主能安全修正的问题一律修正并写进回执的 `notes`，只有示例内容对不上任何形状或缺少用户打开的开关时才拒绝。
+- 门禁与组合路径共用透明度、长度、`text_fit` 与分类检查，另加 `effect_contract` 探针；探针只用于生成路径，手动调参与已发布版本不受它约束。预览不能缓存成发布用的验收报告。
+- 三层 ReAct 保留：各层系统提示在任务内不变、快照作为数据另发，Outer 只拿低细节图片；Plan 设计或恢复修改任务时也拿到基线的运动事实（`base.motion`）与中间帧（`accepted_version_images`，与 Executor 共用一次渲染）。
+- 运动判断以运行代码量出的事实为准（`motion_facts`，回执的 `motion`），图片只是兜底：`effect.save` 只附中间帧，用来看量不出的颜色、填充、裁切与重影；关键帧在 `preview.render` 按需给。不要把方向、顺序这类判断重新压回看图。
+- 缓存约束见上文「缓存命中靠前缀不变」；自由组件另外在任务内不换工具列表，观察图按路径进窗口只发一次。默认计划一步完成；Plan 加的步骤才新建窗口。保存过候选后不允许再提问（`needs_input`、`ask` 被拒绝），对歧义的理解与可选方向写进最后一步汇报的 `choices`、`suggestions`，作为给用户的回复。
+- 采纳的自由组件由 `CatalogStore.solidify` 整份存成没有角色的 Preset（同样的画法只存一次），供之后的作品经 `library.search` 读取借用；它不是组合单元。
+- 多轮：任务结束时 Outer 窗口追加结果记录（`context.OUTCOME_PREFIX`），之后各轮的参考图继续发送（总数上限 `runtime.MAX_REFERENCE_IMAGES`）；修改任务第一步先附基线现在的验收联系表，不占预览次数。
 
 ## Actor 与 Judge 评审
 

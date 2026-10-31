@@ -7,7 +7,11 @@ from pydantic import Field, model_validator
 from .models import Contract, Text
 from .provider import ExecutionFailure
 
-Module = Literal["tools", "image", "preset", "validate", "sprite"]
+# 工具模块：前五个用于 Preset 组合；workspace、preview、effect 与 library 用于自由组件（validate 与 image 两者共用）。
+Module = Literal["tools", "image", "preset", "validate", "sprite", "workspace", "preview", "effect", "library"]
+# 自由组件的工具模块：整个任务都开放同一份工具（工具 Schema 在请求前缀里，换一份就让缓存失效）；步骤的 tool_modules 只决定完成
+# 条件：带 effect 的步骤要保存候选并看过联系表，只带工作区的步骤要当前文件通过检查。
+FREE_TOOL_MODULES = ("workspace", "preview", "validate", "library", "image", "effect")
 
 
 class Step(Contract):
@@ -21,18 +25,20 @@ class Step(Contract):
         description=(
             "Accepted references only: user_intent, accepted_base, "
             "steps.<earlier_step_id>.outputs.sprite for the Sprite an earlier step with the sprite module saves, or "
-            "steps.<earlier_step_id>.outputs.presets for the Presets an earlier step with the preset module readies."
+            "steps.<earlier_step_id>.outputs.presets for the Presets an earlier step with the preset module readies, or "
+            "steps.<earlier_step_id>.outputs.effect for the free-form effect an earlier step with the workspace module built."
         ),
     )
-    tool_modules: list[Module] = Field(min_length=1, max_length=5)
+    tool_modules: list[Module] = Field(min_length=1, max_length=8)
     done_when: str = Field(min_length=1, max_length=2000)
 
 
 # Each step output is produced by exactly one tool module; the host records it from tool receipts.
-OUTPUT_MODULES = {"sprite": "sprite", "presets": "preset"}
+# A free-form step with the workspace module hands on the effect it built as its summary; the files stay in the workspace.
+OUTPUT_MODULES = {"sprite": "sprite", "presets": "preset", "effect": "workspace"}
 REFERENCE_FORMS = (
-    "Inputs must reference user_intent, accepted_base, steps.<earlier_id>.outputs.sprite "
-    "or steps.<earlier_id>.outputs.presets"
+    "Inputs must reference user_intent, accepted_base, steps.<earlier_id>.outputs.sprite, "
+    "steps.<earlier_id>.outputs.presets or steps.<earlier_id>.outputs.effect"
 )
 
 
@@ -72,6 +78,31 @@ class Plan(PlanDraft):
                     )
             seen[step.id] = step
         return self
+
+
+def free_plan(edit: bool) -> Plan:
+    """The host's standard plan for a free-form effect: one step, so the whole task extends one append-only Executor window and
+    the provider's prefix cache keeps hitting. The Plan model is only needed for complex work or recovery.
+
+    A new work turns the starter into the effect; an edit changes only what the request asks of the accepted version's files.
+    Either saves with `effect.save` and checks the saved candidate's measured motion and middle frame against the request.
+    """
+    finish = ("Save it with effect_save, compare the motion in its reply with the request and look at its middle frame (attached to the next turn) "
+              "for what cannot be measured. Fix what is clearly missing or wrong and save again; small differences from a reference are fine.")
+    done = ("The latest effect_save succeeded, its motion and middle frame were checked and the files are unchanged since; report with summary, "
+            "choices (how you read anything ambiguous) and suggestions (other directions the user may want).")
+    if edit:
+        return Plan(goal="Change the accepted effect as the user asks and save it.", steps=[Step(
+            id="edit",
+            goal="Change only what the request asks of the accepted version: edit the lines of Effect.tsx and effect.json involved with workspace_edit and keep everything else as it is. " + finish,
+            input_refs=["user_intent", "accepted_base"], tool_modules=[*FREE_TOOL_MODULES], done_when=done,
+        )])
+    return Plan(goal="Build and save the effect the user asked for.", steps=[Step(
+        id="build",
+        goal=("Turn the starter in the workspace into the requested effect: describe each subject's look, starting state, motion and final state "
+              "from the request and reference images, then write Effect.tsx and effect.json. " + finish),
+        input_refs=["user_intent"], tool_modules=[*FREE_TOOL_MODULES], done_when=done,
+    )])
 
 
 def default_plan(edit: bool, base_drafts: bool | None = None) -> Plan:
@@ -170,6 +201,14 @@ class StepResult(Contract):
     questions: list[str] = Field(
         default_factory=list, max_length=5,
         description="needs_input only: the questions Outer relays to the user.",
+    )
+    choices: list[str] = Field(
+        default_factory=list, max_length=5,
+        description="How you read anything the request left open or ambiguous (for example 「把双栏理解为上下两行」); shown to the user with the result.",
+    )
+    suggestions: list[str] = Field(
+        default_factory=list, max_length=5,
+        description="Short directions the user may want next (for example 「下栏改为逐字出现」); shown to the user as options.",
     )
 
     @model_validator(mode="after")
@@ -351,6 +390,6 @@ class ExecutionState:
 
     @staticmethod
     def _output(completed: dict, ref: str):
-        """Resolve steps.<id>.outputs.<sprite|presets> to what that step recorded, or None."""
+        """Resolve steps.<id>.outputs.<sprite|presets|effect> to what that step recorded, or None."""
         step_id, output = ref.split(".")[1], ref.split(".")[3]
-        return completed.get(step_id, {}).get("sprite_id" if output == "sprite" else "presets") or None
+        return completed.get(step_id, {}).get({"sprite": "sprite_id", "presets": "presets", "effect": "summary"}[output]) or None

@@ -239,10 +239,18 @@ class PresetRecord(PresetDraft):
 | sprite.compose | SpriteComposeInput | SpriteComposeOutput | v2 选定分类并绑定顶层参数，读取引用，生成组合定义与代码并在任务内保存草稿；不保存 sprite |
 | sprite.create | SpriteCreateInput | SpriteCreateOutput | 代码校验、一次浏览器挂载的透明度检查与回看帧并保存 sprite |
 | tools.inspect | ToolInspectInput | ToolDescriptor | 读取工具契约 |
+| workspace.read | WorkspaceReadInput | WorkspaceFile | 读取自由组件工作区的一个文件 |
+| workspace.write | WorkspaceWriteInput | WorkspaceWriteOutput | 整份写入工作区文件；清单须能解析 |
+| workspace.edit | WorkspaceEditInput | WorkspaceWriteOutput | 按顺序精确替换工作区文件的片段 |
+| preview.render | PreviewRenderInput | PreviewRenderOutput | 隔离浏览器渲染工作区并截帧，附为观察图；不保存 |
+| validate.check | EffectCheckInput | EffectCheckOutput | 对工作区运行保存的全部检查；不保存 |
+| effect.save | EffectSaveInput | EffectSaveOutput | 检查并保存为本任务候选，回执带量出的运动事实，附中间帧 |
+| library.search | PresetSearchInput | PresetSearchOutput | 只读检索以往作品的代码（Preset 库） |
+| image.inspect | ImageInspectInput | ImageInspectOutput | 裁切放大参考图局部，附为观察图 |
 | tools.plan_execute（宿主控制） | PlanAction | JsonObject | 回答、澄清、委派，或调整任务内的计划与执行状态 |
 | tools.report_step（宿主控制） | StepResult | JsonObject | 结束当前步骤；宿主核对步骤产出后进入下一步或发布 |
 
-目录包含 11 个业务工具和 2 个宿主控制入口。计划控制由宿主处理，不进入业务工具注册器；检查契约不会授予调用权限。没有 tools.find、自动写代码工具或预览发布工具。后面的函数签名使用下划线作为文档中的语言标识符，实际工具名称以本表的点号形式为准。
+目录包含 19 个业务工具和 2 个宿主控制入口：前 11 个用于 Preset 组合，workspace、preview、validate.check、effect、library 与 image.inspect 用于自由组件（§13）。计划控制由宿主处理，不进入业务工具注册器；检查契约不会授予调用权限。没有 tools.find、自动写代码工具或预览发布工具。后面的函数签名使用下划线作为文档中的语言标识符，实际工具名称以本表的点号形式为准。
 
 ## 5. 图片工具
 
@@ -805,6 +813,8 @@ class SpriteDraft(ComponentDefinition):
     kind: Omittable[SpriteKindName]
     bindings: list[SpriteParameterBinding] = Field(default_factory=list)
     text: Omittable[TextBlock]
+    # 自由组件（Agent 写的 Effect.tsx）的清单：编辑时据此和唯一实例的源码还原工作区。
+    effect: Omittable[JsonObject]
 
 
 class SpriteRecord(SpriteDraft):
@@ -1375,6 +1385,8 @@ ToolName = Literal[
     "preset.search", "preset.create", "preset.modify",
     "validate.code", "validate.render", "sprite.compose", "sprite.create",
     "tools.inspect", "tools.plan_execute", "tools.report_step",
+    "workspace.read", "workspace.write", "workspace.edit", "preview.render", "validate.check", "effect.save",
+    "library.search", "image.inspect",
 ]
 
 
@@ -1454,7 +1466,7 @@ Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布�
 交回 Outer。Executor 只能检查其契约，不能执行计划控制。
 
 `tools.report_step` / `tools_report_step` 只供 Executor 调用，输入为
-[StepResult](../server/src/server/remotion_templates/planning.py)（`status`、`summary`、`questions`；`needs_input` 必须带至少一个问题）。
+[StepResult](../server/src/server/remotion_templates/planning.py)（`status`、`summary`、`questions`；`needs_input` 必须带至少一个问题；`choices` 与 `suggestions` 是自由组件路径给用户看的理解与可选方向）。
 步骤产出由宿主从工具回执登记：带 sprite 模块的步骤须在本步 `sprite_create` 成功，preset 步骤须至少准备好一个预设
 （或编辑任务已有基线草稿），否则 `step_done` 被拒绝并说明下一步应调用的工具；通过后宿主推进下一步，最后一步完成即发布最新 Sprite。
 批次用尽时，若本批有新观察，宿主自动继续当前步骤。读取描述符不会修改计划，也不会发布 Sprite。
@@ -1532,3 +1544,238 @@ Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布�
 新增代码、外部资源读取和自定义测试需要在实施方的受控执行环境运行；工具错误应提供业务可用诊断，不暴露凭据。本文不设计执行沙箱实现、访问控制系统或额外审批流程。
 
 本期不扩展图片上传工具、preset 删除或覆盖更新、sprite 搜索或修改、工具 find、独立模型角色、任务状态机、SSE、预览发布、旧数据迁移，也不将现有 Actor/Judge/Harness 的实现视为新工具已经完成。
+
+## 13. 自由组件工具（`IMV_REMOTION_AGENT=autonomous`）
+
+设置为 `autonomous` 时，新作品与自由组件版本的修改不再组合角色
+Preset：Executor 在任务工作区里写 `Effect.tsx`（默认导出组件，可从 `"imv"` 导入宿主内容运行时，见
+[imv-runtime.tsx](../server/src/server/remotion/imv-runtime.tsx)）与 `effect.json`（清单 `EffectManifest`）。宿主按清单的 `text`
+用与文字块相同的 `text_configuration` 生成固定名称的配置参数，与清单的样式参数合并成唯一实例 `effect` 的顶层参数，打包时内联
+运行时，所以保存的 Sprite 仍只导入 React 与 Remotion，模板、总线与合成照旧使用。三层 ReAct 保留：宿主默认计划只有一步（新作品
+`build`，修改 `edit`），最新一次保存的结果（运动事实与中间帧）看过且文件未再改动才完成；Plan 设计的步骤只带工作区模块时，以检查通过为完成。任务内工具
+列表不变；`input_refs` 另接受 `steps.<id>.outputs.effect`（工作区步骤的汇报摘要）。
+
+- 清单能安全修正的问题（字体库外的字体、字重、字号与比例越界、行起点、缺上下界或颜色 pattern 的样式参数、示例关键词、占用配置名）
+  由宿主修正并在回执 `notes` 里说明；示例文字对不上任何形状、缺少用户打开的双栏或双语开关时才以 `INVALID_ARGUMENT` 拒绝并指出字段。
+- `validate.check` 与 `effect.save` 共用门禁：组件的源码策略与 TypeScript、分类必备参数，再在隔离浏览器里检查透明度、1.5 秒与
+  120 秒长度、100 字排版与 `effect_contract` 契约探针（注入别的文字须照常显示、关键词命中须应用六项关键词样式、预览中间帧须完整显示
+  每一行、调低 `fontSize` 须让文字变小、每个样式参数取两端须改变画面）。检查不通过是 `passed: false` 的结果；保存不通过以
+  `CODE_VALIDATION_FAILED` 拒绝并列出问题。
+- `workspace.read` 给出 `version` 时读该历史自由组件版本的文件（序号见快照的 `versions`，内容含那一版用户调过的参数），写回工作区即可从那一版继续改。
+- 预览、保存与看图得到的图片是观察图，作为一条消息进入 Executor 的窗口，只发一次；修改任务开始时宿主先测量并渲染一次基线，Plan 与 Executor 共用它的运动事实（`base.motion`）与中间帧。
+- `effect.save` 与 `preview.render` 的回执带 `motion`：运行代码量出的每行、每个关键词的运动，用文字说明（相对中间帧的静止位置）。方向与顺序以它为准；图片是兜底，`effect.save` 只附中间帧，`preview.render` 默认给关键帧。
+  预览每个任务最多 12 次，结果不缓存为发布用的验收报告。
+- 自由组件样式参数的 Schema 可带 `x-imv-group`（面板分组），发布时写进 `SpriteParameter.group`，模板编辑按组成卡片并按摆放调整。
+
+```python
+# 自由组件字效：Agent 在工作区里写 Effect.tsx（默认导出组件，可从 "imv" 导入内容运行时）与 effect.json（清单），宿主据清单
+# 生成配置参数、打包成唯一实例的 Sprite 并检查行为；不再有 tiers/keyword/effect 角色组合。
+WorkspacePath = Literal["Effect.tsx", "effect.json"]
+
+
+class EffectFont(ContractModel):
+    """一行文字的字体库家族名、字重（400 或 700）与相对 font_size 的字号比例（多行才用，0.4～2）。"""
+
+    family: NonEmptyString
+    weight: Integer = 400
+    size_ratio: Omittable[FiniteNumber]
+
+
+class EffectText(ContractModel):
+    """字效的示例内容与配置默认值。sample 是预览用的示例文字：一行；双栏两行；双语为中英交替的两行或四行。
+    keywords 是示例里要当关键词显示的词，line_starts 是各行出现的帧（多行才用），keyword_look 表示组件给关键词画了自己的外观。"""
+
+    sample: NonEmptyString
+    keywords: list[NonEmptyString] = Field(default_factory=list, max_length=5)
+    line_starts: Omittable[list[NonNegativeInteger]]
+    bilingual: StrictBool = False
+    keyword_look: StrictBool = False
+    font_size: FiniteNumber = 96.0
+    fonts: list[EffectFont] = Field(min_length=1, max_length=4)
+    line_gap: Omittable[FiniteNumber]
+    arrangement: Literal["stack", "overlap"] = "stack"
+    translation_gap: Omittable[FiniteNumber]
+
+
+class EffectParameter(ContractModel):
+    """组件自己的一个样式参数：名称、JSON Schema、默认值、面板标题与分组（同组参数在面板里成一张卡片）。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False, populate_by_name=True)
+
+    name: ParameterName
+    definition: JsonObject = Field(alias="schema")
+    default: JsonValue
+    title: Omittable[Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]]
+    group: Omittable[Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=16)]]
+
+
+class EffectManifest(ContractModel):
+    """effect.json：效果分类、描述、内容区域（画布上的框，宿主的整体变换围绕它）、字效的示例内容与配置，以及样式参数。"""
+
+    kind: SpriteKindName
+    description: Description
+    layout: TextLayout
+    text: Omittable[EffectText]
+    params: list[EffectParameter] = Field(default_factory=list, max_length=32)
+
+
+# 只读的运行时源码：Agent 可以读 `imv` 的类型与实现，但不能改它。
+RuntimePath = Literal["imv-runtime.tsx"]
+
+
+class WorkspaceReadInput(ContractModel):
+    """读取工作区里的一个文件，或只读的内容运行时源码 imv-runtime.tsx；给出 version 时读该历史版本的文件（序号见快照的 versions）。"""
+
+    path: WorkspacePath | RuntimePath
+    version: Omittable[PositiveInteger]
+
+
+class WorkspaceFile(ContractModel):
+    """文件内容与行数。"""
+
+    path: WorkspacePath | RuntimePath
+    content: str
+    lines: NonNegativeInteger
+
+
+class WorkspaceWriteInput(ContractModel):
+    """整份写入一个文件。"""
+
+    path: WorkspacePath
+    content: Annotated[StrictStr, Field(min_length=1, max_length=200_000)]
+
+
+class WorkspaceEditInput(ContractModel):
+    """按顺序精确替换一个文件里的片段：每个 old_str 从文件当前内容原样复制，且恰好出现一次。"""
+
+    path: WorkspacePath
+    edits: list[CodeEdit] = Field(min_length=1, max_length=32)
+
+
+class WorkspaceWriteOutput(ContractModel):
+    """写入后的行数、相对写入前删去与新增的行数，以及宿主的说明（例如清单的自动修正）。"""
+
+    path: WorkspacePath
+    lines: NonNegativeInteger
+    lines_removed: NonNegativeInteger
+    lines_added: NonNegativeInteger
+    notes: list[str] = Field(default_factory=list)
+
+
+PreviewVariant = Literal["default", "long", "short", "long_duration"]
+
+
+class PreviewRenderInput(ContractModel):
+    """渲染工作区当前的效果：要看的帧（省略时宿主按画面变化挑选关键帧，并含首尾可见帧与中间帧）、内容变体（long 把文字填到 100 字，
+    short 按 1.5 秒、long_duration 按 120 秒的长度挂载）与要当关键词显示的词（省略时用清单的示例关键词）。"""
+
+    frames: Omittable[Annotated[list[NonNegativeInteger], Field(min_length=1, max_length=8)]]
+    variant: PreviewVariant = "default"
+    keywords: Omittable[Annotated[list[NonEmptyString], Field(max_length=5)]]
+
+
+class PreviewRenderOutput(ContractModel):
+    """这次挂载的长度、从运行中的代码量出的运动事实，与截到的帧（附在后续轮次的图片里，灰底不是内容）。"""
+
+    duration_frames: PositiveInteger
+    motion: list[str] = Field(default_factory=list)
+    frames: list[ReviewFrame]
+    keywords: Omittable[list[str]]
+    notes: list[str] = Field(default_factory=list)
+
+
+class EffectProblem(ContractModel):
+    """门禁发现的一个问题：哪项检查、说明与修复方向，能定位时附源码行号与该行内容。"""
+
+    check: NonEmptyString
+    message: str
+    line: Omittable[PositiveInteger]
+    excerpt: Omittable[str]
+
+
+class EffectCheckInput(ContractModel):
+    """检查工作区当前的效果，不保存。"""
+
+
+class EffectCheckOutput(ContractModel):
+    """门禁结论、问题清单与宿主的说明。"""
+
+    passed: StrictBool
+    problems: list[EffectProblem] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class EffectSaveInput(ContractModel):
+    """检查并保存工作区当前的效果为本任务的候选。"""
+
+
+class EffectSaveOutput(ContractModel):
+    """保存的候选、从运行中的代码量出的运动事实，与它的中间帧（附在后续轮次的图片里）。"""
+
+    sprite_id: SpriteId
+    created_at: Timestamp
+    composition: Composition
+    motion: list[str] = Field(default_factory=list)
+    review: SpriteReview
+    notes: list[str] = Field(default_factory=list)
+
+
+class ImageInspectInput(ContractModel):
+    """放大查看一张参考图（序号从 1 起）的局部：x、y、width、height 是 0～1 的比例，省略时看整张。"""
+
+    image: PositiveInteger
+    x: Annotated[FiniteNumber, Field(ge=0, le=1)] = 0.0
+    y: Annotated[FiniteNumber, Field(ge=0, le=1)] = 0.0
+    width: Annotated[FiniteNumber, Field(gt=0, le=1)] = 1.0
+    height: Annotated[FiniteNumber, Field(gt=0, le=1)] = 1.0
+
+
+class ImageInspectOutput(ContractModel):
+    """裁出的局部在后续轮次图片里的序号与像素尺寸，以及原图尺寸。"""
+
+    image: PositiveInteger
+    width: PositiveInteger
+    height: PositiveInteger
+    source_width: PositiveInteger
+    source_height: PositiveInteger
+
+
+async def workspace_read(request: WorkspaceReadInput) -> ToolResult[WorkspaceFile]:
+    """读取工作区文件；函数体由实施方提供。"""
+    ...
+
+
+async def workspace_write(request: WorkspaceWriteInput) -> ToolResult[WorkspaceWriteOutput]:
+    """整份写入工作区文件；函数体由实施方提供。"""
+    ...
+
+
+async def workspace_edit(request: WorkspaceEditInput) -> ToolResult[WorkspaceWriteOutput]:
+    """精确替换工作区文件的片段；函数体由实施方提供。"""
+    ...
+
+
+async def preview_render(request: PreviewRenderInput) -> ToolResult[PreviewRenderOutput]:
+    """渲染工作区并截帧；函数体由实施方提供。"""
+    ...
+
+
+async def validate_check(request: EffectCheckInput) -> ToolResult[EffectCheckOutput]:
+    """检查工作区而不保存；函数体由实施方提供。"""
+    ...
+
+
+async def effect_save(request: EffectSaveInput) -> ToolResult[EffectSaveOutput]:
+    """检查并保存为本任务候选；函数体由实施方提供。"""
+    ...
+
+
+async def library_search(request: PresetSearchInput) -> ToolResult[PresetSearchOutput]:
+    """只读检索以往作品的代码；函数体由实施方提供。"""
+    ...
+
+
+async def image_inspect(request: ImageInspectInput) -> ToolResult[ImageInspectOutput]:
+    """裁切放大参考图局部；函数体由实施方提供。"""
+    ...
+```
