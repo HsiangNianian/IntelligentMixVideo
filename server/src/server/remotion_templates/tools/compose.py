@@ -110,7 +110,7 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
     `tierLayout` (stacked, or overlapping, which needs no gap and defaults it to 0), `lineGap` and `lineStartFrames`. A
     bilingual text (双语字幕) puts the Chinese line in `text` and the English translation of the same sentence in
     `textEn`, the lower tier's content. Both expose `text`, `fontSize` and the seven keyword parameters (off by
-    default), a block with a keyword Preset also its `keywordEffect` switch (on by default), and effect k (from 1, in
+    default), a block with a keyword Preset also its `keywordEffect` switch (on unless `keyword_enabled` is false), and effect k (from 1, in
     the block's order) its switch `effect{k}`, its position `effect{k}Target`, unless it loops its length
     `effect{k}Seconds`, entering or at the lower tier's cue its start delay `effect{k}Delay`, and placed at a glyph
     position (entering, exiting or at the cue) how far its glyphs are staggered `effect{k}Stagger`, titled with the
@@ -144,7 +144,7 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
         entries.append((TRANSLATION_GAP.name, TRANSLATION_GAP.example, block.get("translation_gap", 8)))
     entries += [(rule.name, rule.example, rule.off) for rule in TEXT_KEYWORDS]
     if block.get("keyword") is not None:
-        entries.append((KEYWORD_EFFECT_PROP, {"type": "boolean"}, True))
+        entries.append((KEYWORD_EFFECT_PROP, {"type": "boolean"}, block.get("keyword_enabled", True)))
     titles = dict(FIXED_TITLES)
     if len(tiers) == 4:
         # 四个物理行分成上下两组，面板明确每行的语言，避免将英文误称为第二组。

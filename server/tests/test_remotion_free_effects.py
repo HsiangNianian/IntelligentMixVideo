@@ -174,7 +174,7 @@ def test_contract_probes_cover_content_keywords_lines_size_and_every_style_param
     assert spec["probe"] == {"text": "注入的第1行文字\n注入的第3行文字", "textEn": "Injected line 2\nInjected line 4"}
     assert spec["lines"] == ["示例文字一", "Sample text one", "示例文字二", "Sample text two"]
     assert spec["starts"] == [0, 0, 0, 0] and spec["keyword"] == "示例"
-    assert spec["font_size"] == {"default": 96.0, "min": 48}
+    assert spec["font_size"] == {"max": 96.0, "min": 48}
     assert [item["name"] for item in spec["wiring"]] == ["line1Color", "line2Color", "line3Color", "line4Color", "keywordEffectColor", "keywordEffect"]
     assert spec["base"]["keywords"] == ["示例"]
 
@@ -255,7 +255,7 @@ def test_trial_shots_are_dense_around_motion_and_cover_the_middle():
     """试拍在开头、结尾和后出现的行之后密集，其余时间稀疏，且一定包含总线定格短字幕的中间帧。"""
     draft, _ = build(starter_files("text", {"two_tier"}, "Noto Sans CJK SC"), {"two_tier"}, duration=900, text={"line_starts": [0, 300]})
     frames = trial_frames(draft)
-    assert {0, 3, 42, 899, 449, 303, 342} <= set(frames) and len(frames) < 70
+    assert {0, 3, 42, 899, 450, 303, 342} <= set(frames) and len(frames) < 70
     assert frames == sorted(set(frames)) and max(frames) == 899
 
 
@@ -300,16 +300,17 @@ def free_session(tmp_path, intent=None, spec=None, base=None, report=None):
 
 
 @needs_bundler
-def test_save_runs_the_whole_gate_and_attaches_the_acceptance_sheet(tmp_path):
-    """保存走完整门禁（透明度、两种时长、排版、契约探针），通过后记下候选与它的联系表；联系表成为观察图，等待下一轮看过。"""
-    current = free_session(tmp_path)
+@pytest.mark.parametrize("duration", [149, 150])
+def test_save_runs_the_whole_gate_and_attaches_the_acceptance_sheet(tmp_path, duration):
+    """保存走完整门禁，奇偶预览长度的观察图都取总线实际定格帧；通过后记下候选与等待下一轮看过的联系表。"""
+    current = free_session(tmp_path, intent={"original_request": {"description": "demo", "composition": {"duration_in_frames": duration}}})
     saved = asyncio.run(current.execute("effect.save", {}, available()))
     options = current.calls[-1]
     assert options["transparency"] is True and options["text_fit"] is True and options["lengths"] == [45, 3600]
     assert options["text_fit_parameters"] == {} and options["effect_contract"]["keyword"] == "示例"
     assert current.latest_sprite_id == saved["sprite_id"] and current.pending_sheet == saved["sprite_id"]
     # By default only the middle frame is looked at; motion comes from measurements, which the stub does not write.
-    assert [frame["frame"] for frame in saved["review"]["frames"]] == [74] and saved["motion"] == []
+    assert [frame["frame"] for frame in saved["review"]["frames"]] == [duration // 2] and saved["motion"] == []
     assert len(current.observations) == len(saved["review"]["frames"])
     assert current.saved_hash == current.workspace_hash() == current.checked_hash
 
@@ -416,6 +417,42 @@ def test_an_edit_restores_the_accepted_files_with_the_users_parameter_changes(tm
     data = json.loads(current.files[MANIFEST])
     assert data["text"]["sample"] == "新的引导\n新的主标题" and data["text"]["font_size"] == 120
     assert {item["name"]: item["default"] for item in data["params"]}["line2Color"] == "#FF0000"
+    assert current.files[CODE] == draft.instances[0].preset.code
+
+
+@needs_bundler
+def test_an_edit_preserves_a_disabled_keyword_effect_and_its_controls(tmp_path):
+    """用户关闭关键词字效后继续编辑，默认值仍关闭，但关键词外观能力与开关仍可用，源码保持原样。"""
+    requested = {"keyword_effect"}
+    draft, _ = build(starter_files("text", requested, LIBRARY[0]), requested)
+    values = {**draft.default_parameters, "keywordEffect": False}
+    current = free_session(tmp_path, spec=SimpleNamespace(sprite=draft, sprite_kind="text"), base=SimpleNamespace(default_config=values))
+    again, _ = build(current.files, requested)
+    assert again.default_parameters == values
+    assert again.parameter_schema == draft.parameter_schema
+    assert again.effect["text"]["keyword_look"] is True and again.effect["text"]["keyword_enabled"] is False
+    assert current.files[CODE] == draft.instances[0].preset.code
+    saved = asyncio.run(current.execute("effect.save", {}, available()))
+    assert current.saved_sprites[saved["sprite_id"]].default_parameters == values
+
+
+@needs_bundler
+@pytest.mark.parametrize("shape", ["two tiers", "two bilingual groups with a keyword effect"])
+def test_an_edit_preserves_each_font_expanded_from_a_short_manifest(tmp_path, shape):
+    """旧清单只有一个字体条目时，继续编辑仍完整保留宿主扩展的每行字体、字重与比例，行与行不共享可变条目。"""
+    requested = SHAPES[shape]
+    draft, _ = build(starter_files("text", requested, LIBRARY[0]), requested, text={"fonts": [{"family": LIBRARY[0]}]})
+    assert len(draft.effect["text"]["fonts"]) == 1
+    values = dict(draft.default_parameters)
+    count = len(values["lineStartFrames"])
+    for index in range(1, count + 1):
+        values.update({f"line{index}FontFamily": LIBRARY[index % 2], f"line{index}FontWeight": 700 if index % 2 else 400,
+                       f"line{index}SizeRatio": 0.5 + index * 0.25})
+    current = free_session(tmp_path, spec=SimpleNamespace(sprite=draft, sprite_kind="text"), base=SimpleNamespace(default_config=values))
+    again, _ = build(current.files, requested)
+    assert again.default_parameters == values
+    assert len(again.effect["text"]["fonts"]) == count
+    assert len(draft.effect["text"]["fonts"]) == 1
     assert current.files[CODE] == draft.instances[0].preset.code
 
 
@@ -581,6 +618,7 @@ def test_the_plan_designs_an_edit_from_the_accepted_versions_frames(monkeypatch,
         assert shown == [] and "accepted_version_images" not in harness.options[plan]["data"]
         return
     assert shown == [path for path, _label in run.session.base_frames] and len(shown) == 1
+    assert shown[0].stem == "frame-75"
     assert "accepted_version_images" in harness.options[plan]["data"]
     assert len(run.session.calls) == 1 and run.session.renders_left == 12
     # The Executor's first turn gets the same frames in its window.
@@ -850,12 +888,13 @@ def test_real_saved_motion_tells_which_side_a_line_slides_in_from(tmp_path, star
 @pytest.mark.parametrize(("code", "extra", "expected"), [
     (HARD_CODED, None, "still shows the sample"),
     (FADES_EARLY, None, "On the middle frame"),
+    (FADES_EARLY.replace("frame > duration * 0.4", "frame >= Math.floor(duration / 2)"), None, "On the middle frame 75"),
     (FIXED_SIZE, None, "does not make the text smaller"),
     (PLAIN_KEYWORDS, None, "no keyword hit is marked"),
     (None, {"name": "glowColor", "schema": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"}, "default": "#FFAA00", "title": "发光颜色"}, "glowColor"),
 ])
 def test_real_contract_probes_catch_what_templates_would_break_on(tmp_path, code, extra, expected):
-    """真实隔离浏览器里的契约探针：写死示例文字、中间帧前就淡出、写死字号、关键词不经 KeywordRun、声明了却没用的参数，各自被指出并给出修法。"""
+    """真实浏览器拒绝写死内容/字号、定格帧前或恰好在该帧消失、漏关键词标记与未使用参数，给出对应修法。"""
     current = real_session(tmp_path)
     if code is not None:
         current.files[CODE] = code
@@ -866,3 +905,57 @@ def test_real_contract_probes_catch_what_templates_would_break_on(tmp_path, code
     checked = asyncio.run(current.execute("validate.check", {}, available()))
     assert checked["passed"] is False
     assert any(expected in item["message"] for item in checked["problems"]), checked["problems"]
+
+
+@needs_browser
+@pytest.mark.parametrize(("size", "fixed"), [(24, False), (25, False), (25, True)])
+def test_real_font_size_probe_accepts_small_defaults_but_rejects_fixed_sizes(tmp_path, size, fixed):
+    """默认字号在下限或只高一像素时，正常随参数缩放可通过，写死字号仍失败；探针不改存储的默认字号。"""
+    current = real_session(tmp_path)
+    current.files[MANIFEST] = json.dumps(manifest(current.files, text={"font_size": size}), ensure_ascii=False)
+    if fixed:
+        current.files[CODE] = FIXED_SIZE
+    before = dict(current.files)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] is (not fixed), checked
+    if fixed:
+        assert any("does not make the text smaller" in item["message"] for item in checked["problems"]), checked
+    assert current.files == before
+
+
+@needs_browser
+@pytest.mark.parametrize(("nested", "unused"), [(False, False), (True, False), (False, True)])
+def test_real_wiring_checks_optional_controls_in_context(tmp_path, nested, unused):
+    """默认关闭或嵌套开关下的发光颜色可通过；无关隐藏开关不干扰探针，真正未使用的参数仍失败，默认值不变。"""
+    current = real_session(tmp_path)
+    enabled = "props.glowEnabled && props.nestedEnabled" if nested else "props.glowEnabled"
+    hidden = "" if nested else "opacity: props.hidden ? 0 : 1, "
+    current.files[CODE] = current.files[CODE].replace(
+        "<div style={{ color:",
+        '<div style={{ ' + hidden + 'textShadow: (' + enabled + ') ? "0 0 12px " + props.glowColor : "none", color:',
+    )
+    data = manifest(current.files)
+    data["params"].extend([
+        {"name": "nestedEnabled" if nested else "hidden", "schema": {"type": "boolean"}, "default": False},
+        {"name": "glowEnabled", "schema": {"type": "boolean"}, "default": False},
+        {"name": "glowColor", "schema": {"type": "string"}, "default": "#FF0000"},
+    ])
+    if unused:
+        data["params"].append({"name": "unusedColor", "schema": {"type": "string"}, "default": "#00FF00"})
+    current.files[MANIFEST] = json.dumps(data, ensure_ascii=False)
+    before = dict(current.files)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] is (not unused), checked
+    if unused:
+        assert any("unusedColor" in item["message"] for item in checked["problems"]), checked
+        assert all("glowColor" not in item["message"] for item in checked["problems"]), checked
+    assert current.files == before
+
+
+@needs_browser
+def test_real_disabled_keyword_look_keeps_working_style_controls(tmp_path):
+    """关键词字效默认关闭时，其外观参数仍在开启上下文中检查；保存后开关保持关闭。"""
+    current = real_session(tmp_path, {"keyword_effect"})
+    current.files[MANIFEST] = json.dumps(manifest(current.files, text={"keyword_enabled": False}), ensure_ascii=False)
+    saved = asyncio.run(current.execute("effect.save", {}, available()))
+    assert current.saved_sprites[saved["sprite_id"]].default_parameters["keywordEffect"] is False

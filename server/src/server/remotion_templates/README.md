@@ -46,10 +46,13 @@ role-Preset composition. The tool contracts are §13 of
 - **Workspace** (`tools/workspace.py`, `tools/effect_tools.py`). The Executor writes `Effect.tsx`, a default-exported
   component that may import the content runtime `"imv"` (`remotion/imv-runtime.tsx`), and `effect.json`, the manifest
   `EffectManifest`: kind, description, layout box, for text effects `text` (sample content, keywords, line starts,
-  bilingual, keyword look, font size, one font per line, gaps, arrangement) and `params`, the effect's own style
+  bilingual, keyword look and its default switch, font size, one font per line, gaps, arrangement) and `params`, the effect's own style
   parameters with schema, default, title and `group`. A new work starts from a still starter of its kind that passes
   every check and follows the new-chat switches; an edit restores the accepted version's files with the user's
-  current parameter values written back into the manifest.
+  current parameter values written back into the manifest. `keyword_look` declares the keyword appearance capability;
+  `keyword_enabled` supplies its `keywordEffect` default (true when omitted). Turning it off keeps the capability and
+  controls, and the free-form category gate accepts either boolean default. Restoring older manifests with fewer font
+  entries than lines expands them before applying each line's saved font, weight and size ratio.
 - **Assembly.** `assemble` derives a text effect's configuration parameters from `text` with `text_configuration`
   (the same names, schemas and titles as a text block, without `effect{k}`), merges the style parameters (bounds, a
   colour pattern, titles and out-of-range defaults are corrected and noted; a host configuration name is left out)
@@ -66,9 +69,12 @@ role-Preset composition. The tool contracts are §13 of
   category's required parameters and, in the isolated browser, transparency, both render lengths, `text_fit` (with an
   empty `text_fit_parameters`, so lines may be timed independently but must not jump) and the `effect_contract`
   probes of the validation worker: other injected text must be what it shows, a keyword hit takes keywordColor and
-  keywordBold with the keyword effect off, every default line is shown in full on the preview's middle frame (where
-  the bus freezes subtitles shorter than 1.5 s), lowering `fontSize` shrinks the text, and each style parameter (and
-  `keywordEffect`) changes a sampled frame between its two ends (screenshot comparison). A check failure is a
+  keywordBold with the keyword effect off, every default line is shown in full on frame `duration_frames // 2` (where
+  the bus freezes subtitles shorter than 1.5 s, with every line starting at zero), lowering `fontSize` between two legal
+  sizes at least 25% apart shrinks the text, and each style parameter (and `keywordEffect`) changes a sampled frame
+  between its two ends (screenshot comparison). If defaults hide a parameter, its endpoints are also compared with each
+  other boolean flipped, then all other booleans on or off, always holding those controls fixed between endpoints.
+  These bounded probes do not enumerate every combination or change saved defaults. A check failure is a
   `passed: false` result; a save failure is `CODE_VALIDATION_FAILED` listing every problem.
 - **Observations.** `preview.render` (at most 12 per task, never cached as a publication report), `effect.save`'s
   acceptance sheet and

@@ -593,13 +593,15 @@ class EffectFont(ContractModel):
 
 class EffectText(ContractModel):
     """字效的示例内容与配置默认值。sample 是预览用的示例文字：一行；双栏两行；双语为中英交替的两行或四行。
-    keywords 是示例里要当关键词显示的词，line_starts 是各行出现的帧（多行才用），keyword_look 表示组件给关键词画了自己的外观。"""
+    keywords 是示例里要当关键词显示的词，line_starts 是各行出现的帧（多行才用），keyword_look 表示组件有关键词外观，
+    keyword_enabled 保留该外观的 keywordEffect 默认开关；关闭开关不移除能力或参数。"""
 
     sample: NonEmptyString
     keywords: list[NonEmptyString] = Field(default_factory=list, max_length=5)
     line_starts: Omittable[list[NonNegativeInteger]]
     bilingual: StrictBool = False
     keyword_look: StrictBool = False
+    keyword_enabled: StrictBool = True
     font_size: FiniteNumber = 96.0
     fonts: list[EffectFont] = Field(min_length=1, max_length=4)
     line_gap: Omittable[FiniteNumber]

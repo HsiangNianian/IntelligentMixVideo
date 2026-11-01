@@ -1163,7 +1163,8 @@ function wiringFrames(total) {
 async function effectContractCheck(page) {
   const spec = request.effect_contract;
   const total = request.composition.duration_frames;
-  const middle = Math.floor((total - 1) / 2);
+  // Match sprite_render's short-subtitle hold, including even preview lengths (150 frames holds frame 75).
+  const middle = Math.floor(total / 2);
   const problems = [];
   const mount = async (patch, frame) => {
     await page.evaluate((values) => window.__imvTool.setParameters(values), patch);
@@ -1219,15 +1220,15 @@ async function effectContractCheck(page) {
           break;
         }
       }
-      if (!failure && spec.font_size && spec.font_size.min < spec.font_size.default) {
+      if (!failure && spec.font_size && spec.font_size.min < spec.font_size.max) {
         const area = async (size) => {
           await mount({ ...spec.sample, keywords: [], fontSize: size, ...(spec.starts ? { lineStartFrames: spec.starts } : {}) }, middle);
           const verdict = await textFitProblems(page, spec.lines.find(Boolean), UNPLACED);
           return verdict?.extent ? (verdict.extent.right - verdict.extent.left) * (verdict.extent.bottom - verdict.extent.top) : null;
         };
-        const [large, small] = [await area(spec.font_size.default), await area(spec.font_size.min)];
+        const [large, small] = [await area(spec.font_size.max), await area(spec.font_size.min)];
         if (large !== null && small !== null && small > large * 0.9)
-          problems.push(`Lowering fontSize from ${spec.font_size.default} to ${spec.font_size.min} does not make the text smaller. The host lowers fontSize to fit long text: `
+          problems.push(`Lowering fontSize from ${spec.font_size.max} to ${spec.font_size.min} does not make the text smaller. The host lowers fontSize to fit long text: `
             + "draw every line at the font size TextRoot gives it (line.fontSize), without fixed font sizes, scale factors derived from the text length or fixed-size boxes.");
       }
     }
@@ -1238,17 +1239,37 @@ async function effectContractCheck(page) {
         const image = await client.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: true, clip: { x: 0, y: 0, width: request.composition.width, height: request.composition.height, scale: 0.25 } });
         return (image.value ?? image).data;
       };
-      for (const item of spec.wiring) {
-        let changes = false;
+      const switches = spec.wiring.filter((item) => item.values.every((value) => typeof value === "boolean"));
+      /** Compare only this parameter's endpoints under one fixed set of other controls; runtime errors are failures. */
+      const changesWith = async (item, controls) => {
         for (const frame of wiringFrames(total)) {
           const shots = [];
           for (const value of item.values) {
-            await mount({ ...spec.base, [item.name]: value }, frame);
+            const failure = await mount({ ...spec.base, ...controls, [item.name]: value }, frame);
+            if (failure) return { error: `The effect throws while checking ${item.name} at frame ${frame}: ${failure}` };
             shots.push(await shot());
           }
-          if (shots[0] !== shots[1]) { changes = true; break; }
+          if (shots[0] !== shots[1]) return { changed: true };
         }
-        if (!changes) unwired.push(`${item.name} (${item.values.map((value) => JSON.stringify(value)).join(" and ")})`);
+        return { changed: false };
+      };
+      for (const item of spec.wiring) {
+        // Defaults can hide a working parameter behind an off switch. Try each other boolean flipped, then all on/off
+        // for nested switches, without an exponential search. Both endpoints always use the same other controls.
+        const others = switches.filter((control) => control.name !== item.name);
+        const contexts = [{}, ...others.map(({ name }) => ({ [name]: !spec.base[name] })),
+          ...[true, false].map((enabled) => Object.fromEntries(others.map(({ name }) => [name, enabled])))];
+        const seen = new Set();
+        let result = { changed: false };
+        for (const controls of contexts) {
+          const key = JSON.stringify({ ...spec.base, ...controls });
+          if (seen.has(key)) continue;
+          seen.add(key);
+          result = await changesWith(item, controls);
+          if (result.changed || result.error) break;
+        }
+        if (result.error) { problems.push(result.error); break; }
+        if (!result.changed) unwired.push(`${item.name} (${item.values.map((value) => JSON.stringify(value)).join(" and ")})`);
         await mount(spec.base, 0);
       }
     }

@@ -162,7 +162,7 @@ class EffectTools:
             problems = [_diagnostic_problem(item) for item in code.diagnostics if item.severity == "error"]
             return list({item.message: item for item in problems}.values())[:8] or [EffectProblem(check="code", message="Effect.tsx does not compile.")], None
         missing = category_problems(draft.kind, draft.parameter_schema, {item.name for item in draft.bindings}, draft.default_parameters,
-                                    fonts=set(self._fonts()), requested=set(self.requested))
+                                    fonts=set(self._fonts()), requested=set(self.requested), allow_disabled_keyword_effect=True)
         if missing:
             return [EffectProblem(check="parameters", message=(
                 f"{item.name} {item.reason}{f'; schema {item.rule.example}' if item.rule else ''}. Declare the effect's own style parameters in "
@@ -214,8 +214,8 @@ class EffectTools:
         return [(images[frame], frame, label) for frame, label in keyframes(images, sprite)]
 
     def _middle_shot(self, capture, sprite: SpriteDraft) -> list[tuple[Path, int, str]]:
-        """The one frame that is looked at by default: the middle, for what cannot be measured (colours, fills, ghosted text)."""
-        frame = (sprite.composition.duration_frames - 1) // 2
+        """The bus hold frame (duration // 2), for what cannot be measured: colours, fills and ghosted text."""
+        frame = sprite.composition.duration_frames // 2
         path = capture.directory / f"frame-{frame}.png"
         return [(path, frame, "middle, where the bus freezes short subtitles")] if path.is_file() else []
 
@@ -224,7 +224,7 @@ class EffectTools:
         path = capture.directory / "motion.json"
         if not path.is_file():
             return []
-        return motion_facts(json.loads(path.read_text(encoding="utf-8")), sprite.composition.fps, (sprite.composition.duration_frames - 1) // 2)
+        return motion_facts(json.loads(path.read_text(encoding="utf-8")), sprite.composition.fps, sprite.composition.duration_frames // 2)
 
     def _capture(self, sprite: SpriteDraft, frames: list[int], keywords: list[str], extra: dict | None = None, *, trace: list[int] | None = None):
         """A frame capture of ``frames`` over the effect's region, scaled for the model, with sample keywords mounted; ``trace`` frames are measured."""
@@ -239,7 +239,7 @@ class EffectTools:
         """Check the workspace and save it as this task's latest candidate, returning its acceptance sheet."""
         draft, notes = await self._assemble()
         keywords = preview_keywords(draft)
-        capture = self._capture(draft, [(draft.composition.duration_frames - 1) // 2], keywords, trace=trial_frames(draft))
+        capture = self._capture(draft, [draft.composition.duration_frames // 2], keywords, trace=trial_frames(draft))
         problems, sprite = await self._gate(draft, capture)
         if sprite is None:
             listed = "\n".join(f"- [{item.check}] {item.message}" + (f" (line {item.line}: {item.excerpt})" if item.line and item.excerpt else "") for item in problems)
@@ -293,7 +293,7 @@ class EffectTools:
             return
         try:
             draft, _notes = await self._assemble()
-            capture = self._capture(draft, [(draft.composition.duration_frames - 1) // 2], preview_keywords(draft), trace=trial_frames(draft))
+            capture = self._capture(draft, [draft.composition.duration_frames // 2], preview_keywords(draft), trace=trial_frames(draft))
             report = await self.validator.validate_render(RenderValidationInput(
                 component=ComponentDefinition(code=draft.code, parameter_schema=draft.parameter_schema, default_parameters=draft.default_parameters),
                 duration_frames=draft.composition.duration_frames), capture=capture)
