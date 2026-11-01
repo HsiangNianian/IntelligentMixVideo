@@ -273,6 +273,16 @@ def test_a_keyword_effect_exposes_a_switch_that_defaults_on():
     assert check({**looks, "keywordEffect": {"type": "string", "maxLength": 4}}, {**defaults, "keywordEffect": "on"}) == [("keywordEffect", "has the wrong schema")]
 
 
+@pytest.mark.parametrize(("value", "valid"), [(False, True), (True, True), (0, False), (None, False), ("false", False)])
+def test_a_free_keyword_effect_preserves_its_boolean_default(value, valid):
+    """自由组件可保存关闭的关键词字效，但不放过缺失或非布尔默认值；组合路径的默认开启约定独立保留。"""
+    properties = {**TEXT_PROPERTIES, "fontFamily": TIER_FONT, "keywordEffect": {"type": "boolean"}}
+    defaults = {**OFF, "fontFamily": "Zed Display", "keywordEffect": value}
+    problems = category_problems("text", schema(properties), set(properties), defaults, TIER_LIBRARY,
+                                 requested={"keyword_effect"}, allow_disabled_keyword_effect=True)
+    assert [(item.name, item.reason) for item in problems] == ([] if valid else [("keywordEffect", "must have a boolean default")])
+
+
 def test_publishing_a_multi_line_text_needs_no_shared_colour_or_weight():
     """发布路径（不传字体库）：新生成的双栏字效没有整段共用的颜色与字重也能保存到资产，更早生成、没有逐栏参数的多行版本同样可以。"""
     assert category_problems("text", schema(TWO_TIER), set(TWO_TIER), TWO_TIER_DEFAULTS) == []

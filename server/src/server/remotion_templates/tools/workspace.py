@@ -229,7 +229,7 @@ def _text_block(text: EffectText, fonts: list[str], requested: set[str], duratio
     if font_size != text.font_size:
         notes.append(f"text.font_size was kept within {FONT_SIZE[0]:g}-{FONT_SIZE[1]:g}.")
     block: dict[str, Any] = {"text": text.sample, "bilingual": text.bilingual, "font_size": font_size, "tiers": tiers,
-                             "keyword": {} if text.keyword_look else None, "effects": [], "layout": layout}
+                             "keyword": {} if text.keyword_look else None, "keyword_enabled": text.keyword_enabled, "effects": [], "layout": layout}
     if count > 1:
         given = list(text.line_starts or [])
         starts = [given[index] if index < len(given) else (given[-1] if given else 0) for index in range(count)]
@@ -394,7 +394,7 @@ def trial_frames(sprite: SpriteDraft) -> list[int]:
     """The frames the host shoots to find an effect's keyframes: densely where motion usually is (the opening, the closing and
     after each later line appears), sparsely in between, and always the middle frame the bus freezes short subtitles on."""
     last = sprite.composition.duration_frames - 1
-    frames = {*range(0, TRIAL_WINDOW, TRIAL_STEP), *range(max(0, last - TRIAL_WINDOW), last + 1, TRIAL_STEP), last, last // 2}
+    frames = {*range(0, TRIAL_WINDOW, TRIAL_STEP), *range(max(0, last - TRIAL_WINDOW), last + 1, TRIAL_STEP), last, sprite.composition.duration_frames // 2}
     frames |= {last * index // TRIAL_MIDDLE for index in range(TRIAL_MIDDLE)}
     for start in (sprite.default_parameters.get("lineStartFrames") or [])[1:]:
         if isinstance(start, int):
@@ -427,7 +427,7 @@ def keyframes(images: dict[int, Path], sprite: SpriteDraft) -> list[tuple[int, s
             thumbnails[frame] = image.convert("L").resize((THUMBNAIL_SIDE, max(1, round(THUMBNAIL_SIDE * image.height / image.width))))
     blank = Image.new("L", thumbnails[frames[0]].size, 128)
     visible = [frame for frame in frames if _change(thumbnails[frame], blank)]
-    middle = min(frames, key=lambda frame: abs(frame - (sprite.composition.duration_frames - 1) // 2))
+    middle = min(frames, key=lambda frame: abs(frame - sprite.composition.duration_frames // 2))
     chosen = {middle: "middle, where the bus freezes short subtitles"}
     if visible:
         chosen.setdefault(visible[0], "first visible")
@@ -526,12 +526,18 @@ def restore_files(sprite: SpriteDraft, values: dict[str, Any]) -> dict[str, str]
         if "fontSize" in values:
             text["font_size"] = values["fontSize"]
         fonts = text.get("fonts") or []
+        if fonts:
+            # Accepted manifests may predate the host's per-line expansion. Copy each entry independently before
+            # applying the saved values, so a later line's manual font/weight/ratio is never lost or aliased.
+            count = len(values.get("lineStartFrames") or [0])
+            fonts = text["fonts"] = [deepcopy(fonts[min(index, len(fonts) - 1)]) for index in range(count)]
         for index, font in enumerate(fonts):
-            names = (f"line{index + 1}FontFamily", f"line{index + 1}FontWeight", f"line{index + 1}SizeRatio") if len(lines) > 1 else ("fontFamily", "fontWeight", None)
+            names = (f"line{index + 1}FontFamily", f"line{index + 1}FontWeight", f"line{index + 1}SizeRatio") if len(fonts) > 1 else ("fontFamily", "fontWeight", None)
             for key, name in zip(("family", "weight", "size_ratio"), names):
                 if name in values:
                     font[key] = values[name]
-        for key, name in (("line_starts", "lineStartFrames"), ("line_gap", "lineGap"), ("arrangement", "tierLayout"), ("translation_gap", "translationGap")):
+        for key, name in (("line_starts", "lineStartFrames"), ("line_gap", "lineGap"), ("arrangement", "tierLayout"), ("translation_gap", "translationGap"),
+                          ("keyword_enabled", "keywordEffect")):
             if name in values:
                 text[key] = values[name]
     for item in manifest.get("params", []):
@@ -584,9 +590,10 @@ def _extremes(definition: dict[str, Any]) -> list[Any] | None:
 def contract_probes(sprite: SpriteDraft) -> dict[str, Any]:
     """The `effect_contract` request of the validation worker for a free-form effect (see `effectContractCheck`).
 
-    Every style parameter of the manifest (and a text effect's keyword effect switch) is probed at its two ends over
-    the defaults with every line shown and the sample keywords on; a text effect also gets other text, a keyword with
-    its options on, its default lines for the middle frame and its default and smallest font size.
+    Every style parameter of the manifest (and a text effect's keyword effect switch) supplies two endpoints and
+    defaults with every line shown and the sample keywords on; the worker also probes conditional boolean contexts.
+    A text effect gets other text, a keyword with
+    its options on, its default lines for the bus hold frame and two sufficiently separated legal font sizes.
     """
     values = sprite.default_parameters
     properties = sprite.parameter_schema.get("properties", {})
@@ -601,11 +608,14 @@ def contract_probes(sprite: SpriteDraft) -> dict[str, Any]:
         probe, probe_lines = _probe_content(values)
         ratios = [value for key, value in values.items() if re.fullmatch(r"line\d+SizeRatio", key) and isinstance(value, (int, float)) and value > 0]
         smallest = max(float(properties.get("fontSize", {}).get("minimum", FONT_SIZE[0])), math.ceil(FONT_SIZE[0] / min([1.0, *ratios])))
+        # A default near the minimum (25 -> 24, or fractional sizes) cannot reliably exceed the pixel tolerance.
+        # Probe at least a 25% size difference within the fixed fontSize contract, without changing saved defaults.
+        largest = min(FONT_SIZE[1], max(values.get("fontSize", FONT_SIZE[0]), math.ceil(smallest * 1.25)))
         spec |= {
             "sample": {key: values[key] for key in ("text", "textEn") if key in values},
             "probe": probe, "probe_lines": probe_lines, "lines": physical_lines(values), "starts": starts,
             "keyword": keywords[0] if keywords else None,
-            "font_size": {"default": values.get("fontSize"), "min": smallest} if isinstance(values.get("fontSize"), (int, float)) else None,
+            "font_size": {"max": largest, "min": smallest} if isinstance(values.get("fontSize"), (int, float)) else None,
         }
     return spec
 

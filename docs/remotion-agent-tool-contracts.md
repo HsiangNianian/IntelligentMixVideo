@@ -1558,10 +1558,13 @@ Preset：Executor 在任务工作区里写 `Effect.tsx`（默认导出组件，�
 - 清单能安全修正的问题（字体库外的字体、字重、字号与比例越界、行起点、缺上下界或颜色 pattern 的样式参数、示例关键词、占用配置名）
   由宿主修正并在回执 `notes` 里说明；示例文字对不上任何形状、缺少用户打开的双栏或双语开关时才以 `INVALID_ARGUMENT` 拒绝并指出字段。
 - `validate.check` 与 `effect.save` 共用门禁：组件的源码策略与 TypeScript、分类必备参数，再在隔离浏览器里检查透明度、1.5 秒与
-  120 秒长度、100 字排版与 `effect_contract` 契约探针（注入别的文字须照常显示、关键词命中须应用六项关键词样式、预览中间帧须完整显示
-  每一行、调低 `fontSize` 须让文字变小、每个样式参数取两端须改变画面）。检查不通过是 `passed: false` 的结果；保存不通过以
+  120 秒长度、100 字排版与 `effect_contract` 契约探针（注入别的文字须照常显示、关键词命中须应用六项关键词样式、总线定格帧
+  `duration_frames // 2` 须完整显示每一行、两个相差至少 25% 的合法字号之间调低 `fontSize` 须让文字变小、每个样式参数取两端须改变画面）。
+  默认值隐藏的参数会在逐个翻转其他布尔开关、以及全部打开或关闭的上下文中重试，两端保持相同的其他控制值；有界探针不穷举组合、不改保存的默认值。
+  检查不通过是 `passed: false` 的结果；保存不通过以
   `CODE_VALIDATION_FAILED` 拒绝并列出问题。
 - `workspace.read` 给出 `version` 时读该历史自由组件版本的文件（序号见快照的 `versions`，内容含那一版用户调过的参数），写回工作区即可从那一版继续改。
+- 修改还原保留 `keywordEffect` 开关与宿主补足的各行字体配置；`keyword_look` 表示有关键词外观能力，`keyword_enabled` 保存其默认开关，关闭仍保留能力与参数，自由组件分类检查允许关闭的布尔默认值。
 - 预览、保存与看图得到的图片是观察图，作为一条消息进入 Executor 的窗口，只发一次；修改任务开始时宿主先测量并渲染一次基线，Plan 与 Executor 共用它的运动事实（`base.motion`）与中间帧。
 - `effect.save` 与 `preview.render` 的回执带 `motion`：运行代码量出的每行、每个关键词的运动，用文字说明（相对中间帧的静止位置）。方向与顺序以它为准；图片是兜底，`effect.save` 只附中间帧，`preview.render` 默认给关键帧。
   预览每个任务最多 12 次，结果不缓存为发布用的验收报告。
@@ -1583,13 +1586,15 @@ class EffectFont(ContractModel):
 
 class EffectText(ContractModel):
     """字效的示例内容与配置默认值。sample 是预览用的示例文字：一行；双栏两行；双语为中英交替的两行或四行。
-    keywords 是示例里要当关键词显示的词，line_starts 是各行出现的帧（多行才用），keyword_look 表示组件给关键词画了自己的外观。"""
+    keywords 是示例里要当关键词显示的词，line_starts 是各行出现的帧（多行才用），keyword_look 表示组件有关键词外观，
+    keyword_enabled 保留该外观的 keywordEffect 默认开关；关闭开关不移除能力或参数。"""
 
     sample: NonEmptyString
     keywords: list[NonEmptyString] = Field(default_factory=list, max_length=5)
     line_starts: Omittable[list[NonNegativeInteger]]
     bilingual: StrictBool = False
     keyword_look: StrictBool = False
+    keyword_enabled: StrictBool = True
     font_size: FiniteNumber = 96.0
     fonts: list[EffectFont] = Field(min_length=1, max_length=4)
     line_gap: Omittable[FiniteNumber]
