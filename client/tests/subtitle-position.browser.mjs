@@ -309,6 +309,17 @@ try {
     }
     console.log(`${name} 实际动画与定位通过`);
   }
+  // 直接在实际播放中改参，除 UI 回零暂停外，SDK 时间也必须持续停在零帧。
+  await seek(0);
+  await page.getByRole("button", { name: "播放", exact: true }).click();
+  await page.waitForFunction(() => window.sdkPlayer.currentTime >= 1);
+  await page.getByRole("button", { name: "暂停", exact: true }).waitFor();
+  await moveX(75);
+  for (let sample = 0; sample < 10; sample++) {
+    await page.waitForTimeout(100);
+    assert(Math.abs(await page.evaluate(() => window.sdkPlayer.currentTime)) < 1 / 30, "播放中调参后 SDK 应持续停在零帧");
+  }
+  console.log("播放中调参回零并持续暂停通过");
   assert.deepEqual(errors, [], "真实预览不应产生页面异常");
   console.log("同屏字幕真实预览回归通过");
 } finally {
