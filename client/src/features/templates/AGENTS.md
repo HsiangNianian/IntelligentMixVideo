@@ -35,6 +35,7 @@
 - 画布与 SDK 场景固定为 1080×1920（`timeline.ts` 的 `PREVIEW_CANVAS`，与合成默认值、AI 资产画布一致），不随预览视频变化；视频按 Contain 放入，留白用 `Background/Blur`（Radius 0.1）填充，比例相同时不加模糊，转场补帧沿用所属视频的填充。
 - `loadSDK` 创建播放器前把 SDK 内置 Konva 的全局 `pixelRatio` 固定为 1，画布按 1080×1920 绘制，不随屏幕缩放倍数放大。
 - 客户端不往标题和字幕里插入换行，也不下载 IMS 测量字体：中文由 SDK 的 `AutoWrap`（`TextWidth: 1`）做与合成端相同的有界换行，英文用 `AutoScale`（`TextWidth: 0.9`；Web SDK 不支持缩放，面板有提示）。
+- SDK 5.2.2 的自适应文字排版会忽略居中对齐时的 X。`playerTimeline` 只对 X 非 50% 的自适应文字追加 ASS `\pos`，按每段最终坐标和画布尺寸定位；保留换行、花字、关键词及动画参数，默认居中文字和气泡沿用 SDK 原行为。此标记只存在 SDK 入参，不写入草稿或保存内容；升级 SDK 时运行 `client/tests/subtitle-position.browser.mjs` 复核。调参仍回零暂停。
 - 预览视频：URL 来源各取前十秒（不足十秒用完整区间），本地文件与内置示例用完整时长（`previewVideos` 按 blob URL 或媒体服务地址区分）。三个来源的真实时长与尺寸全部读到、本地文件提交成功后才一起替换，再由工作区计算时间；失败保留原来源并标明视频编号，关闭或取消终止读取。视频信息独立于模板保存。
 - 本地文件（`localVideos.ts`，每个不超过 512 MiB，不上传）：桌面经 Tauri `preview_video_list/write/remove` 存到 `data/preview_videos/`。写入与删除共用短暂重试的独占目录锁，数据文件唯一命名、元数据替换是提交点；任一槽位保存失败时已完成的槽位回滚（替换前先从媒体服务读回原视频，读不到就不开始提交），保存期间弹窗不可关闭；改用 URL 即删除本机副本。浏览器只用页面内存的 blob URL。
 - 独立视频元素与缩略图（有界缓存）在完成、失败、取消与卸载时释放。

@@ -236,6 +236,8 @@ bun run build
 `preview-timeline.test.tsx` 检查轨道数据转换、缩略图源时间采样、播放时间同步和键盘定位边界。
 `preview-canvas.test.ts` 检查横屏、竖屏、方形和超宽视频均使用固定 1080×1920 画布，以及留白填充、文字参数、SDK 绘制倍数和三个各十秒的默认片段。
 画布的真实浏览器回归执行 `bun tests/preview-canvas.browser.mjs`，需要 Chrome、FFmpeg 和联网访问 SDK、字体。脚本自动启动独立 Vite 服务，生成本地视频，验证 Canvas 像素、横竖屏切换、实际播放、数字时间与时间轴游标的更新频率、暂停和播放结束后游标与播放器时间一致、窄屏比例、全屏时 AI 资产叠加层与播放器画面同框（竖屏视频在横屏屏幕上全屏，字效不按整个屏幕放大）、标题和字幕原文与卸载清理；不访问业务后端。中间文件保存在已忽略的 `node_modules/.cache/preview-canvas-tests/`，结束时关闭浏览器和测试服务。
+
+同屏字幕定位的真实浏览器回归执行 `bun tests/subtitle-position.browser.mjs`，需要 Chrome（可用 `IMV_TEST_CHROME` 指定路径）、FFmpeg 和 SDK/字体网络。脚本挂载生产同屏面板与播放器，从浏览器最终合成帧比较字幕像素，覆盖 X 左右移动、Y、调参回零暂停、长字幕自动换行、花字、关键词及组合、中英文字幕、淡入淡出、滑入滑出和循环动画；SDK 暂停时只显示静态封面，动画必须从实际播放的字幕画布采样。长字幕移出画布的部分按画布边界裁剪。截图写入 `node_modules/.cache/subtitle-position-tests/`，不访问业务后端，结束时关闭浏览器与服务。SDK 5.2.2 在自适应排版下忽略 X，最终 SDK 时间线仅对非居中的文字补 ASS 定位，保留原文、换行和效果参数，不改变保存协议。
 播放器调试日志的真实浏览器回归执行 `bun tests/preview-diagnostics.browser.mjs`，同样需要 Chrome、FFmpeg 和联网访问 SDK、字体。脚本在页面里伪装桌面端接收日志，验证元数据可读但播放器加载不了的视频在预览里按序号提示并把地址与 MediaError 码写进日志，正常视频播放后记录播放状态与流畅度汇总且不误报；中间文件保存在 `node_modules/.cache/preview-diagnostics-tests/`。
 `effect-tracks.test.ts` 覆盖独立对象增删、时间规则、视频替换、动画帧数、SDK 数据转换和序列化；`track-timing.test.tsx` 验证输入自动更新、单位换算、非法输入恢复和对象切换。前后端共同使用 `server/tests/template_timing_cases.json` 和 `server/tests/template_sequence_cases.json`，后者覆盖累计重叠、短视频、固定语音时间、转场缩短与缺失交界处；预期结果包含区间和提示，并检查计算过程保留原始规则。
 
