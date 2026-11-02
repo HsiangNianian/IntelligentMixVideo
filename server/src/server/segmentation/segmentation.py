@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import jieba
 from pydantic import ValidationError
-from openai import APIError, APITimeoutError, OpenAI
+from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
 
 from ..log_sanitization import sanitize
 from .settings import ClientSettings, Settings
@@ -28,8 +28,9 @@ SPLIT_CONCURRENCY = 8
 SPLIT_MAX_PARTS = 10
 SPLIT_MAX_CALLS = 200
 KEYWORD_MAX_ATTEMPTS = 3
+MODEL_MAX_RETRIES = 3
 MODEL_TIMEOUT_SECONDS = 30
-SEGMENTATION_BUDGET_SECONDS = 90
+SEGMENTATION_BUDGET_SECONDS = 120
 
 # 对齐忽略常见中英文标点；字幕过滤集合供下游合成使用，切片原文保留标点。
 PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.．!?;:\"'()<>[]{}~`")
@@ -248,13 +249,13 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     请求为 {script, asr_result, max_segment_chars}，读取 fun-asr transcripts 第一音轨，词时间为 begin_time/end_time 毫秒。
     替换/增删代价均为 1；波前搜索保留最远位置，平局依次优先替换、文案多字、
     ASR 多字。先在句读标点、换行与中文之间的空白处切开，超过 max_segment_chars（默认 8，不计标点空白）
-    的片段交给模型按语义切分（单次最多 SPLIT_MAX_PARTS 段，每次切片最多 SPLIT_MAX_CALLS 个请求），
+    的片段交给模型按语义切分（单次最多 SPLIT_MAX_PARTS 段，每次切片最多 SPLIT_MAX_CALLS 组请求，含各自重试），
     最多 SPLIT_MAX_PASSES 轮，仍超长则完整保留并给出 warning，不在代码里硬切；
     模型另按最终片段提关键词，时间投射和关键词校验由代码完成。
     显式 config 仅用于当前调用；省略时读取 server/.env 与 IMV_ 环境变量，SDK 在返回前关闭。
     返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
     warnings 和 trace；原文保留标点，字幕去标点由下游合成处理。
-    有 ASR 时 title 与片段共用关键词调用；无 ASR 时仅调用一次模型，返回 title_keyword，不校验提词内容。
+    有 ASR 时 title 与片段共用关键词调用；无 ASR 时仅提标题词、不纠错；临时请求错误最多重试 MODEL_MAX_RETRIES 次。
     空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
     diagnostics 供共用入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
@@ -292,12 +293,27 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
             raise TimeoutError("切片处理超时。")
         return min(config.llm_timeout_seconds, MODEL_TIMEOUT_SECONDS, remaining)
 
+    def request_model(client, **kwargs):
+        """临时模型请求错误额外重试，重算剩余预算；耗尽或不可重试时保留原异常。"""
+        for attempt in range(MODEL_MAX_RETRIES + 1):
+            timeout = request_timeout()
+            try:
+                return client.chat.completions.create(timeout=timeout, **kwargs)
+            except (APIConnectionError, APIStatusError) as exc:
+                if isinstance(exc, APIStatusError) and exc.status_code not in (408, 409, 429) and exc.status_code < 500:
+                    raise
+                if attempt == MODEL_MAX_RETRIES:
+                    raise
+                request_timeout()
+                logger.warning("切片模型请求重试 stage=%s retry=%s error=%s",
+                               diagnostics["stage"], attempt + 1, type(exc).__name__)
+
     if title_only:
         diagnostics["stage"] = "keywords"
         with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
-            response = client.chat.completions.create(
+            response = request_model(
+                client,
                 model=model, temperature=0.2, response_format={"type": "json_object"},
-                timeout=request_timeout(),
                 messages=[{"role": "system", "content": '从标题中提取一个关键词，只返回 JSON：{"title_keyword":"关键词"}，无合适词时返回空字符串。'},
                           {"role": "user", "content": title}],
                 **_thinking(config),
@@ -499,8 +515,9 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         needed = math.ceil((b - a) / segment_max_length)
         num_parts = min(needed, SPLIT_MAX_PARTS)
         prompt = _split_prompt(text, num_parts, segment_max_length if needed == num_parts else None)
-        response = client.chat.completions.create(
-            model=model, temperature=0.2, response_format={"type": "json_object"}, timeout=request_timeout(),
+        response = request_model(
+            client,
+            model=model, temperature=0.2, response_format={"type": "json_object"},
             # 沿用 VideoLingo：重试时在提示末尾追加空格，使请求与上一轮不同。
             messages=[{"role": "user", "content": prompt + " " * attempt}],
             **_thinking(config),
@@ -534,7 +551,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     segments, rejected = [], 0
     with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
         # 超长片段并行请求，仍超长的段落下一轮继续切；模型切出的段落只按校验结果采用，代码不硬切。
-        # 每次切片最多发出 SPLIT_MAX_CALLS 个切分请求，用完后其余超长片段完整保留并告警。
+        # 每次切片最多 SPLIT_MAX_CALLS 组切分请求（各自可重试），用完后其余超长片段完整保留并告警。
         diagnostics["stage"] = "split"
         started = perf_counter()
         calls_left = SPLIT_MAX_CALLS
@@ -603,12 +620,12 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         started = perf_counter()
         try:
             for attempt in range(KEYWORD_MAX_ATTEMPTS):
-                response = client.chat.completions.create(
+                response = request_model(
+                    client,
                     model=model,
                     messages=messages,
                     temperature=0.2,
                     response_format={"type": "json_object"},
-                    timeout=request_timeout(),
                     **_thinking(config),
                 )
                 raw = _response_content(response)
