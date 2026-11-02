@@ -644,7 +644,7 @@ async def test_environment_check_skips_bindings_without_content(composition_case
 
 @pytest.mark.anyio
 async def test_assemble_reuses_saved_overlay_and_keeps_ims_text(composition_case, composition_runtime, monkeypatch):
-    """恢复组装复用已上传地址；叠加从 0 秒开始，IMS 字幕轨保留在其原位置。"""
+    """恢复组装复用已上传地址与原时长，不再探测；叠加从 0 秒开始，IMS 字幕轨保留原位置。"""
     data = case(composition_case)
     data.update(template=composition_case["template"], matches=composition_case["matches"])
     result = {"video_url": "https://zos.test/overlay.webm", "duration": 8}
@@ -658,6 +658,7 @@ async def test_assemble_reuses_saved_overlay_and_keeps_ims_text(composition_case
         """无需真实 IMS 账号即可组装最终提交。"""
         return "bucket.oss-cn-shanghai.aliyuncs.com"
     monkeypatch.setattr(remotion, "render", should_not_render)
+    monkeypatch.setattr(service.media, "video_duration", should_not_render)
     monkeypatch.setattr(service.ims.IMS, "storage_location", storage)
     job = service.Job(composition_runtime, record, composition_runtime.settings)
     await job.assemble()

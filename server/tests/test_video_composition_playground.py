@@ -66,6 +66,7 @@ def test_playground_reuses_prepared_content(upstreams, client, composition_case,
 
     monkeypatch.setattr(service, "translate", unexpected)
     monkeypatch.setattr(service.media, "material_durations", unexpected)
+    monkeypatch.setattr(service.media, "video_duration", unexpected)
     response = client.post(f"{BASE}/playground", json={"mode": mode, "styleId": composition_case["request"]["styleId"]})
     assert response.status_code == 200, response.text
     task_id = response.json()["data"]

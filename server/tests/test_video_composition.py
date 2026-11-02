@@ -211,8 +211,9 @@ def test_silent_model_config_only_required_for_title(upstreams, client, composit
 
 
 @pytest.mark.parametrize("missing_tool", [True, False])
-def test_material_probe_failures_do_not_render(upstreams, client, composition_case, monkeypatch, missing_tool):
-    """缺少 FFprobe 受理前报错，媒体探测失败则异步报错，两者都不提交 IMS。"""
+@pytest.mark.parametrize("mode", ["standard", "materials_silent"])
+def test_material_probe_failures_do_not_render(upstreams, client, composition_case, monkeypatch, missing_tool, mode):
+    """数字人与纯素材均要求 FFprobe；探测失败不提交 IMS，缺工具时不受理。"""
     from server.video_composition.errors import CompositionError
 
     async def failed_probe(*args):
@@ -225,6 +226,8 @@ def test_material_probe_failures_do_not_render(upstreams, client, composition_ca
     request = {"styleId": composition_case["request"]["styleId"],
                "processRules": {"videoDuration": 3},
                "materials": [{"fileUrl": "https://media.test/a.mp4?token=private", "type": "video"}]}
+    if mode == "standard":
+        request = composition_case["request"]
     response = client.post(BASE, json=request)
     if missing_tool:
         assert response.status_code == 503 and store.pending([], 10) == []
@@ -233,7 +236,7 @@ def test_material_probe_failures_do_not_render(upstreams, client, composition_ca
         result = finished(client, response.json()["data"])
         assert result["error"]["code"] == "material_probe_failed" and result["status"] == "failed"
         assert "private" not in json.dumps(result)
-    assert upstreams["submits"] == [] and upstreams["asr_calls"] == 0
+    assert upstreams["submits"] == [] and upstreams["asr_calls"] == int(mode == "standard" and not missing_tool)
 
 
 @pytest.mark.parametrize("voiced", [False, True])
@@ -469,6 +472,119 @@ def test_blank_match_address_only_blocks_matching(upstreams, client, composition
         result = finished(client, response.json()["data"])
         assert result["status"] == "succeeded", result
     assert upstreams["posts"] == upstreams["gets"] == []
+
+
+@pytest.mark.parametrize("matched", [False, True])
+@pytest.mark.parametrize("video_seconds", [102.833333, 102.96, 103.0])
+def test_avatar_tail_cutoff_keeps_original_content_preparation(
+    upstreams, client, composition_case, composition_logs, monkeypatch, matched, video_seconds,
+):
+    """复现 102.94 秒补尾越界；纯数字人与末尾素材均统一裁短，原 ASR 和匹配请求保持完整。"""
+    upstreams["raw"]["properties"]["original_duration_in_milliseconds"] = 102960
+    composition_case["segments"][-1].update(start_time=101.95, end_time=102.94)
+    composition_case["matches"][-1].update(start_time=101.95, end_time=102.94)
+    if matched:
+        composition_case["matches"][-1].update(
+            matched_candidate_url="https://media.example.test/tail.mp4", matched_candidate_type="video",
+        )
+    else:
+        composition_case["request"].pop("materials")
+    probes, overlays = [], []
+
+    async def probe(url, timeout):
+        """提供实际画面轨时长，记录探测只执行一次。"""
+        probes.append(url)
+        return video_seconds
+
+    async def render(task_id, data, timeout, *, timeline):
+        """确认叠加渲染接到与 IMS 相同的裁剪快照，不调用真实渲染器。"""
+        overlays.append(deepcopy(data))
+        return None
+
+    monkeypatch.setattr(service.media, "video_duration", probe)
+    monkeypatch.setattr(service.remotion, "render", render)
+    response = client.post(BASE, json=composition_case["request"])
+    assert response.status_code == 200
+    task_id = response.json()["data"]
+    result = finished(client, task_id)
+    assert result["status"] == "succeeded", result
+    data = store.get(task_id)["data"]
+    duration_ms = min(102960, int(video_seconds * 1000))
+    end = duration_ms / 1000
+    assert data["duration_ms"] == overlays[0]["duration_ms"] == duration_ms
+    assert data["segmentation"] == overlays[0]["segmentation"]
+    assert probes == [composition_case["request"]["videoUrl"]]
+    timeline = json.loads(upstreams["submits"][0]["timeline"])
+    clips = timeline["VideoTracks"][0]["VideoTrackClips"]
+    assert clips[-1]["TimelineOut"] == end
+    assert all(clip["TimelineIn"] < end and clip["TimelineOut"] <= end for clip in clips)
+    assert all(clip["In"] < video_seconds and clip["Out"] <= video_seconds for clip in clips
+               if clip["MediaURL"] == composition_case["request"]["videoUrl"])
+    assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["Out"] == end
+    assert data["segmentation"]["segments"][-1]["text"] == composition_case["segments"][-1]["text"]
+    if matched:
+        assert json.loads(upstreams["posts"][0]["llm"])["segments"] == composition_case["segments"]
+        if video_seconds < 102.96:
+            assert clips[-1]["MediaURL"] == "https://media.example.test/tail.mp4"
+    else:
+        assert upstreams["posts"] == []
+    rows = composition_logs(task_id)
+    outputs = {row["details"]["step"]: row["details"].get("output")
+               for row in rows if row["event"] == "step_finished"}
+    assert outputs["asr"]["properties"]["original_duration_in_milliseconds"] == 102960
+    assert outputs["segmentation"]["segments"] == composition_case["segments"]
+    assert upstreams["asr_calls"] == upstreams["segment_calls"] == 1
+
+
+@pytest.mark.anyio
+async def test_avatar_cutoff_recovery_preserves_bilingual_text_and_subtitle_parts(
+    upstreams, composition_case, composition_runtime, monkeypatch,
+):
+    """保存裁尾后中断再恢复：不重复探测，删除末尾切片，跨界中英整句与旧字幕子段均保留。"""
+    from server.video_composition.text_events import subtitle_events
+    from server.video_composition.schema import Segment
+
+    segments = deepcopy(composition_case["segments"])
+    segments[-1].update(start_time=7.8, end_time=7.98, text_en="Keep the whole sentence.", keyword_en="whole",
+                        subtitle_parts=[{"text": "戊己", "start_time": 7.8, "end_time": 7.9},
+                                        {"text": "庚辛", "start_time": 7.9, "end_time": 7.98}])
+    segments.append({**segments[0], "segment_id": 3, "start_time": 7.98, "end_time": 8.0})
+    matches = [{key: item[key] for key in ("segment_id", "text", "start_time", "end_time")} for item in segments]
+    store.initialize_schema()
+    record = store.create(composition_case["request"], composition_runtime.settings.output())
+    record = store.advance(record, "assembling", template=composition_case["template"], duration_ms=8000,
+                           segmentation={"segments": segments}, matches=matches)
+
+    async def probe(url, timeout):
+        """模拟画面轨比配音短五十毫秒。"""
+        return 7.9509
+
+    async def interrupted(*args, **kwargs):
+        """在已保存裁剪结果、尚未生成叠加视频时中断。"""
+        raise RuntimeError("stop before overlay")
+
+    monkeypatch.setattr(service.media, "video_duration", probe)
+    original_render = service.remotion.render
+    monkeypatch.setattr(service.remotion, "render", interrupted)
+    with pytest.raises(RuntimeError, match="stop before overlay"):
+        await service.Job(composition_runtime, record, composition_runtime.settings).assemble()
+    saved = store.get(record["task_id"])
+    assert saved["data"]["duration_ms"] == saved["data"]["avatar_duration_ms"] == 7950
+    cropped = saved["data"]["segmentation"]["segments"]
+    assert [item["segment_id"] for item in cropped] == [1, 2]
+    assert cropped[-1] == {**segments[-2], "end_time": 7.95, "subtitle_parts": [
+        segments[-2]["subtitle_parts"][0], {**segments[-2]["subtitle_parts"][1], "end_time": 7.95},
+    ]}
+    assert saved["data"]["matches"] == [matches[0], {**matches[1], "end_time": 7.95}]
+    last = Segment.model_validate(cropped[-1])
+    assert subtitle_events([last])[-1] == ("庚辛", "", 7.9, 7.95)
+    assert subtitle_events([last], "en") == [("Keep the whole sentence", "whole", 7.8, 7.95)]
+    assert record["data"]["duration_ms"] == 8000 and record["data"]["segmentation"]["segments"] == segments
+    monkeypatch.setattr(service.media, "video_duration", lambda *args: pytest.fail("恢复不应再次探测"))
+    monkeypatch.setattr(service.remotion, "render", original_render)
+    await composition_runtime._execute(saved)
+    assert store.get(record["task_id"])["status"] == "succeeded"
+    assert upstreams["asr_calls"] == upstreams["segment_calls"] == 0 and upstreams["posts"] == []
 
 
 @pytest.fixture
@@ -1979,7 +2095,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     rows = composition_logs(task_id)
     started = {row["details"]["step"]: row["details"]["input"] for row in rows if row["event"] == "step_started"}
     outputs = {row["details"]["step"]: row["details"].get("output") for row in rows if row["event"] == "step_finished"}
-    assert set(started) == set(outputs) == {"template", "remotion_snapshot", "remotion_render", "asr", "segmentation", "match_submit", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
+    assert set(started) == set(outputs) == {"template", "remotion_snapshot", "remotion_render", "asr", "segmentation", "match_submit", "material_probe", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
     assert started["template"] == {"style_id": request["styleId"]}
     assert outputs["template"] == composition_case["template"]
     assert outputs["asr"] == upstreams["raw"] == started["segmentation"]["asr_result"]
