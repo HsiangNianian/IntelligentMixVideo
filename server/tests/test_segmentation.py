@@ -489,11 +489,12 @@ def test_wavefront_matches_independent_dp(model):
 
 
 @pytest.mark.parametrize("failure,status,calls", [
-    ("json", 502, 3), ("shape", 502, 3), ("connect", 502, 1), ("timeout", 504, 1), ("split_connect", 502, 1),
+    ("json", 502, 3), ("shape", 502, 3), ("connect", 502, 4), ("timeout", 504, 4),
+    ("split_connect", 502, 4),
     ("budget_before", 504, 0), ("budget_split", 504, 1), ("budget_keywords", 504, 1),
 ])
 def test_model_failures_close_client(model, client, monkeypatch, failure, status, calls):
-    """提词非法输出、切分或提词的网络失败及预算耗尽按原错误路径结束，不再调用模型且关闭 SDK。"""
+    """纠错或请求重试耗尽、预算耗尽按原错误路径结束，返回原状态码且关闭 SDK。"""
     script = "甲乙丙丁戊己庚辛壬" if failure in ("split_connect", "budget_split") else "甲乙丙丁"
     if failure.startswith("budget"):
         clock = MagicMock(return_value=0.0)
@@ -502,7 +503,7 @@ def test_model_failures_close_client(model, client, monkeypatch, failure, status
             settings = segmentation._settings
 
             def configure(config):
-                clock.return_value = 90.0
+                clock.return_value = 120.0
                 return settings(config)
 
             monkeypatch.setattr(segmentation, "_settings", configure)
@@ -510,7 +511,7 @@ def test_model_failures_close_client(model, client, monkeypatch, failure, status
             default = model[1].chat.completions.create.side_effect
 
             def respond(**kwargs):
-                clock.return_value = 90.0
+                clock.return_value = 120.0
                 return default(**kwargs)
 
             model[1].chat.completions.create.side_effect = respond
@@ -531,6 +532,48 @@ def test_model_failures_close_client(model, client, monkeypatch, failure, status
         assert response.json() == {"error": {"message": "切片处理超时。"}}
     if failure != "budget_before":
         assert model[0].call_args.kwargs["max_retries"] == 0
+
+
+def test_model_request_recovers_after_three_retries(model, client, monkeypatch):
+    """前三次各超时 30 秒，第四次在 120 秒预算内恢复并返回正确关键词。"""
+    clock = MagicMock(return_value=0.0)
+    monkeypatch.setattr(segmentation, "perf_counter", clock)
+    create = model[1].chat.completions.create
+    default = create.side_effect
+    request = httpx.Request("POST", "https://example.test/v1")
+
+    def respond(**kwargs):
+        """模拟三次超时，随后用正常回复完成提词。"""
+        if create.call_count <= 3:
+            clock.return_value += 30
+            raise APITimeoutError(request=request)
+        clock.return_value += 1
+        return default(**kwargs)
+
+    create.side_effect = respond
+    response = client.post("/segmentations", json=payload("甲乙丙丁"))
+    assert response.status_code == 200
+    assert response.json()["segments"][0]["keyword"] == "甲乙"
+    assert create.call_count == 4
+
+
+def test_model_retry_stops_at_shared_budget(model, client, monkeypatch):
+    """请求重试不重置总预算：后续超时缩短，120 秒耗尽后不再发出第四次请求。"""
+    clock = MagicMock(return_value=0.0)
+    monkeypatch.setattr(segmentation, "perf_counter", clock)
+    request = httpx.Request("POST", "https://example.test/v1")
+
+    def timeout(**kwargs):
+        """首个超时含额外处理耗时，后两次只消耗剩余预算允许的请求时间。"""
+        clock.return_value += kwargs["timeout"] + (40 if clock.return_value == 0 else 0)
+        raise APITimeoutError(request=request)
+
+    model[1].chat.completions.create.side_effect = timeout
+    response = client.post("/segmentations", json=payload("甲乙丙丁"))
+    assert response.status_code == 504
+    assert response.json() == {"error": {"message": "切片处理超时。"}}
+    assert [call.kwargs["timeout"] for call in model[1].chat.completions.create.call_args_list] == [30, 30, 20]
+    assert model[0].return_value.__exit__.call_count == 1
 
 
 def test_real_fun_asr_excerpt(model):
@@ -593,7 +636,7 @@ def test_real_fun_asr_excerpt(model):
 
 @pytest.mark.parametrize("invalid", [{}, {"keywords": []}, {"keywords": {"3": "QQ"}},
                                      {"keywords": {"01": "甲乙"}}, {"keywords": {"1": None}}])
-@pytest.mark.parametrize("timeout,budget", [(120, 90), (5, 90), (120, 10)])
+@pytest.mark.parametrize("timeout,budget", [(120, 120), (5, 120), (120, 10)])
 def test_model_cuts_keywords_and_protected_runs(model, monkeypatch, invalid, timeout, budget):
     """第三次提词成功，超时最多 30 秒；纠错共享预算，不放宽更短的配置。"""
     monkeypatch.setenv("IMV_LLM_TIMEOUT_SECONDS", str(timeout))
