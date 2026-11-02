@@ -214,7 +214,11 @@ def edit_run(tmp_path, code: str, intent: dict) -> AgentRun:
     sprite = saved_sprite("bundle", code, ("big",))
     spec = SimpleNamespace(sprite=sprite, composition=sprite.composition, sprite_kind="filter_overlay")
     base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
-    harness = SimpleNamespace(settings=Settings(_env_file=None, data_dir=tmp_path), renderer=None)
+    harness = SimpleNamespace(
+        settings=Settings(_env_file=None, data_dir=tmp_path),
+        renderer=None,
+        fonts=SimpleNamespace(guide=lambda: ""),
+    )
     return AgentRun(harness, spec, Budget(), tmp_path / "run", [], lambda *_: None, base=base, intent=intent)
 
 

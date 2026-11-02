@@ -25,8 +25,9 @@ evidence. The final delivery is a saved Sprite published as an isolated Player p
 
 Providers bill input served from their prefix cache far lower, and a hit needs an identical prefix, so the system
 prompt holds only each layer's fixed rules and the snapshot follows the window. The Executor's window
-(`context.StepWindow`) is append-only: the request, the accepted base and the reference images come once at its start,
-and only what changes each turn (`session.turn_state`, review frames) follows it. It is replaced whole only when it
+(`context.StepWindow`) is append-only: the request, the accepted base, the font library and the reference images come
+once at its start, with the font library read once so a live registry update cannot change the cached system prefix.
+Only what changes each turn (`session.turn_state`, review frames) follows it. It is replaced whole only when it
 grows `agent.WINDOW_BYTES` (120 KB) past its start, keeping that start, the newest exchange (unless it fills the budget
 alone), one small exchange before it and a list of the Presets the current step made, whose IDs would otherwise leave with
 their receipts. The previous turn's snapshot is not written into the window: that would miss on the same bytes (the new

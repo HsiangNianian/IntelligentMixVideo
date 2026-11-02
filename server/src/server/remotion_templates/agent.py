@@ -291,12 +291,8 @@ class AgentRun:
         return {
             Layer.OUTER: OUTER_RULES,
             Layer.PLAN: PLAN_RULES,
-            Layer.EXECUTOR: self._executor_rules(),
+            Layer.EXECUTOR: EXECUTOR_RULES,
         }[self.layer]
-
-    def _executor_rules(self):
-        """Executor rules plus the font library read from the database, as the enum the Agent chooses `fontFamily` from."""
-        return f"{EXECUTOR_RULES}\n{self.harness.fonts.guide()}"
 
     def _append_handoff(self, context, reason, detail=None):
         """Pass host state between role windows as data, never as an assistant claim."""
@@ -317,11 +313,15 @@ class AgentRun:
     def _start_window(self, reason, **notes):
         """Open a new Executor window with what stays the same for the whole task, so every later turn only extends it.
 
-        The request, the accepted base with its source and the reference images come once and stay; a request trimmed for
-        the token budget keeps them too.
+        The request, the accepted base with its source, the font library and the reference images come once and stay; a
+        request trimmed for the token budget keeps them too. The font library stays out of the system prompt so its live
+        registry cannot change the cached system prefix during a task.
         """
         window = StepWindow()
         self._append_handoff(window, reason, {"user_intent": self.session.intent, **self.session.task_facts(), **notes})
+        font_library = self.harness.fonts.guide()
+        if font_library:
+            window.append([{"role": "user", "content": "Host font library (data):\n" + font_library}])
         if self.session.images:
             window.append([image_message(REFERENCE_IMAGES_LABEL, self.session.images)])
         window.pinned = len(window.groups)

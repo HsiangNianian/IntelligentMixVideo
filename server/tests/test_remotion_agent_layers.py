@@ -849,6 +849,31 @@ def record_requests(harness):
     return seen
 
 
+def test_executor_font_library_is_window_data_not_a_mutable_system_prompt(monkeypatch, tmp_path):
+    """字体库只作为窗口开头的宿主数据发送且在窗口打开时读取一次，后续字体同步不会改变系统提示并击穿整段前缀缓存。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-search", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-report", summary="预设已就绪"),
+    ])
+    guides = []
+
+    def guide():
+        """Return a marker while recording how often the live font library is read for this window."""
+        guides.append(True)
+        return "FONT_LIBRARY_MARKER"
+
+    harness.fonts.guide = guide
+    seen = record_requests(harness)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+
+    executor = [item for item in seen if item["phase"] == "executor"]
+    assert executor and len(guides) == 1
+    assert all("FONT_LIBRARY_MARKER" not in item["system"] for item in executor)
+    assert all(any("FONT_LIBRARY_MARKER" in message.get("content", "") for message in item["messages"]) for item in executor)
+
+
 def test_each_executor_request_extends_the_previous_one(monkeypatch, tmp_path):
     """前缀缓存要求每次请求的系统提示与窗口是上一次的严格延伸：超过八组也不淘汰，系统提示不变，每轮变化的快照只在窗口之后，
     需求只在窗口开头给一次；任务跨步骤也不换窗口。"""
