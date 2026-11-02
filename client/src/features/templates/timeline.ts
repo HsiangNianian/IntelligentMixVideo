@@ -417,7 +417,13 @@ export function playerTimeline(timeline: ReturnType<typeof buildTimeline>, trans
         // IMS 服务端仍使用实际像素宽高，不能把这里的 SDK 比例原样发给云端。
         Duration: timeline.duration, X: 0, Y: 0, Width: 1, Height: 1, AdaptMode: "Fill" }] }] : []),
       ...[...timeline.EffectTracks].reverse().map((row) => ({ Type: "Effect", VideoTrackClips: row.EffectTrackItems })),
-      ...[...timeline.SubtitleTracks].reverse().map((row) => ({ Type: "Subtitle", VideoTrackClips: row.SubtitleTrackClips })),
+      ...[...timeline.SubtitleTracks].reverse().map((row) => ({ Type: "Subtitle", VideoTrackClips: row.SubtitleTrackClips.map((clip) => {
+        // SDK 5.2.2 的自适应排版会忽略居中对齐文字的 X；仅对 X 非 50% 的文字补 ASS 定位，保留自动换行和样式。
+        // 必须在开场/同屏坐标确定之后适配，且不将预览专用标记写回业务时间线或保存内容。
+        return clip.AdaptMode && clip.X !== 0.5 ? {
+          ...clip, Content: `{\\pos(${Math.round(clip.X * timeline.FECanvas.Width)},${Math.round(clip.Y * timeline.FECanvas.Height)})}${clip.Content}`,
+        } : clip;
+      }) })),
     ],
   };
 }
