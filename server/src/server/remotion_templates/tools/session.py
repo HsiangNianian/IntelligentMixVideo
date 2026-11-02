@@ -50,9 +50,11 @@ from .compose import TEXT_BLOCK_ID, compose_source, compose_text_source
 
 # 四个搜索回执需共享 240 KB 会话交换，留出调用参数与消息封装的空间。
 _SEARCH_BYTE_BUDGET = 40_000
-# 快照预算：provider 的请求体上限是 512000 字节，会话窗口自身上限 240000 字节，
-# 余量留给规则与工具描述。快照里只有编辑基线的源码没有上限，只能在这里按需省略。
+# 交接预算：Executor 窗口开头的交接消息是一组，单组上限 240000 字节；provider 的请求体上限是 512000 字节，
+# 窗口还要加上增长预算（agent.WINDOW_BYTES），余量留给规则、工具描述与快照。交接里只有编辑基线的源码没有上限，只能在这里按需省略。
 _SNAPSHOT_BYTE_BUDGET = 200_000
+# 每轮快照里校验报告的预算：它们都在窗口之后，每轮都算未命中，而每份报告的结论已经写在当时的工具回执里。
+_VALIDATION_BYTE_BUDGET = 20_000
 # 分词的词典只在第一次检索时载入，日志里不留它的启动信息。
 jieba.setLogLevel(logging.WARNING)
 
@@ -195,29 +197,30 @@ def _terms(text: str) -> set[str]:
 
 
 _OMITTED = (
-    "{size} bytes of source omitted to keep the snapshot within the request limit. Compose it unchanged by its "
+    "{size} bytes of source omitted to keep the handoff within the request limit. Compose it unchanged by its "
     "draft_id, or write a replacement with preset_create."
 )
 
 
 def _snapshot_bytes(data: dict) -> int:
-    """测量模型实际收到的快照体积（UTF-8 字节）。"""
-    return len(json.dumps(data, ensure_ascii=False, default=str).encode())
+    """测量快照作为消息文本写进窗口后的体积（UTF-8 字节）：JSON 文本再序列化一次，引号与换行多转义一层。"""
+    return len(json.dumps(json.dumps(data, ensure_ascii=False, default=str), ensure_ascii=False).encode())
 
 
-def _bounded_snapshot(data: dict) -> dict:
-    """超过预算时从最大的开始省略基线源码，保留草稿句柄、Schema、默认值与编排。
+def _bounded_snapshot(data: dict, reserved: int) -> dict:
+    """超过预算（已扣除同一条消息里其他内容占用的 ``reserved`` 字节）时从最大的开始省略基线源码，保留草稿句柄、Schema、默认值与编排。
 
     正常编辑的基线远低于预算，模型可见信息不变；省略的预设仍可按 draft_id 原样组合。
     """
     base = data.get("base") or {}
-    if _snapshot_bytes(data) <= _SNAPSHOT_BYTE_BUDGET:
+    budget = _SNAPSHOT_BYTE_BUDGET - reserved
+    if _snapshot_bytes(data) <= budget:
         return data
     if "legacy_code" in base:
         base["legacy_code_omitted"] = _OMITTED.format(size=len(base.pop("legacy_code").encode()))
     presets = base.get("presets", {})
     for draft_id in sorted((key for key, value in presets.items() if "code" in value), key=lambda key: -len(presets[key]["code"])):
-        if _snapshot_bytes(data) <= _SNAPSHOT_BYTE_BUDGET:
+        if _snapshot_bytes(data) <= budget:
             break
         presets[draft_id]["code_omitted"] = _OMITTED.format(size=len(presets[draft_id].pop("code").encode()))
     return data
@@ -468,8 +471,8 @@ class ToolSession:
 
     def task_facts(self) -> dict:
         """What stays the same for the whole task, handed to the Executor once at the start of its window: the accepted
-        base with its Preset source, largest sources first omitted when they would exceed the snapshot budget."""
-        return _bounded_snapshot({"base": self._base_summary(True)}) if self.base is not None else {}
+        base with its Preset source, largest sources first omitted when they and the request would exceed the snapshot budget."""
+        return _bounded_snapshot({"base": self._base_summary(True)}, _snapshot_bytes(self.intent)) if self.base is not None else {}
 
     def turn_state(self) -> dict:
         """Expose task-local observations as IDs and summaries; the Executor gets only this after its window, so the
@@ -488,12 +491,21 @@ class ToolSession:
                 for item in self.saved_sprites.values()
             ],
             "drafts": {"presets": list(self.preset_drafts), "sprites": list(self.sprite_drafts)},
-            "last_validation": {
-                key: report.model_dump(mode="json") for key, report in self.validation_reports.items()
-            },
+            "last_validation": self._recent_validation(),
             "preset_backend": self.catalog_backend,
             "feedback": list(self.feedback),
         }
+
+    def _recent_validation(self) -> dict:
+        """The latest validation reports that fit their budget, oldest first; each one's outcome was already reported in its tool receipt."""
+        kept, size = [], 0
+        for key, report in reversed(self.validation_reports.items()):
+            data = report.model_dump(mode="json")
+            size += _snapshot_bytes(data)
+            if size > _VALIDATION_BYTE_BUDGET:
+                break
+            kept.append((key, data))
+        return dict(reversed(kept))
 
     def _base_summary(self, with_code: bool) -> dict | None:
         """Describe the accepted base as instances over base_* Preset drafts, each source listed once.

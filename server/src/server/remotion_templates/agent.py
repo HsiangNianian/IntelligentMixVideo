@@ -314,14 +314,14 @@ class AgentRun:
             ]
         )
 
-    def _start_window(self, reason):
+    def _start_window(self, reason, **notes):
         """Open a new Executor window with what stays the same for the whole task, so every later turn only extends it.
 
         The request, the accepted base with its source and the reference images come once and stay; a request trimmed for
         the token budget keeps them too.
         """
         window = StepWindow()
-        self._append_handoff(window, reason, {"user_intent": self.session.intent, **self.session.task_facts()})
+        self._append_handoff(window, reason, {"user_intent": self.session.intent, **self.session.task_facts(), **notes})
         if self.session.images:
             window.append([image_message(REFERENCE_IMAGES_LABEL, self.session.images)])
         window.pinned = len(window.groups)
@@ -329,17 +329,22 @@ class AgentRun:
         self.window_floor = len(window.serialize().encode())
 
     def _compact_executor_window(self):
-        """Keep the Executor window append-only until it outgrows its budget, then replace it whole, which costs one cache miss."""
+        """Keep the Executor window append-only until it outgrows its budget, then replace it whole, which costs one cache miss.
+
+        The newest exchange stays unless it fills the budget alone, because the Executor has not acted on its receipt yet.
+        An older one stays only when small, or the window would soon outgrow its budget again; the Presets this step made
+        are listed in the new handoff, because a stored Preset's ID is otherwise only in the receipt being dropped.
+        """
         window = self.executor_context
         size = len(window.serialize().encode())
         if size <= self.window_floor + WINDOW_BYTES:
             return
-        # A big exchange stays out, or the window would soon outgrow its budget again.
-        kept = [group for group in window.groups if group[0].get("role") == "assistant"
-                and len(json.dumps(group, ensure_ascii=False).encode()) <= WINDOW_BYTES // 8][-WINDOW_KEEP_EXCHANGES:]
+        exchanges = [(group, len(json.dumps(group, ensure_ascii=False).encode())) for group in window.groups if group[0].get("role") == "assistant"]
+        older = [group for group, bytes_ in exchanges[:-1] if bytes_ <= WINDOW_BYTES // 8][-(WINDOW_KEEP_EXCHANGES - 1):]
+        newest = [group for group, bytes_ in exchanges[-1:] if bytes_ <= WINDOW_BYTES]
         self.budget.record("window_compacted", groups=len(window.groups), bytes=size)
-        self._start_window("window_compacted")
-        for group in kept:
+        self._start_window("window_compacted", presets_ready_in_this_step=self.step_presets.get(self.state.index, []))
+        for group in [*older, *newest]:
             self.executor_context.append(group)
 
     def _receipt_key(self, tool_name, value):

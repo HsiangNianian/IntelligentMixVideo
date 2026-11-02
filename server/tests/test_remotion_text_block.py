@@ -1266,7 +1266,7 @@ def test_the_executor_knows_what_hides_a_gradient_fill_and_how_to_order_parts():
 
     assert "a text-shadow on the same element is painted on top of it" in EXECUTOR_RULES
     assert "order them with delay" in EXECUTOR_RULES
-    assert "a change shows only once sprite_create saves it" in EXECUTOR_RULES
+    assert "a sprite_compose takes them away" in EXECUTOR_RULES
 
 
 def test_the_executor_makes_transparency_an_effect_and_allows_negative_line_gaps():

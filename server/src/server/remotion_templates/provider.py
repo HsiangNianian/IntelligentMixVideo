@@ -134,8 +134,8 @@ class Budget:
     on_progress: Callable[[str], None] | None = None
     on_round: Callable[[dict], None] | None = None
     active_phase: str | None = None
-    # Input tokens the provider served from its prefix cache in this run, when it reports them.
-    cached_tokens: int = 0
+    # Input tokens the provider served from its prefix cache in this run; None until it reports them, so a reported zero stays visible.
+    cached_tokens: int | None = None
     _start: tuple[int, int] = (0, 0)
 
     def progress(self, phase: str) -> None:
@@ -164,7 +164,7 @@ class Budget:
     def summary(self) -> dict[str, int]:
         """Expose flat integer counters compatible with the stored job usage contract."""
         result = {"calls": self.calls, "tokens": self.tokens}
-        if self.cached_tokens:
+        if self.cached_tokens is not None:
             result["cached_tokens"] = self.cached_tokens
         for name, usage in self.phases.items():
             result.update({f"{name}_{key}": value for key, value in usage.items()})
@@ -520,7 +520,8 @@ class Provider:
             nested = details.get("cached_tokens") if isinstance(details, dict) else None
             cached = valid_usage("prompt_cache_hit_tokens")
             cached = cached if cached is not None else nested if type(nested) is int and nested >= 0 else None
-            budget.cached_tokens += cached or 0
+            if cached is not None:
+                budget.cached_tokens = (budget.cached_tokens or 0) + cached
             budget.record(
                 "model_usage",
                 phase=budget.active_phase,

@@ -850,7 +850,7 @@ def record_requests(harness):
 
 
 def test_each_executor_request_extends_the_previous_one(monkeypatch, tmp_path):
-    """前缀缓存要求每次请求是上一次的严格延伸：超过八组也不淘汰，系统提示不变，每轮变化的快照只在窗口之后，
+    """前缀缓存要求每次请求的系统提示与窗口是上一次的严格延伸：超过八组也不淘汰，系统提示不变，每轮变化的快照只在窗口之后，
     需求只在窗口开头给一次；任务跨步骤也不换窗口。"""
     searches = [call(f"exec-{index}", "preset_search", {"preset_id": f"preset-{index}"}) for index in range(12)]
     run, harness = new_run(monkeypatch, tmp_path, [
@@ -874,7 +874,8 @@ def test_each_executor_request_extends_the_previous_one(monkeypatch, tmp_path):
 
 
 def test_a_full_executor_window_is_replaced_whole_keeping_the_facts(monkeypatch, tmp_path):
-    """窗口超过预算才整体压缩一次：新窗口仍以需求与基线开头，留下最新的小交换、不留整份写入的大交换，之后继续只追加。"""
+    """窗口超过预算才整体压缩一次：新窗口仍以需求与基线开头，留下最新一次交换（回放里 15 次压缩有 5 次丢了它，模型看不到刚做完的结果）
+    和它之前的一次小交换、不留更早的大交换，列出本步骤已备好的 Preset（它们的 ID 只在被丢掉的回执里），之后继续只追加。"""
     big = {"description": "大", "code": "x" * (WINDOW_BYTES // 4 + 1000), "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}
     run, harness = new_run(monkeypatch, tmp_path, [
         delegate(),
@@ -895,5 +896,23 @@ def test_a_full_executor_window_is_replaced_whole_keeping_the_facts(monkeypatch,
     head = compacted["messages"][0]["content"]
     assert "window_compacted" in head and "今日灵感 打字机" in head and "基线源码" in head
     calls = [tool["id"] for message in compacted["messages"] for tool in message.get("tool_calls", [])]
-    assert calls == ["exec-small"]
+    assert calls == ["exec-small", "exec-big-2"]
+    assert json.loads(head.split("\n", 1)[1])["detail"]["presets_ready_in_this_step"] == [{"kind": "stored", "preset_id": "preset-new"}, {"kind": "stored", "preset_id": "preset-1"}]
     assert after["messages"][:len(compacted["messages"])] == compacted["messages"]
+
+
+def test_a_newest_exchange_that_fills_the_window_budget_is_not_kept(monkeypatch, tmp_path):
+    """一次交换单独就超过窗口预算时不留，否则压缩后下一轮又要压缩，大基线下还可能超过请求上限。"""
+    huge = {"description": "大", "code": '"' * (WINDOW_BYTES // 5), "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-small", "preset_search", {"preset_id": "preset-1"}),
+        call("exec-huge", "preset_create", huge),
+        call("exec-next", "preset_search", {"preset_id": "preset-2"}),
+    ], max_tooluse=30)
+    seen = record_requests(harness)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    compacted = [item for item in seen if item["phase"] == "executor"][2]
+    assert "window_compacted" in compacted["messages"][0]["content"]
+    assert [tool["id"] for message in compacted["messages"] for tool in message.get("tool_calls", [])] == ["exec-small"]

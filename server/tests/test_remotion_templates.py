@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from server.remotion_templates.agent import AgentRun
 from server.remotion_templates.models import TemplateCandidate
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.settings import Settings
@@ -206,6 +207,55 @@ def test_an_edit_composes_the_base_instances_as_listed(tmp_path):
     composed = asyncio.run(run())
     assert composed["instances"][0]["draft_id"] == "base_tint"
     assert composed["default_parameters"] == {"tint": {"opacity": 0.4}}
+
+
+def edit_run(tmp_path, code: str, intent: dict) -> AgentRun:
+    """An edit AgentRun over the real session, whose base has one Preset with the given source."""
+    sprite = saved_sprite("bundle", code, ("big",))
+    spec = SimpleNamespace(sprite=sprite, composition=sprite.composition, sprite_kind="filter_overlay")
+    base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
+    harness = SimpleNamespace(settings=Settings(_env_file=None, data_dir=tmp_path), renderer=None)
+    return AgentRun(harness, spec, Budget(), tmp_path / "run", [], lambda *_: None, base=base, intent=intent)
+
+
+def test_the_executor_handoff_fits_one_window_group_whatever_the_base_source_holds(tmp_path):
+    """审计复现：基线源码按单层 JSON 没超预算，写进窗口多转义一层后加上需求超过单组 240000 字节，任务在 Executor 启动时以 ValueError 失败。
+    现在按写进窗口后的体积连同需求一起计算，放不下时省略源码；放得下的基线源码原样保留。"""
+    quoted = 'const a = {"k": "v", "l": "w"};\n' * (152_000 // 32)
+    run = edit_run(tmp_path, quoted, {"instruction": "改颜色"})
+    run._start_window("step_dispatched")
+    handoff = json.loads(run.executor_context.groups[0][0]["content"].split("\n", 1)[1])["detail"]
+    assert "code" not in handoff["base"]["presets"]["base_big"] and "code_omitted" in handoff["base"]["presets"]["base_big"]
+    assert handoff["user_intent"]["instruction"] == "改颜色"
+    assert run.window_floor <= 240_000
+    # Room the request takes comes out of the source's budget.
+    fits = "x" * 170_000
+    assert "code" in edit_run(tmp_path, fits, {}).session.task_facts()["base"]["presets"]["base_big"]
+    assert "code" not in edit_run(tmp_path, fits, {"instruction": "灯" * 15_000}).session.task_facts()["base"]["presets"]["base_big"]
+
+
+def test_the_turn_state_keeps_only_the_latest_validation_reports_that_fit(tmp_path):
+    """审计复现：每次 sprite.create 都累积一份报告且没有上限，加上大基线和增长中的窗口，请求超过 512000 字节，任务以 ModelFailure 失败；
+    它们每轮都不命中缓存，所以只留放得下的最新几份，顺序不变，放不下的最老报告不再重复。"""
+    current = session(tmp_path)
+
+    def report(size):
+        """One failed save's report with a check message of the given size."""
+        return RenderValidationReport(
+            passed=False, composition=Composition(width=1080, height=1920, fps=30, duration_frames=30),
+            code_validation={"passed": True, "diagnostics": []},
+            checks=[{"name": "text_fit", "status": "failed", "message": "m" * size}], tests=[], custom_tests_executed=0,
+        )
+
+    assert current.turn_state()["last_validation"] == {}
+    for index in range(6):
+        current.validation_reports[f"key-{index}"] = report(6_000)
+    kept = current.turn_state()["last_validation"]
+    assert list(kept) == ["key-3", "key-4", "key-5"]
+    assert kept["key-5"]["checks"][0]["message"] == "m" * 6_000
+    # A report that fills the budget alone leaves none, rather than breaking it: its receipt is in the window.
+    current.validation_reports["key-6"] = report(30_000)
+    assert current.turn_state()["last_validation"] == {}
 
 
 def test_a_large_edit_base_is_omitted_largest_first_to_fit_the_snapshot_budget(tmp_path):

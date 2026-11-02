@@ -27,9 +27,14 @@ Providers bill input served from their prefix cache far lower, and a hit needs a
 prompt holds only each layer's fixed rules and the snapshot follows the window. The Executor's window
 (`context.StepWindow`) is append-only: the request, the accepted base and the reference images come once at its start,
 and only what changes each turn (`session.turn_state`, review frames) follows it. It is replaced whole only when it
-grows `agent.WINDOW_BYTES` (120 KB) past its start, keeping that start and the newest small exchanges. Providers
-without prefix caching may cost more on long tasks, because the window no longer evicts turn by turn. `model_usage`
-audit events record `cached_input_tokens` and the job usage `cached_tokens`.
+grows `agent.WINDOW_BYTES` (120 KB) past its start, keeping that start, the newest exchange (unless it fills the budget
+alone), one small exchange before it and a list of the Presets the current step made, whose IDs would otherwise leave with
+their receipts. The previous turn's snapshot is not written into the window: that would miss on the same bytes (the new
+exchange and the new snapshot) and only add input. Validation reports in the snapshot are capped at the newest that fit
+20 KB, since they miss on every turn and each one's outcome was already reported in its tool receipt. Providers without prefix caching may
+cost more on long tasks, because the window no longer evicts turn by turn. `model_usage` audit events record
+`cached_input_tokens` and the job usage `cached_tokens`, absent until the provider reports them, so a reported zero means
+no hit and an absent value means the provider does not say.
 
 ## Tool catalog
 
