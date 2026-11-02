@@ -325,7 +325,12 @@ def composition_settings(monkeypatch, asr_env):
         """默认无 Remotion 绑定，具体集成用例单独覆盖资产快照。"""
         return {"revision": 0, "placements": [], "assets": {}}
 
+    async def video_duration(url, timeout):
+        """默认提供足够长的画面轨，禁止编排测试访问媒体网络；探测用例另行覆盖。"""
+        return 3600.0
+
     monkeypatch.setattr(service.remotion, "snapshot", empty_bindings)
+    monkeypatch.setattr(service.media, "video_duration", video_duration)
 
     monkeypatch.setattr(service, "shutil", SimpleNamespace(which=lambda name: "ffmpeg"))
     for key, value in {

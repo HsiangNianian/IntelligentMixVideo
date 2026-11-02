@@ -1,6 +1,7 @@
 """单进程合成调度：持久化阶段、有限恢复和异步上游调用，退出收束任务与后台日志。"""
 
 import asyncio
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 import logging
 import json
@@ -48,8 +49,8 @@ def preflight(request: CompositionRequest, config: ClientSettings | None = None)
     if request.composition_mode == "standard":
         if "materials" in request.model_fields_set and settings.match_base_url is None:
             raise ValueError("缺少素材匹配配置")
-    elif any(item.type == "video" for item in request.materials) and shutil.which("ffprobe") is None:
-        raise RuntimeError("缺少 FFprobe，无法读取素材视频时长")
+    if (request.composition_mode == "standard" or any(item.type == "video" for item in request.materials)) and shutil.which("ffprobe") is None:
+        raise RuntimeError("缺少 FFprobe，无法读取视频时长")
     if request.composition_mode != "materials_silent":
         if request.text or (request.title and request.title.strip()):
             SegmentationSettings()
@@ -573,9 +574,32 @@ class Job:
             await self.save("assembling", matches=matches)
 
     async def assemble(self) -> None:
-        """组装只读业务快照，提交前持久化完整请求、稳定 ClientToken 和总截止时间。"""
+        """按画面轨时长裁剪合成快照，提交前持久化完整请求、稳定 ClientToken 和总截止时间。"""
         data = self.record["data"]
         request = CompositionRequest.from_snapshot(data["request"])
+        # 原始 ASR、切片和匹配回执保留在执行日志；只裁合成快照，不重跑内容准备。
+        # 已渲染叠加的历史任务及操练场封存样本沿用原快照，避免恢复时改变时钟。
+        if request.composition_mode == "standard" and not data.get("playground") and "remotion_result" not in data and "avatar_duration_ms" not in data:
+            seconds = await self.runtime.step(self.record, "material_probe", lambda: media.video_duration(
+                request.video_url, self.settings.composition_http_timeout_seconds,
+            ), {"video_url": request.video_url})
+            avatar_duration_ms = int(seconds * 1000)
+            prepared = {"avatar_duration_ms": avatar_duration_ms}
+            if avatar_duration_ms < data["duration_ms"]:
+                end = avatar_duration_ms / 1000
+                segmented = deepcopy(data.get("segmentation", {"segments": []}))
+                segments = [item for item in segmented["segments"] if item["start_time"] < end]
+                for item in segments:
+                    item["end_time"] = min(item["end_time"], end)
+                    if item.get("subtitle_parts"):
+                        item["subtitle_parts"] = [part for part in item["subtitle_parts"] if part["start_time"] < end]
+                        item["subtitle_parts"][-1]["end_time"] = item["end_time"]
+                segmented["segments"] = segments
+                matches = [{**item, "end_time": min(item["end_time"], end)}
+                           for item in data.get("matches", []) if item["start_time"] < end]
+                prepared.update(duration_ms=avatar_duration_ms, segmentation=segmented, matches=matches)
+            await self.save("assembling", **prepared)
+            data = self.record["data"]
         # 上传成功但 URL 尚未落库时若进程中断，恢复会按固定任务 key 幂等覆盖同一份蒙版。
         # 允许重复上传这张小 PNG；URL 已落库时直接复用。
         if data["template"].get("frame_mask") and "frame_mask_url" not in data:
