@@ -202,6 +202,7 @@ try {
     ["keyword", keyword],
     ["flower-keyword", { subtitleFlower: flower, ...keyword }],
   ];
+  let keywordOnly;
   for (const [name, editor] of cases) {
     await update(() => page.evaluate(editor => window.setSubtitle(editor), editor));
     await seek(1.5);
@@ -210,8 +211,11 @@ try {
       const lines = before.rows.filter((y, i) => i === 0 || y - before.rows[i - 1] > 5).length;
       assert(lines >= 3, `长字幕应实际自动换行，当前 ${lines} 行`);
     }
-    if (name === "keyword") assert(before.points.filter(([, , r, g, b]) => r > 160 && g > 160 && b < 80).length > 100, "关键词应有实际黄色像素");
+    // 组合样式必须同时有关键词颜色和额外花字效果，避免两处同时丢失效果仍通过平移比较。
+    if (name === "keyword") keywordOnly = before;
+    if (name === "keyword" || name === "flower-keyword") assert(before.points.filter(([, , r, g, b]) => r > 160 && g > 160 && b < 80).length > 100, "关键词应有实际黄色像素");
     if (name === "flower") assert.notDeepEqual(before.points, centered.points, "花字应实际改变渲染样式");
+    if (name === "flower-keyword") assert.notDeepEqual(before.points, keywordOnly.points, "组合样式应保留关键词之外的花字效果");
     await moveX(25); await seek(1.5);
     translated(before, await pixels(`${name}-left`), -270);
   }
