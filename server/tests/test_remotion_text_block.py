@@ -1222,7 +1222,7 @@ def test_text_and_keywords_are_preview_samples_not_the_thing_to_ask_about():
     assert "are injected by templates on each render" in OUTER_RULES
     assert "do not ask about those unless the user clearly wants a specific wording chosen now" in OUTER_RULES
     assert "its default text and keywords are only the preview sample" in EXECUTOR_RULES
-    assert "The request is user_intent, in the host handoff and at the top of the snapshot" in EXECUTOR_RULES
+    assert "The request is user_intent, in the host handoff at the start of this conversation" in EXECUTOR_RULES
 
 
 def test_the_executor_recognizes_the_words_a_request_singles_out():
@@ -1266,7 +1266,7 @@ def test_the_executor_knows_what_hides_a_gradient_fill_and_how_to_order_parts():
 
     assert "a text-shadow on the same element is painted on top of it" in EXECUTOR_RULES
     assert "order them with delay" in EXECUTOR_RULES
-    assert "a sprite_compose takes them away" in EXECUTOR_RULES
+    assert "a change shows only once sprite_create saves it" in EXECUTOR_RULES
 
 
 def test_the_executor_makes_transparency_an_effect_and_allows_negative_line_gaps():

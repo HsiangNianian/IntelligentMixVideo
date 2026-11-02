@@ -149,7 +149,7 @@ def test_snapshot_lists_saved_sprites_without_source(tmp_path):
     current = session(tmp_path)
     current.latest_sprite_id = "saved-sprite"
     current.saved_sprites["saved-sprite"] = saved_sprite("x" * 50_000, "y" * 50_000)
-    snapshot = current.snapshot(with_code=True)
+    snapshot = current.turn_state()
     assert snapshot["saved_sprites"] == [{
         "sprite_id": "saved-sprite", "description": "标题",
         "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
@@ -169,7 +169,7 @@ def test_edit_base_presets_become_drafts_and_only_the_coder_sees_their_source(tm
     plain = current.snapshot()
     assert [item["source"] for item in plain["base"]["instances"]] == [{"kind": "draft", "draft_id": "base_left"}, {"kind": "draft", "draft_id": "base_right"}]
     assert "preset-source" not in json.dumps(plain) and "bundle" not in json.dumps(plain)
-    coded = current.snapshot(with_code=True)["base"]["presets"]
+    coded = current.task_facts()["base"]["presets"]
     assert coded["base_left"]["code"] == "preset-source"
     assert coded["base_right"] == {"same_code_as": "base_left"}
 
@@ -195,7 +195,7 @@ def test_an_edit_composes_the_base_instances_as_listed(tmp_path):
     base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
     current = ToolSession(SimpleNamespace(settings=Settings(_env_file=None, data_dir=tmp_path), renderer=None), spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
     patch_validation(current)
-    listed = current.snapshot(with_code=True)["base"]
+    listed = current.task_facts()["base"]
 
     async def run():
         """Compose the base exactly as the snapshot lists it, as an edit that changes nothing would."""
@@ -219,7 +219,7 @@ def test_a_large_edit_base_is_omitted_largest_first_to_fit_the_snapshot_budget(t
     spec = SimpleNamespace(sprite=sprite, composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="filter_overlay")
     base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
     current = ToolSession(harness, spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
-    snapshot = current.snapshot(with_code=True)
+    snapshot = current.task_facts()
     assert len(json.dumps(snapshot, ensure_ascii=False).encode()) <= _SNAPSHOT_BYTE_BUDGET
     presets = snapshot["base"]["presets"]
     assert "code" not in presets["base_big"] and "190000 bytes" in presets["base_big"]["code_omitted"]
@@ -229,10 +229,10 @@ def test_a_large_edit_base_is_omitted_largest_first_to_fit_the_snapshot_budget(t
     # A small base keeps every source, and a large legacy component is omitted the same way.
     small_spec = SimpleNamespace(sprite=saved_sprite("bundle", "x" * 1000), composition=spec.composition, sprite_kind="filter_overlay")
     small = ToolSession(harness, small_spec, base, Budget(), tmp_path / "small", [], lambda *_: None, {})
-    assert small.snapshot(with_code=True)["base"]["presets"]["base_title"]["code"] == "x" * 1000
+    assert small.task_facts()["base"]["presets"]["base_title"]["code"] == "x" * 1000
     # A legacy component holds at most 100000 characters, which only multi-byte text pushes past the budget.
     legacy = TemplateCandidate(tsx_code="灯" * 100_000, config_schema={"type": "object"}, default_config={})
-    old = ToolSession(harness, SimpleNamespace(sprite=None, composition=spec.composition, sprite_kind="filter_overlay"), legacy, Budget(), tmp_path / "legacy", [], lambda *_: None, {}).snapshot(with_code=True)
+    old = ToolSession(harness, SimpleNamespace(sprite=None, composition=spec.composition, sprite_kind="filter_overlay"), legacy, Budget(), tmp_path / "legacy", [], lambda *_: None, {}).task_facts()
     assert "legacy_code" not in old["base"] and "300000 bytes" in old["base"]["legacy_code_omitted"]
 
 

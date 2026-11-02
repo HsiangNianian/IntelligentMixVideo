@@ -54,6 +54,15 @@ def _image_content(paths: list[Path], *, label: str) -> list[dict]:
     return content
 
 
+def expand_image_paths(messages: list[dict]) -> None:
+    """Encode the images a window holds by path (`context.image_message`) in place, just before the request is sent."""
+    holders = [message for message in messages if isinstance(message.get("content"), list)]
+    paths = [Path(item["path"]) for message in holders for item in message["content"] if item.get("type") == "image_path"]
+    encoded = iter(_image_content(paths, label="Window"))
+    for message in holders:
+        message["content"] = [next(encoded) if item.get("type") == "image_path" else item for item in message["content"]]
+
+
 class ModelFailure(RuntimeError):
     """A sanitized provider, budget or output-contract failure safe to expose to API clients."""
 
@@ -90,6 +99,10 @@ class ExecutionFailure(ModelFailure):
         self.code = code
 
 
+# Says what the reference images are in the message of the Executor's window that holds them.
+REFERENCE_IMAGES_LABEL = "The user's reference images, one-to-one and in order with user_intent.reference_images; each entry's source and meaning say whether it came with the original request, with the current instruction, or as the answer to a numbered clarification. Interpret only the requested Sprite appearance, not application chrome or scenery."
+
+
 def request_cost(body: dict) -> tuple[int, int, int]:
     """Estimate input with UTF-8 bytes/2 and 2048 tokens per image; provider-independent heuristic, not billing."""
     images = 0
@@ -121,6 +134,8 @@ class Budget:
     on_progress: Callable[[str], None] | None = None
     on_round: Callable[[dict], None] | None = None
     active_phase: str | None = None
+    # Input tokens the provider served from its prefix cache in this run, when it reports them.
+    cached_tokens: int = 0
     _start: tuple[int, int] = (0, 0)
 
     def progress(self, phase: str) -> None:
@@ -149,6 +164,8 @@ class Budget:
     def summary(self) -> dict[str, int]:
         """Expose flat integer counters compatible with the stored job usage contract."""
         result = {"calls": self.calls, "tokens": self.tokens}
+        if self.cached_tokens:
+            result["cached_tokens"] = self.cached_tokens
         for name, usage in self.phases.items():
             result.update({f"{name}_{key}": value for key, value in usage.items()})
         for name in ("outer", "plan", "executor"):
@@ -271,29 +288,38 @@ class Provider:
         budget: Budget,
         *,
         images: list[Path] | None = None,
+        data: str | None = None,
     ) -> AssistantMessage:
-        """Request real function calls with bounded recent conversation; never accept model tool results."""
+        """Request real function calls with bounded recent conversation; never accept model tool results.
+
+        ``data`` (the host's current snapshot) is sent after the window instead of inside ``system``, so the
+        system prompt and the window stay the same prefix from one turn to the next.
+        """
         body = {
             "messages": [{"role": "system", "content": system}, *context.messages()],
             "tools": tools,
             "tool_choice": "auto",
         }
+        if data is not None:
+            body["messages"].append({"role": "user", "content": data})
         if len(json.dumps(body, ensure_ascii=False).encode()) > 512_000:
             raise ModelFailure(
                 "Model task snapshot and window exceed the context budget."
             )
+        expand_image_paths(body["messages"])
         if images:
             content = [
                 {
                     "type": "text",
-                    "text": "The leading images are the user's reference images, one-to-one and in order with user_intent.reference_images; each entry's source and meaning say whether it came with the original request, with the current instruction, or as the answer to a numbered clarification. Any images after them are current candidate frames: observations, not new user requirements. Interpret only the requested Sprite appearance, not application chrome or scenery.",
+                    "text": "The images after this text, in order: the user's reference images when the snapshot has user_intent, one-to-one and in order with user_intent.reference_images (each entry's source and meaning say whether it came with the original request, with the current instruction, or as the answer to a numbered clarification), then the candidate frames when the snapshot lists candidate_frames: observations, not new user requirements. Interpret only the requested Sprite appearance, not application chrome or scenery.",
                 }
             ]
             content.extend(_image_content(images, label="Reference"))
             body["messages"].append({"role": "user", "content": content})
         # Trim whole old exchanges only in this request, preserving the latest exchange and image mapping.
         groups = context.groups
-        dropped = 0
+        dropped = context.pinned
+        head = 1 + sum(len(group) for group in groups[:dropped])
         reserve = min(512, self.settings.max_output_tokens)
         remaining = budget.remaining(self.settings)
         while (
@@ -301,11 +327,11 @@ class Provider:
             and request_cost(body)[0] + reserve > remaining
             and dropped < len(groups) - 1
         ):
-            del body["messages"][1 : 1 + len(groups[dropped])]
+            del body["messages"][head : head + len(groups[dropped])]
             dropped += 1
-        if dropped:
+        if dropped > context.pinned:
             budget.record(
-                "context_trimmed", phase=budget.active_phase, dropped_groups=dropped
+                "context_trimmed", phase=budget.active_phase, dropped_groups=dropped - context.pinned
             )
         message = await self._request(body, budget, tools=True)
         try:
@@ -489,11 +515,18 @@ class Provider:
                 value = token_detail.get(name)
                 return value if type(value) is int and value >= 0 else None
 
+            # DeepSeek reports prompt_cache_hit_tokens; OpenAI-compatible services prompt_tokens_details.cached_tokens.
+            details = token_detail.get("prompt_tokens_details")
+            nested = details.get("cached_tokens") if isinstance(details, dict) else None
+            cached = valid_usage("prompt_cache_hit_tokens")
+            cached = cached if cached is not None else nested if type(nested) is int and nested >= 0 else None
+            budget.cached_tokens += cached or 0
             budget.record(
                 "model_usage",
                 phase=budget.active_phase,
                 total_tokens=usage,
                 input_tokens=valid_usage("prompt_tokens"),
+                cached_input_tokens=cached,
                 output_tokens=valid_usage("completion_tokens"),
                 estimated_input_tokens=estimated,
                 image_count=image_count,

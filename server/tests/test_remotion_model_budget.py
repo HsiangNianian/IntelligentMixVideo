@@ -5,7 +5,9 @@ import json
 
 import httpx
 import pytest
+from PIL import Image
 from pydantic import SecretStr, ValidationError
+from server.remotion_templates.context import StepWindow, image_message
 from server.remotion_templates.models import DialogueOutput
 from server.remotion_templates.provider import Budget, ModelFailure, Provider
 from server.remotion_templates.settings import Settings
@@ -305,6 +307,71 @@ def test_usage_breakdown_and_output_reservation(tmp_path):
         100,
         0,
     )
+
+
+@pytest.mark.parametrize(("usage", "cached"), [
+    ({"prompt_cache_hit_tokens": 700}, 700),
+    ({"prompt_tokens_details": {"cached_tokens": 650}}, 650),
+    ({}, None),
+])
+def test_cache_hits_are_recorded_from_either_provider_shape(tmp_path, usage, cached):
+    """DeepSeek 的 prompt_cache_hit_tokens 与 OpenAI 兼容服务的 prompt_tokens_details.cached_tokens 都记入私有审计与任务用量；服务没有报告时记为 null，不算零命中。"""
+
+    def respond(_request):
+        """One completion with the provider's usage shape."""
+        return httpx.Response(200, json={
+            "usage": {"total_tokens": 900, "prompt_tokens": 800, "completion_tokens": 100, **usage},
+            "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": '{"answer":"完成"}'}}],
+        })
+
+    settings = Settings(_env_file=None, actor_model="offline", actor_api_key=SecretStr("fixture"))
+    budget = Budget(audit_path=tmp_path / "audit.jsonl")
+    asyncio.run(Provider(settings, transport=httpx.MockTransport(respond)).ask(DialogueOutput, "s", "u", budget))
+    events = [json.loads(line) for line in budget.audit_path.read_text().splitlines()]
+    assert next(e for e in events if e["event"] == "model_usage")["cached_input_tokens"] == cached
+    assert budget.summary().get("cached_tokens") == cached
+
+
+def window_request(tmp_path, window, *, settings=None, data="snapshot"):
+    """Send one turn over ``window`` through a mock transport and return the request body."""
+    bodies = []
+
+    def respond(request):
+        """Keep the body and answer with a plain reply."""
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"usage": {"total_tokens": 10}, "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}]})
+
+    settings = settings or Settings(_env_file=None, actor_model="offline", actor_api_key=SecretStr("fixture"))
+    asyncio.run(Provider(settings, transport=httpx.MockTransport(respond)).turn("rules", window, [], Budget(audit_path=tmp_path / "audit.jsonl"), data=data))
+    return bodies[0]
+
+
+def test_the_snapshot_follows_the_window_and_window_images_are_encoded_in_place(tmp_path):
+    """快照在窗口之后、系统提示不变；窗口里按路径保存的图片在原位编码后发送，两次发送的前缀逐字节相同，窗口本身不变。"""
+    image = tmp_path / "frame.png"
+    Image.new("RGB", (8, 8), "red").save(image)
+    window = StepWindow()
+    window.append([{"role": "user", "content": "handoff"}])
+    window.append([image_message("frames", [image])])
+    first = window_request(tmp_path, window, data="turn 1")
+    second = window_request(tmp_path, window, data="turn 2")
+    assert first["messages"][0] == {"role": "system", "content": "rules"}
+    assert first["messages"][-1] == {"role": "user", "content": "turn 1"}
+    assert first["messages"][2]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert first["messages"][:-1] == second["messages"][:-1]
+    assert window.messages()[1]["content"][1] == {"type": "image_path", "path": str(image)}
+
+
+def test_budget_trimming_keeps_the_pinned_start_of_a_step_window(tmp_path):
+    """开启预算时裁剪从旧交换开始，窗口开头的需求与基线（pinned）不被裁掉，否则 Executor 再也看不到它们。"""
+    window = StepWindow()
+    window.append([{"role": "user", "content": "handoff " + "h" * 1000}])
+    window.pinned = 1
+    window.append([{"role": "user", "content": "old " + "o" * 40_000}])
+    window.append([{"role": "user", "content": "new"}])
+    settings = Settings(_env_file=None, actor_model="offline", actor_api_key=SecretStr("fixture"), enforce_model_budget=True, max_tokens=15_000, max_output_tokens=512)
+    contents = [message["content"] for message in window_request(tmp_path, window, settings=settings)["messages"]]
+    assert contents[1].startswith("handoff") and "new" in contents and not any(item.startswith("old") for item in contents)
 
 
 @pytest.mark.parametrize("enforced", [False, True])

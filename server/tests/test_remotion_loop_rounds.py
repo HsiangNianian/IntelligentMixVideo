@@ -157,6 +157,14 @@ class FakeSession:
         """返回确定性的宿主快照。"""
         return {"user_intent": self.intent, "sprites": sorted(self.saved_sprites)}
 
+    def turn_state(self):
+        """Return the facts that follow the Executor's window."""
+        return {"sprites": sorted(self.saved_sprites)}
+
+    def task_facts(self):
+        """Return the facts the Executor's window starts with."""
+        return {}
+
     def saved_sprite(self, identifier):
         """只解析本任务已保存的 Sprite。"""
         return self.saved_sprites[identifier]
@@ -199,7 +207,7 @@ class FakeHarness:
             max_no_progress_turns=4,
         )
 
-    async def _turn(self, _system, _context, _tools, _budget, _images, *, phase):
+    async def _turn(self, _system, _context, _tools, _budget, _images, *, phase, data=None):
         """按角色返回下一条脚本响应。"""
         self.roles.append(phase)
         response = next(self.responses)

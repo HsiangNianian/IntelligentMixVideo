@@ -462,14 +462,20 @@ class ToolSession:
             # diagnostics remain available for catalog inspection and compose.
             self.validator = None
 
-    def snapshot(self, *, with_code: bool = False) -> dict:
-        """Expose task-local observations as IDs and summaries; source is only read on purpose.
+    def snapshot(self) -> dict:
+        """What Outer and Plan see on each turn: the current state and the accepted base without its source."""
+        return {**self.turn_state(), "base": self._base_summary(False)}
 
-        ``with_code`` adds the accepted base's Preset source for the layer that edits code, largest
-        sources first omitted when they would exceed the snapshot budget. Saved Sprites and drafts are
-        never repeated here: their handles are what the tools take.
+    def task_facts(self) -> dict:
+        """What stays the same for the whole task, handed to the Executor once at the start of its window: the accepted
+        base with its Preset source, largest sources first omitted when they would exceed the snapshot budget."""
+        return _bounded_snapshot({"base": self._base_summary(True)}) if self.base is not None else {}
+
+    def turn_state(self) -> dict:
+        """Expose task-local observations as IDs and summaries; the Executor gets only this after its window, so the
+        rest of the request stays cached. Saved Sprites and drafts are never repeated here: their handles are what the tools take.
         """
-        return _bounded_snapshot({
+        return {
             "latest_sprite_id": self.latest_sprite_id,
             **({"target_duration_frames": self.target_frames} if self.target_frames else {}),
             "saved_sprites": [
@@ -482,13 +488,12 @@ class ToolSession:
                 for item in self.saved_sprites.values()
             ],
             "drafts": {"presets": list(self.preset_drafts), "sprites": list(self.sprite_drafts)},
-            "base": self._base_summary(with_code),
             "last_validation": {
                 key: report.model_dump(mode="json") for key, report in self.validation_reports.items()
             },
             "preset_backend": self.catalog_backend,
             "feedback": list(self.feedback),
-        })
+        }
 
     def _base_summary(self, with_code: bool) -> dict | None:
         """Describe the accepted base as instances over base_* Preset drafts, each source listed once.
@@ -619,7 +624,7 @@ class ToolSession:
         if record is None and preset_id in self.preset_drafts:
             # A weak model reads or composes a draft handle like a stored ID; say what it is and how to use it.
             raise ToolFault("PRESET_NOT_FOUND", (
-                f"{preset_id} is a draft of this task, not a stored Preset: its source is in the snapshot "
+                f"{preset_id} is a draft of this task, not a stored Preset: its source is in the host handoff "
                 f"(base.presets for base_* drafts, unless omitted for size). Change it with preset_modify {{\"preset_id\": \"{preset_id}\", \"changes\": {{\"edits\": [{{\"old_str\": ..., \"new_str\": ...}}]}}}} "
                 f"or compose it with source {{\"kind\": \"draft\", \"draft_id\": \"{preset_id}\"}}."
             ))
