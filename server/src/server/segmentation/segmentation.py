@@ -1,46 +1,76 @@
-"""文案切片与标题提词：无 ASR 时仅提取标题词，其余完成字符对齐、按标点切分、超长片段交模型语义切分与时间投射；
+"""文案切片与标题提词：无 ASR 时仅提取标题词，其余完成字符对齐、CT-Punc 恢复并叠加原标点、按句读标点切分与时间投射；
 另提供独立的 translate，把切片结果一次性译成英文并校验英文关键词。"""
 
-import bisect
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
-from itertools import accumulate
 import json
 import logging
-import math
 import re
 from time import perf_counter
 import unicodedata
 from urllib.parse import urlparse
 
-import jieba
 from pydantic import ValidationError
 from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
 
 from ..log_sanitization import sanitize
 from .settings import ClientSettings, Settings
+from . import punctuation
 
-jieba.setLogLevel(logging.WARNING)
-
-SPLIT_MAX_PASSES = 3
-SPLIT_CONCURRENCY = 8
-# 单次切分请求最多要求的段数与每次切片的切分请求总数，限制极小上限或超长文案带来的模型工作量。
-SPLIT_MAX_PARTS = 10
-SPLIT_MAX_CALLS = 200
 KEYWORD_MAX_ATTEMPTS = 3
 MODEL_MAX_RETRIES = 3
 MODEL_TIMEOUT_SECONDS = 30
 SEGMENTATION_BUDGET_SECONDS = 120
 
-# 对齐忽略常见中英文标点；字幕过滤集合供下游合成使用，切片原文保留标点。
+# 历史标点集合供下游字幕过滤使用；切片另通过 Unicode 标点类别识别全部标点。
 PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.．!?;:\"'()<>[]{}~`")
 SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
-# 句读标点、换行及中文之间的空白是切点；引号、括号、书名号不切，字幕显示时由下游去掉。
-SPLIT_PUNCTUATION = set("，。！？、；：…,.．!?;:")
-CJK = re.compile("[㐀-鿿豈-﫿]")
-# 语义切分的非首行不能以单独的助词开头；按结巴首词判断，「的确」「了解」等词不受影响。
-PARTICLES = set("的地得了着过吗呢吧啊")
-SPLIT_MARK = re.compile(r"\[br\]|<br\s*/?>", re.IGNORECASE)
+
+
+def _is_punctuation(char: str) -> bool:
+    """识别去标点及正文对齐使用的字符；是否断句由独立的切点规则判断。"""
+    return char in PUNCTUATION or unicodedata.category(char).startswith("P")
+
+
+def _slice_boundaries(text: str, offsets: list[int]) -> dict[int, int]:
+    """将正文切点映射到原文本位置：只切句读，保护数字/缩写，开符号随下段、闭符号随前段。"""
+    # 连续句点是省略号；数字中的小数点/千分位、常见称谓和点分缩写不是句末。
+    protected = set()
+    for match in re.finditer(
+        r"[.．]{2,}|(?<!\d)\d{1,3}(?:,\d{3})+(?!\d)(?:[.．]\d+)?|(?<!\d)\d+(?:[.．]\d+)+"
+        r"|(?<![A-Za-z])(?:[A-Za-z]{1,3}\.){2,}"
+        r"|\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc)\.", text, re.IGNORECASE,
+    ):
+        protected.update(range(match.start(), match.end()))
+    openings, quotes = set(), set()
+    for i, char in enumerate(text):
+        if unicodedata.category(char) in ("Ps", "Pi") or char == "<":
+            openings.add(i)
+        elif char in "\"'":
+            # 英文词内撇号不参与引号配对。
+            if char == "'" and i and i + 1 < len(text) and text[i - 1].isalnum() and text[i + 1].isalnum():
+                continue
+            if char in quotes:
+                quotes.remove(char)
+            else:
+                quotes.add(char)
+                openings.add(i)
+    boundaries = {0: 0}
+    for cut in range(1, len(offsets)):
+        begin, end = offsets[cut - 1] + 1, offsets[cut]
+        marks = []
+        for i in range(begin, end):
+            if text[i] not in "，,。！？!?.．" or i in protected:
+                continue
+            # 英文单词/域名内部的点不按句末处理；无空格的中文句点仍可断句。
+            if text[i] in ".．" and i and i + 1 < len(text) and all(
+                char.isascii() and char.isalnum() for char in (text[i - 1], text[i + 1])
+            ):
+                continue
+            marks.append(i)
+        if marks:
+            boundaries[cut] = next((i for i in range(marks[-1] + 1, end) if i in openings), end)
+    boundaries[len(offsets)] = len(text)
+    return boundaries
 
 
 def segmentation_error(exc: Exception) -> tuple[str, int]:
@@ -148,72 +178,7 @@ def _thinking(config: Settings) -> dict:
 
 def _core(text: str) -> str:
     """只保留计数字符（去掉空白与标点），字数上限与切分校验都按它计算。"""
-    return "".join(c for c in text if not c.isspace() and c not in PUNCTUATION)
-
-
-def _split_prompt(text: str, num_parts: int, max_chars: int | None) -> str:
-    """超长片段的语义切分提示：段数由代码算出，模型给出两种切法并自选。
-
-    max_chars 为 None 表示段数已按 SPLIT_MAX_PARTS 截断、这一轮放不进上限，只要求大致均分，
-    超限的段落留待下一轮；上限不足 3 字时不再要求每段至少 3 字，避免与上限矛盾。
-    结构与要求改编自 VideoLingo（Apache-2.0）core/prompts.py 的 get_split_prompt，计数单位改为中文字符。
-    """
-    size = (f"each no more than **{max_chars}** Chinese characters" if max_chars is not None
-            else "of roughly equal length")
-    minimum = " (minimum 3 characters each)" if max_chars is None or max_chars >= 3 else ""
-    return f"""## Role
-You are a professional Netflix subtitle splitter in Chinese.
-
-## Task
-Split the given subtitle text into **{num_parts}** parts, {size} (punctuation and spaces are not counted).
-
-1. Maintain sentence meaning coherence according to Netflix subtitle standards
-2. MOST IMPORTANT: Keep parts roughly equal in length{minimum}
-3. Split at natural points like punctuation marks or conjunctions
-4. If provided text is repeated words, simply split at the middle of the repeated words.
-
-## Steps
-1. Analyze the sentence structure, complexity, and key splitting challenges
-2. Generate two alternative splitting approaches with [br] tags at split positions
-3. Compare both approaches highlighting their strengths and weaknesses
-4. Choose the best splitting approach
-
-## Given Text
-<split_this_sentence>
-{text}
-</split_this_sentence>
-
-## Output in only JSON format and no other text
-{{"analysis": "Brief description of sentence structure, complexity, and key splitting challenges",
-"split1": "First splitting approach with [br] tags at split positions",
-"split2": "Alternative splitting approach with [br] tags at split positions",
-"assess": "Comparison of both approaches",
-"choice": "1 or 2"}}"""
-
-
-def _pick_split(output: dict, text: str, blocked: set[int], max_chars: int, final: bool) -> list[int] | None:
-    """从模型的两种切法里取最好的合格切法，返回各段计数字符数；都不合格返回 None，交给下一轮重新请求。
-
-    合格：至少两段、去掉 [br] 后计数字符与原文逐字相同（标点和空白可增删）、切点不落在 blocked
-    （受保护串或修复块内部，按段内计数位置）。合格切法依次优先：非首段不以单独助词开头、各段都不超过
-    max_chars、模型的选择；有段落超限的切法照常采用，超限段落由下一轮继续切；助词开头的切法只在
-    最后一轮（final）作后备。代码不改写原文，也不自行切分。
-    """
-    original = _core(text)
-    keys = ("split2", "split1") if "2" in str(output.get("choice", "")) else ("split1", "split2")
-    candidates = []
-    for order, key in enumerate(keys):
-        value = output.get(key)
-        if not isinstance(value, str):
-            continue
-        parts = [part for part in map(_core, SPLIT_MARK.split(value)) if part]
-        lengths = [len(part) for part in parts]
-        if len(parts) < 2 or "".join(parts) != original or blocked & set(accumulate(lengths[:-1])):
-            continue
-        particle = any(next(iter(jieba.cut(part)), "") in PARTICLES for part in parts[1:])
-        if final or not particle:
-            candidates.append(((particle, max(lengths) > max_chars, order), lengths))
-    return min(candidates)[1] if candidates else None
+    return "".join(c for c in text if not c.isspace() and not _is_punctuation(c))
 
 
 def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics: dict | None = None) -> dict:
@@ -248,13 +213,12 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
 
     请求为 {script, asr_result, max_segment_chars}，读取 fun-asr transcripts 第一音轨，词时间为 begin_time/end_time 毫秒。
     替换/增删代价均为 1；波前搜索保留最远位置，平局依次优先替换、文案多字、
-    ASR 多字。先在句读标点、换行与中文之间的空白处切开，超过 max_segment_chars（默认 8，不计标点空白）
-    的片段交给模型按语义切分（单次最多 SPLIT_MAX_PARTS 段，每次切片最多 SPLIT_MAX_CALLS 组请求，含各自重试），
-    最多 SPLIT_MAX_PASSES 轮，仍超长则完整保留并给出 warning，不在代码里硬切；
-    模型另按最终片段提关键词，时间投射和关键词校验由代码完成。
+    ASR 多字。CT-Punc 对去标点的完整文案恢复标点，原标点优先叠加。
+    按合并后的句读标点切开，保护数字/缩写并保留其他标点（空白本身不切）；超过 max_segment_chars（默认 8，不计标点空白）
+    的片段完整保留并告警，不再请求大模型二次切分。模型只按最终片段提关键词。
     显式 config 仅用于当前调用；省略时读取 server/.env 与 IMV_ 环境变量，SDK 在返回前关闭。
     返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
-    warnings 和 trace；原文保留标点，字幕去标点由下游合成处理。
+    warnings 和 trace；正文与原标点保留，补入预测标点，字幕去标点由下游合成处理。
     有 ASR 时 title 与片段共用关键词调用；无 ASR 时仅提标题词、不纠错；临时请求错误最多重试 MODEL_MAX_RETRIES 次。
     空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
@@ -274,7 +238,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         chars = [
             (i, unicodedata.normalize("NFKC", c).lower())
             for i, c in enumerate(script)
-            if not c.isspace() and c not in PUNCTUATION
+            if not c.isspace() and not _is_punctuation(c)
         ]
         if not chars:
             raise ValueError("文案缺少有效字符。")
@@ -338,7 +302,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         for word in sentence["words"]:
             begin, end = word["begin_time"], word["end_time"]
             # ponytail: 词内字符均分词时长，并非真实字级强制对齐；精度不足时需上游提供更细时间轴。
-            content = [c for c in word["text"] if not c.isspace() and c not in PUNCTUATION]
+            content = [c for c in word["text"] if not c.isspace() and not _is_punctuation(c)]
             # 空内容不进入循环或执行除法。
             for i, char in enumerate(content):
                 timeline.append(
@@ -450,7 +414,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
             else:
                 blocks.append((begin, end))
             run = None
-    repair_ranges = []
+    repair_block_count = 0
     for begin, end in blocks:
         indices = [i for _, i, _ in ops[begin:end] if i is not None]
         sources = [j for _, _, j in ops[begin:end] if j is not None]
@@ -462,79 +426,39 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         step = (end_time - begin_time) / len(indices)
         for order, i in enumerate(indices):
             starts[i], ends[i] = begin_time + step * order, begin_time + step * (order + 1)
-        repair_ranges.append((indices[0], indices[-1] + 1))
-    trace["repair_block_count"] = len(repair_ranges)
+        repair_block_count += 1
+    trace["repair_block_count"] = repair_block_count
 
-    # 词串保护：数字后紧跟三位数字的半角逗号视为千分位；
-    # 逗号列表须有共享后缀或明确约数语境，避免把“99，3件”连成一串。
-    diagnostics["stage"] = "punctuation_split"
+    # 先去标点恢复，再按原字符间隙叠加原标点；随后独立判断切点。
+    # 只按计数位置取 CT-Punc 的标点，正文始终用原文，模型改写英文大小写等不影响结果。
     offsets = [c[0] for c in chars]
-    protected = set()
-    number = r"\d+(?:[.．]\d+)?"
-    for pattern in (
-        r"[+＋\-－]?[A-Za-zＡ-Ｚａ-ｚ\d]+(?:(?:[.．\-－]|(?<=\d),(?=\d{3}(?!\d)))[A-Za-zＡ-Ｚａ-ｚ\d]+)*[%％]?",
-        rf"{number}(?:\s*[,，、]\s*{number})+\s*后",
-        rf"第\s*{number}(?:\s*[,，、]\s*{number})+\s*名",
-        rf"{number}(?:\s*、\s*{number})+",
-        rf"(?<=等)\s*{number}\s*[,，]\s*{number}\s*(?:小时|分钟|秒|天|周|个月|月|年)",
-    ):
-        for token in re.finditer(pattern, script):
-            begin, end = bisect.bisect_left(offsets, token.start()), bisect.bisect_left(offsets, token.end())
-            protected.update(range(begin + 1, end))
-    # 增删修复块内时间为估算值，保留整块以免制造看似精确的切点。
-    forbidden = protected.copy()
-    for begin, end in repair_ranges:
-        forbidden.update(range(begin + 1, end))
-    # 先在句读标点、换行或中文之间的空白处切开；受保护串与修复块内部不切，标点和空白留在前段。
-    edges = [0]
-    for cut in range(1, len(chars)):
-        gap = script[offsets[cut - 1] + 1:offsets[cut]]
-        if gap and cut not in forbidden and (
-            any(char in SPLIT_PUNCTUATION or char == "\n" for char in gap)
-            or (gap.isspace() and CJK.match(script[offsets[cut - 1]]) and CJK.match(script[offsets[cut]]))
-        ):
-            edges.append(cut)
-    edges.append(len(chars))
+    diagnostics["stage"] = "punctuation"
+    request_timeout()
+    started = perf_counter()
+    restored = punctuation.restore("".join(c for c in script if not _is_punctuation(c)), deadline=deadline)
+    trace["model_elapsed_ms"] = {"punctuation": round((perf_counter() - started) * 1000, 1)}
+    request_timeout()
+    additions, position = {}, 0
+    for char in restored:
+        if not _is_punctuation(char) and not char.isspace():
+            position += 1
+        elif _is_punctuation(char):
+            begin = offsets[position - 1] + 1 if position else 0
+            end = offsets[position] if position < len(offsets) else len(script)
+            if not any(_is_punctuation(c) for c in script[begin:end]):
+                additions[begin] = additions.get(begin, "") + char
+    script = additions.get(0, "") + "".join(char + additions.get(i + 1, "") for i, char in enumerate(script))
+    offsets = [i for i, c in enumerate(script) if not c.isspace() and not _is_punctuation(c)]
+    diagnostics["stage"] = "punctuation_split"
+    boundaries = _slice_boundaries(script, offsets)
+    edges = list(boundaries)
     spans = list(zip(edges, edges[1:]))
-    trace.update(punctuation_piece_count=len(spans), split_requests=[], keyword_candidates={}, model_elapsed_ms={})
-
-    def over_limit(span: tuple[int, int]) -> bool:
-        """超过上限且内部还有可切位置的片段交给模型；整段受保护的长串（如长英文数字串）保持完整。"""
-        a, b = span
-        return b - a > segment_max_length and any(cut not in forbidden for cut in range(a + 1, b))
-
-    def split_piece(client, span: tuple[int, int], attempt: int) -> list[int] | None:
-        """请求模型把一个超长片段切成 ceil(字数/上限) 段（最多 SPLIT_MAX_PARTS 段），返回各段计数字符数；
-        不合格返回 None 留待下一轮。
-
-        段数被截断时只要求大致均分，仍超限的段落下一轮继续切。发送的文本去掉首尾标点；
-        SDK 异常与预算超时原样传播，与提词阶段一致。
-        """
-        a, b = span
-        text = script[offsets[a]:offsets[b - 1] + 1]
-        needed = math.ceil((b - a) / segment_max_length)
-        num_parts = min(needed, SPLIT_MAX_PARTS)
-        prompt = _split_prompt(text, num_parts, segment_max_length if needed == num_parts else None)
-        response = request_model(
-            client,
-            model=model, temperature=0.2, response_format={"type": "json_object"},
-            # 沿用 VideoLingo：重试时在提示末尾追加空格，使请求与上一轮不同。
-            messages=[{"role": "user", "content": prompt + " " * attempt}],
-            **_thinking(config),
-        )
-        raw = _response_content(response)
-        logger.info("切片模型调用 stage=split pass=%s", attempt + 1)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("切片模型输出 stage=split pass=%s content=%r", attempt + 1, sanitize(raw))
-        try:
-            output = _json_output(response)
-        except RuntimeError:
-            output = {}
-        blocked = {cut - a for cut in range(a + 1, b) if cut in forbidden}
-        lengths = _pick_split(output, text, blocked, segment_max_length, attempt == SPLIT_MAX_PASSES - 1)
-        trace["split_requests"].append(
-            {"text": text, "num_parts": num_parts, "pass": attempt + 1, "accepted": lengths is not None})
-        return lengths
+    trace.update(punctuation_piece_count=len(spans), keyword_candidates={})
+    remaining = [script[offsets[a]:offsets[b - 1] + 1] for a, b in spans if b - a > segment_max_length]
+    trace["over_limit_pieces"] = remaining
+    if remaining:
+        warnings.append({"code": "segment_over_max_chars",
+                         "message": f"{len(remaining)} 个片段超过每行 {segment_max_length} 字，已按标点完整保留。"})
 
     # 段落按其首字归属 ASR 句：句内序号从 1 递增，total 为该句的最终段数。
     # 跨句片段整体计入起始句，使同句编号连续且不因归属再切分文本。
@@ -550,35 +474,8 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     attribution = [first_sentence if s is None else s for s in attribution]
     segments, rejected = [], 0
     with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
-        # 超长片段并行请求，仍超长的段落下一轮继续切；模型切出的段落只按校验结果采用，代码不硬切。
-        # 每次切片最多 SPLIT_MAX_CALLS 组切分请求（各自可重试），用完后其余超长片段完整保留并告警。
-        diagnostics["stage"] = "split"
-        started = perf_counter()
-        calls_left = SPLIT_MAX_CALLS
-        try:
-            with ThreadPoolExecutor(max_workers=SPLIT_CONCURRENCY) as pool:
-                for attempt in range(SPLIT_MAX_PASSES):
-                    todo = [k for k, span in enumerate(spans) if over_limit(span)][:calls_left]
-                    if not todo:
-                        break
-                    calls_left -= len(todo)
-                    futures = [pool.submit(split_piece, client, spans[k], attempt) for k in todo]
-                    # 从后往前替换，前面片段的下标不受影响。
-                    for k, future in reversed(list(zip(todo, futures))):
-                        if lengths := future.result():
-                            cuts = list(accumulate(lengths, initial=spans[k][0]))
-                            spans[k:k + 1] = list(zip(cuts, cuts[1:]))
-        finally:
-            if trace["split_requests"]:
-                trace["model_elapsed_ms"]["split"] = round((perf_counter() - started) * 1000, 1)
-        remaining = [script[offsets[a]:offsets[b - 1] + 1] for a, b in spans if over_limit((a, b))]
-        trace["over_limit_pieces"] = remaining
-        if remaining:
-            warnings.append({"code": "segment_over_max_chars",
-                             "message": f"{len(remaining)} 个片段无法在每行 {segment_max_length} 字内按语义切开，已完整保留。"})
         for index, (a, b) in enumerate(spans, 1):
-            begin = 0 if a == 0 else offsets[a]
-            end = len(script) if b == len(chars) else offsets[b]
+            begin, end = boundaries[a], boundaries[b]
             segments.append({
                 "segment_id": index, "text": script[begin:end],
                 "start_time_ms": round(starts[a]), "end_time_ms": round(ends[b - 1]), "keyword": "", "level": 1,

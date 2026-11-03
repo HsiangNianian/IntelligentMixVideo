@@ -1441,6 +1441,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     factory = MagicMock()
     factory.return_value.__enter__.return_value = model
     monkeypatch.setattr(segmentation, "OpenAI", factory)
+    monkeypatch.setattr(segmentation.punctuation, "restore", lambda text, *, deadline: text)
 
     def cut(body):
         """按真实切片结果建立匹配替身响应，不复制切片算法作为预期值。"""
@@ -1459,7 +1460,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     snapshot = store.get(task_id)["data"]
     assert snapshot["segmentation"]["trace"]["edit_cost"] == 0
     assert "".join(s["text"] for s in snapshot["segmentation"]["segments"]) == snapshot["request"]["text"]
-    # 句号处切开，两段都不超过上限，不请求语义切分。
+    # CT-Punc 替身不新增标点，按原句号切开，关键词只请求一次。
     assert snapshot["segmentation"]["segments"] == [
         {"segment_id": 1, "text": "甲乙丙丁。", "start_time": 1, "end_time": 3,
          "keyword": "甲乙", "level": 2, "group_id": [1, 2]},

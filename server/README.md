@@ -1,7 +1,7 @@
 # IntelligentMixVideo API
 
 Python 3.12+、FastAPI 和 MySQL。模板库在连接此服务的客户端之间共享，不包含登录、用户隔离或旧数据迁移。
-另提供文案切片接口，使用已有 ASR 时间轴与 OpenAI 兼容模型生成带时间和关键词的片段。
+另提供文案切片接口，使用已有 ASR 时间轴、CT-Punc 标点恢复与 OpenAI 兼容模型提词，生成带时间和关键词的片段。
 服务端与客户端使用同一项目版本；`pyproject.toml`、`uv.lock` 随发版统一更新并提交，操作见[根目录发版说明](../README.md#tag-releases)。FastAPI 文档版本读取已安装的 `imv-server` 包元数据；更新后通过 `uv run --locked server` 同步安装并重启。
 
 ## 本地启动
@@ -230,7 +230,7 @@ uv sync --locked --default-index https://pypi.org/simple
 
 ## 文案切片
 
-`POST /segmentations` 与 `segment` 函数用正确文案和已有 ASR 结果生成带时间和关键词的片段，不调用 ASR。模型连接填在 `server/.env` 的 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY`、`IMV_LLM_MODEL`（其余见 [.env.example](.env.example)），环境变量优先。代码中调用：
+`POST /segmentations` 与 `segment` 函数用正确文案和已有 ASR 结果生成带时间和关键词的片段，不调用 ASR。CT-Punc 在本地恢复标点，大模型只负责提词和翻译。提词模型连接填在 `server/.env` 的 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY`、`IMV_LLM_MODEL`（其余见 [.env.example](.env.example)），环境变量优先。代码中调用：
 
 ```python
 import json
@@ -244,17 +244,37 @@ result = segment({
 })
 ```
 
+**CT-Punc 部署**：使用 FunASR 官方 `AutoModel(model="ct-punc", model_revision="v2.0.4")`，服务器运行命令加 `--extra ct-punc` 安装 FunASR/PyTorch；官方库优先使用可用的 CUDA，否则回退 CPU。extra 只声明 `funasr` 与 `torch`：funasr 导入时尝试加载全部子模块并容忍缺依赖，`pyproject.toml` 的 `override-dependencies` 排除 CT-Punc 推理用不到的 funasr 直接依赖（transformers、hydra-core、umap-learn 等），不要设置 `FUNASR_STRICT_IMPORT=1`；升级 funasr 或调整排除项后，用下方真实模型测试与空 `MODELSCOPE_CACHE` 首次下载重新验证。普通客户端打包不携带此依赖。服务启动时自动下载约 1.1 GB 权重、加载并试推理，成功后才恢复合成任务和接收请求；后续切片复用进程内实例；下载与磁盘缓存由 ModelScope 管理，可用 `MODELSCOPE_CACHE` 指向持久目录。模型不入库、不随包分发；未安装此 extra 的服务跳过预热。加载、推理或返回格式出错时在同一次调用内最多尝试 3 次（`punctuation.py` 的 `MAX_ATTEMPTS`，缺少依赖不重试，重试日志只记次数与异常类型）；仍失败时预热阻止启动，请求返回安全 502，不回退旧策略。只按位置采用模型预测的标点，正文始终取原文，模型改写英文大小写不影响切片。
+
+首次部署先解析并安装可选依赖，再等待启动预热完成；重启复用磁盘缓存，下载不占切片请求预算：
+
+```sh
+uv sync --extra ct-punc --project server
+uv run --locked --extra ct-punc --project server server
+```
+
+常规测试隔离模型下载；真实模型测试（合成 ASR、隔离关键词接口）：
+
+```sh
+IMV_TEST_CT_PUNC=1 uv run --locked --extra ct-punc --project server pytest server/tests/test_punctuation.py -v
+```
+
 **请求与返回**：`script`、`asr_result`、`title` 都可省略或为 null。
 
-- 有 ASR：必须有有效 `script`，使用第一音轨的词级时间（毫秒）。返回 `segments`（保留标点的原文、秒制时间、分组、关键词）、`warnings` 和 `trace`；传了 `title` 时另返回 `title_keyword`。
-- `max_segment_chars`：每段（字幕一行）最多字数，正整数，独立调用默认 8，不计标点和空白；非法值返回 422。视频合成在 ASR 前按本单模板自动计算 `max(1, 最小单行全角字容量 - 2)` 并传入。IMS 用居中位置到较近画布边缘的两倍宽度除以正文与关键词较大字号（全角字一 em）；Remotion 在共享渲染名额内用隔离浏览器加载封存源码、字体、默认参数和摆放覆盖，测量全角样本在预览时序下的单行容量，计入字距、关键词、分栏、变换及输出画布裁切，不缩字或移动摆放。新槽位接管字幕时隐藏的 IMS 对象不参与；旧 `businessTarget` 共存取两者较小值；没有数字 `fontSize` 的字效也实测。样本受发布正文长度契约限制，不能代替最终真实文案的排版预检。放不下一字以 `subtitle_capacity_too_small`、无法测量以 `subtitle_capacity_unavailable` 在 template 阶段失败，不产生 ASR/模型调用。结果随任务保存，恢复沿用；仅标题、无字幕和操练场封存切片不重新计算。真实关键词、译文及超长受保护串仍经原有成片排版预检。
+- 有 ASR：必须有有效 `script`，使用第一音轨的词级时间（毫秒）。返回 `segments`（原正文与原标点保留，并补入预测标点；秒制时间、分组、关键词）、`warnings` 和 `trace`；传了 `title` 时另返回 `title_keyword`。
+- `max_segment_chars`：每段（字幕一行）的字数告警阈值，正整数，独立调用默认 8，不计标点和空白；非法值返回 422。超过阈值完整保留并返回 `segment_over_max_chars`，不触发二次切分。视频合成在 ASR 前按本单模板自动计算 `max(1, 最小单行全角字容量 - 2)` 并传入。IMS 用居中位置到较近画布边缘的两倍宽度除以正文与关键词较大字号（全角字一 em）；Remotion 在共享渲染名额内用隔离浏览器加载封存源码、字体、默认参数和摆放覆盖，测量全角样本在预览时序下的单行容量，计入字距、关键词、分栏、变换及输出画布裁切，不缩字或移动摆放。新槽位接管字幕时隐藏的 IMS 对象不参与；旧 `businessTarget` 共存取两者较小值；没有数字 `fontSize` 的字效也实测。样本受发布正文长度契约限制，不能代替最终真实文案的排版预检。放不下一字以 `subtitle_capacity_too_small`、无法测量以 `subtitle_capacity_unavailable` 在 template 阶段失败，不产生 ASR/模型调用。结果随任务保存，恢复沿用；仅标题、无字幕和操练场封存切片不重新计算。真实关键词、译文及超长片段仍经原有成片排版预检。
 - 只有 `title`：只做标题提词（临时请求错误仍按下述规则重试），返回 `{"title_keyword":"关键词"}`，不校验内容、不纠错，缺失或非字符串按空字符串处理。
 - 可选 `config` 只用于本次调用：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120（切片单次最多取 30 秒），`llm_max_retries` 默认 1（0～3，只用于翻译），`llm_disable_thinking` 默认 false；Python 中传 `segment(payload, config=ClientSettings(...))`。`allow_insecure_llm_http` 由服务端决定，错误响应不回显输入。
-- `IMV_LLM_DISABLE_THINKING=true`（或 `config.llm_disable_thinking`）时，切分、提词与翻译请求附带 `thinking={"type":"disabled"}`。DeepSeek 等默认开启思考的模型应开启它，否则单次切分可能超过 30 秒；不支持该扩展字段的服务保持 false，此时不发送该字段。
+- `IMV_LLM_DISABLE_THINKING=true`（或 `config.llm_disable_thinking`）时，提词与翻译请求附带 `thinking={"type":"disabled"}`。DeepSeek 等默认开启思考的模型应开启它，否则单次提词可能超过 30 秒；不支持该扩展字段的服务保持 false，此时不发送该字段。
 
-**模型调用**：使用 `response_format.type=json_object`，先对超长片段做语义切分，再按最终片段提关键词。提词输入为带 `segment_id`、`text` 的片段，模型返回 `{"keywords":{"1":"医院","3":"CT"}}`，只列有关键词的 ID；代码按 ID 填回，缺失、不在对应原文中连续出现或超过 12 字的词置空。`title_keyword` 须在标题中连续出现且最多 12 字。提词 JSON、结构、ID 或标题词不合法（含回复缺少 `choices`/`message`/`content`）时，把上次回复与错误反馈给模型重试（空回复只反馈错误），共 3 次，耗尽返回 502。单次请求最多 30 秒，关闭 SDK 重试，由切片共用调用捕获超时、连接错误及 HTTP 408/409/429/5xx，原请求额外重试最多 3 次（含首次最多 4 次）；其余 HTTP 错误直接失败。切分、提词和仅标题提词均适用，与输出纠错次数独立；重试耗尽后仍按原错误返回 502/504，重试日志只记录阶段、次数和异常类型。HTTP 与合成共用 120 秒软预算（不含排队、ASR 和翻译），重试不重置预算，每次按剩余时间缩短请求超时，在调用前后检查，预算耗尽则提前停止重试并返回 504，无法打断进行中的请求。次数、超时、并发与预算是模块内具名常量。
+**模型调用**：使用 `response_format.type=json_object`，只按 CT-Punc 与原标点确定的最终片段提关键词，不再请求 `[br]` 切法。提词输入为带 `segment_id`、`text` 的片段，模型返回 `{"keywords":{"1":"医院","3":"CT"}}`，只列有关键词的 ID；代码按 ID 填回，缺失、不在对应原文中连续出现或超过 12 字的词置空。`title_keyword` 须在标题中连续出现且最多 12 字。提词 JSON、结构、ID 或标题词不合法（含回复缺少 `choices`/`message`/`content`）时，把上次回复与错误反馈给模型重试（空回复只反馈错误），共 3 次，耗尽返回 502。单次请求最多 30 秒，关闭 SDK 重试，由切片共用调用捕获超时、连接错误及 HTTP 408/409/429/5xx，原请求额外重试最多 3 次（含首次最多 4 次）；其余 HTTP 错误直接失败。提词和仅标题提词均适用，与输出纠错次数独立；重试耗尽后仍按原错误返回 502/504，重试日志只记录阶段、次数和异常类型。HTTP 与合成共用 120 秒软预算（包含推理锁等待与推理，不含启动预热、任务排队、ASR 和翻译；直接调用 Python 函数时仍计入首次加载），CT-Punc 按剩余预算限时等锁，并在拿锁后、加载后及每次推理前后检查截止时间；耗尽返回 504，不再重试，已拿到的锁始终释放。重试不重置预算，每次按剩余时间缩短请求超时，在调用前后检查，预算耗尽则提前停止重试并返回 504，无法打断进行中的本地推理或 HTTP 请求。次数、超时与预算是模块内具名常量。
 
-**切分规则**：先在句读标点（`，。！？、；：…` 及对应半角）、换行和中文之间的空白处切开，标点和空白留在前一段；引号、括号、书名号不是切点，英文单词之间的空格也不切。`OpenAI`、`3.14%`、`1,299` 这类英文和数字串，以及 `70，80，90后`、顿号枚举、`第1、2、3名`、`等2，3天` 这类数字列表内部不切，普通逗号两侧的数字（如 `99，3件`）照常切开；ASR 增删修复块内部也不切。超过 `max_segment_chars` 的片段去掉首尾标点后交给模型，多段并行：代码按 `ceil(字数/上限)` 算出段数写进提示（提示改编自 [VideoLingo](https://github.com/Huanshere/VideoLingo) 的 `get_split_prompt`），模型用 `[br]` 给出两种切法并自选。合格的切法须至少两段、去掉 `[br]` 后汉字字母数字与原文逐字相同（标点和空白可增删，按原文补回）、切点不在受保护串或修复块内部；合格切法中依次优先非首段不以单独助词（结巴首词为 的、了、着、过、吗、呢 等）开头、各段都不超过上限、模型的选择，有段落超限的切法照常采用，助词开头的只在最后一轮作后备。仍超长的段落下一轮重新计算段数继续切，最多 3 轮（重试在提示末尾追加空格）；单次请求最多要求 10 段，超过时只要求大致均分、下一轮再按上限切；上限不足 3 字时提示不再要求每段至少 3 字。每次切片最多 200 组切分请求（每组含首次及临时错误重试最多 4 次，仍受总预算限制）。之后仍超长或没轮到请求的片段完整保留，`warnings` 返回 `segment_over_max_chars`，代码不硬切。整段受保护的超长串不请求模型、不告警。切分请求的网络错误与预算超时同提词一样返回 502/504。关键词在最终片段上提取。字幕去标点由下游合成负责，保留问号和数字小数点。
+**切分规则**：整段去标点 → CT-Punc 恢复标点 → 按正文间隙叠加原标点（原标点优先）→ 按句读切片。
+
+- 仅 `，,。！？!?` 和句末 `.`/`．` 触发切分；分号、顿号、冒号、引号、括号、书名号、省略号和破折号等保留，不单独切分。
+- 保护小数、半角千分位、常见称谓和点分缩写（如 `3.14`、`1,299.50`、`Dr.`、`U.S.A.`）及英文词内句点；不保护整段引号内容，也不自动合并短句。
+- 连续句读只形成一个边界，闭引号/右括号随前段，下一句的开引号/左括号随下段；空白本身不切，不生成无正文片段。正文、原空白与原标点完整保留，片段拼接等于合并后的文案。
+- 时间轴沿用 ASR 对齐，新增标点不占时间，再按最终片段提关键词。超长仅告警，仍须通过排版预检；后处理不纠正原标点或模型补错的逗号，字幕显示过滤不变。
 
 **英文翻译**：`translate(result, title=None)` 一次模型调用把切片结果译成英文（双语视频合成在切片后调用），只读服务端配置。返回副本，片段增加 `text_en`、`keyword_en`，传入 `title` 时增加 `title_en`、`title_keyword_en`；英文关键词复用中文校验但不限长度（片段词不在译文中置空，标题词不在英文标题中报错）。段数、类型不符或译文为空时直接报错，不重试。双语模板以文字对象的 `language=en` 区分，`enabled=false` 的英文对象不翻译、不渲染；英文字幕与展示关键词沿用中文字幕去标点规则（另保留英文词内撇号和空格换行），译文不进入素材匹配。翻译失败以 `translation_failed` 结束任务，中断后不自动重放，译文随任务快照恢复并写入 `segmentation.json`。
 

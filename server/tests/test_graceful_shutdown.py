@@ -54,7 +54,7 @@ def _wait_ready(process: subprocess.Popen[str], port: int, timeout: float) -> No
 
 def test_open_sse_shutdown_exits_within_limit(tmp_path: Path) -> None:
     """持续 SSE 阻止正常收尾时，入口仍须在限时内退出，旧进程不会与重启后的进程同时操作 MySQL。"""
-    # 子进程只替换数据库与合成调度器生命周期，保留真实 Uvicorn 与 SSE 关闭路径。
+    # 子进程隔离数据库、模型预热与合成调度器生命周期，保留真实 Uvicorn 与 SSE 关闭路径。
     runner = r'''
 import asyncio
 from fastapi.responses import StreamingResponse
@@ -64,6 +64,7 @@ from server.startup.settings import GRACEFUL_SHUTDOWN_SECONDS
 import uvicorn
 
 app_module.initialize_database = lambda: None
+app_module.initialize_punctuation = lambda: None
 app_module.close_database = lambda: None
 app_module.Runtime.start = lambda self: asyncio.sleep(0)
 app_module.Runtime.close = lambda self: asyncio.sleep(0)

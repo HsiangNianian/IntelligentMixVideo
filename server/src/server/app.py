@@ -1,9 +1,10 @@
 """组装模板库、切片、异步合成与示例 API，挂载独立 Remotion 服务。
 
-退出先收束合成任务，再释放数据库连接；保留主应用校验和数据库错误处理。未处理的异常在 CORS 之内转成 500，
+启动先预热可选标点模型再恢复任务；退出先收束合成任务，再释放数据库连接；保留主应用校验和数据库错误处理。未处理的异常在 CORS 之内转成 500，
 跨域客户端看到的是服务端错误，而不是被浏览器拦截后的「无法连接」。
 """
 
+from asyncio import to_thread
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from importlib.metadata import version
@@ -19,6 +20,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .database import close_database, initialize_database
 from .segmentation.router import router as segmentation_router
+from .segmentation.punctuation import initialize as initialize_punctuation
 from .settings_plugins import router as settings_router
 from .sub_api.router import router
 from .template.router import router as template_router
@@ -31,11 +33,12 @@ from .video_composition.service import Runtime
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """初始化数据库后恢复合成任务；启动失败和退出均先收束后台工作再关闭连接池。"""
+    """初始化数据库、预热标点模型后恢复合成任务；失败和退出均收束后台工作并关闭连接池。"""
     runtime = Runtime()
     app.state.video_composition = runtime
     try:
         initialize_database()
+        await to_thread(initialize_punctuation)
         await runtime.start()
         yield
     finally:

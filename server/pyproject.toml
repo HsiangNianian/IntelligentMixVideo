@@ -31,6 +31,10 @@ dependencies = [
     "opencv-python-headless==4.12.0.88",
 ]
 
+# 服务器按需启用官方标点模型；普通客户端打包不携带 PyTorch。
+[project.optional-dependencies]
+ct-punc = ["funasr>=1.4.20", "torch>=2.15.0"]
+
 [project.scripts]
 server = "server.__main__:main"
 
@@ -51,6 +55,28 @@ addopts = "--import-mode=importlib --strict-markers"
 dev = [
     "pytest>=9.1.1",
     "pytest-mock>=3.14,<4",
+]
+
+# funasr 导入时会尝试加载全部子模块并容忍缺依赖；CT-Punc 推理用不到的 funasr 直接依赖在此排除。
+# 标记取 requires-python 下不可能成立的 python_version < '3'，uv 才会把它们移出跨平台锁文件
+# （sys_platform == 'never' 仍会被记录）。保留 torch-complex 以免启动日志刷屏。
+# 升级 funasr 后须用真实模型测试重新验证（见 segmentation/AGENTS.md）。
+[tool.uv]
+override-dependencies = [
+    "huggingface-hub; python_version < '3'",
+    "hydra-core; python_version < '3'",
+    "jaconv; python_version < '3'",
+    "jamo; python_version < '3'",
+    "oss2; python_version < '3'",
+    "rapidfuzz; python_version < '3'",
+    "regex; python_version < '3'",
+    "safetensors; python_version < '3'",
+    "sentencepiece; python_version < '3'",
+    "tensorboardx; python_version < '3'",
+    "tiktoken; python_version < '3'",
+    "transformers; python_version < '3'",
+    "umap-learn; python_version < '3'",
+    "websockets; python_version < '3'",
 ]
 
 [[tool.uv.index]]

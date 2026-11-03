@@ -38,6 +38,8 @@ def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, request: pyt
             continue
         if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_", "ZOS_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
+    # 常规 API 测试不下载/加载模型；启动顺序与失败场景在标点模块测试中显式覆盖。
+    monkeypatch.setattr("server.app.initialize_punctuation", lambda: None)
     # 预装字体默认会在后台复制进对象存储（约 100 MB）；测试一律关闭，安装行为的用例自行显式开启并替换字体包。
     monkeypatch.setenv("IMV_INSTALL_BUNDLED_FONTS", "false")
     monkeypatch.chdir(tmp_path)

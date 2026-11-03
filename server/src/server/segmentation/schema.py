@@ -11,5 +11,5 @@ class SegmentationRequest(BaseModel):
     title: str | None = None
     script: str | None = None
     asr_result: dict | None = None
-    max_segment_chars: int = Field(default=8, ge=1, strict=True)
+    max_segment_chars: int = Field(default=8, ge=1, strict=True, description="字数告警阈值；标点断句超过阈值时完整保留，不二次切分。")
     config: ClientSettings | None = None

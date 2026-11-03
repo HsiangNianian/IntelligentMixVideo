@@ -22,7 +22,7 @@ class ClientSettings(BaseModel):
     llm_disable_thinking: bool = Field(
         title="关闭思考模式", default=False,
         description="仅在模型服务支持 thinking 扩展字段（如 DeepSeek）时开启：请求附带 thinking=disabled，"
-                    "避免切分等待长推理；关闭时不发送该字段，采用服务默认行为。",
+                    "避免提词等待长推理；关闭时不发送该字段，采用服务默认行为。",
     )
 
 
