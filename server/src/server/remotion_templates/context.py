@@ -51,6 +51,9 @@ class AssistantMessage(Contract):
 class Conversation:
     """Keep eight complete exchanges within a UTF-8 budget, with no generated summaries."""
 
+    # Leading groups a request trimmed for the token budget must keep.
+    pinned = 0
+
     def __init__(self, groups: list[list[dict]] | None = None) -> None:
         """Restore only complete exchanges saved by this service for the current work."""
         self.groups: list[list[dict]] = []
@@ -87,6 +90,10 @@ class Conversation:
         if len(json.dumps(group, ensure_ascii=False).encode()) > 240_000:
             raise ValueError("single conversation exchange exceeds context budget")
         self.groups.append(deepcopy(group))
+        self._evict()
+
+    def _evict(self) -> None:
+        """Keep the newest exchanges that fit the window."""
         while len(self.groups) > 8 or len(self.serialize().encode()) > 240_000:
             self.groups.pop(0)
 
@@ -97,3 +104,17 @@ class Conversation:
     def serialize(self) -> str:
         """Persist the bounded window only, never an accumulating transcript."""
         return json.dumps(self.groups, ensure_ascii=False)
+
+
+def image_message(label: str, paths: list) -> dict:
+    """A window message holding local images by path; the provider encodes them when it sends the request, so the window stays small."""
+    return {"role": "user", "content": [{"type": "text", "text": label}, *({"type": "image_path", "path": str(path)} for path in paths)]}
+
+
+class StepWindow(Conversation):
+    """The Executor's window: append-only, so every request extends the previous one and the provider's prefix cache keeps
+    hitting. It never evicts a group turn by turn, because dropping the oldest group changes everything after it; `AgentRun`
+    replaces the whole window once it outgrows its budget, which costs one miss."""
+
+    def _evict(self) -> None:
+        """Keep every exchange: only the compaction in `AgentRun` shortens this window."""

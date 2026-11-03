@@ -64,11 +64,11 @@ class Harness:
         self.presentation = PresentationBuilder(renderer)
         self.fonts = FontStore.for_settings(self.settings)
 
-    async def _turn(self, system, context, tools, budget, images, *, phase="outer"):
-        """Account exactly one request for an explicit ReAct role."""
+    async def _turn(self, system, context, tools, budget, images, *, phase="outer", data=None):
+        """Account exactly one request for an explicit ReAct role; ``data`` is the snapshot sent after the window."""
         with budget.phase(phase):
             budget.remaining(self.settings)
-            response = await self.provider.turn(system, context, tools, budget, images=images)
+            response = await self.provider.turn(system, context, tools, budget, images=images, data=data)
             budget.record("agent_response", phase=phase, response=response.wire())
             return response
 
