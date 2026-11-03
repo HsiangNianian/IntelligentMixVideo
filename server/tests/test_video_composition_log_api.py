@@ -4,6 +4,7 @@
 """
 
 import json
+import os
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -94,6 +95,27 @@ def test_error_returns_all_task_error_files(log_client, task_folder):
     assert response.status_code == 200
     assert response.json() == {"files": [{"name": name, "content": contents[name]} for name in sorted(contents)]}
     assert {path.name: path.read_text(encoding="utf-8") for path in errors.glob("*.log")} == contents
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="目录权限回归需以非 root 用户在 POSIX 上运行")
+def test_error_directory_permission_failure_and_recovery(log_client, task_folder):
+    """错误目录不可枚举时返回 500；恢复权限后可读取原文件，测试结束前恢复目录权限。"""
+    errors = task_folder / "errors"
+    errors.mkdir()
+    content = "错误详情\n"
+    (errors / "existing.log").write_text(content, encoding="utf-8")
+    url = f"/api/v1/video-compositions/{task_folder.name}/logs"
+    errors.chmod(0o000)
+    try:
+        response = log_client.get(url, params={"module": "error"})
+        assert response.status_code == 500
+        assert response.json() == {"detail": "服务端内部错误，请稍后重试"}
+    finally:
+        errors.chmod(0o700)
+
+    response = log_client.get(url, params={"module": "error"})
+    assert response.status_code == 200
+    assert response.json() == {"files": [{"name": "existing.log", "content": content}]}
 
 
 @pytest.mark.parametrize("module", ["asr", "error"])

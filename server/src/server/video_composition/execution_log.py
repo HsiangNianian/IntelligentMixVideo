@@ -358,9 +358,13 @@ def query_log(task_id: str, module: str) -> dict | None:
         if not folder.is_dir():
             return None
         if module == "error":
+            try:
+                paths = sorted((folder / "errors").iterdir())
+            except FileNotFoundError:
+                return {"files": []}
             return {"files": [
                 {"name": path.name, "content": path.read_text(encoding="utf-8")}
-                for path in sorted((folder / "errors").glob("*.log")) if path.is_file()
+                for path in paths if path.name.endswith(".log") and path.is_file()
             ]}
         return expand_columns(read_log(task_id))[module]
 
