@@ -16,10 +16,15 @@ from PIL import Image
 from pydantic import BaseModel, ValidationError
 
 from .settings import Settings
-from .context import AssistantMessage, Conversation
+from .context import AssistantMessage, Conversation, image_message
 from .completion_stream import StreamFailure, read_completion
 
 Output = TypeVar("Output", bound=BaseModel)
+
+# One request's PNG bytes before base64, including window references and trailing review frames.
+_IMAGE_BYTE_LIMIT = 30 * 1024 * 1024
+# Base64 expands the image budget to 40 MiB; reserve another 2 MiB for text and JSON framing.
+_REQUEST_BYTE_LIMIT = _IMAGE_BYTE_LIMIT * 4 // 3 + 2 * 1024 * 1024
 
 
 def model_image(path: Path) -> bytes:
@@ -34,13 +39,13 @@ def model_image(path: Path) -> bytes:
 
 
 def _image_content(paths: list[Path], *, label: str) -> list[dict]:
-    """Encode ephemeral model images in order, enforcing the shared 24 MiB raw-image limit."""
+    """Encode all images of one request in order, enforcing the shared 30 MiB pre-base64 limit."""
     content = []
     size = 0
     for path in paths:
         data = model_image(path)
         size += len(data)
-        if size > 24 * 1024 * 1024:
+        if size > _IMAGE_BYTE_LIMIT:
             raise ModelFailure(f"{label} images exceed the bounded model request size.")
         content.append(
             {
@@ -55,10 +60,10 @@ def _image_content(paths: list[Path], *, label: str) -> list[dict]:
 
 
 def expand_image_paths(messages: list[dict]) -> None:
-    """Encode the images a window holds by path (`context.image_message`) in place, just before the request is sent."""
+    """Encode all request image paths in place under one budget, preserving window and trailing-frame positions."""
     holders = [message for message in messages if isinstance(message.get("content"), list)]
     paths = [Path(item["path"]) for message in holders for item in message["content"] if item.get("type") == "image_path"]
-    encoded = iter(_image_content(paths, label="Window"))
+    encoded = iter(_image_content(paths, label="Reference"))
     for message in holders:
         message["content"] = [next(encoded) if item.get("type") == "image_path" else item for item in message["content"]]
 
@@ -306,16 +311,12 @@ class Provider:
             raise ModelFailure(
                 "Model task snapshot and window exceed the context budget."
             )
-        expand_image_paths(body["messages"])
         if images:
-            content = [
-                {
-                    "type": "text",
-                    "text": "The images after this text, in order: the user's reference images when the snapshot has user_intent, one-to-one and in order with user_intent.reference_images (each entry's source and meaning say whether it came with the original request, with the current instruction, or as the answer to a numbered clarification), then the candidate frames when the snapshot lists candidate_frames: observations, not new user requirements. Interpret only the requested Sprite appearance, not application chrome or scenery.",
-                }
-            ]
-            content.extend(_image_content(images, label="Reference"))
-            body["messages"].append({"role": "user", "content": content})
+            body["messages"].append(image_message(
+                "The images after this text, in order: the user's reference images when the snapshot has user_intent, one-to-one and in order with user_intent.reference_images (each entry's source and meaning say whether it came with the original request, with the current instruction, or as the answer to a numbered clarification), then the candidate frames when the snapshot lists candidate_frames: observations, not new user requirements. Interpret only the requested Sprite appearance, not application chrome or scenery.",
+                images,
+            ))
+        expand_image_paths(body["messages"])
         # Trim whole old exchanges only in this request, preserving the latest exchange and image mapping.
         groups = context.groups
         dropped = context.pinned
@@ -489,7 +490,7 @@ class Provider:
                 "Insufficient model budget for estimated input and a useful response; no request sent.",
             )
         body["max_tokens"] = output_limit
-        if len(json.dumps(body, ensure_ascii=False).encode()) > 36_000_000:
+        if len(json.dumps(body, ensure_ascii=False).encode()) > _REQUEST_BYTE_LIMIT:
             raise ModelFailure("Model request exceeds the context size limit.")
         if settings.disable_thinking:
             body["thinking"] = {"type": "disabled"}

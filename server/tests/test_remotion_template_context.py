@@ -8,7 +8,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from pydantic import SecretStr
-from server.remotion_templates.context import AssistantMessage, Conversation
+from server.remotion_templates.context import AssistantMessage, Conversation, StepWindow, image_message
 from server.remotion_templates.models import AnswerReview
 from server.remotion_templates.provider import Budget, ModelFailure, Provider
 from server.remotion_templates.settings import Settings
@@ -193,12 +193,12 @@ def test_structured_review_is_independent_of_actor_window():
 @pytest.mark.parametrize("actor", [True, False])
 @pytest.mark.parametrize(
     "sizes",
-    [[], [3, 5], [12 * 1024 * 1024] * 2, [12 * 1024 * 1024, 12 * 1024 * 1024 + 1]],
+    [[], [3, 5], [15 * 1024 * 1024] * 2, [15 * 1024 * 1024, 15 * 1024 * 1024 + 1]],
 )
 def test_model_images_preserve_order_and_request_limits(
     actor, sizes, monkeypatch, tmp_path
 ):
-    """图片组装去重后，两类请求保留顺序、空图语义和累计 24 MiB 边界，超限不发 HTTP。"""
+    """两类请求保留图片顺序、空图语义和累计 30 MiB 边界，超限不发 HTTP。"""
     from server.remotion_templates import provider as provider_module
 
     paths = [tmp_path / str(i) for i in range(len(sizes))]
@@ -257,7 +257,7 @@ def test_model_images_preserve_order_and_request_limits(
         if actor
         else provider.ask(AnswerReview, "review", "inspect", budget, images=paths)
     )
-    if sum(sizes) > 24 * 1024 * 1024:
+    if sum(sizes) > 30 * 1024 * 1024:
         with pytest.raises(
             ModelFailure, match=("Reference" if actor else "Review") + " images exceed"
         ):
@@ -267,6 +267,59 @@ def test_model_images_preserve_order_and_request_limits(
         asyncio.run(call)
         assert requests == [True] and budget.calls == 1
     assert context.serialize() == original
+
+
+@pytest.mark.parametrize("frame_sizes", [
+    [1024 * 1024],
+    [1024 * 1024] * 6,
+    [1024 * 1024] * 5 + [1024 * 1024 + 1],
+], ids=["above-old-limit", "exact-limit", "one-byte-over"])
+def test_executor_images_share_one_budget_across_window_and_review_frames(frame_sizes, monkeypatch, tmp_path):
+    """PR #303 回归：多条窗口消息中的参考图和尾部回看帧共用 30 MiB；超一字节不发 HTTP，合法请求保持顺序且下次重新计数。"""
+    from server.remotion_templates import provider as provider_module
+
+    references = [tmp_path / f"reference-{index}.png" for index in range(4)]
+    frames = [tmp_path / f"frame-{index}.png" for index in range(len(frame_sizes))]
+    paths = references + frames
+    sizes = [6 * 1024 * 1024] * len(references) + frame_sizes
+    data = {path: bytes([index + 1]) * size for index, (path, size) in enumerate(zip(paths, sizes))}
+    monkeypatch.setattr(provider_module, "model_image", data.__getitem__)
+    window = StepWindow([
+        [{"role": "user", "content": "task handoff"}],
+        [image_message("first references", references[:2])],
+        [image_message("remaining references", references[2:])],
+        exchange("prior"),
+    ])
+    window.pinned = 3
+    original = window.serialize()
+    requests = []
+
+    def respond(request):
+        """Check actual wire image order and snapshot placement without reaching a live provider."""
+        messages = json.loads(request.content)["messages"]
+        assert messages[-2] == {"role": "user", "content": "current state"}
+        images = [item for message in messages if isinstance(message.get("content"), list)
+                  for item in message["content"] if item.get("type") == "image_url"]
+        assert len(images) == len(paths)
+        for item, path in zip(images, paths):
+            assert base64.b64decode(item["image_url"]["url"].split(",", 1)[1]) == data[path]
+        requests.append(True)
+        return httpx.Response(200, json={"usage": {"total_tokens": 5}, "choices": [
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}},
+        ]})
+
+    settings = Settings(_env_file=None, actor_model="offline", actor_api_key=SecretStr("fixture"))
+    provider = Provider(settings, transport=httpx.MockTransport(respond))
+    budget = Budget()
+    if sum(sizes) > 30 * 1024 * 1024:
+        with pytest.raises(ModelFailure, match="images exceed"):
+            asyncio.run(provider.turn("rules", window, [], budget, images=frames, data="current state"))
+        assert requests == [] and budget.calls == 0
+    else:
+        for _ in range(2):
+            asyncio.run(provider.turn("rules", window, [], budget, images=frames, data="current state"))
+        assert requests == [True, True] and budget.calls == 2
+    assert window.serialize() == original
 
 
 def test_duplicate_calls_never_execute():

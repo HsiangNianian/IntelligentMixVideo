@@ -30,6 +30,7 @@
 - 目录读写放到工作线程，不能阻塞事件循环、SSE 或取消；取消的任务不发布版本。
 - 删除会话：先持久化删除标记，取消并等待运行任务与队列收尾，再删任务草稿与审计、所有成功版本的对象与缓存（ZOS 上的对象默认保留，见 `ZOS_DELETE_OBJECTS`）、没有其他会话引用的参考图与关联 MySQL 记录；不删其他会话或已发布资产。完成或不存在返回 204；清理失败返回 503（说明为「会话数据清理未完成，请重试删除。」，根因写服务端日志 `Work deletion is incomplete`）并保留标记，供显式重试与启动恢复；删除中的读写返回 410；已有 SSE 先发无 ID 的 `work.deleted` 控制事件再关闭。
 - 参考图：新图片在入队事务内校验存在、由本设备上传且不属于正在删除的会话（404/409）；作品用到的每张图记在 `remotion_work_assets`，任务记录送达删除后仍据此判断引用。回答图片记录所答 `clarifications` 序号，该条澄清也写入 `answer_images`。上传 24 小时后仍无作品或任务引用的素材由每小时清理调用 `Store.prune_assets` 回收，正在删除的会话仍引用的图留给删除流程；回收失败只记日志，不影响上传或启动。
+- 单次模型请求的图片合计上限为 30 MiB，按转换为检查用 PNG 后、Base64 编码前的字节数计算；窗口参考图与末尾回看帧必须共用预算，超限在发 HTTP 前拒绝。传输上限须容纳 Base64 膨胀与文本封装，不能提前拦住合法边界。
 - 公开进度存 `remotion_job_progress`，与 `job.updated` 在同一事务发布、送达后随任务清理；循环记录经 `job.round` 增量发布、逐条存 `job_rounds`，终态任务不再接受记录。
 - 配置类在 `settings.py`（经 `server.remotion_templates.settings` 导入），继续复用 `config_base.CommonSettings` 读取 `server/.env`，相对数据目录和默认 `server/remotion/` 渲染资源位置不变。渲染默认值集中在这里，`.env.example` 新增的渲染项只写 CPU/内存预留比例；模型预算、超时与重试的默认值与 `.env.example` 同步。
 

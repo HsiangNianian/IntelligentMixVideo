@@ -73,6 +73,11 @@ receives them, each with its `source` (`work_original`, `message` or
 `meaning`. They take that asset reference, not a URL, and
 never upload anything.
 
+Each model request has a combined 30 MiB image limit, measured after conversion
+to inspection PNGs and before base64 encoding. Window reference images and
+trailing review frames share this limit; exceeding it fails before HTTP is sent.
+The transport limit allows the base64 expansion plus text and JSON framing.
+
 ## Storage
 
 The backend keeps no SQLite file. Works, jobs, accepted versions, the model's sliding window, public events and
