@@ -18,8 +18,6 @@ from . import punctuation
 
 KEYWORD_MAX_ATTEMPTS = 3
 MODEL_MAX_RETRIES = 3
-MODEL_TIMEOUT_SECONDS = 30
-SEGMENTATION_BUDGET_SECONDS = 120
 
 # 历史标点集合供下游字幕过滤使用；切片另通过 Unicode 标点类别识别全部标点。
 PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.．!?;:\"'()<>[]{}~`")
@@ -91,7 +89,7 @@ def _settings(config: ClientSettings | None) -> Settings:
     """准备本次调用的模型配置并检查，返回 Settings。
 
     传了 config（客户端配置）就用它，传 None 就读服务端 server/.env 与 IMV_ 环境变量；
-    「是否允许远程 HTTP」始终只看服务端设置。必填项缺失或格式不对、模型地址不是有效的
+    「是否允许远程 HTTP」与切片单次上限、总预算始终只看服务端设置。必填项缺失或格式不对、模型地址不是有效的
     http/https 地址、或用远程 http 地址却没在服务端开启允许时，抛 RuntimeError，报错不带原始输入。
     """
     try:
@@ -224,7 +222,8 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
     diagnostics 供共用入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
     """
-    deadline = perf_counter() + SEGMENTATION_BUDGET_SECONDS
+    # 预算从进入切片开始计，读到服务端配置后再确定截止时间。
+    entered = perf_counter()
     trace = diagnostics["trace"]
     logger = logging.getLogger("uvicorn.error")
     title = payload.get("title")
@@ -244,9 +243,10 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
             raise ValueError("文案缺少有效字符。")
         if payload.get("asr_result") is None:
             raise ValueError("缺少 ASR 结果或标题。")
-    # 客户端完整参数覆盖模型字段；服务端 HTTP 策略仍从环境读取，不修改共享状态。
+    # 客户端完整参数覆盖模型字段；服务端 HTTP 策略与切片超时仍从环境读取，不修改共享状态。
     diagnostics["stage"] = "config"
     config = _settings(config)
+    deadline = entered + config.segmentation_budget_seconds
     base_url, key, model = config.llm_base_url, config.llm_api_key, config.llm_model
 
     def request_timeout() -> float:
@@ -255,7 +255,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         remaining = deadline - perf_counter()
         if remaining <= 0:
             raise TimeoutError("切片处理超时。")
-        return min(config.llm_timeout_seconds, MODEL_TIMEOUT_SECONDS, remaining)
+        return min(config.llm_timeout_seconds, config.segmentation_model_timeout_seconds, remaining)
 
     def request_model(client, **kwargs):
         """临时模型请求错误额外重试，重算剩余预算；耗尽或不可重试时保留原异常。"""

@@ -311,8 +311,8 @@ def test_punctuation_time_counts_toward_budget(model, punctuation_model, client,
     monkeypatch.setattr(segmentation, "perf_counter", clock)
 
     def slow_restore(text, *, deadline):
-        """模拟推理用完全部预算。"""
-        clock.return_value = 120
+        """模拟推理用完默认 240 秒预算。"""
+        clock.return_value = 240
         return text
 
     punctuation_model.side_effect = slow_restore
@@ -332,7 +332,7 @@ def test_failed_punctuation_over_budget_returns_504_without_retry(model, client,
 
     def slow_failure(*, input):
         """模拟一次超过请求截止时间的失败推理，不等待真实时间。"""
-        clock.return_value = 121
+        clock.return_value = 241
         raise RuntimeError("private inference failure")
 
     engine.generate.side_effect = slow_failure
@@ -428,7 +428,7 @@ def test_model_failures_close_client(model, client, monkeypatch, failure, status
             settings = segmentation._settings
 
             def configure(config):
-                clock.return_value = 120.0
+                clock.return_value = 240.0
                 return settings(config)
 
             monkeypatch.setattr(segmentation, "_settings", configure)
@@ -436,7 +436,7 @@ def test_model_failures_close_client(model, client, monkeypatch, failure, status
             default = model[1].chat.completions.create.side_effect
 
             def respond(**kwargs):
-                clock.return_value = 120.0
+                clock.return_value = 240.0
                 return default(**kwargs)
 
             model[1].chat.completions.create.side_effect = respond
@@ -483,7 +483,7 @@ def test_model_request_recovers_after_three_retries(model, client, monkeypatch):
 
 
 def test_model_retry_stops_at_shared_budget(model, client, monkeypatch):
-    """请求重试不重置总预算：后续超时缩短，120 秒耗尽后不再发出第四次请求。"""
+    """请求重试不重置总预算：单次默认 90 秒，后续超时缩短，240 秒耗尽后不再发出第四次请求。"""
     clock = MagicMock(return_value=0.0)
     monkeypatch.setattr(segmentation, "perf_counter", clock)
     request = httpx.Request("POST", "https://example.test/v1")
@@ -497,7 +497,7 @@ def test_model_retry_stops_at_shared_budget(model, client, monkeypatch):
     response = client.post("/segmentations", json=payload("甲乙丙丁"))
     assert response.status_code == 504
     assert response.json() == {"error": {"message": "切片处理超时。"}}
-    assert [call.kwargs["timeout"] for call in model[1].chat.completions.create.call_args_list] == [30, 30, 20]
+    assert [call.kwargs["timeout"] for call in model[1].chat.completions.create.call_args_list] == [90, 90, 20]
     assert model[0].return_value.__exit__.call_count == 1
 
 
@@ -563,9 +563,9 @@ def test_real_fun_asr_excerpt(model, punctuation_model):
                                      {"keywords": {"01": "甲乙"}}, {"keywords": {"1": None}}])
 @pytest.mark.parametrize("timeout,budget", [(120, 120), (5, 120), (120, 10)])
 def test_keywords_retry_respects_timeout_and_budget(model, monkeypatch, invalid, timeout, budget):
-    """第三次提词成功，超时最多 30 秒；纠错共享预算，不放宽更短的配置。"""
+    """第三次提词成功，单次默认最多 90 秒；纠错共享服务端配置的预算，不放宽更短的配置。"""
     monkeypatch.setenv("IMV_LLM_TIMEOUT_SECONDS", str(timeout))
-    monkeypatch.setattr(segmentation, "SEGMENTATION_BUDGET_SECONDS", budget)
+    monkeypatch.setenv("IMV_SEGMENTATION_BUDGET_SECONDS", str(budget))
     clock = MagicMock(return_value=0.0)
     monkeypatch.setattr(segmentation, "perf_counter", clock)
     responses = iter([invalid, invalid, {"keywords": {"2": "QQ", "1": "甲乙"}}])
@@ -581,7 +581,7 @@ def test_keywords_retry_respects_timeout_and_budget(model, monkeypatch, invalid,
     assert result["trace"]["keyword_rejected_count"] == 0
     calls = model[1].chat.completions.create.call_args_list
     assert len(calls) == 3
-    assert [call.kwargs["timeout"] for call in calls] == [min(timeout, 30, budget - spent) for spent in (0, 2, 4)]
+    assert [call.kwargs["timeout"] for call in calls] == [min(timeout, 90, budget - spent) for spent in (0, 2, 4)]
     assert model[0].call_args.kwargs["max_retries"] == 0
     assert all(call.kwargs["response_format"] == {"type": "json_object"} for call in calls)
     assert json.loads(calls[0].kwargs["messages"][1]["content"]) == [
@@ -795,6 +795,7 @@ def test_dotenv_configuration_and_environment_priority(model, client, monkeypatc
 @pytest.mark.parametrize("key,value", [
     ("LLM_API_KEY", ""), ("LLM_TIMEOUT_SECONDS", "nan"),
     ("LLM_MAX_RETRIES", "4"), ("LLM_TIMEOUT_SECONDS", "invalid-secret"),
+    ("SEGMENTATION_MODEL_TIMEOUT_SECONDS", "0"), ("SEGMENTATION_BUDGET_SECONDS", "nan"),
 ])
 def test_settings_validation_returns_safe_error(model, client, monkeypatch, key, value):
     """缺失内容、非法类型及越界配置返回固定 502，不泄露配置值，也不创建 SDK。"""
@@ -986,7 +987,7 @@ def test_title_only_calls_model_once(model, client, server_logs, data, keyword):
     model[1].chat.completions.create.assert_called_once()
     assert model[1].chat.completions.create.call_args.kwargs["messages"][1]["content"] == data["title"]
     assert model[0].call_args.kwargs["max_retries"] == 0
-    assert model[1].chat.completions.create.call_args.kwargs["timeout"] == 30
+    assert model[1].chat.completions.create.call_args.kwargs["timeout"] == 90
     assert model[0].return_value.__exit__.call_count == 1
 
 
@@ -1159,9 +1160,23 @@ def test_client_configuration_is_request_scoped(model, client, monkeypatch):
     assert client.post("/segmentations", json={**payload("甲乙丙丁"), "config": config}).status_code == 200
 
 
+def test_server_env_sets_segmentation_timeouts_for_client_config(model, punctuation_model, client, monkeypatch):
+    """单次上限与总预算只读服务端 IMV_ 配置：带客户端配置的请求也按它限时，CT-Punc 截止时间同源。"""
+    monkeypatch.setenv("IMV_SEGMENTATION_MODEL_TIMEOUT_SECONDS", "7")
+    monkeypatch.setenv("IMV_SEGMENTATION_BUDGET_SECONDS", "9")
+    monkeypatch.setattr(segmentation, "perf_counter", MagicMock(return_value=0.0))
+    config = dict(llm_base_url="https://client.test/v1", llm_api_key="client-secret", llm_model="client-model")
+    response = client.post("/segmentations", json={**payload("甲乙丙丁"), "config": config})
+    assert response.status_code == 200
+    assert punctuation_model.call_args.kwargs["deadline"] == 9
+    assert model[0].call_args.kwargs["timeout"] == 7
+    assert model[1].chat.completions.create.call_args.kwargs["timeout"] == 7
+
+
 @pytest.mark.parametrize("change", [
     {"llm_api_key": None}, {"llm_base_url": ""}, {"llm_model": " "},
     {"llm_max_retries": 4}, {"llm_timeout_seconds": 0}, {"allow_insecure_llm_http": True},
+    {"segmentation_model_timeout_seconds": 600}, {"segmentation_budget_seconds": 600},
 ])
 def test_invalid_client_configuration_never_falls_back(model, client, change):
     """非法客户端配置返回脱敏 422，不回退到已配置的服务端密钥，也不创建 SDK。"""
