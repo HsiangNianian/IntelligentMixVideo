@@ -1,13 +1,13 @@
-"""异步合成 API；受理先持久化，查询读取本地状态和新任务的 ZOS 成片地址。"""
+"""异步合成 API；受理先持久化，查询状态、成片地址及本机文件执行日志。"""
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 
 from ..client_config import parse_config
 from .settings import ClientSettings
-from . import store
+from . import execution_log, store
 from .schema import AcceptedResponse, CompositionRequest, MatchCallback, PlaygroundRequest, TaskResponse
 
 router = APIRouter(prefix="/api/v1/video-compositions", tags=["video-composition"])
@@ -54,3 +54,21 @@ async def get_composition(task_id: UUID, request: Request, config: Config) -> Ta
     if record is None:
         raise HTTPException(404, "合成任务不存在")
     return await request.app.state.video_composition.response(record, config=config)
+
+
+@router.get("/{task_id}/logs", summary="查询任务日志")
+def get_composition_logs(
+    task_id: UUID,
+    module: Annotated[
+        Literal["request", "template", "asr", "segmentation", "matching", "timeline", "zos", "error"],
+        Query(description="选择日志模块；error 返回该任务全部详细错误文件。"),
+    ],
+) -> dict:
+    """读取本机已落盘日志，不查询数据库；七模块展开引用，error 返回文件名与完整正文。
+
+    供开发和运维排障，无鉴权；未落盘或已清理的任务目录返回 404，不等待日志队列。
+    """
+    result = execution_log.query_log(str(task_id), module)
+    if result is None:
+        raise HTTPException(404, "任务日志不可用：尚未落盘、已清理或任务不存在")
+    return result

@@ -1,4 +1,4 @@
-"""任务日志入队归类、脱敏并保存七个 JSON 与独立错误文件；调度错误保存最近一次诊断。"""
+"""任务日志入队归类、脱敏、保存与按模块查询；详细错误独立保存，调度错误保留最近一次诊断。"""
 
 import json
 import logging
@@ -349,6 +349,20 @@ def read_log(task_id: str) -> dict:
     folder = LOG_ROOT / "video_composition" / task_id
     return {name: json.loads(path.read_text(encoding="utf-8")) if (path := folder / f"{name}.json").exists()
             else {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
+
+
+def query_log(task_id: str, module: str) -> dict | None:
+    """读取入口已校验的任务与模块；锁内展开已落盘日志或返回全部错误文件，不访问数据库。"""
+    with LOG_LOCK:
+        folder = LOG_ROOT / "video_composition" / task_id
+        if not folder.is_dir():
+            return None
+        if module == "error":
+            return {"files": [
+                {"name": path.name, "content": path.read_text(encoding="utf-8")}
+                for path in sorted((folder / "errors").glob("*.log")) if path.is_file()
+            ]}
+        return expand_columns(read_log(task_id))[module]
 
 
 def write_log(record: dict, event: str, details: dict, finished_tasks, *, time=None) -> None:
