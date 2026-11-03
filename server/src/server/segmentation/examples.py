@@ -28,7 +28,7 @@ SEGMENTATION_REQUEST_EXAMPLE = {
     },
 }
 
-# 文档成功响应示例：先按标点切开，超过 8 字的片段由模型按语义切分，原文标点保留给下游。
+# 文档成功响应示例：假设 CT-Punc 在「今天上架」后补逗号，再叠加原标点切段；实际预测可能不同。
 # warnings 非空时元素为 {"code", "message"}，此处展示正常对齐情况所以为空数组。
 SEGMENTATION_RESPONSE_EXAMPLE = {
     "title_keyword": "散养土鸡",
@@ -54,7 +54,7 @@ SEGMENTATION_RESPONSE_EXAMPLE = {
         {
             "segment_id": 3,
             "group_id": [3, 4],
-            "text": "今天上架",
+            "text": "今天上架，",
             "start_time": 2.4,
             "end_time": 3.2,
             "keyword": "",
