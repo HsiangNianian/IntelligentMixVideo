@@ -636,18 +636,21 @@ RuntimePath = Literal["imv-runtime.tsx"]
 
 
 class WorkspaceReadInput(ContractModel):
-    """读取工作区里的一个文件，或只读的内容运行时源码 imv-runtime.tsx；给出 version 时读该历史版本的文件（序号见快照的 versions）。"""
+    """分段读取工作区、历史版本或只读运行时源码；offset 是从零开始的 Unicode 字符位置，续读用回执的 next_offset。"""
 
     path: WorkspacePath | RuntimePath
     version: Omittable[PositiveInteger]
+    offset: NonNegativeInteger = 0
 
 
 class WorkspaceFile(ContractModel):
-    """文件内容与行数。"""
+    """文件的一段内容与全文件行数；next_offset 缺省表示已读至末尾，不能把分段内容当成完整文件写回。"""
 
     path: WorkspacePath | RuntimePath
     content: str
     lines: NonNegativeInteger
+    offset: NonNegativeInteger = 0
+    next_offset: Omittable[PositiveInteger]
 
 
 class WorkspaceWriteInput(ContractModel):

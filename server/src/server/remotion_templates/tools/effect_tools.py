@@ -100,17 +100,24 @@ class EffectTools:
         return hashlib.sha256("\0".join(self.files[name] for name in (CODE, MANIFEST)).encode()).hexdigest()
 
     def read_file(self, request: WorkspaceReadInput) -> WorkspaceFile:
-        """Return one workspace file as it stands, an earlier free-form version's file, or the source of the content runtime "imv" (read-only)."""
+        """Read a bounded page of current, historical or runtime source; offsets count Unicode characters, not bytes."""
         if request.version is not None:
             if request.version not in self.versions or request.path == RUNTIME_FILE.name:
                 raise ToolFault("INVALID_ARGUMENT", f"Earlier versions hold {CODE} and {MANIFEST}; the versions of this work are {sorted(self.versions)}.", field="/version")
             content = restore_files(*self.versions[request.version])[request.path]
-            return WorkspaceFile(path=request.path, content=content, lines=line_count(content))
-        if request.path == RUNTIME_FILE.name:
+        elif request.path == RUNTIME_FILE.name:
             content = RUNTIME_FILE.read_text(encoding="utf-8")
-            return WorkspaceFile(path=request.path, content=content, lines=line_count(content))
-        content = self._workspace()[request.path]
-        return WorkspaceFile(path=request.path, content=content, lines=line_count(content))
+        else:
+            content = self._workspace()[request.path]
+        if request.offset > len(content):
+            raise ToolFault("INVALID_ARGUMENT", f"offset exceeds the file's {len(content)} characters.", field="/offset")
+        page = content[request.offset:request.offset + 16_000]
+        # Bound encoded text, including escapes, so even several read replies fit one atomic tool exchange.
+        while len(json.dumps(page, ensure_ascii=False).encode()) > 16_000:
+            page = page[:len(page) // 2]
+        end = request.offset + len(page)
+        return WorkspaceFile(path=request.path, content=page, lines=line_count(content), offset=request.offset,
+                             **({"next_offset": end} if end < len(content) else {}))
 
     def _store(self, path: str, content: str) -> WorkspaceWriteOutput:
         """Replace a file after checking that a manifest still parses; report the lines removed and added."""
