@@ -1,6 +1,6 @@
 # 视频合成接口文档
 
-本文按当前 `router.py`、`schema.py`、`service.py` 实现整理，更新日期：2026-10-29。
+本文按当前 `router.py`、`schema.py`、`service.py` 实现整理，更新日期：2026-11-03。
 
 ## 1. 接口概览
 
@@ -11,6 +11,7 @@
 | POST | `/api/v1/video-compositions` | 创建异步合成任务 |
 | POST | `/api/v1/video-compositions/playground` | 复用固定中英样本，按新模板创建合成任务 |
 | GET | `/api/v1/video-compositions/{taskId}` | 查询状态和成片地址 |
+| GET | `/api/v1/video-compositions/{taskId}/logs?module=...` | 按模块读取本机任务日志或全部错误详情 |
 | POST | `/api/v1/video-compositions/{taskId}/segment-match-callback?token=...` | 素材库向 IMV 回传匹配结果 |
 
 当前模块没有任务列表、取消、删除、重试或重新发送最终通知接口。创建接口没有调用方幂等键，重复 POST 会创建新的任务；响应丢失时不要盲目重复提交。
@@ -259,6 +260,47 @@ curl 'http://127.0.0.1:20070/api/v1/video-compositions/22222222-2222-4222-8222-2
 
 任务不存在返回 404；UUID 非法返回 422；历史成片已成功但暂时无法获取 IMS 播放地址返回 503，此时可重试 GET，任务不会被改成失败。查询本地任务不会主动触发素材匹配补查。
 
+### 查询任务日志
+
+`GET /api/v1/video-compositions/{taskId}/logs?module=asr`
+
+开发和运维可在 FastAPI `/docs` 的 `video-composition` 分组中打开该接口，填写任务 UUID，通过 `module` 下拉框选择日志类别并执行。不增加客户端入口，也不增加鉴权；能连接服务并知道地址的人仍可直接调用，日志可能包含业务正文、媒体签名链接和私有错误诊断。
+
+`taskId` 必须是 UUID；`module` 必填，接受下列英文值，与任务状态的 `stage` 枚举不同：
+
+| module | 返回内容 |
+| --- | --- |
+| `request` | 请求、任务级记录、查询响应与通知 |
+| `template` | 模板输入与输出 |
+| `asr` | 音频转写输入与输出 |
+| `segmentation` | 切片及翻译 |
+| `matching` | 素材匹配请求、回调与查询 |
+| `timeline` | 时间线组装、Remotion 及提交 |
+| `zos` | 渲染、取址与转存 |
+| `error` | 当前任务 `errors/` 下全部 `.log` 文件，包括普通错误、`remotion-error.log` 和 `remotion-worker.log` |
+
+七模块返回 HTTP 200 和对应 JSON 对象，保留 `input`、`output`、`execute_log`、`error_log` 四个数组；服务端读取同任务七文件并展开 `$log_ref`，返回的输入输出可独立阅读，不修改原文件。
+
+`error` 返回 HTTP 200 和下列结构，文件按名称排序，正文完整保留：
+
+```json
+{
+  "files": [
+    {"name": "remotion-error.log", "content": "Traceback...\n错误详情\n"},
+    {"name": "remotion-worker.log", "content": "渲染器输出\n"}
+  ]
+}
+```
+
+读取路径固定为本机 `server/.log/video_composition/<taskId>/`，与启动工作目录无关。接口不查询任务数据库、不调用上游服务、不等待异步日志队列，也不为这次查询追加日志；只返回读取时已落盘的内容。响应不分页、不截断，大任务日志的响应可能较大。需要最新日志时再次调用；运行中错误文件可能仍在写入。
+
+- 任务目录不存在：HTTP 404，`detail` 为 `任务日志不可用：尚未落盘、已清理或任务不存在`；不推断具体原因。
+- 任务目录存在，所选模块缺失或未执行：HTTP 200，四个空数组；`error` 没有文件时返回 `{"files":[]}`。
+- UUID 无效、`module` 缺失或不在枚举中：HTTP 422，沿用 FastAPI 参数错误结构。
+- 文件损坏或读取失败：HTTP 500，沿用服务端内部错误响应，不伪装成空日志。
+
+仅读取当前服务实例的新日志目录，不查其他实例、历史目录或旧数据库日志表；现有异步写入和容量清理规则不变。日志不是数据库状态的事务快照，任务已完成也不保证日志已写完或仍被保留。
+
 ## 4. IMV 向业务系统发送最终通知
 
 创建任务时提供 `callbackUrl` 后，IMV 在任务成功或失败落库后尝试向该地址发送 **POST JSON**。回调固定为以下四个字段，`taskId` 与创建响应的 `data` 一致：
@@ -374,7 +416,7 @@ ZOS_DELETE_OBJECTS=false
 
 ## 7. 可选的客户端 IMS 配置
 
-创建和查询接口支持 `X-IMS-Config` 请求头，其值为 URI 编码 JSON（JavaScript：`encodeURIComponent(JSON.stringify(config))`）。省略时使用服务端配置；提供时使用本次客户端凭据。
+创建和任务状态查询接口支持 `X-IMS-Config` 请求头，其值为 URI 编码 JSON（JavaScript：`encodeURIComponent(JSON.stringify(config))`）。省略时使用服务端配置；提供时使用本次客户端凭据。日志查询不需要此请求头。
 
 编码前对象：
 
