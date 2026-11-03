@@ -493,6 +493,11 @@ class AgentRun:
         if self.session.latest_sprite_id != identifier:
             raise ValueError("Completion must reference the latest task Sprite")
         self.session.saved_sprite(identifier)
+        if self.free and (problem := self._missing_saved_effect()):
+            # Every completion route, including automatic budget completion, must deliver the current reviewed files.
+            if self.state.calls >= self.state.total_limit or self.state.batches >= self.state.max_steps:
+                raise ExecutionFailure("tool_budget_exhausted", problem)
+            raise ValueError(problem)
         return await self.harness.finalize_sprite(
             self.session, identifier, self.budget, self.session.directory
         )
@@ -534,13 +539,19 @@ class AgentRun:
         if "effect" in step.tool_modules:
             if not self.step_sprites.get(index):
                 return f"Step {step.id} is not done: no effect_save succeeded in this step. Call effect_save, check its motion and middle frame, then tools_report_step."
-            if digest != session.saved_hash:
-                return f"Step {step.id} is not done: the files changed after the latest effect_save. Save again and check the new result."
-            if session.sheet_seen != session.latest_sprite_id:
-                return (f"Step {step.id} is not done: the middle frame of the latest save is attached to this turn. "
-                        "Compare its motion and that frame with the request, then report (or fix and save again).")
+            if problem := self._missing_saved_effect():
+                return f"Step {step.id} is not done: {problem}"
         elif "workspace" in step.tool_modules and digest != session.checked_hash:
             return f"Step {step.id} is not done: validate_check has not passed on the files as they stand. Call validate_check and fix what it lists."
+        return None
+
+    def _missing_saved_effect(self):
+        """Require unchanged workspace files and the latest save's review evidence for any free-form publication."""
+        if self.session.workspace_hash() != self.session.saved_hash:
+            return "the files changed after the latest effect_save. Save again and check the new result."
+        if self.session.sheet_seen != self.session.latest_sprite_id:
+            return ("the middle frame of the latest save has not reached the Executor yet. "
+                    "Compare its motion and that frame with the request, then report (or fix and save again).")
         return None
 
     def _refuse_question(self):
@@ -606,8 +617,8 @@ class AgentRun:
     def _continue_or_replan(self):
         """At the batch limit, continue a step that is still making progress; otherwise wake the Plan.
 
-        When the task budget allows no further batch, a Sprite the task already saved is published
-        (None) instead of asking the Plan, which could no longer act either.
+        When the task budget allows no further batch, try publishing a saved Sprite (None) through the
+        shared publication guard instead of asking the Plan, which could no longer act either.
         """
         if self.batch_evidence:
             try:
@@ -654,6 +665,8 @@ class AgentRun:
             self._append_handoff(self._context_for_layer(), reason, detail)
             if self.free and transition is Layer.EXECUTOR and "continues" not in detail:
                 self._append_references()
+                self.executor_context.pinned = len(self.executor_context.groups)
+                self.window_floor = len(self.executor_context.serialize().encode())
         return None
 
     def _append_references(self):
@@ -668,16 +681,17 @@ class AgentRun:
         session = self.session
         window = self.executor_context
         if window.exceeds(max(WINDOW_BYTES, self.window_floor * 2), WINDOW_IMAGES):
-            # Whole-file writes stay out: the handoff has the current files, and a big kept exchange would soon compact again.
+            # Large writes stay out: current files remain available through workspace.read; keeping the writes would soon compact again.
             kept = [group for group in window.groups if group[0].get("role") == "assistant"
                     and len(json.dumps(group, ensure_ascii=False).encode()) <= WINDOW_BYTES // 8][-WINDOW_KEEP_EXCHANGES:]
             self.budget.record("window_compacted", groups=len(window.groups), bytes=len(window.serialize().encode()))
             self.executor_context = window = StepWindow()
             self._append_handoff(window, "window_compacted", self._handoff_detail())
             self._append_references()
+            window.pinned = len(window.groups)
             for group in kept:
                 window.append(group)
-            # A handoff larger than the budget (huge files) raises the limit, or every later turn would compact and miss the cache.
+            # A large handoff raises the limit, or every later turn would compact and miss the cache.
             self.window_floor = len(window.serialize().encode())
             session.observations_fresh = bool(session.observations)
         if session.observations_fresh:
@@ -724,7 +738,15 @@ class AgentRun:
         return self._handoff_detail()
 
     def _handoff_detail(self):
-        """What a free-form step's window starts with and keeps for as long as it lasts: the request, the step, the task's facts and the files as they stand."""
+        """Keep the request and task facts in the handoff; large files stay intact in the workspace for paged reads."""
+        files = dict(self.session.files)
+        omitted = {}
+        # Budget serialized UTF-8, including JSON escapes. Leave room for the brief, plan and the outer message encoding.
+        for name in sorted(files, key=lambda path: len(json.dumps(files[path], ensure_ascii=False).encode()), reverse=True):
+            if len(json.dumps(files, ensure_ascii=False).encode()) <= 64_000:
+                break
+            content = files.pop(name)
+            omitted[name] = f"{len(content)} characters; use workspace_read with this path and follow next_offset until absent."
         return {
             "user_intent": {key: value for key, value in self.session.intent.items() if key != "accepted_base"},
             "current_step": self.state.step.model_dump() if self.state.step else None,
@@ -734,7 +756,8 @@ class AgentRun:
             "outer_brief": (self.delegation or {}).get("reason"),
             "plan_goal": self.state.plan.goal if self.state.plan is not None else None,
             "earlier_steps": {key: value.get("summary") for key, value in self.state.completed.items()},
-            "files": dict(self.session.files),
+            "files": files,
+            **({"files_omitted": omitted} if omitted else {}),
         }
 
     async def _handle_layer_message(self, response):
@@ -943,7 +966,7 @@ class AgentRun:
                         if self.layer is Layer.EXECUTOR:
                             limit_hit = True
                         elif self._latest_sprite_id():
-                            # Plan and Outer only hit the task-wide budget; a Sprite the task saved is still delivered.
+                            # Plan and Outer only hit the task-wide budget; the shared guard decides whether the save is deliverable.
                             publish = True
                         elif self.layer is Layer.PLAN:
                             self.plan_result = {"status": "blocked", "summary": str(exc)}

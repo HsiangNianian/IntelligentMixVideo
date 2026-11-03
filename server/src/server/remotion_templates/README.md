@@ -93,7 +93,10 @@ role-Preset composition. The tool contracts are §13 of
   the first and last visible and the middle frame, and frames spaced evenly by summed brightness change, at least 3 frames apart. A
   step below 20% of the biggest counts as no motion, so a pulsing glow does not take an entrance's frames; a still effect gets only the fixed ones.
 - **Loop.** The three layers stay. The host's free plan is one step, `build` or `edit`, done when the latest save's
-  result reached the window and the files did not change since. A step the Plan layer designs without the effect module
+  result reached the window and the files did not change since. Every publication route checks this, including Plan
+  completion and automatic completion at the tool limit; an exhausted task with unsaved edits fails instead of delivering
+  an older candidate. Steps with the `effect` module can supply `steps.<id>.outputs.sprite` to later steps.
+  A step the Plan layer designs without the effect module
   is done when `validate.check` passed on the files as they stand. Outer gets low-detail images. Once a candidate is saved, `needs_input` and `ask` are refused:
   the last step's `tools_report_step` carries `choices` and `suggestions`, stored as `GenerationJob.reply` and shown
   as the assistant message (suggestions as options) instead of the fixed success text.
@@ -101,7 +104,11 @@ role-Preset composition. The tool contracts are §13 of
   Executor request of a step extends the previous one. The system prompt and the whole free tool list stay the same for
   the task; `StepWindow` never evicts group by group (dropping the oldest group would change everything after it), and
   `AgentRun` replaces it whole only past `WINDOW_BYTES` or `WINDOW_IMAGES`, with the current files and the newest small
-  exchanges; the request, step, task facts, files and reference images sit at its start; images are held by path and
+  exchanges. The request, step, task facts, font library, files and reference images sit at its start and remain pinned
+  when the provider trims old exchanges for the token budget, both on dispatch and after compaction. Inline files have
+  a shared 64 KB serialized UTF-8 budget; larger files stay intact in the workspace, listed under `files_omitted` with
+  instructions to read them. `workspace.read` returns bounded pages; pass its `next_offset` back as `offset` until the
+  field is absent (offsets count Unicode characters). Images are held by path and
   encoded when sent (`provider.expand_image_paths`); after the window comes only `turn_state`. A step the Plan layer
   adds gets a new window, keeping the system prompt and tools cached.
 - **Turns.** The runtime appends a `Host record (data):` entry with each task's outcome to the Outer window and
@@ -650,7 +657,8 @@ otherwise.
 Outer has no publish action, so publication is the host's. Besides the last accepted step, a Plan
 `complete` (or a text `plan_done`) publishes the latest Sprite this task saved; a completion that names any
 other Sprite is refused. When the task budget allows no further batch or control call, the host publishes
-the latest task Sprite if there is one, and only otherwise returns `blocked` to Outer.
+the latest task Sprite if there is one, and only otherwise returns `blocked` to Outer. Free-form effects additionally
+require unchanged workspace files and review of the latest save on every publication route, as described above.
 A handoff counts for the no-progress guard only once it has happened: an automatic advance or a
 publication the host refuses is recorded as the return to the Plan, not as the transition it attempted.
 

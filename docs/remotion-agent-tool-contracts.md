@@ -1563,7 +1563,7 @@ Preset：Executor 在任务工作区里写 `Effect.tsx`（默认导出组件，�
   默认值隐藏的参数会在逐个翻转其他布尔开关、以及全部打开或关闭的上下文中重试，两端保持相同的其他控制值；有界探针不穷举组合、不改保存的默认值。
   检查不通过是 `passed: false` 的结果；保存不通过以
   `CODE_VALIDATION_FAILED` 拒绝并列出问题。
-- `workspace.read` 给出 `version` 时读该历史自由组件版本的文件（序号见快照的 `versions`，内容含那一版用户调过的参数），写回工作区即可从那一版继续改。
+- `workspace.read` 给出 `version` 时读该历史自由组件版本的文件（序号见快照的 `versions`，内容含那一版用户调过的参数）。读取按序列化 UTF-8 限制为每页至多 16 KB 内容；`offset` 是从零开始的 Unicode 字符位置，默认 0，续读须沿用同一 `path`、`version` 并把回执 `next_offset` 传回，直到该字段缺省。`lines` 是全文件行数；整份写回之前须收齐所有页面，不能用一页覆盖整份文件。大文件不内联到执行层交接消息，而是在 `files_omitted` 中列出读取指引。
 - 修改还原保留 `keywordEffect` 开关与宿主补足的各行字体配置；`keyword_look` 表示有关键词外观能力，`keyword_enabled` 保存其默认开关，关闭仍保留能力与参数，自由组件分类检查允许关闭的布尔默认值。
 - 预览、保存与看图得到的图片是观察图，作为一条消息进入 Executor 的窗口，只发一次；修改任务开始时宿主先测量并渲染一次基线，Plan 与 Executor 共用它的运动事实（`base.motion`）与中间帧。
 - `effect.save` 与 `preview.render` 的回执带 `motion`：运行代码量出的每行、每个关键词的运动，用文字说明（相对中间帧的静止位置）。方向与顺序以它为准；图片是兜底，`effect.save` 只附中间帧，`preview.render` 默认给关键帧。
@@ -1629,18 +1629,21 @@ RuntimePath = Literal["imv-runtime.tsx"]
 
 
 class WorkspaceReadInput(ContractModel):
-    """读取工作区里的一个文件，或只读的内容运行时源码 imv-runtime.tsx；给出 version 时读该历史版本的文件（序号见快照的 versions）。"""
+    """分段读取工作区、历史版本或只读运行时源码；offset 是从零开始的 Unicode 字符位置，续读用回执的 next_offset。"""
 
     path: WorkspacePath | RuntimePath
     version: Omittable[PositiveInteger]
+    offset: NonNegativeInteger = 0
 
 
 class WorkspaceFile(ContractModel):
-    """文件内容与行数。"""
+    """文件的一段内容与全文件行数；next_offset 缺省表示已读至末尾，不能把分段内容当成完整文件写回。"""
 
     path: WorkspacePath | RuntimePath
     content: str
     lines: NonNegativeInteger
+    offset: NonNegativeInteger = 0
+    next_offset: Omittable[PositiveInteger]
 
 
 class WorkspaceWriteInput(ContractModel):
@@ -1746,7 +1749,7 @@ class ImageInspectOutput(ContractModel):
 
 
 async def workspace_read(request: WorkspaceReadInput) -> ToolResult[WorkspaceFile]:
-    """读取工作区文件；函数体由实施方提供。"""
+    """分段读取工作区、历史版本或只读运行时文件；函数体由实施方提供。"""
     ...
 
 

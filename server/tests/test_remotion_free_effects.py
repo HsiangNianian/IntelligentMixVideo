@@ -12,8 +12,10 @@ import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from PIL import Image
+from pydantic import SecretStr
 
 from server.remotion_templates.agent import AgentRun, Layer
 from server.remotion_templates.context import AssistantMessage, Conversation, StepWindow, image_message
@@ -21,7 +23,8 @@ from server.remotion_templates.fonts import FontStore
 from server.remotion_templates.history import reply_text
 from server.remotion_templates.models import JobReply
 from server.remotion_templates.models import GenerationJob
-from server.remotion_templates.provider import Budget, _image_content, expand_image_paths
+from server.remotion_templates.provider import Budget, ExecutionFailure, Provider, _image_content, expand_image_paths
+from server.remotion_templates.planning import PlanAction
 from server.remotion_templates.runtime import MAX_REFERENCE_IMAGES, earlier_images, outcome_record
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
@@ -342,6 +345,17 @@ def test_workspace_edits_are_exact_and_a_broken_manifest_is_not_written(tmp_path
     assert checked["problems"][0]["check"] == "manifest"
 
 
+def test_workspace_reads_report_eof_and_refuse_out_of_range_offsets(tmp_path):
+    """末尾读取返回空页且不再给续读位置；越界是可恢复工具错误，不改变工作区。"""
+    current = free_session(tmp_path)
+    content = current.files[CODE]
+    result = asyncio.run(current.execute("workspace.read", {"path": CODE, "offset": len(content)}, available()))
+    assert result["content"] == "" and "next_offset" not in result
+    with pytest.raises(ToolFault, match="offset exceeds") as caught:
+        asyncio.run(current.execute("workspace.read", {"path": CODE, "offset": len(content) + 1}, available()))
+    assert caught.value.error.field == "/offset" and current.files[CODE] == content
+
+
 @needs_bundler
 def test_an_accepted_free_effect_joins_the_library_once(tmp_path, template_db):
     """采纳的自由组件整份存进 Preset 库（没有角色、按清单描述检索），同样的效果再次采纳不重复存；之后的作品用 library.search 能找到它。"""
@@ -467,8 +481,10 @@ class FakeHarness:
     """Scripted model turns over the real session; records each layer's system prompt, options and window."""
 
     def __init__(self, responses, tmp_path):
+        """Record scripted model requests and host publications without external calls."""
         self.responses = iter(responses)
         self.roles, self.systems, self.options, self.windows, self.tools = [], [], [], [], []
+        self.published = []
         self.fonts = SimpleNamespace(guide=lambda free=False: "Font library (free)" if free else "Font library")
         self.settings = SimpleNamespace(max_steps=8, max_tooluse=6, enforce_no_progress=False, max_no_progress_turns=6, remotion_agent="autonomous")
         self.renderer = None
@@ -487,6 +503,7 @@ class FakeHarness:
 
     async def finalize_sprite(self, _session, identifier, _budget, _directory):
         """Publish exactly the saved candidate."""
+        self.published.append(identifier)
         return {"published": identifier}
 
 
@@ -517,6 +534,149 @@ def free_run(monkeypatch, tmp_path, responses, intent=None):
 
 
 @needs_bundler
+@pytest.mark.parametrize("completion", ["plan_tool", "plan_text", "outer_tool", "outer_text"])
+def test_completion_refuses_a_saved_candidate_after_the_files_change(monkeypatch, tmp_path, completion):
+    """各完成入口都拒绝保存后又改过的旧候选，保留工作区并给出重新保存的指引。"""
+    finish = (call("complete", "tools_plan_execute", {"action": "complete"}) if completion.endswith("tool") else
+              AssistantMessage(content=json.dumps({"status": "plan_done", "summary": "done"} if completion == "plan_text" else {"action": "complete"})))
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer", "tools_plan_execute", {"action": "delegate"}),
+        call("save", "effect_save", {}),
+        call("edit", "workspace_edit", {"path": MANIFEST, "edits": [{"old_str": "#FFFFFF", "new_str": "#FF0000"}]}),
+        report("blocked", status="blocked", summary="the edit needs saving"),
+        *([call("return", "tools_plan_execute", {"action": "stop"})] if completion.startswith("outer") else []),
+        finish,
+    ])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert harness.published == []
+    assert "files changed after the latest effect_save" in run.session.feedback[0]
+    assert "#FF0000" in run.session.files[MANIFEST]
+
+
+@needs_bundler
+def test_a_refused_completion_can_resume_save_and_publish_the_current_files(monkeypatch, tmp_path):
+    """完成被拒后可继续执行、重新保存并回看，最终只交付修改后的红字候选。"""
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer", "tools_plan_execute", {"action": "delegate"}),
+        call("save", "effect_save", {}),
+        call("edit", "workspace_edit", {"path": MANIFEST, "edits": [{"old_str": "#FFFFFF", "new_str": "#FF0000"}]}),
+        report("blocked", status="blocked", summary="needs saving"),
+        call("complete", "tools_plan_execute", {"action": "complete"}),
+        call("resume", "tools_plan_execute", {"action": "continue"}),
+        call("save-current", "effect_save", {}),
+        report("done"),
+    ])
+    result = asyncio.run(run.plan_execute())
+    assert harness.published == [result["published"]]
+    assert run.session.saved_sprites[result["published"]].default_parameters["color"] == "#FF0000"
+    assert run.session.saved_hash == run.session.workspace_hash()
+
+
+@needs_bundler
+@pytest.mark.parametrize("changed", [True, False])
+def test_budget_completion_only_publishes_an_unchanged_reviewed_save(monkeypatch, tmp_path, changed):
+    """额度耗尽仍可交付已回看的当前保存；工作区已改动时明确结束失败，不能悄悄交付旧版。"""
+    change = (call("edit", "workspace_edit", {"path": MANIFEST, "edits": [{"old_str": "#FFFFFF", "new_str": "#FF0000"}]})
+              if changed else call("read", "workspace_read", {"path": MANIFEST}))
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer", "tools_plan_execute", {"action": "delegate"}),
+        call("save", "effect_save", {}), change,
+        call("over-budget", "workspace_read", {"path": MANIFEST}),
+    ])
+    run.state.max_steps, run.state.max_tooluse = 1, 3
+    if changed:
+        with pytest.raises(ExecutionFailure, match="files changed") as caught:
+            asyncio.run(run.plan_execute())
+        assert caught.value.code == "tool_budget_exhausted"
+        assert harness.published == []
+    else:
+        result = asyncio.run(run.plan_execute())
+        assert harness.published == [result["published"]]
+
+
+@needs_bundler
+def test_publication_requires_the_latest_saves_middle_frame(monkeypatch, tmp_path):
+    """绕过步骤汇报也不能交付未回看的保存；中间帧进入执行层窗口后才可发布。"""
+    run, harness, _ = free_run(monkeypatch, tmp_path, [])
+    saved = asyncio.run(run.session.execute("effect.save", {}, available()))
+    with pytest.raises(ValueError, match="middle frame of the latest save"):
+        asyncio.run(run._finalize_outer(saved["sprite_id"]))
+    assert harness.published == []
+    run._prepare_executor_turn()
+    assert asyncio.run(run._finalize_outer(saved["sprite_id"])) == {"published": saved["sprite_id"]}
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_budget_trimming_keeps_the_free_handoff_and_references(monkeypatch, tmp_path, compact):
+    """首次交接与整体压缩后，真实 Provider 请求即使裁掉旧交换，也必须保留需求、步骤、文件与参考图。"""
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (8, 8)).save(reference)
+    run, _, _ = free_run(monkeypatch, tmp_path, [])
+    run.session.images = [reference]
+    transition, _, _ = run._outer_control(PlanAction(action="delegate"))
+    asyncio.run(run._switch(transition))
+    if compact:
+        run.executor_context.append([{"role": "user", "content": "x" * 130_000}])
+        run._prepare_executor_turn()
+    run.executor_context.append([{"role": "user", "content": "old observation " + "x" * 40_000}])
+    run.executor_context.append([{"role": "user", "content": "latest observation"}])
+    sent = []
+
+    def respond(request):
+        """记录真实请求体，用内存传输返回模型响应，不访问网络。"""
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"usage": {"total_tokens": 1}, "choices": [
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}},
+        ]})
+
+    provider = Provider(Settings(_env_file=None, actor_model="offline", actor_api_key=SecretStr("fixture"),
+                                 enforce_model_budget=True, max_tokens=15_000, max_output_tokens=512),
+                        transport=httpx.MockTransport(respond))
+    snapshot, _ = run.snapshot()
+    asyncio.run(provider.turn("rules", run.executor_context, [], Budget(), data=json.dumps(snapshot)))
+    contents = [item["content"] for item in sent[0]["messages"]]
+    assert "latest observation" in contents
+    assert not any(isinstance(item, str) and "old observation" in item for item in contents)
+    assert any(isinstance(item, str) and "user_intent" in item and "Effect.tsx" in item for item in contents)
+    assert any(isinstance(item, list) and any(part["type"] == "image_url" for part in item) for item in contents)
+
+
+@needs_bundler
+def test_large_unicode_source_survives_handoffs_and_can_be_read_in_full(monkeypatch, tmp_path):
+    """合法大源码在步骤交接与压缩时保留在工作区，并能逐页无损读取，JSON 转义和 UTF-8 都不会撑爆窗口。"""
+    run, _, _ = free_run(monkeypatch, tmp_path, [])
+    source = run.session.files[CODE] + "\n/*" + '字😀"\\\n' * 30_000 + "*/\n"
+    run.session.files[CODE] = source
+    draft, _ = build(run.session.files)
+    assert len(draft.code) < 100_000 and len(source) < 200_000
+    transition, _, _ = run._outer_control(PlanAction(action="delegate"))
+    asyncio.run(run._switch(transition))
+    run.executor_context.append([{"role": "user", "content": "x" * 130_000}])
+    run._prepare_executor_turn()
+    assert run.session.files[CODE] == source
+    assert len(run.executor_context.serialize().encode()) < 120_000
+    handoff = json.loads(run.executor_context.messages()[0]["content"].split("\n", 1)[1])["detail"]
+    assert CODE in handoff["files_omitted"] and "workspace_read" in handoff["files_omitted"][CODE]
+    chunks, offset = [], 0
+    for index in range(128):
+        response = call(f"read-{index}", "workspace_read", {"path": CODE, "offset": offset})
+        data = asyncio.run(run.session.execute("workspace.read", {"path": CODE, "offset": offset}, available()))
+        window = StepWindow()
+        window.append([response.wire(), {"role": "tool", "tool_call_id": f"read-{index}",
+                                        "content": json.dumps({"ok": True, "data": data}, ensure_ascii=False)}])
+        assert len(window.serialize().encode()) < 40_000
+        chunks.append(data["content"])
+        if "next_offset" not in data:
+            break
+        assert data["next_offset"] > offset
+        offset = data["next_offset"]
+    else:
+        pytest.fail("workspace.read did not reach the end of the file")
+    assert "".join(chunks) == source
+
+
+@needs_bundler
 def test_every_executor_request_extends_the_previous_one_so_the_prefix_cache_hits(monkeypatch, tmp_path):
     """自由组件路径：委派后宿主建立一步计划，执行层改代码、检查、保存并看过联系表再汇报，宿主发布最新候选。缓存命中靠前缀不变：每次请求的系统提示与工具列表
     完全相同，窗口是上一次窗口的严格延伸（超过八组也不淘汰），请求与文件只在窗口开头给一次，尾部只有每轮变化的状态，图片不在尾部重发；最后的汇报成为给用户的回复。"""
@@ -532,6 +692,14 @@ def test_every_executor_request_extends_the_previous_one_so_the_prefix_cache_hit
         report("exec-4", summary="金色粗体标题，逐字上浮入场", choices=["把「逐字」理解为每个字依次上浮"], suggestions=["改成从左滑入", " "]),
     ])
     run.session.images = [reference]
+    guides = []
+
+    def guide(free=False):
+        """模拟持续变化的字体库，只有打开窗口时读取，不能让每次系统提示随之变化。"""
+        guides.append(free)
+        return f"FONT_LIBRARY_MARKER_{len(guides)}"
+
+    harness.fonts.guide = guide
     assert asyncio.run(run.plan_execute()) == {"published": run.session.latest_sprite_id}
     assert [step.id for step in run.state.plan.steps] == ["build"]
     executor = [index for index, role in enumerate(harness.roles) if role == "executor"]
@@ -544,6 +712,8 @@ def test_every_executor_request_extends_the_previous_one_so_the_prefix_cache_hit
     # The request and the files come once, first; the tail is only what changes and no image is re-sent after the window.
     first = harness.windows[executor[0]]
     handoff = json.loads(first[0]["content"].split("\n", 1)[1])["detail"]
+    assert guides == [True] and handoff["font_library"] == "FONT_LIBRARY_MARKER_1"
+    assert all("FONT_LIBRARY_MARKER" not in harness.systems[index] for index in executor)
     assert set(handoff["files"]) == {CODE, MANIFEST} and handoff["outer_brief"] == "金色粗体标题，逐字上浮" and handoff["current_step"]["id"] == "build"
     assert handoff["user_intent"]["original_request"]["description"] == "金色标题"
     tail = harness.options[executor[-1]]["data"]

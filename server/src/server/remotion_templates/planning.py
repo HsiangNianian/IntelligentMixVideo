@@ -24,7 +24,7 @@ class Step(Contract):
         max_length=32,
         description=(
             "Accepted references only: user_intent, accepted_base, "
-            "steps.<earlier_step_id>.outputs.sprite for the Sprite an earlier step with the sprite module saves, or "
+            "steps.<earlier_step_id>.outputs.sprite for the Sprite an earlier step with the sprite or effect module saves, or "
             "steps.<earlier_step_id>.outputs.presets for the Presets an earlier step with the preset module readies, or "
             "steps.<earlier_step_id>.outputs.effect for the free-form effect an earlier step with the workspace module built."
         ),
@@ -33,9 +33,9 @@ class Step(Contract):
     done_when: str = Field(min_length=1, max_length=2000)
 
 
-# Each step output is produced by exactly one tool module; the host records it from tool receipts.
+# Either sprite.create or effect.save produces a Sprite; the host records outputs from tool receipts.
 # A free-form step with the workspace module hands on the effect it built as its summary; the files stay in the workspace.
-OUTPUT_MODULES = {"sprite": "sprite", "presets": "preset", "effect": "workspace"}
+OUTPUT_MODULES = {"sprite": ("sprite", "effect"), "presets": ("preset",), "effect": ("workspace",)}
 REFERENCE_FORMS = (
     "Inputs must reference user_intent, accepted_base, steps.<earlier_id>.outputs.sprite, "
     "steps.<earlier_id>.outputs.presets or steps.<earlier_id>.outputs.effect"
@@ -71,10 +71,11 @@ class Plan(PlanDraft):
                     or parts[3] not in OUTPUT_MODULES
                 ):
                     raise ValueError(REFERENCE_FORMS)
-                if OUTPUT_MODULES[parts[3]] not in seen[parts[1]].tool_modules:
+                modules = OUTPUT_MODULES[parts[3]]
+                if not any(module in seen[parts[1]].tool_modules for module in modules):
                     raise ValueError(
-                        f"Step input {ref}: step {parts[1]} has no {OUTPUT_MODULES[parts[3]]} module, so it "
-                        f"produces no {parts[3]}. Compose and save a Sprite in the same step that has the sprite module."
+                        f"Step input {ref}: step {parts[1]} has no {' or '.join(module + ' module' for module in modules)}, so it "
+                        f"produces no {parts[3]}. The producing step must include one of these modules."
                     )
             seen[step.id] = step
         return self
