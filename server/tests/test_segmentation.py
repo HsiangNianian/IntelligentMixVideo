@@ -4,13 +4,14 @@ import json
 import logging
 import random
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import httpx
 from openai import APIConnectionError, APITimeoutError
 import pytest
 
 from server.segmentation import segment, segmentation, translate
+from server.segmentation.punctuation import restore as restore_punctuation
 
 
 def payload(script, transcript=None, step=200):
@@ -53,7 +54,7 @@ def reply_with(data):
 @pytest.fixture
 def punctuation_model(monkeypatch):
     """隔离本地 CT-Punc，默认不增加标点；恢复与失败场景显式设置回复。"""
-    restore = MagicMock(side_effect=lambda text: text)
+    restore = MagicMock(side_effect=lambda text, *, deadline: text)
     monkeypatch.setattr(segmentation.punctuation, "restore", restore)
     return restore
 
@@ -205,6 +206,7 @@ def test_boundary_policy_preserves_text_and_timing(model, punctuation_model, scr
     assert "".join(expected) == script
     punctuation_model.assert_called_once_with(
         "".join(c for c in script if not segmentation._is_punctuation(c)),
+        deadline=ANY,
     )
     positions = [i for i, c in enumerate(script) if not c.isspace() and not segmentation._is_punctuation(c)]
     cursor = 0
@@ -225,7 +227,7 @@ def test_restore_merges_original_marks_before_keyword_extraction(model, punctuat
     result = response.json()
     texts = ["他说：“你好，", "世界！”", "你好吗？", "我很好。"]
     assert [s["text"] for s in result["segments"]] == texts
-    punctuation_model.assert_called_once_with("他说你好世界你好吗我很好")
+    punctuation_model.assert_called_once_with("他说你好世界你好吗我很好", deadline=ANY)
     assert segmentation._core("".join(texts)) == segmentation._core(script)
     assert [(s["start_time"], s["end_time"]) for s in result["segments"]] == [
         (0, 1.2), (1.2, 1.6), (2, 2.6), (2.8, 3.4),
@@ -308,7 +310,7 @@ def test_punctuation_time_counts_toward_budget(model, punctuation_model, client,
     clock = MagicMock(return_value=0.0)
     monkeypatch.setattr(segmentation, "perf_counter", clock)
 
-    def slow_restore(text):
+    def slow_restore(text, *, deadline):
         """模拟推理用完全部预算。"""
         clock.return_value = 120
         return text
@@ -317,6 +319,29 @@ def test_punctuation_time_counts_toward_budget(model, punctuation_model, client,
     response = client.post("/segmentations", json=payload("甲乙丙丁"))
     assert response.status_code == 504
     assert response.json() == {"error": {"message": "切片处理超时。"}}
+    model[0].assert_not_called()
+
+
+def test_failed_punctuation_over_budget_returns_504_without_retry(model, client, monkeypatch):
+    """真实恢复入口的首次推理耗尽预算并失败时返回 504，释放锁且不再推理或提词。"""
+    clock = MagicMock(return_value=0.0)
+    monkeypatch.setattr(segmentation, "perf_counter", clock)
+    monkeypatch.setattr(segmentation.punctuation, "perf_counter", clock)
+    monkeypatch.setattr(segmentation.punctuation, "restore", restore_punctuation)
+    engine = MagicMock()
+
+    def slow_failure(*, input):
+        """模拟一次超过请求截止时间的失败推理，不等待真实时间。"""
+        clock.return_value = 121
+        raise RuntimeError("private inference failure")
+
+    engine.generate.side_effect = slow_failure
+    monkeypatch.setattr(segmentation.punctuation, "_model", lambda: engine)
+    response = client.post("/segmentations", json=payload("甲乙丙丁"))
+    assert response.status_code == 504
+    assert response.json() == {"error": {"message": "切片处理超时。"}}
+    engine.generate.assert_called_once()
+    assert not segmentation.punctuation._lock.locked()
     model[0].assert_not_called()
 
 

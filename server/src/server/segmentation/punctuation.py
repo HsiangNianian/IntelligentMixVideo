@@ -4,6 +4,7 @@ from functools import lru_cache
 from importlib.util import find_spec
 import logging
 from threading import Lock
+from time import perf_counter
 
 
 # 初始化和推理共用锁，避免并发首次加载多份模型；失败不缓存，下次请求可以重试。
@@ -23,25 +24,45 @@ def _model():
     )
 
 
-def restore(text: str) -> str:
+def restore(text: str, *, deadline: float | None = None) -> str:
     """返回单段恢复后的正文；加载、推理及回复错误在锁内最多尝试 MAX_ATTEMPTS 次，
-    仍失败时转为安全摘要，原异常仅供私有诊断；重试日志只记次数与异常类型。"""
-    with _lock:
+    等锁、加载和重试共用 perf_counter 截止时间；预热不设截止时间，预算耗尽原样抛 TimeoutError。"""
+    def remaining() -> float:
+        """返回等锁的剩余秒数；无请求预算时无限等待，超时不再开始推理或重试。"""
+        if deadline is None:
+            return -1
+        seconds = deadline - perf_counter()
+        if seconds <= 0:
+            raise TimeoutError("切片处理超时。")
+        return seconds
+
+    if not _lock.acquire(timeout=remaining()):
+        raise TimeoutError("切片处理超时。")
+    try:
         for attempt in range(1, MAX_ATTEMPTS + 1):
+            remaining()
             try:
-                result = _model().generate(input=text)
+                model = _model()
+                remaining()
+                result = model.generate(input=text)
                 if (not isinstance(result, list) or len(result) != 1
                         or not isinstance(result[0], dict) or not isinstance(result[0].get("text"), str)
                         or not result[0]["text"].strip()):
                     raise ValueError("CT-Punc 返回格式无效。")
-                return result[0]["text"]
             except Exception as exc:
+                # 预算耗尽优先于模型错误，不能包装成 502 或继续重试。
+                remaining()
                 if isinstance(exc, ModuleNotFoundError) and exc.name == "funasr":
                     raise RuntimeError("请使用 --extra ct-punc 安装并启动服务端，以启用 FunASR 标点恢复。") from exc
                 if attempt == MAX_ATTEMPTS:
                     raise RuntimeError("CT-Punc 标点恢复失败，请检查模型缓存及运行环境。") from exc
                 logging.getLogger("uvicorn.error").warning(
                     "CT-Punc 标点恢复重试 retry=%s error=%s", attempt, type(exc).__name__)
+            else:
+                remaining()
+                return result[0]["text"]
+    finally:
+        _lock.release()
 
 
 def initialize() -> None:

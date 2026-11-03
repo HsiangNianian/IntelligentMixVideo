@@ -1441,7 +1441,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     factory = MagicMock()
     factory.return_value.__enter__.return_value = model
     monkeypatch.setattr(segmentation, "OpenAI", factory)
-    monkeypatch.setattr(segmentation.punctuation, "restore", lambda text: text)
+    monkeypatch.setattr(segmentation.punctuation, "restore", lambda text, *, deadline: text)
 
     def cut(body):
         """按真实切片结果建立匹配替身响应，不复制切片算法作为预期值。"""

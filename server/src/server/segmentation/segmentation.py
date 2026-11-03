@@ -435,7 +435,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     diagnostics["stage"] = "punctuation"
     request_timeout()
     started = perf_counter()
-    restored = punctuation.restore("".join(c for c in script if not _is_punctuation(c)))
+    restored = punctuation.restore("".join(c for c in script if not _is_punctuation(c)), deadline=deadline)
     trace["model_elapsed_ms"] = {"punctuation": round((perf_counter() - started) * 1000, 1)}
     request_timeout()
     additions, position = {}, 0

@@ -156,18 +156,79 @@ def test_engine_failure_is_safe_and_next_request_can_recover(engine, failure):
     assert engine.call_count == (punctuation.MAX_ATTEMPTS + 1 if failure == "load" else 1)
 
 
+@pytest.mark.parametrize("deadline", [None, 120])
 @pytest.mark.parametrize("failure", ["load", "infer", "format"])
-def test_transient_failure_retries_within_same_call(engine, failure):
+def test_transient_failure_retries_within_same_call(engine, monkeypatch, failure, deadline):
     """偶发的加载、推理异常或无效回复只出现一次时，同一次调用内重试成功，不向切片报错。"""
+    monkeypatch.setattr(punctuation, "perf_counter", lambda: 0)
     if failure == "load":
         engine.side_effect = [RuntimeError("transient"), engine.return_value]
     elif failure == "infer":
         engine.return_value.generate.side_effect = [RuntimeError("transient"), [{"text": "你好，世界。"}]]
     else:
         engine.return_value.generate.side_effect = [[], [{"text": "你好，世界。"}]]
-    assert punctuation.restore("你好世界") == "你好，世界。"
+    assert punctuation.restore("你好世界", deadline=deadline) == "你好，世界。"
     assert engine.call_count == (2 if failure == "load" else 1)
     assert engine.return_value.generate.call_count == (1 if failure == "load" else 2)
+
+
+@pytest.mark.parametrize("acquired", [False, True])
+def test_lock_wait_expiry_skips_model(engine, monkeypatch, acquired):
+    """等锁到期或刚拿锁时已到期都不加载模型；只释放实际拿到的锁。"""
+    clock = MagicMock(return_value=5.0)
+    monkeypatch.setattr(punctuation, "perf_counter", clock)
+    lock = MagicMock()
+
+    def acquire(*, timeout):
+        """模拟有限等锁后到达截止时间，包括刚好拿到锁的竞态。"""
+        assert timeout == 115
+        clock.return_value = 120
+        return acquired
+
+    lock.acquire.side_effect = acquire
+    monkeypatch.setattr(punctuation, "_lock", lock)
+    with pytest.raises(TimeoutError, match="切片处理超时"):
+        punctuation.restore("你好世界", deadline=120)
+    engine.assert_not_called()
+    assert lock.release.call_count == int(acquired)
+
+
+def test_expired_request_does_not_acquire_lock(engine, monkeypatch):
+    """进入恢复前预算已耗尽时不等锁，也不加载模型。"""
+    monkeypatch.setattr(punctuation, "perf_counter", lambda: 120)
+    lock = MagicMock()
+    monkeypatch.setattr(punctuation, "_lock", lock)
+    with pytest.raises(TimeoutError, match="切片处理超时"):
+        punctuation.restore("你好世界", deadline=120)
+    lock.acquire.assert_not_called()
+    lock.release.assert_not_called()
+    engine.assert_not_called()
+
+
+@pytest.mark.parametrize("stage", ["load", "infer"])
+@pytest.mark.parametrize("failed", [False, True])
+def test_model_work_exhausting_budget_stops_and_releases_lock(engine, monkeypatch, stage, failed):
+    """加载或推理完成/失败时预算耗尽：不开始下次推理、不包装超时，并始终释放锁。"""
+    clock = MagicMock(return_value=0.0)
+    monkeypatch.setattr(punctuation, "perf_counter", clock)
+
+    def slow_work(**kwargs):
+        """以假时钟模拟同步模型工作耗尽预算。"""
+        clock.return_value = 120
+        if failed:
+            raise RuntimeError("private model failure")
+        return engine.return_value if stage == "load" else [{"text": "你好，世界。"}]
+
+    target = engine if stage == "load" else engine.return_value.generate
+    target.side_effect = slow_work
+    with pytest.raises(TimeoutError, match="切片处理超时"):
+        punctuation.restore("你好世界", deadline=120)
+    engine.assert_called_once()
+    assert engine.return_value.generate.call_count == int(stage == "infer")
+    assert not punctuation._lock.locked()
+    # 新请求有新的预算，前次超时不能把进程内锁留住。
+    target.side_effect = None
+    assert punctuation.restore("你好世界", deadline=240) == "你好，世界。"
 
 
 @pytest.mark.skipif(not REAL_MODEL, reason="设置 IMV_TEST_CT_PUNC=1 才下载并运行真实官方模型")
