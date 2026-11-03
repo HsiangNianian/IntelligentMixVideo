@@ -244,7 +244,7 @@ result = segment({
 })
 ```
 
-**CT-Punc 部署**：使用 FunASR 官方 `AutoModel(model="ct-punc", model_revision="v2.0.4")`，服务器运行命令加 `--extra ct-punc` 安装 FunASR/PyTorch；官方库优先使用可用的 CUDA，否则回退 CPU。普通客户端打包不携带此依赖。服务启动时自动下载约 1.1 GB 权重、加载并试推理，成功后才恢复合成任务和接收请求；后续切片复用进程内实例；下载与磁盘缓存由 ModelScope 管理，可用 `MODELSCOPE_CACHE` 指向持久目录。模型不入库、不随包分发；未安装此 extra 的服务跳过预热。加载、推理或返回格式出错时在同一次调用内最多尝试 3 次（`punctuation.py` 的 `MAX_ATTEMPTS`，缺少依赖不重试，重试日志只记次数与异常类型）；仍失败时预热阻止启动，请求返回安全 502，不回退旧策略。只按位置采用模型预测的标点，正文始终取原文，模型改写英文大小写不影响切片。
+**CT-Punc 部署**：使用 FunASR 官方 `AutoModel(model="ct-punc", model_revision="v2.0.4")`，服务器运行命令加 `--extra ct-punc` 安装 FunASR/PyTorch；官方库优先使用可用的 CUDA，否则回退 CPU。extra 只声明 `funasr` 与 `torch`：funasr 导入时尝试加载全部子模块并容忍缺依赖，`pyproject.toml` 的 `override-dependencies` 排除 CT-Punc 推理用不到的 funasr 直接依赖（transformers、hydra-core、umap-learn 等），不要设置 `FUNASR_STRICT_IMPORT=1`；升级 funasr 或调整排除项后，用下方真实模型测试与空 `MODELSCOPE_CACHE` 首次下载重新验证。普通客户端打包不携带此依赖。服务启动时自动下载约 1.1 GB 权重、加载并试推理，成功后才恢复合成任务和接收请求；后续切片复用进程内实例；下载与磁盘缓存由 ModelScope 管理，可用 `MODELSCOPE_CACHE` 指向持久目录。模型不入库、不随包分发；未安装此 extra 的服务跳过预热。加载、推理或返回格式出错时在同一次调用内最多尝试 3 次（`punctuation.py` 的 `MAX_ATTEMPTS`，缺少依赖不重试，重试日志只记次数与异常类型）；仍失败时预热阻止启动，请求返回安全 502，不回退旧策略。只按位置采用模型预测的标点，正文始终取原文，模型改写英文大小写不影响切片。
 
 首次部署先解析并安装可选依赖，再等待启动预热完成；重启复用磁盘缓存，下载不占切片请求预算：
 
