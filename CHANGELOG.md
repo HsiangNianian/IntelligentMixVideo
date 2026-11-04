@@ -3,6 +3,36 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.20] - 2026-11-04
+### New Features
+- [`3ac80b6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3ac80b6058f9ef7ddc28fc06b5efdce246f00aed) - **segmentation**: restore punctuation with official FunASR CT-Punc *(PR [#306](https://github.com/HsiangNianian/IntelligentMixVideo/pull/306) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`d1950f6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/d1950f65106bb4b282598dcf1dd6f8026688c806) - **server**: add task execution log queries *(PR [#307](https://github.com/HsiangNianian/IntelligentMixVideo/pull/307) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`f2cdb95`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f2cdb95ab47c7cb6988a636254d395f5d2bdaaad) - **segmentation**: configure keyword timeouts via env *(PR [#308](https://github.com/HsiangNianian/IntelligentMixVideo/pull/308) by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Bug Fixes
+- [`3811151`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3811151e8f49b37bbaeefaf723c7a44eefbfbb3a) - **server**: clamp composition tails to avatar video duration *(PR [#305](https://github.com/HsiangNianian/IntelligentMixVideo/pull/305) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`e926c57`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e926c57b9a85cc3474f36d9ed6c6eac4ab5a389d) - **segmentation**: retry transient model failures *(PR [#304](https://github.com/HsiangNianian/IntelligentMixVideo/pull/304) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`3b31d62`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3b31d62c51b8ad88dd0bfd7a585a9a0d9f851224) - **remotion-agent**: keep the request prefix cacheable across turns *(PR [#303](https://github.com/HsiangNianian/IntelligentMixVideo/pull/303) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`c017ec7`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c017ec7e37ced7aa362476ea734ca2f754977175) - **remotion**: prefer Simplified Chinese fonts during rendering *(PR [#309](https://github.com/HsiangNianian/IntelligentMixVideo/pull/309) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`e91c291`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e91c29162b1d546d425eb8bebc6cef3a41f03e9e) - **templates**: align split-screen Remotion subtitles by center *(PR [#310](https://github.com/HsiangNianian/IntelligentMixVideo/pull/310) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`3be7302`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3be73029d1600e8149b558f94ad71c59fa8d0b25) - **preview**: restore IMS rendering in Linux AppImage *(PR [#311](https://github.com/HsiangNianian/IntelligentMixVideo/pull/311) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Documentation Changes
+- [`48a4422`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/48a442230a03d51eacb655cf62e246590be8a598) - update CHANGELOG.md for v0.9.19 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`99f881d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/99f881d53413c9c1c6f78e6a8e286f40c58de320) - **release**: prepare v0.9.20 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`280fd8f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/280fd8ffdff386f6dbf2666342bc9b2d4cdad75f) - **release**: promote dev to main for v0.9.20 *(PR [#313](https://github.com/HsiangNianian/IntelligentMixVideo/pull/313) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`5c0de75`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5c0de75a090c3a626436744f5da1310f337e0b6b) - Merge pull request [#302](https://github.com/HsiangNianian/IntelligentMixVideo/pull/302) from IT-coder-Yy/fix/subtitle-preview-x
+
+fix(client): honor subtitle x positions in SDK previews *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`1fdf357`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1fdf357b98c219b871ad446fe300d6e0cb6b9234) - Update .gitignore for improved file exclusions ([#312](https://github.com/HsiangNianian/IntelligentMixVideo/pull/312))
+
+Refactor .gitignore to simplify log and data exclusions. *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`dc2f00f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/dc2f00f8e96f4f2e1e0f51e477acd942647e9471) - Merge remote-tracking branch 'upstream/main' into codex/release-v0.9.20 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.19] - 2026-10-30
 ### New Features
 - [`23f2423`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/23f24237204a17b5aed21a45b83acb5456495866) - **templates**: add live avatar effect previews *(PR [#293](https://github.com/HsiangNianian/IntelligentMixVideo/pull/293) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
@@ -1890,3 +1920,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.18]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.17...v0.9.18
 
 [v0.9.19]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.18...v0.9.19
+
+[v0.9.20]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.19...v0.9.20
