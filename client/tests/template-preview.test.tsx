@@ -247,6 +247,54 @@ test("SDK 生成图片保持内容与格式，复用 Blob URL 并在卸载时释
   expect(revoke.mock.calls).toEqual([["blob:http://localhost/preview-1"], ["blob:http://localhost/preview-2"]]);
 });
 
+// 回归：连续编辑不能积累弃用图片；等新时间线可播放才释放，保留共用图片并支持恢复旧样式。
+test("时间线替换后回收弃用图片，恢复旧图片时重建 URL，移除时清空", async () => {
+  spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ fillRect() {}, fillStyle: "" } as unknown as CanvasRenderingContext2D);
+  const oldImage = "data:image/png;base64,b2xk";
+  const newImage = "data:image/png;base64,bmV3";
+  const encode = spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue(oldImage);
+  let created = 0;
+  spyOn(URL, "createObjectURL").mockImplementation(() => `blob:http://localhost/image-${++created}`);
+  const revoke = spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  const mask = newFrameMask();
+  const draft = { ...newDraft(), frame_mask: mask };
+  const stable = props(draft);
+  const { view, player } = await mountWithSdk(draft, { resolved: stable.resolved });
+  await player.materials!([{ mediaId: oldImage, type: "Image" }]);
+  await act(async () => player.finishTimeline());
+  await act(async () => player.emit("canplay"));
+  expect(revoke).not.toHaveBeenCalled();
+
+  const urls = [1, 2, 3].map((id) => `blob:http://localhost/image-${id}`);
+  const cases = [
+    { image: oldImage, url: urls[0], released: 0 },
+    { image: newImage, url: urls[1], released: 1 },
+    { image: oldImage, url: urls[2], released: 2 },
+    { image: undefined, url: undefined, released: 3 },
+  ];
+  for (const [index, entry] of cases.entries()) {
+    if (entry.image) encode.mockReturnValue(entry.image);
+    view.rerender(<TemplatePreview {...stable} draft={{ ...draft, frame_mask: entry.image
+      ? { ...mask, top: { ...mask.top, height: 10 + index } } : undefined }} />);
+    await waitFor(() => expect(player.setTimeline).toHaveBeenCalledTimes(index + 2));
+    const before = revoke.mock.calls.length;
+    if (entry.image) {
+      expect(JSON.stringify(player.setTimeline.mock.calls.at(-1)?.[0])).toContain(entry.image);
+      expect(await player.materials!([{ mediaId: entry.image, type: "Image" }])).toEqual([
+        { mediaId: entry.image, type: "Image", image: { src: entry.url } },
+      ]);
+    }
+    await act(async () => player.finishTimeline());
+    expect(revoke).toHaveBeenCalledTimes(before);
+    await act(async () => player.emit("canplay"));
+    expect(revoke.mock.calls).toEqual(urls.slice(0, entry.released).map((url) => [url]));
+  }
+  expect(created).toBe(3);
+  expect(FakePlayer.last).toBe(player);
+  view.unmount();
+  expect(revoke.mock.calls).toEqual(urls.map((url) => [url]));
+});
+
 // 取景和羽化变化必须重新应用 SDK 时间线，预览不得反向修改模板草稿。
 test("工作区传入预览圆心和羽化后刷新 SDK 并暂停回零，不改变草稿", async () => {
   spyOn(HTMLImageElement.prototype, "decode").mockResolvedValue();

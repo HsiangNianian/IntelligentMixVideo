@@ -320,6 +320,7 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
       if (!mediaFailed) setFailed(false);
       let applied = revision;
       let canPlay = Promise.resolve<CanPlayResult>("cancelled");
+      const imageIds = new Set<string>();
       try {
         do {
           applied = revision;
@@ -350,8 +351,11 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
           applyTimer = setTimeout(() => switchToBasicVideo(`${CAN_PLAY_TIMEOUT_MS / 1000} 秒内没有载入时间线`), CAN_PLAY_TIMEOUT_MS);
           const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames, latestMaskImages.current.images);
           previewMasks = new Map();
+          imageIds.clear();
           for (const row of playback.VideoTracks) for (const clip of row.VideoTrackClips) {
-            if (!("MaskVideoURL" in clip) || typeof clip.MaskVideoURL !== "string" || typeof clip.MediaURL !== "string") continue;
+            if (!("MediaURL" in clip) || typeof clip.MediaURL !== "string") continue;
+            if (clip.MediaURL.startsWith("data:image/")) imageIds.add(clip.MediaURL);
+            if (!("MaskVideoURL" in clip) || typeof clip.MaskVideoURL !== "string") continue;
             // SDK 缓存媒体回调：把几何放进本次素材 ID，修改圆角或角色后才能重新读取蒙版。
             const id = `${clip.MediaURL}#imv-mask=${encodeURIComponent(clip.MaskVideoURL)}`;
             previewMasks.set(id, { url: clip.MediaURL, maskUrl: clip.MaskVideoURL });
@@ -389,6 +393,12 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
           // 只有 canplay 才证明播放节点已建好；超时或取消都不能把预览标为可播放。
           const readiness = await canPlay;
           if (!disposed && !basicRequested && applied === revision && readiness === "canplay" && !mediaFailed) {
+            // 新时间线可播放后再释放弃用图片，加载期间保留旧地址，仍被引用的图片继续复用。
+            for (const [id, url] of previewImages) {
+              if (imageIds.has(id)) continue;
+              URL.revokeObjectURL(url);
+              previewImages.delete(id);
+            }
             setReady(true);
             setStatus("预览已就绪，点击播放查看效果");
           } else if (!disposed && !basicRequested && applied === revision && readiness === "timeout" && !mediaFailed) {
