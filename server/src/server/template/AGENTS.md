@@ -9,6 +9,7 @@
 - 路由、配置校验、数据库存储与效果目录都放在本模块（与示例目录 `sub_api/` 平级）：`schema.py` 做业务校验，`router.py` 在生成的 Protobuf 消息与业务模型之间转换。
 - 云端模板库是共享的：没有登录、用户隔离或旧数据迁移，配置存 MySQL（SQLAlchemy + PyMySQL）。
 - 客户端只能新建和编辑云端模板。不要恢复本地模板入口、「本地模板保存路径」设置或 Tauri `local_templates` 命令；旧版留在磁盘上的 `data/template/templates.json` 与 `$client.template_path` 不读取、不删除、不迁移。
+- 两类几何蒙版 MP4 必须支持单段 HTTP Range（206/416），供 WebKit 加载与定位；共用路由内的字节响应，不为范围读取新增落盘缓存。请求与响应规则见 `server/README.md`「模板接口」。
 
 ## 保存契约
 

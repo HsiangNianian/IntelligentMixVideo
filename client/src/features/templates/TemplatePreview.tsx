@@ -1,7 +1,7 @@
 /**
  * SDK 预览组件：管理单个播放器、串行更新时间线；无效输入保留上次有效预览，IMS 渲染或载入时间线失败、卡住或 60 秒仍不能播放时降级为基础视频。
  * 播放位置由前端持有：IMS 就绪时由它推进，降级后由基础视频推进，二者都不可用时由前端时钟推进，换来源时接着当前位置与播放状态；
- * 播放按钮、进度条、时间轴、文字选择框与 AI 资产都只跟随这个位置，不等 IMS。卸载时清理订阅和异步任务。
+ * 播放按钮、进度条、时间轴、文字选择框与 AI 资产都只跟随这个位置，不等 IMS。卸载时清理订阅、异步任务和生成图片的 Blob URL。
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { frameMaskImage, frameMaskRects } from "./frameMask";
@@ -197,6 +197,7 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
     let frame: HTMLIFrameElement | undefined;
     const controller = new AbortController();
     const transitionFrames = new Map<string, string>();
+    const previewImages = new Map<string, string>();
     let appliedLayout: Draft["split_screen"];
     let previewMasks = new Map<string, { url: string; maskUrl: string }>();
     let appliedAvatar: number | undefined;
@@ -319,6 +320,7 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
       if (!mediaFailed) setFailed(false);
       let applied = revision;
       let canPlay = Promise.resolve<CanPlayResult>("cancelled");
+      const imageIds = new Set<string>();
       try {
         do {
           applied = revision;
@@ -349,8 +351,11 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
           applyTimer = setTimeout(() => switchToBasicVideo(`${CAN_PLAY_TIMEOUT_MS / 1000} 秒内没有载入时间线`), CAN_PLAY_TIMEOUT_MS);
           const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames, latestMaskImages.current.images);
           previewMasks = new Map();
+          imageIds.clear();
           for (const row of playback.VideoTracks) for (const clip of row.VideoTrackClips) {
-            if (!("MaskVideoURL" in clip) || typeof clip.MaskVideoURL !== "string" || typeof clip.MediaURL !== "string") continue;
+            if (!("MediaURL" in clip) || typeof clip.MediaURL !== "string") continue;
+            if (clip.MediaURL.startsWith("data:image/")) imageIds.add(clip.MediaURL);
+            if (!("MaskVideoURL" in clip) || typeof clip.MaskVideoURL !== "string") continue;
             // SDK 缓存媒体回调：把几何放进本次素材 ID，修改圆角或角色后才能重新读取蒙版。
             const id = `${clip.MediaURL}#imv-mask=${encodeURIComponent(clip.MaskVideoURL)}`;
             previewMasks.set(id, { url: clip.MediaURL, maskUrl: clip.MaskVideoURL });
@@ -388,6 +393,12 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
           // 只有 canplay 才证明播放节点已建好；超时或取消都不能把预览标为可播放。
           const readiness = await canPlay;
           if (!disposed && !basicRequested && applied === revision && readiness === "canplay" && !mediaFailed) {
+            // 新时间线可播放后再释放弃用图片，加载期间保留旧地址，仍被引用的图片继续复用。
+            for (const [id, url] of previewImages) {
+              if (imageIds.has(id)) continue;
+              URL.revokeObjectURL(url);
+              previewImages.delete(id);
+            }
             setReady(true);
             setStatus("预览已就绪，点击播放查看效果");
           } else if (!disposed && !basicRequested && applied === revision && readiness === "timeout" && !mediaFailed) {
@@ -490,8 +501,18 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
           },
           getTimelineMaterials: async (materials) =>
             materials.map((item) => {
-              if (typeof item.mediaId === "string" && item.mediaId.startsWith("data:image/"))
-                return { ...item, image: { src: item.mediaId } };
+              if (typeof item.mediaId === "string" && item.mediaId.startsWith("data:image/")) {
+                // 上游画布生成的 PNG/JPEG 都是 base64；WebKit 的 SDK 图片路径需同源 Blob URL，原素材 ID 保持不变。
+                let src = previewImages.get(item.mediaId);
+                if (!src) {
+                  const comma = item.mediaId.indexOf(",");
+                  const type = item.mediaId.slice(5, item.mediaId.indexOf(";"));
+                  const bytes = Uint8Array.from(atob(item.mediaId.slice(comma + 1)), (char) => char.charCodeAt(0));
+                  src = URL.createObjectURL(new Blob([bytes], { type }));
+                  previewImages.set(item.mediaId, src);
+                }
+                return { ...item, image: { src } };
+              }
               const sourceUrl = previewMasks.get(String(item.mediaId))?.url ?? item.mediaId;
               const video = sources.find((source) => source.url === sourceUrl);
               if (!video) throw new Error("预览素材缺少真实媒体信息");
@@ -601,6 +622,7 @@ export function TemplatePreview({ draft: editingDraft, media, resolved, mediaErr
       ims.current = null;
       apply.current = null;
       instance?.destroy();
+      for (const url of previewImages.values()) URL.revokeObjectURL(url);
       frame?.remove();
     };
   }, [attempt, media]);
