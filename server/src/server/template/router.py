@@ -1,8 +1,9 @@
-# 模板 API：接收 Protobuf 保存请求，默认返回 JSON，兼容旧客户端明确请求的 Protobuf 响应。
+"""模板 API：Protobuf 保存与 JSON/Protobuf 读取；几何蒙版 MP4 支持单段字节范围读取。"""
 
 from uuid import UUID
 from typing import Annotated
 import logging
+import re
 import subprocess
 
 from fastapi import APIRouter, File, HTTPException, Path, Query, Request, Response, UploadFile
@@ -93,26 +94,44 @@ async def save_template(request: Request) -> Response:
     )
 
 
+def _preview_mask_response(content: bytes, request: Request) -> Response:
+    """复用编码字节回答单段 Range；非法或多段忽略，无法满足返回 416，不产生磁盘文件。"""
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=86400"}
+    match = re.fullmatch(r"bytes=([0-9]*)-([0-9]*)", request.headers.get("range", "").strip())
+    # 没有 ETag/Last-Modified 可匹配 If-Range，须返回完整资源，不能将新片段拼入旧缓存。
+    if match and any(match.groups()) and "if-range" not in request.headers:
+        first, last = (int(value) if value else None for value in match.groups())
+        if first is None or last is None or first <= last:
+            size = len(content)
+            start = first if first is not None else max(0, size - last)
+            end = min(last, size - 1) if first is not None and last is not None else size - 1
+            if start >= size:
+                return Response(status_code=416, headers={"Accept-Ranges": "bytes", "Content-Range": f"bytes */{size}"})
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            return Response(content[start:end + 1], status_code=206, media_type="video/mp4", headers=headers)
+    return Response(content, media_type="video/mp4", headers=headers)
+
+
 @router.get("/preview-mask", response_class=Response)
-def preview_mask(params: Annotated[PreviewMask, Query()]) -> Response:
+def preview_mask(params: Annotated[PreviewMask, Query()], request: Request) -> Response:
     """在线程池里生成 SDK 的圆角蒙版；只接受有界几何，不访问用户视频或数据库。"""
     try:
         content = mask_video(**params.model_dump())
     except (OSError, subprocess.SubprocessError) as exc:
         logging.getLogger(__name__).exception("Preview mask encoding failed")
         raise HTTPException(status_code=503, detail="圆角预览蒙版生成失败，请检查服务端 FFmpeg 后重试") from exc
-    return Response(content, media_type="video/mp4", headers={"Cache-Control": "public, max-age=86400"})
+    return _preview_mask_response(content, request)
 
 
 @router.get("/preview-circle-mask", response_class=Response)
-def preview_circle_mask(params: Annotated[PreviewCircleMask, Query()]) -> Response:
+def preview_circle_mask(params: Annotated[PreviewCircleMask, Query()], request: Request) -> Response:
     """仅按示意圆形生成预览资源，不检测人脸、不读取源视频或写入模板。"""
     try:
         content = circle_mask_video(**params.model_dump())
     except (OSError, subprocess.SubprocessError) as exc:
         logging.getLogger(__name__).exception("Preview circle mask encoding failed")
         raise HTTPException(status_code=503, detail="圆形预览蒙版生成失败，请检查服务端 FFmpeg 后重试") from exc
-    return Response(content, media_type="video/mp4", headers={"Cache-Control": "public, max-age=86400"})
+    return _preview_mask_response(content, request)
 
 
 @router.post("/frame-mask-images", status_code=201)
