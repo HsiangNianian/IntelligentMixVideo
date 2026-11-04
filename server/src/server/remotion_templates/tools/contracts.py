@@ -552,7 +552,7 @@ class SpriteCreateInput(ContractModel):
 
 
 class ReviewFrame(ContractModel):
-    """回看的一帧：下一轮图片序号（参考图在前）、Sprite 帧号与采样时机；标签不代表视觉结论。"""
+    """回看的一帧：下一轮图片序号、Sprite 帧号与采样时机；自由组件按随后的观察消息从 1 编号，组合路径把回看帧接在参考图之后。"""
 
     image: PositiveInteger
     frame: NonNegativeInteger
@@ -690,7 +690,7 @@ class PreviewRenderInput(ContractModel):
 
 
 class PreviewRenderOutput(ContractModel):
-    """这次挂载的长度、从运行中的代码量出的运动事实，与截到的帧（附在后续轮次的图片里，灰底不是内容）。"""
+    """这次挂载的长度、从运行中的代码量出的运动事实，与截到的帧；帧号是随后的观察消息内的 1..n，灰底不是内容。"""
 
     duration_frames: PositiveInteger
     motion: list[str] = Field(default_factory=list)
@@ -725,7 +725,7 @@ class EffectSaveInput(ContractModel):
 
 
 class EffectSaveOutput(ContractModel):
-    """保存的候选、从运行中的代码量出的运动事实，与它的中间帧（附在后续轮次的图片里）。"""
+    """保存的候选、从运行中的代码量出的运动事实，与它的中间帧；中间帧在随后的观察消息里编号为 1。"""
 
     sprite_id: SpriteId
     created_at: Timestamp
@@ -746,7 +746,7 @@ class ImageInspectInput(ContractModel):
 
 
 class ImageInspectOutput(ContractModel):
-    """裁出的局部在后续轮次图片里的序号与像素尺寸，以及原图尺寸。"""
+    """裁出的局部在随后观察消息内的序号（固定为 1）、像素尺寸，以及原图尺寸。"""
 
     image: PositiveInteger
     width: PositiveInteger

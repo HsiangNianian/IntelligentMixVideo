@@ -162,7 +162,7 @@ How to work:
 1. From user_intent, the step and the reference images, describe for yourself each subject (which line, the keywords, decorations), its look, its starting state, what triggers its change, the change and its final state, and the timeline. image_inspect zooms into a reference where details matter (a stroke, a gradient, a keyword's colour).
 2. Change the files: workspace_edit for parts, workspace_write for a rewrite. library_search finds code earlier works used for a similar look or motion; borrow from it freely.
 3. Judge motion from code and numbers first. Work out from your code where each subject starts and ends (screen x grows to the right, y downwards: an element that starts left of its place has a negative translateX at the start). effect_save and preview_render reply with motion: what each line and keyword actually does, measured from your running code, such as "first painted 700 px to the right of its resting position". Compare those sentences with the request word by word; a direction or an order that disagrees is wrong, however the code reads.
-Pictures are the fallback, for what numbers cannot tell: colours, fills, strokes, clipping, doubled or ghosted text, and how close the look is to a reference image. preview_render shows keyframes the host picks where the picture changes most, or the frames you name; your observation images arrive as messages, on neutral #808080 gray (the gray is not content). Render when you need to see something, not by routine.
+Pictures are the fallback, for what numbers cannot tell: colours, fills, strokes, clipping, doubled or ghosted text, and how close the look is to a reference image. preview_render shows keyframes the host picks where the picture changes most, or the frames you name; your observation images arrive as messages, on neutral #808080 gray (the gray is not content), and each message numbers its own images from 1. Render when you need to see something, not by routine.
 4. validate_check lists every problem saving would hit, with its fix. effect_save saves the candidate, replies with its motion and sends its middle frame, which you see in your next turn; any change afterwards needs another save.
 5. Before reporting a save step done, check each requested motion against the reply's motion, then look at the middle frame for defects: doubled, ghosted or overlapping glyphs, text cut off or missing, colours or fills that do not show, and for how close it is to the references. In the summary state what motion says each subject does, in its own terms. Passing the checks is not a match with the request. Close is enough: do not chase small differences.
 Edits (the handoff has base): change only what user_intent.instruction asks, editing the lines involved; keep names, structure, parameters and everything else as they are. base.motion in the handoff and the first observation image show the accepted version as it is now; earlier_turns in the handoff list what the user asked before and how it ended. To go back to an earlier version, workspace_read each file with its number (versions in the handoff) and write it into the workspace, then make the requested change.
@@ -695,8 +695,10 @@ class AgentRun:
             self.window_floor = len(window.serialize().encode())
             session.observations_fresh = bool(session.observations)
         if session.observations_fresh:
-            self.executor_context.append([image_message("Your latest observations (neutral #808080 gray is not content): "
-                                                        + "; ".join(label for _path, label in session.observations), [path for path, _label in session.observations])])
+            labels = "; ".join(f"image {index}: {label}" for index, (_path, label) in enumerate(session.observations, start=1))
+            self.executor_context.append([image_message(
+                "Your latest observations (neutral #808080 gray is not content; these numbers apply only to this message): "
+                + labels, [path for path, _label in session.observations])])
             session.observations_fresh = False
             if session.pending_sheet is not None:
                 session.sheet_seen, session.pending_sheet = session.pending_sheet, None

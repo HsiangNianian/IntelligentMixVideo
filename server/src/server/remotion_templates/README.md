@@ -78,7 +78,8 @@ role-Preset composition. The tool contracts are §13 of
   `passed: false` result; a save failure is `CODE_VALIDATION_FAILED` listing every problem.
 - **Observations.** `preview.render` (at most 12 per task, never cached as a publication report), `effect.save`'s
   acceptance sheet and
-  `image.inspect` crops reach the Executor once, as a message appended to its window. An edit starts with the accepted
+  `image.inspect` crops reach the Executor once, as a message appended to its window; that message numbers its own
+  images from 1, independently of reference images and earlier observation messages. An edit starts with the accepted
   version's middle frame, rendered once by the host and shared with the Plan layer, which sees it after the reference images
   (`accepted_version_images`) when it designs or recovers an edit.
 - **Motion from the running code, pictures as the fallback.** Each capture also measures every line and keyword hit on the

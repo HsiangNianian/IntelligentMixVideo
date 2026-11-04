@@ -205,7 +205,7 @@ class EffectTools:
         return EffectCheckOutput(passed=not problems, problems=problems, notes=notes)
 
     def _frames_out(self, shots: list[tuple[Path, int, str]], prefix: str) -> list[ReviewFrame]:
-        """Make captured frames the current observation images and describe them by their image numbers.
+        """Make captured frames the current observation images and number them within that message.
 
         They replace whatever was attached before, so a saved candidate's sheet that has not been shown yet no longer counts
         as pending (`save_effect` marks its own sheet pending afterwards).
@@ -213,7 +213,7 @@ class EffectTools:
         self.observations = [(path, f"{prefix} frame {frame} ({label})") for path, frame, label in shots]
         self.observations_fresh = True
         self.pending_sheet = None
-        return [ReviewFrame(image=len(self.images) + index, frame=frame, label=label) for index, (_path, frame, label) in enumerate(shots, start=1)]
+        return [ReviewFrame(image=index, frame=frame, label=label) for index, (_path, frame, label) in enumerate(shots, start=1)]
 
     def _keyframes(self, capture, sprite: SpriteDraft) -> list[tuple[Path, int, str]]:
         """The keyframes among a capture's trial shots, as (path, frame, label)."""
@@ -332,4 +332,4 @@ class EffectTools:
         self.observations = [(path, f"reference image {request.image}, region x {request.x:g} y {request.y:g} width {request.width:g} height {request.height:g}")]
         self.observations_fresh = True
         self.pending_sheet = None
-        return ImageInspectOutput(image=len(self.images) + 1, width=region.width, height=region.height, source_width=width, source_height=height)
+        return ImageInspectOutput(image=1, width=region.width, height=region.height, source_width=width, source_height=height)
