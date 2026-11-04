@@ -8,7 +8,7 @@ from pydantic.alias_generators import to_camel
 
 
 class ScreenPoint(BaseModel):
-    """画布百分比坐标；字幕横坐标表示中心，纵坐标表示顶部。"""
+    """画布百分比坐标；IMS 字幕横向居中、纵向为顶部，Remotion 字效以内容框中心定位。"""
 
     model_config = ConfigDict(extra="forbid", alias_generator=to_camel, populate_by_name=True)
     x: float = Field(default=50, ge=0, le=100, allow_inf_nan=False)

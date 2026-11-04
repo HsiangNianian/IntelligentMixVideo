@@ -204,7 +204,7 @@ message TrackList {
   repeated EffectTrack tracks = 1;
 }
 
-// 同屏字幕位置，画布百分比；横向居中、纵向为顶部。
+// 同屏字幕位置，画布百分比；IMS 横向居中、纵向为顶部，Remotion 字效以内容框中心定位。
 message ScreenPoint {
   optional double x = 1;
   optional double y = 2;

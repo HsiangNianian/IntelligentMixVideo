@@ -67,6 +67,8 @@ PORT=8010 uv run --locked server
 
 同屏配置通过 `SaveTemplateRequest.split_screen` 保存，JSON 响应为 `splitScreen`：包含 `enabled`、`layout`、`backgroundColor`、`material`、`avatar`、`subtitle`、`subtitleEn`。`layout` 为 `split`（默认，分区双窗口）、`overlay`（完整素材叠人物）、`circle`（完整素材叠自动圆形头像）；旧客户端省略新 `layout` 重存时保留原值。`overlay` / `circle` 的素材直接用完整画布 Contain 加模糊填充，忽略但保留原素材窗口配置；人物位置用窗口左上角 X/Y 和宽高的画布百分比，无左右角/边距预设、无自动字幕避让。人物叠加等比放入原视频框，圆形头像截取检测到的头部正方形，再用 `mask_circle` 放入窗口内的最大正圆；两种叠加布局均无矩形装饰。`split` 保留原有窗口 Contain/Cover、圆角/内边框（1080×1920 基准像素）和底色。旧模板缺省关闭，旧客户端更新时省略整个同屏字段保留已有配置，关闭用 `enabled=false`。三种布局都仅在标准合成命中素材时生效，未命中时使用带原背景的全屏数字人，不抠像、不裁圆；纯素材模式忽略配置。进出同屏及同屏内均不使用转场。
 
+同屏字幕位置使用画布百分比：IMS 字幕仍按横向中心、纵向顶部定位；Remotion 字效沿用普通摆放的内容框中心，直接将 X/Y 百分比换算为资产画布像素，不加半框高、不测量正文边界。客户端预览与合成使用同一规则，缩放、旋转和内部排版保持原有行为。已有模板保留坐标数值，重新预览和合成时生效；已生成的视频不自动重做，曾为旧偏移手动调过位置的模板需重新核对。
+
 圆角预览资源接收 `width`、`height`（源尺寸，2～32768）、`box_width`（2～1080）、`box_height`（2～1920）、`radius`（大于 0 且不超过窗口短边一半）、`seconds`（正整数持续秒数）。在工作线程用 Pillow/FFmpeg 编码单帧 MP4，最多缓存 32 份，缺编码器返回 503。云合成另用 ffprobe 探测实际尺寸、IMS 原生蒙版与 ZOS 透明边框，不重编码用户源视频。SDK 预览保留实时花字和滤镜。
 
 数字人效果独立通过 `SaveTemplateRequest.avatar_effects` 保存，JSON 为 `avatarEffects`：`openingEnabled` 默认 false，`openingDuration` 默认 2 秒（0.1～300），`circleScale` 默认 1.6（1～3，脸框留量），`feather` 默认 0.02（0～0.2），`removeBackground` 默认 false。省略整个字段时，旧客户端重存保留已有设置；显式关闭不清除参数。位置尺寸继续使用 `splitScreen.avatar`，相对整张画布、按原视频矩形框定位。
