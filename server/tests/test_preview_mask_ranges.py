@@ -40,9 +40,12 @@ def mask_resource(request, monkeypatch):
     ("bytes=-", 200, b"0123456789", None),
     ("bytes=0-1,4-5", 200, b"0123456789", None),
     ("items=0-1", 200, b"0123456789", None),
+    pytest.param("bytes=" + "9" * 5000 + "-", 200, b"0123456789", None, id="oversized-start"),
+    pytest.param("bytes=0-" + "9" * 5000, 200, b"0123456789", None, id="oversized-end"),
+    pytest.param("bytes=-" + "9" * 5000, 200, b"0123456789", None, id="oversized-suffix"),
 ])
 def test_mask_byte_ranges(client, mask_resource, byte_range, status, content, content_range):
-    """WebKit 请求范围时返回精确的 206；越界 416，其余完整读取，所有响应均可跨域。"""
+    """WebKit 请求范围时返回精确的 206；越界 416，超长数字等无法处理的范围完整读取，所有响应均可跨域。"""
     path, params = mask_resource
     headers = {"Origin": "tauri://localhost"}
     if byte_range is not None:

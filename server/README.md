@@ -69,7 +69,7 @@ PORT=8010 uv run --locked server
 
 圆角预览资源接收 `width`、`height`（源尺寸，2～32768）、`box_width`（2～1080）、`box_height`（2～1920）、`radius`（大于 0 且不超过窗口短边一半）、`seconds`（正整数持续秒数）。在工作线程用 Pillow/FFmpeg 编码单帧 MP4，最多缓存 32 份，缺编码器返回 503。云合成另用 ffprobe 探测实际尺寸、IMS 原生蒙版与 ZOS 透明边框，不重编码用户源视频。SDK 预览保留实时花字和滤镜。
 
-两个几何蒙版 MP4 接口均声明 `Accept-Ranges: bytes`，支持单段 `bytes=a-b`、`bytes=a-`、`bytes=-n`，返回 206、对应字节和 `Content-Range`；末端越界截到结尾，无法满足的范围返回 416 与 `Content-Range: bytes */总长度`。无 Range、格式错误、多段范围或带无法验证的 If-Range 时返回 200 完整视频。200/206 保留一天缓存；此约定保证 WebKit 在加载和定位蒙版时能按范围读取。
+两个几何蒙版 MP4 接口均声明 `Accept-Ranges: bytes`，支持单段 `bytes=a-b`、`bytes=a-`、`bytes=-n`，返回 206、对应字节和 `Content-Range`；末端越界截到结尾，无法满足的范围返回 416 与 `Content-Range: bytes */总长度`。无 Range、格式错误、数字超出 Python 解析限制、多段范围或带无法验证的 If-Range 时返回 200 完整视频。200/206 保留一天缓存；此约定保证 WebKit 在加载和定位蒙版时能按范围读取。
 
 数字人效果独立通过 `SaveTemplateRequest.avatar_effects` 保存，JSON 为 `avatarEffects`：`openingEnabled` 默认 false，`openingDuration` 默认 2 秒（0.1～300），`circleScale` 默认 1.6（1～3，脸框留量），`feather` 默认 0.02（0～0.2），`removeBackground` 默认 false。省略整个字段时，旧客户端重存保留已有设置；显式关闭不清除参数。位置尺寸继续使用 `splitScreen.avatar`，相对整张画布、按原视频矩形框定位。
 

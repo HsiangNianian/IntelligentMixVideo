@@ -100,7 +100,11 @@ def _preview_mask_response(content: bytes, request: Request) -> Response:
     match = re.fullmatch(r"bytes=([0-9]*)-([0-9]*)", request.headers.get("range", "").strip())
     # 没有 ETag/Last-Modified 可匹配 If-Range，须返回完整资源，不能将新片段拼入旧缓存。
     if match and any(match.groups()) and "if-range" not in request.headers:
-        first, last = (int(value) if value else None for value in match.groups())
+        try:
+            first, last = (int(value) if value else None for value in match.groups())
+        except ValueError:
+            # 超出 Python 十进制位数限制时忽略 Range，不能让外部请求触发 500。
+            return Response(content, media_type="video/mp4", headers=headers)
         if first is None or last is None or first <= last:
             size = len(content)
             start = first if first is not None else max(0, size - last)
