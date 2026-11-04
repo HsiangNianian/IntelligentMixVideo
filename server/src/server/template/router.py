@@ -97,7 +97,7 @@ async def save_template(request: Request) -> Response:
 def _preview_mask_response(content: bytes, request: Request) -> Response:
     """复用编码字节回答单段 Range；非法或多段忽略，无法满足返回 416，不产生磁盘文件。"""
     headers = {"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=86400"}
-    match = re.fullmatch(r"bytes=([0-9]*)-([0-9]*)", request.headers.get("range", "").strip())
+    match = re.fullmatch(r"bytes=([0-9]*)-([0-9]*)", request.headers.get("range", "").strip(), re.IGNORECASE)
     # 没有 ETag/Last-Modified 可匹配 If-Range，须返回完整资源，不能将新片段拼入旧缓存。
     if match and any(match.groups()) and "if-range" not in request.headers:
         try:

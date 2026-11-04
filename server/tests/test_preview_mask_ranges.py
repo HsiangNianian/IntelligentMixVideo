@@ -27,6 +27,9 @@ def mask_resource(request, monkeypatch):
 @pytest.mark.parametrize("byte_range,status,content,content_range", [
     (None, 200, b"0123456789", None),
     ("bytes=1-2", 206, b"12", "bytes 1-2/10"),
+    ("Bytes=1-2", 206, b"12", "bytes 1-2/10"),
+    ("bYtEs=3-", 206, b"3456789", "bytes 3-9/10"),
+    ("BYTES=-3", 206, b"789", "bytes 7-9/10"),
     ("bytes=0-0", 206, b"0", "bytes 0-0/10"),
     ("bytes=3-", 206, b"3456789", "bytes 3-9/10"),
     ("bytes=-3", 206, b"789", "bytes 7-9/10"),
