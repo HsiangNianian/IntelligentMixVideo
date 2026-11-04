@@ -207,11 +207,23 @@ async def test_assembly_recovery_reuses_layout_assets(composition_case, composit
     assert len(calls) == (0 if cached else 1)
 
 
-def test_remotion_crossing_keeps_original_clock(composition_case, monkeypatch):
-    """跨界字幕保持内容和动画长度，显示区间互斥，排版只检查该位置真正可见的帧。"""
+@pytest.mark.parametrize("language, y", [("zh", 1190.4), ("en", 1257.6)])
+@pytest.mark.parametrize("box_height, scale", [(700, 1), (200, 2)])
+def test_remotion_crossing_keeps_original_clock(composition_case, monkeypatch, language, y, box_height, scale):
+    """同屏按字效中心定位，不受框高或缩放推移；跨界保留原位置、正文和动画时钟。"""
     case = enable(composition_case)
     data = remotion_case(case)
     data.update(template=case["template"], matches=case["matches"])
+    sprite = next(iter(data["remotion"]["assets"].values()))
+    sprite["canvas"].update(width=1080, height=1920)
+    sprite["content_box"] = dict(x=40, y=620, width=1000, height=box_height)
+    transform = dict(x=420, y=1500, scale=scale, rotation=12, opacity=0.8)
+    data["remotion"]["placements"][0].update(language=language, text_target="subtitle")
+    if language == "en":
+        subtitle = next(track for track in data["template"]["tracks"] if track["target"] == "subtitle")
+        data["template"]["tracks"].append({**deepcopy(subtitle), "id": "subtitle-en", "language": "en"})
+    data["remotion"]["placements"][0]["editor"]["transform"] = transform
+    original = deepcopy(data)
     monkeypatch.setattr(remotion, "subtitle_events", lambda *args: [("跨界字幕", "", 0, 8)])
     result = remotion.plan(data, 120)
     assert [(i["visible_start_frame"], i["visible_end_frame"]) for i in result.instances] == [(0, 30), (30, 90), (90, 120), (120, 180), (180, 240)]
@@ -219,6 +231,9 @@ def test_remotion_crossing_keeps_original_clock(composition_case, monkeypatch):
     assert all(i["config"] == result.instances[0]["config"] for i in result.instances)
     assert result.instances[0]["host"] == result.instances[2]["host"]
     assert result.instances[1]["host"] == result.instances[3]["host"] != result.instances[0]["host"]
+    assert result.instances[0]["host"]["transform"] == transform
+    assert result.instances[1]["host"]["transform"] == {**transform, "x": 540, "y": pytest.approx(y)}
+    assert data == original
     frames, length = _fit_frames(result.instances[1], 240)
     assert (min(frames), max(frames), length) == (30, 89, 240)
 
