@@ -9,6 +9,7 @@ import { SpriteClips } from "@/features/templates/SpritePanels";
 import { SpriteClipInspector } from "@/features/templates/SpriteClipInspector";
 import { getTemplate, saveTemplate } from "@/features/templates/api";
 import { bindClip } from "@/features/templates/clips";
+import { defaultSplitScreen } from "@/features/templates/splitScreen";
 import { CATALOG_SILENCE_MS, listSprites, watchCatalog } from "@/features/sprites/api";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { newDraft, toDraft, type RemotionClip } from "@/features/templates/model";
@@ -853,6 +854,45 @@ test("工作区收到覆盖事件后刷新正在使用的资产预览", async ()
     await waitFor(() => expect(new URL(frame.src).searchParams.get("version")).toBe("v2"));
     expect(posts).toEqual([]);
     expect(screen.queryByText("有未保存的修改")).toBeNull();
+  } finally {
+    Object.defineProperty(HTMLMediaElement.prototype, "src", source);
+  }
+});
+
+// 同屏直接把中英字幕的内容框中心传给播放器；框高和缩放不能产生半框偏移，关闭同屏恢复保存的摆放。
+test.each([
+  ["zh", 700, 1, 1190.4], ["en", 200, 2, 1257.6],
+] as const)("同屏 %s 字效按内容框中心预览（框高 %d、缩放 %d）", async (language, height, scale, y) => {
+  const source = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "src")!;
+  Object.defineProperty(HTMLMediaElement.prototype, "src", {
+    ...source,
+    // 只模拟媒体元数据，让真实工作区完成时间线计算；不读取视频或执行 SDK。
+    set(this: HTMLMediaElement, value: string) {
+      source.set!.call(this, value);
+      Object.defineProperties(this, { duration: { configurable: true, value: 10 }, videoWidth: { configurable: true, value: 1080 }, videoHeight: { configurable: true, value: 1920 } });
+      queueMicrotask(() => this.dispatchEvent(new Event("loadedmetadata")));
+    },
+  });
+  try {
+    const transform = { x: 420, y: 1500, scale, rotation: 12, opacity: 0.8 };
+    const asset = { ...textAsset(), contentBox: { x: 40, y: 620, width: 1000, height } };
+    const { template, posts } = sprites({ catalog: [asset], clips: [{ id: "placed", sprite_id: "sprite-t", text_target: "subtitle", language,
+      start: 0, duration: null, parameters: {}, transform }] });
+    template.split_screen = { ...defaultSplitScreen(), enabled: true };
+    if (language === "en") template.tracks.push({ ...template.tracks.find((track) => track.target === "subtitle")!, id: "subtitle-en", language: "en" });
+    render(<TemplateWorkspace selection={{ templateId: template.template_id }} onHome={() => {}} />);
+    const frame = await screen.findByTitle<HTMLIFrameElement>("AI 资产预览：金色标题");
+    const post = spyOn(frame.contentWindow!, "postMessage");
+    await act(async () => window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow,
+      data: { type: "imv-preview-ready", channel: new URL(frame.src).hash.slice(1), sync: true, host: true } })));
+    // 断言工作区经真实叠加组件发出的摆放，而非复写坐标公式。
+    const placement = () => post.mock.calls.map(([message]) => message).filter((message) => message.type === "imv-preview-update").at(-1)?.host.transform;
+    await waitFor(() => expect(placement()).toEqual({ ...transform, x: 540, y: expect.closeTo(y, 4) }));
+    fireEvent.change(screen.getByLabelText(`${language === "en" ? "英文" : "中文"}字幕垂直位置 Y %`), { target: { value: "60" } });
+    await waitFor(() => expect(placement()).toEqual({ ...transform, x: 540, y: 1152 }));
+    fireEvent.click(screen.getByText("启用同屏"));
+    await waitFor(() => expect(placement()).toEqual(transform));
+    expect(posts).toEqual([]);
   } finally {
     Object.defineProperty(HTMLMediaElement.prototype, "src", source);
   }

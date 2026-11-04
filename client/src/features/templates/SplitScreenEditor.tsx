@@ -43,8 +43,9 @@ export function SplitScreenEditor({ value, removeBackground = false, onChange, o
       <p className="text-xs text-muted-foreground">X/Y 为窗口左上角相对整张成片画布的百分比。{layout.layout === "circle" ? "头像在窗口内保持正圆，圆内保留原背景；真实头部由合成时自动定位，检测不到则退回直接切换：有素材时只显示素材，无素材时显示数字人。" : "数字人按原视频框定位和等比缩放。"}字幕由你手动安排位置。</p>
       {(["subtitle", "subtitleEn"] as const).map((role) => <fieldset key={role}><legend className="mb-2 text-xs font-semibold">同屏{role === "subtitle" ? "中文" : "英文"}字幕</legend><div className="grid grid-cols-2 gap-2">
         {number(`${role === "subtitle" ? "中文" : "英文"}字幕中心 X %`, layout[role].x, (x) => onChange({ ...layout, [role]: { ...layout[role], x } }))}
-        {number(`${role === "subtitle" ? "中文" : "英文"}字幕顶部 Y %`, layout[role].y, (y) => onChange({ ...layout, [role]: { ...layout[role], y } }))}
+        {number(`${role === "subtitle" ? "中文" : "英文"}字幕垂直位置 Y %`, layout[role].y, (y) => onChange({ ...layout, [role]: { ...layout[role], y } }))}
       </div></fieldset>)}
+      <p className="text-xs text-muted-foreground">Remotion 字效按内容框中心定位，与普通字效的位置设置一致；普通字幕的 Y 仍表示文字顶部。</p>
     </fieldset>
     <p className="text-xs leading-relaxed text-muted-foreground">仅命中素材时同屏；没有素材时显示完整数字人，不抠像。有效圆形开场优先。纯素材合成忽略此设置；同屏不使用转场，数字人在上。</p>
   </div></details>;
