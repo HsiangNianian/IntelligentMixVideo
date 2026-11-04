@@ -1014,7 +1014,7 @@ class SpriteCreateInput(ContractModel):
 
 
 class ReviewFrame(ContractModel):
-    """回看的一帧：下一轮附带的第几张图片（参考图在前）、Sprite 帧号与采样时机；标签只说明取样时刻，不代表视觉结论。"""
+    """回看的一帧：下一轮图片序号、Sprite 帧号与采样时机；自由组件按随后的观察消息从 1 编号，组合路径把回看帧接在参考图之后。标签只说明取样时刻，不代表视觉结论。"""
 
     image: PositiveInteger
     frame: NonNegativeInteger
@@ -1565,7 +1565,7 @@ Preset：Executor 在任务工作区里写 `Effect.tsx`（默认导出组件，�
   `CODE_VALIDATION_FAILED` 拒绝并列出问题。
 - `workspace.read` 给出 `version` 时读该历史自由组件版本的文件（序号见快照的 `versions`，内容含那一版用户调过的参数）。读取按序列化 UTF-8 限制为每页至多 16 KB 内容；`offset` 是从零开始的 Unicode 字符位置，默认 0，续读须沿用同一 `path`、`version` 并把回执 `next_offset` 传回，直到该字段缺省。`lines` 是全文件行数；整份写回之前须收齐所有页面，不能用一页覆盖整份文件。大文件不内联到执行层交接消息，而是在 `files_omitted` 中列出读取指引。
 - 修改还原保留 `keywordEffect` 开关与宿主补足的各行字体配置；`keyword_look` 表示有关键词外观能力，`keyword_enabled` 保存其默认开关，关闭仍保留能力与参数，自由组件分类检查允许关闭的布尔默认值。
-- 预览、保存与看图得到的图片是观察图，作为一条消息进入 Executor 的窗口，只发一次；修改任务开始时宿主先测量并渲染一次基线，Plan 与 Executor 共用它的运动事实（`base.motion`）与中间帧。
+- 预览、保存与看图得到的图片是观察图，作为一条消息进入 Executor 的窗口，只发一次；每条观察消息都从 1 开始编号，不沿用参考图或上一条消息的序号。修改任务开始时宿主先测量并渲染一次基线，Plan 与 Executor 共用它的运动事实（`base.motion`）与中间帧。
 - `effect.save` 与 `preview.render` 的回执带 `motion`：运行代码量出的每行、每个关键词的运动，用文字说明（相对中间帧的静止位置）。方向与顺序以它为准；图片是兜底，`effect.save` 只附中间帧，`preview.render` 默认给关键帧。
   预览每个任务最多 12 次，结果不缓存为发布用的验收报告。
 - 自由组件样式参数的 Schema 可带 `x-imv-group`（面板分组），发布时写进 `SpriteParameter.group`，模板编辑按组成卡片并按摆放调整。
@@ -1683,7 +1683,7 @@ class PreviewRenderInput(ContractModel):
 
 
 class PreviewRenderOutput(ContractModel):
-    """这次挂载的长度、从运行中的代码量出的运动事实，与截到的帧（附在后续轮次的图片里，灰底不是内容）。"""
+    """这次挂载的长度、从运行中的代码量出的运动事实，与截到的帧；帧号是随后的观察消息内的 1..n，灰底不是内容。"""
 
     duration_frames: PositiveInteger
     motion: list[str] = Field(default_factory=list)
@@ -1718,7 +1718,7 @@ class EffectSaveInput(ContractModel):
 
 
 class EffectSaveOutput(ContractModel):
-    """保存的候选、从运行中的代码量出的运动事实，与它的中间帧（附在后续轮次的图片里）。"""
+    """保存的候选、从运行中的代码量出的运动事实，与它的中间帧；中间帧在随后的观察消息里编号为 1。"""
 
     sprite_id: SpriteId
     created_at: Timestamp
@@ -1739,7 +1739,7 @@ class ImageInspectInput(ContractModel):
 
 
 class ImageInspectOutput(ContractModel):
-    """裁出的局部在后续轮次图片里的序号与像素尺寸，以及原图尺寸。"""
+    """裁出的局部在随后观察消息内的序号（固定为 1）、像素尺寸，以及原图尺寸。"""
 
     image: PositiveInteger
     width: PositiveInteger

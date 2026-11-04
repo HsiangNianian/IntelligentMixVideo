@@ -409,6 +409,44 @@ def test_previews_render_variants_without_caching_and_are_limited(tmp_path):
         asyncio.run(current.execute("preview.render", {}, available()))
 
 
+@needs_bundler
+def test_each_observation_message_numbers_its_own_images_from_one(monkeypatch, tmp_path):
+    """连续保存和预览时，每份回执与随后那条观察消息都使用消息内的 1..n 编号，不沿用参考图或上一条观察消息的序号。"""
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(reference)
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "x"}),
+        call("save-1", "effect.save", {}),
+        call("read-1", "workspace.read", {"path": "effect.json"}),
+        call("preview-1", "preview.render", {"frames": [10, 20]}),
+        call("read-2", "workspace.read", {"path": "effect.json"}),
+    ])
+    run.session.images = [reference]
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+
+    window = harness.windows[-1]
+    receipts, observations = [], []
+    for message in window:
+        if message.get("role") == "tool":
+            result = json.loads(message["content"])
+            frames = result.get("data", {}).get("frames") or result.get("data", {}).get("review", {}).get("frames", [])
+            if result.get("ok") and frames:
+                receipts.append([frame["image"] for frame in frames])
+        elif message.get("role") == "user" and isinstance(message.get("content"), list):
+            text = message["content"][0].get("text", "")
+            if text.startswith("Your latest observations"):
+                observations.append(message)
+    assert receipts == [[1], [1, 2]]
+    assert len(observations) == 2
+    for message, count in zip(observations, (1, 2)):
+        text = message["content"][0]["text"]
+        assert "image 1:" in text
+        if count == 2:
+            assert "image 2:" in text
+        assert len([item for item in message["content"] if item.get("type") == "image_path"]) == count
+
+
 def test_image_inspect_enlarges_a_region_of_a_reference(tmp_path):
     """放大参考图的局部：裁出比例区域并放大，作为下一轮的观察图；区域越界时拒绝。"""
     reference = tmp_path / "ref.png"
@@ -416,7 +454,7 @@ def test_image_inspect_enlarges_a_region_of_a_reference(tmp_path):
     current = free_session(tmp_path)
     current.images = [reference]
     shown = asyncio.run(current.execute("image.inspect", {"image": 1, "x": 0.5, "y": 0.5, "width": 0.25, "height": 0.1}, available()))
-    assert (shown["image"], shown["source_width"], shown["source_height"]) == (2, 400, 800)
+    assert (shown["image"], shown["source_width"], shown["source_height"]) == (1, 400, 800)
     assert max(shown["width"], shown["height"]) == 400
     with pytest.raises(ToolFault):
         asyncio.run(current.execute("image.inspect", {"image": 2}, available()))

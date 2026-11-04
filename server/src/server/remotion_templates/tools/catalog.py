@@ -345,7 +345,7 @@ async def workspace_edit(owner, request: WorkspaceEditInput) -> ToolResult[Works
     "preview.render",
     constraints=[
         "Mounts the workspace as it stands in the isolated browser and captures frames, without the save checks; a component that throws or does not compile is reported.",
-        "The frames reach the next turn as a message of the conversation (on neutral #808080 gray, which is not content).",
+        "The frames reach the next turn as one observation message (on neutral #808080 gray, which is not content), numbered 1..n inside that message.",
         "A task has a limited number of previews (previews_left in the snapshot).",
     ],
     side_effects=["isolated browser execution of the workspace"],
@@ -379,7 +379,7 @@ async def validate_check(owner, request: EffectCheckInput) -> ToolResult[EffectC
     "effect.save",
     constraints=[
         "Runs the checks of validate.check; a failure saves nothing and lists every problem.",
-        "A success saves the workspace as this task's latest candidate, which the host publishes when the plan finishes, and returns the measured motion and sends the middle frame to the next turn.",
+        "A success saves the workspace as this task's latest candidate, which the host publishes when the plan finishes, and returns the measured motion and sends image 1 of the next observation message with the middle frame.",
     ],
     side_effects=["code validation, one browser mount with frame capture, task candidate record"],
     error_codes=["CODE_VALIDATION_FAILED", "COMPOSITION_FAILED", "INVALID_ARGUMENT", "VALIDATION_UNAVAILABLE"],
@@ -411,10 +411,10 @@ async def library_search(owner, request: PresetSearchInput) -> ToolResult[Preset
 
 @tool(
     "image.inspect",
-    constraints=["Crops a region of a reference image (fractions of its width and height) and enlarges it as the next observation image."],
+    constraints=["Crops a region of a reference image (fractions of its width and height) and enlarges it as image 1 of the next observation message."],
     side_effects=["local reference image read and PNG write"],
     error_codes=["INVALID_ARGUMENT", "IMAGE_DECODE_FAILED"],
-    examples=[{"input": {"image": 1, "x": 0.1, "y": 0.6, "width": 0.8, "height": 0.2}, "output": {"ok": True, "data": {"image": 3, "width": 1024, "height": 256, "source_width": 1080, "source_height": 1920}}}],
+    examples=[{"input": {"image": 1, "x": 0.1, "y": 0.6, "width": 0.8, "height": 0.2}, "output": {"ok": True, "data": {"image": 1, "width": 1024, "height": 256, "source_width": 1080, "source_height": 1920}}}],
 )
 async def image_inspect(owner, request: ImageInspectInput) -> ToolResult[ImageInspectOutput]:
     """Zoom into part of a reference image (to read a stroke, a gradient or a keyword's colour); the enlarged region follows in the next turn."""
