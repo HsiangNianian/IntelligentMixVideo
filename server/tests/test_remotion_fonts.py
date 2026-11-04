@@ -38,6 +38,7 @@ from server.remotion_templates.object_store import LocalObjects, ObjectStoreErro
 from server.remotion_templates.overlay_render import Overlay, OverlayError, require_fonts
 from server.remotion_templates.placement import resolve
 from server.remotion_templates.renderer import Renderer
+from server.remotion_templates.managed_fonts import bundled_font
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.sprites import operator_parameters
 
@@ -758,7 +759,8 @@ def test_the_font_api_lists_serves_and_uploads(client: TestClient, served, setti
     system_font.write_bytes(b"system-collection")
     monkeypatch.setattr(settings, "font_regular", system_font)
     system = client.get("/api/templates/fonts/noto-sans-cjk")
-    assert (system.status_code, system.content, system.headers["content-type"]) == (200, b"system-collection", "font/collection")
+    # The fixture is not a usable font: serve the bundled SC fallback, never the malformed source bytes.
+    assert (system.status_code, system.content, system.headers["content-type"]) == (200, bundled_font(400).data, "font/ttf")
     file = client.get("/api/templates/fonts/alpha")
     assert (file.status_code, file.content) == (200, PAYLOADS["alpha"])
     assert file.headers["access-control-allow-origin"] == "*" and file.headers["content-type"] == "font/ttf"

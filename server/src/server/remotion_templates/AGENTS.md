@@ -50,7 +50,8 @@
 
 - `remotion_fonts` 只增不删，字体 ID 与家族名不变，只能修正显示名、预览条与字形；库永远不空（系统默认字体在运行时首次使用时登记）。
 - 预装字体随后端包发布，安装时不联网；增删预装字体要同时更新 `font_catalog.json`、`bundled_fonts/` 与 `bundled_fonts/LICENSES.txt`，测试会核对三者一致。
-- 后端只用有边界检查的纯 Python 读取 name 表，不解码字体，也不参与修复（修复在浏览器端，见 `client/src/features/fonts/AGENTS.md`）。
+- 上传字体只用有边界检查的纯 Python 读取 name 表，不解码字体，也不参与修复（修复在浏览器端，见 `client/src/features/fonts/AGENTS.md`）。受信任的系统字体由 `managed_fonts.py` 按内部名称与字重提取独立 SC 子字体，不能把整个 TTC 改名后交给浏览器。
+- 受管字体优先级为配置中的 SC 子字体、随包且哈希校验的 Noto Sans SC、浏览器本地中文字体；预览、排版预检与渲染共用此顺序。合成校验发现实际字形字体不符时只切换一次到随包 SC，诊断不通过只记私有日志，不能因此阻断合成或无限重试。字体库中用户明确选择的其他家族保持原有规则。
 - 字效的 `fontFamily`（及双栏的逐栏字体）保存时换成普通字符串（`open_font_schema`），之后的选择一律按实时字体库校验（`fonts.require_family`），不按生成时冻结的枚举。
 
 ## 生成、校验与发布

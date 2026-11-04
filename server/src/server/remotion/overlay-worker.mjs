@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { bundle } from "@remotion/bundler";
 import { openBrowser, selectComposition, renderMedia } from "@remotion/renderer";
+import { verifyManagedFonts } from "./managed-fonts.mjs";
 
 const root = process.env.IMV_WORK_ROOT ?? "/work";
 const rendererRoot = process.env.IMV_RENDERER_ROOT ?? "/renderer";
@@ -44,14 +45,19 @@ function entrypoint() {
   }).join("");
   return `/** Trusted overlay host waits for both managed font weights. */
 import React from 'react';
-import {AbsoluteFill, Composition, Freeze, Sequence, registerRoot, delayRender, continueRender, cancelRender, staticFile, useCurrentFrame} from 'remotion';
+import {AbsoluteFill, Composition, Freeze, Sequence, registerRoot, delayRender, continueRender, staticFile, useCurrentFrame} from 'remotion';
 import {HostLayer} from './host-layer';
 ${imports}
 const handle = delayRender('managed fonts');
-Promise.all([400,700].map(async weight => {
-  const face = new FontFace('Noto Sans CJK SC', 'url(' + staticFile('font-' + weight + '.ttc') + ')', {weight:String(weight)});
+document.documentElement.lang = 'zh-CN';
+document.documentElement.style.fontFamily = '"Noto Sans CJK SC", "Noto Sans SC", sans-serif';
+Promise.allSettled([400,700].map(async weight => {
+  const face = new FontFace('Noto Sans CJK SC', 'url(' + staticFile('font-' + weight + '.otf') + ')', {weight:String(weight)});
   document.fonts.add(await face.load());
-})).then(() => continueRender(handle)).catch(cancelRender);
+})).then(results => {
+  if (results.some(result => result.status === 'rejected')) console.warn('Using local Chinese font fallback');
+  continueRender(handle);
+});
 /** A still instance: frozen on one frame of a \`length\`-frame timeline and shown only for its first \`frames\` frames. */
 const Hold = ({frame, frames, length, children}) => useCurrentFrame() < frames ? <Freeze frame={frame}><Sequence durationInFrames={length}>{children}</Sequence></Freeze> : null;
 /** Transparent canvas: nothing paints a background, so unplaced frames stay fully transparent. */
@@ -70,16 +76,8 @@ try {
   }
   await fs.writeFile(`${root}/entry.tsx`, entrypoint());
   timings.source_prepare_ms = performance.now() - started;
-  let stageStarted = performance.now();
-  const serveUrl = await bundle({
-    entryPoint: `${root}/entry.tsx`,
-    outDir: `${root}/bundle`,
-    publicDir: `${root}/public`,
-    webpackOverride: (config) => ({ ...config, cache: false }),
-  });
-  timings.bundle_ms = performance.now() - stageStarted;
   console.info(`[overlay] ${new Date().toISOString()} opening browser`);
-  stageStarted = performance.now();
+  let stageStarted = performance.now();
   browser = await openBrowser("chrome", {
     browserExecutable: request.browser,
     logLevel,
@@ -87,6 +85,15 @@ try {
   });
   timings.browser_ms = performance.now() - stageStarted;
   console.info(`[overlay] ${new Date().toISOString()} browser connected`);
+  await verifyManagedFonts(browser, root);
+  stageStarted = performance.now();
+  const serveUrl = await bundle({
+    entryPoint: `${root}/entry.tsx`,
+    outDir: `${root}/bundle`,
+    publicDir: `${root}/public`,
+    webpackOverride: (config) => ({ ...config, cache: false }),
+  });
+  timings.bundle_ms = performance.now() - stageStarted;
   stageStarted = performance.now();
   const selected = await selectComposition({ serveUrl, id: "Overlay", inputProps: {}, puppeteerInstance: browser, logLevel });
   timings.select_ms = performance.now() - stageStarted;

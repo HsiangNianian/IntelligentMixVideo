@@ -408,6 +408,17 @@ style's own file.
   own `/tmp`). The browser preview registers each file as a `FontFace` with its weight and style; player bundles built
   before cards had styles skip italic files (their list entries carry no plain `weight`). macOS development without
   the sandbox does not load them.
+- **Managed Chinese fonts**: `managed_fonts.py` selects `Noto Sans CJK SC` by its internal family and requested
+  weight from `IMV_FONT_REGULAR` / `IMV_FONT_BOLD`, then supplies a standalone face to both preview APIs and workers.
+  Registering a whole TTC under an SC CSS name does not select its SC member; the first member can be Japanese.
+  Missing, damaged or mismatched configured fonts fall back to the already shipped, hash-pinned `Noto Sans SC`
+  variable font, without downloads or a registry dependency (also when catalog installation is disabled).
+  Layout/capacity checks and both render workers inspect Chrome's actual font for `关复` at weights 400 and 700.
+  A mismatch replaces the worker's font with the bundled SC face once, before bundling/encoding, and continues;
+  further diagnostic failures are logged rather than rejecting composition or retrying indefinitely. Browser loaders
+  use the local Chinese font fallback if a web font cannot load, and set `lang=zh-CN`. Explicit library font choices
+  retain their existing behavior. Shared preview responses hash the emitted font for ETags, invalidating cached TTCs.
+  Existing encoded videos need to be rendered again; immutable Sprite source and saved text are not rewritten.
 - **Agent**: the Executor rules end with the library as an enum read from the database, one entry per card with the
   styles it has (bold and italic text use the card's bold and italic files). A text effect must expose
   `fontFamily` (an enum of library families, defaulting to the font chosen from the reference image or description);

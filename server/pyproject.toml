@@ -29,6 +29,7 @@ dependencies = [
     "boto3>=1.40,<2",
     "referencing>=0.37.0",
     "opencv-python-headless==4.12.0.88",
+    "fonttools>=4.60,<5",
 ]
 
 # 服务器按需启用官方标点模型；普通客户端打包不携带 PyTorch。

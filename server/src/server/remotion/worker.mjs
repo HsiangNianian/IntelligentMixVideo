@@ -6,6 +6,7 @@ import ts from "typescript";
 import prettier from "prettier";
 import { VERSION } from "remotion";
 import { languageDiagnostics } from "./typescript.mjs";
+import { verifyManagedFonts } from "./managed-fonts.mjs";
 import { bundle } from "@remotion/bundler";
 import { exportTemplate, buildPresentation } from "./presentation.mjs";
 import {
@@ -193,14 +194,19 @@ function entrypoint() {
   const composition = request.composition;
   return `/** Trusted preview host waits for both managed font weights. */
 import React from 'react';
-import {Composition, registerRoot, delayRender, continueRender, cancelRender, staticFile} from 'remotion';
+import {Composition, registerRoot, delayRender, continueRender, staticFile} from 'remotion';
 import Template from './Template';
 import Export from './Export';
 const handle = delayRender('managed fonts');
-Promise.all([400,700].map(async weight => {
-  const face = new FontFace('Noto Sans CJK SC', 'url(' + staticFile('font-' + weight + '.ttc') + ')', {weight:String(weight)});
+document.documentElement.lang = 'zh-CN';
+document.documentElement.style.fontFamily = '"Noto Sans CJK SC", "Noto Sans SC", sans-serif';
+Promise.allSettled([400,700].map(async weight => {
+  const face = new FontFace('Noto Sans CJK SC', 'url(' + staticFile('font-' + weight + '.otf') + ')', {weight:String(weight)});
   document.fonts.add(await face.load());
-})).then(() => continueRender(handle)).catch(cancelRender);
+})).then(results => {
+  if (results.some(result => result.status === 'rejected')) console.warn('Using local Chinese font fallback');
+  continueRender(handle);
+});
 /** Compose the transparent candidate at its declared dimensions and frame rate. */
 const Root = () => <><Composition id="Template" component={Template} defaultProps={${config}} width={${composition.width}} height={${composition.height}} fps={${composition.fps}} durationInFrames={${composition.duration_in_frames}} /><Composition id="Export" component={Export} defaultProps={{}} width={${composition.width}} height={${composition.height}} fps={${composition.fps}} durationInFrames={${composition.duration_in_frames}} /></>;
 registerRoot(Root);
@@ -235,6 +241,12 @@ async function main() {
     await check("interactive_bundle", () =>
       buildPresentation(root, request.config, request.composition, request.keywords),
     );
+    browser = await openBrowser("chrome", {
+      browserExecutable: request.browser,
+      logLevel: "error",
+      chromiumOptions: { gl: "swangle" },
+    });
+    await check("managed_fonts", () => verifyManagedFonts(browser, root));
     const serveUrl = await check("bundle", () =>
       bundle({
         entryPoint: `${root}/entry.tsx`,
@@ -243,11 +255,6 @@ async function main() {
         webpackOverride: (config) => ({ ...config, cache: false }),
       }),
     );
-    browser = await openBrowser("chrome", {
-      browserExecutable: request.browser,
-      logLevel: "error",
-      chromiumOptions: { gl: "swangle" },
-    });
     const composition = await selectComposition({
       serveUrl,
       id: "Template",

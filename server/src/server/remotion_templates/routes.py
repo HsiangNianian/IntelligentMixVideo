@@ -6,6 +6,7 @@ and need no header, like the public-read objects behind them.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -31,8 +32,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ..client_config import parse_config
 from .settings import ClientSettings
-from .evidence import digest
 from .fonts import SYSTEM_FONT_ID, Font, FontExists, FontRejected, FontStore, Slot, cards
+from .managed_fonts import managed_font
 from .history import WorkEvent
 from .media import save_image
 from .object_store import ObjectStoreError
@@ -507,8 +508,8 @@ def preview(version_id: UUID, service: Service, overlay: bool = False) -> HTMLRe
 @router.get(
     "/versions/{version_id}/fonts/{weight}", tags=["生成产物"], summary="读取预览字体"
 )
-def preview_font(version_id: UUID, weight: int, service: Service) -> FileResponse:
-    """仅提供与该成功版本渲染时指纹相同的受管字体；字体变更或字重不支持时返回 404。"""
+def preview_font(version_id: UUID, weight: int, service: Service) -> Response:
+    """核对成功版本的原始字体指纹后提供独立 SC 字体；源文件变更或字重不支持时返回 404。"""
     version = service.store.version(version_id)
     if weight not in {400, 700}:
         raise NotFound("font not found")
@@ -516,15 +517,24 @@ def preview_font(version_id: UUID, weight: int, service: Service) -> FileRespons
         service.settings.font_regular if weight == 400 else service.settings.font_bold
     )
     try:
-        if digest(font) != version.validation.runtime.get(f"font_{weight}"):
+        if managed_font(font, weight).source_sha256 != version.validation.runtime.get(f"font_{weight}"):
             raise ValueError("font changed")
     except (OSError, ValueError) as exc:
         raise NotFound("accepted font unavailable") from exc
-    return FileResponse(
-        font,
-        media_type="font/collection",
-        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
-    )
+    return managed_font_response(font, weight, cache_control="no-store")
+
+
+def managed_font_response(path: Path, weight: int, *, cache_control: str) -> Response:
+    """Serve only a verified SC face; hash the emitted bytes so clients discard previously cached TTC responses."""
+    try:
+        font = managed_font(path, weight)
+    except (OSError, ValueError) as exc:
+        logger.exception("Managed SC font unavailable")
+        raise HTTPException(503, "简体中文字体不可用，请检查服务端字体配置。") from exc
+    return Response(font.data, media_type=font.media_type, headers={
+        "Access-Control-Allow-Origin": "*", "Cache-Control": cache_control,
+        "ETag": f'"{hashlib.sha256(font.data).hexdigest()}"',
+    })
 
 
 class FontFaceInfo(BaseModel):
@@ -645,7 +655,7 @@ async def upload_font(
 
 
 @router.get("/fonts/{font_id}", tags=["字体"], summary="读取字体文件")
-async def catalog_font(font_id: str, service: Service) -> FileResponse:
+async def catalog_font(font_id: str, service: Service) -> Response:
     """提供已登记字体的文件供预览页、字体选择器与字体详情的字样注册（本机还没缓存时先从对象存储取回并校验哈希）；
     系统默认字体提供服务端安装的常规字重文件；未知字体返回 404。
 
@@ -653,7 +663,9 @@ async def catalog_font(font_id: str, service: Service) -> FileResponse:
     """
     if font_id == SYSTEM_FONT_ID:
         regular = service.settings.font_regular
-        path = regular if regular.is_file() else None
+        if not regular.is_file():
+            raise NotFound("font not found")
+        return await asyncio.to_thread(managed_font_response, regular, 400, cache_control="no-cache")
     else:
         path = await asyncio.to_thread(FontStore.for_settings(service.settings).ensure, font_id)
     if path is None:

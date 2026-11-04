@@ -431,7 +431,7 @@ class ToolValidator:
             payload = await self.renderer.run_worker(
                 directory, worker="tool-validation-worker.mjs", timeout_seconds=timeout_seconds, cpu_seconds=cpu_seconds,
             )
-        except (OSError, RuntimeError, TimeoutError) as exc:
+        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
             raise ValidationUnavailable(str(exc)) from exc
         for item in payload.get("checks", []) if isinstance(payload, dict) else []:
             if item.get("name") == "runtime" and item.get("status") == "error":

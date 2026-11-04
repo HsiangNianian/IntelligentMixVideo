@@ -14,6 +14,7 @@ from .settings import Settings
 from .render_resources import renderer_cpus
 from .evidence import digest
 from .fonts import CONFIG_NAME, SANDBOX_DIR, font_root
+from .managed_fonts import managed_font, prepare_fonts
 from .image_comparison import consistency_checks
 from .models import (
     Check,
@@ -113,8 +114,8 @@ class Renderer:
     def verify_environment(self, report: ValidationReport) -> None:
         """Reject evidence if managed code, dependencies, fonts or executables changed since rendering."""
         paths = {
-            "font_400": self.settings.font_regular,
-            "font_700": self.settings.font_bold,
+            "managed_fonts": Path(__file__).with_name("managed_fonts.py"),
+            "managed_font_check": self.settings.renderer_dir / "managed-fonts.mjs",
             "worker": self.settings.renderer_dir / "worker.mjs",
             "image_comparison": Path(__file__).with_name("image_comparison.py"),
             "probes": Path(__file__).with_name("probes.py"),
@@ -126,6 +127,9 @@ class Renderer:
             "node_binary": Path(shutil.which("node") or "/usr/bin/node").resolve(),
             "ffprobe": Path(shutil.which("ffprobe") or "/usr/bin/ffprobe").resolve(),
         }
+        for weight, path in ((400, self.settings.font_regular), (700, self.settings.font_bold)):
+            if report.runtime.get(f"font_{weight}") != managed_font(path, weight).source_sha256:
+                raise ValueError("Managed font changed; revalidate before completion.")
         for name, path in paths.items():
             if report.runtime.get(name) != digest(path):
                 raise ValueError(
@@ -286,6 +290,10 @@ class Renderer:
         group, then wait for it before returning so browsers cannot leak between tests.
         """
         directory.mkdir(parents=True, exist_ok=True)
+        if worker == "tool-validation-worker.mjs":
+            request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
+            if request.get("mode") in {"fit", "capacity"}:
+                await asyncio.to_thread(prepare_fonts, self.settings, directory)
         timeout = timeout_seconds or self.settings.render_timeout_seconds
         process = None
         log_path = directory / "worker.log"
@@ -370,15 +378,9 @@ class Renderer:
         settings = self.settings
         try:
             (directory / ".tmp").mkdir()
-            public = directory / "public"
-            public.mkdir()
-            for weight, font in (
-                (400, settings.font_regular),
-                (700, settings.font_bold),
-            ):
-                data = font.read_bytes()
-                (public / f"font-{weight}.ttc").write_bytes(data)
-                report.runtime[f"font_{weight}"] = hashlib.sha256(data).hexdigest()
+            report.runtime.update(await asyncio.to_thread(prepare_fonts, settings, directory))
+            report.runtime["managed_fonts"] = digest(Path(__file__).with_name("managed_fonts.py"))
+            report.runtime["managed_font_check"] = digest(settings.renderer_dir / "managed-fonts.mjs")
             report.runtime["worker"] = hashlib.sha256(
                 (settings.renderer_dir / "worker.mjs").read_bytes()
             ).hexdigest()
