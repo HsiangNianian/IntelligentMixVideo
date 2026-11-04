@@ -701,7 +701,7 @@ export const TrackListSchema: GenMessage<TrackList> = /*@__PURE__*/
   messageDesc(file_imv_template_v1_template, 7);
 
 /**
- * 同屏字幕位置，画布百分比；横向居中、纵向为顶部。
+ * 同屏字幕位置，画布百分比；IMS 横向居中、纵向为顶部，Remotion 字效以内容框中心定位。
  *
  * @generated from message imv.template.v1.ScreenPoint
  */
