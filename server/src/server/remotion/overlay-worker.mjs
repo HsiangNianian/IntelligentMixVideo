@@ -7,7 +7,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { bundle } from "@remotion/bundler";
 import { openBrowser, selectComposition, renderMedia } from "@remotion/renderer";
-import { verifyManagedFonts } from "./managed-fonts.mjs";
+import { recordFontLoad, verifyManagedFonts } from "./managed-fonts.mjs";
 
 const root = process.env.IMV_WORK_ROOT ?? "/work";
 const rendererRoot = process.env.IMV_RENDERER_ROOT ?? "/renderer";
@@ -47,17 +47,11 @@ function entrypoint() {
 import React from 'react';
 import {AbsoluteFill, Composition, Freeze, Sequence, registerRoot, delayRender, continueRender, staticFile, useCurrentFrame} from 'remotion';
 import {HostLayer} from './host-layer';
+import {loadManagedFonts} from './font-loader.mjs';
 ${imports}
 const handle = delayRender('managed fonts');
-document.documentElement.lang = 'zh-CN';
-document.documentElement.style.fontFamily = '"Noto Sans CJK SC", "Noto Sans SC", sans-serif';
-Promise.allSettled([400,700].map(async weight => {
-  const face = new FontFace('Noto Sans CJK SC', 'url(' + staticFile('font-' + weight + '.otf') + ')', {weight:String(weight)});
-  document.fonts.add(await face.load());
-})).then(results => {
-  if (results.some(result => result.status === 'rejected')) console.warn('Using local Chinese font fallback');
-  continueRender(handle);
-});
+loadManagedFonts({400:staticFile('font-400.otf'),700:staticFile('font-700.otf')}, staticFile('font-fallback.otf'))
+  .then(() => continueRender(handle));
 /** A still instance: frozen on one frame of a \`length\`-frame timeline and shown only for its first \`frames\` frames. */
 const Hold = ({frame, frames, length, children}) => useCurrentFrame() < frames ? <Freeze frame={frame}><Sequence durationInFrames={length}>{children}</Sequence></Freeze> : null;
 /** Transparent canvas: nothing paints a background, so unplaced frames stay fully transparent. */
@@ -71,6 +65,7 @@ let browser;
 try {
   await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`);
   await fs.copyFile(`${rendererRoot}/host-layer.tsx`, `${root}/host-layer.tsx`);
+  await fs.copyFile(`${rendererRoot}/font-loader.mjs`, `${root}/font-loader.mjs`);
   for (const [index, code] of codes.entries()) {
     await fs.writeFile(`${root}/Sprite${index}.tsx`, code);
   }
@@ -85,7 +80,8 @@ try {
   });
   timings.browser_ms = performance.now() - stageStarted;
   console.info(`[overlay] ${new Date().toISOString()} browser connected`);
-  await verifyManagedFonts(browser, root);
+  const fonts = await verifyManagedFonts(browser, root);
+  const onBrowserLog = (log) => recordFontLoad(fonts.runtime, log);
   stageStarted = performance.now();
   const serveUrl = await bundle({
     entryPoint: `${root}/entry.tsx`,
@@ -95,7 +91,7 @@ try {
   });
   timings.bundle_ms = performance.now() - stageStarted;
   stageStarted = performance.now();
-  const selected = await selectComposition({ serveUrl, id: "Overlay", inputProps: {}, puppeteerInstance: browser, logLevel });
+  const selected = await selectComposition({ serveUrl, id: "Overlay", inputProps: {}, puppeteerInstance: browser, logLevel, onBrowserLog });
   timings.select_ms = performance.now() - stageStarted;
   // A long single Sprite render asks for consecutive `ranges`, each written to its own file from the same bundle and
   // browser; the host joins them. Otherwise the whole output is one file.
@@ -117,6 +113,7 @@ try {
       composition: selected,
       inputProps: {},
       puppeteerInstance: browser,
+      onBrowserLog,
       logLevel,
       timeoutInMilliseconds: 30000,
       frameRange,
@@ -168,7 +165,7 @@ try {
   timings.render_ms = performance.now() - stageStarted;
   timings.total_ms = performance.now() - started;
   console.info(`[overlay-performance] ${JSON.stringify(timings)}`);
-  await fs.writeFile(`${root}/renderer.json`, JSON.stringify({ frames: composition.frames, performance: timings }));
+  await fs.writeFile(`${root}/renderer.json`, JSON.stringify({ frames: composition.frames, performance: timings, runtime: fonts.runtime }));
 } catch (error) {
   // openBrowser can reject before returning a handle while Chrome still keeps Node alive.
   // End this isolated worker immediately; bubblewrap tears down its remaining child processes.

@@ -6,7 +6,7 @@ import ts from "typescript";
 import prettier from "prettier";
 import { VERSION } from "remotion";
 import { languageDiagnostics } from "./typescript.mjs";
-import { verifyManagedFonts } from "./managed-fonts.mjs";
+import { recordFontLoad, verifyManagedFonts } from "./managed-fonts.mjs";
 import { bundle } from "@remotion/bundler";
 import { exportTemplate, buildPresentation } from "./presentation.mjs";
 import {
@@ -197,16 +197,10 @@ import React from 'react';
 import {Composition, registerRoot, delayRender, continueRender, staticFile} from 'remotion';
 import Template from './Template';
 import Export from './Export';
+import {loadManagedFonts} from './font-loader.mjs';
 const handle = delayRender('managed fonts');
-document.documentElement.lang = 'zh-CN';
-document.documentElement.style.fontFamily = '"Noto Sans CJK SC", "Noto Sans SC", sans-serif';
-Promise.allSettled([400,700].map(async weight => {
-  const face = new FontFace('Noto Sans CJK SC', 'url(' + staticFile('font-' + weight + '.otf') + ')', {weight:String(weight)});
-  document.fonts.add(await face.load());
-})).then(results => {
-  if (results.some(result => result.status === 'rejected')) console.warn('Using local Chinese font fallback');
-  continueRender(handle);
-});
+loadManagedFonts({400:staticFile('font-400.otf'),700:staticFile('font-700.otf')}, staticFile('font-fallback.otf'))
+  .then(() => continueRender(handle));
 /** Compose the transparent candidate at its declared dimensions and frame rate. */
 const Root = () => <><Composition id="Template" component={Template} defaultProps={${config}} width={${composition.width}} height={${composition.height}} fps={${composition.fps}} durationInFrames={${composition.duration_in_frames}} /><Composition id="Export" component={Export} defaultProps={{}} width={${composition.width}} height={${composition.height}} fps={${composition.fps}} durationInFrames={${composition.duration_in_frames}} /></>;
 registerRoot(Root);
@@ -232,6 +226,7 @@ async function main() {
       await fs.writeFile(`${root}/Export.tsx`, exported);
     });
     await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`);
+    await fs.copyFile(`${rendererRoot}/font-loader.mjs`, `${root}/font-loader.mjs`);
     await fs.writeFile(
       `${root}/contract.tsx`,
       `/** Verify source props and default export call sites. */\nimport React from 'react';\nimport Template from './Template';\nimport Export from './Export';\nconst props = ${JSON.stringify(request.config)};\nconst element = <Template {...props} ${request.subtitle ? `highlightRanges={[[0,1]]}` : ""} />;\nconst exported = <Export />;\n`,
@@ -246,7 +241,9 @@ async function main() {
       logLevel: "error",
       chromiumOptions: { gl: "swangle" },
     });
-    await check("managed_fonts", () => verifyManagedFonts(browser, root));
+    const fonts = await check("managed_fonts", () => verifyManagedFonts(browser, root));
+    Object.assign(result.runtime, fonts.runtime);
+    const onBrowserLog = (log) => recordFontLoad(result.runtime, log);
     const serveUrl = await check("bundle", () =>
       bundle({
         entryPoint: `${root}/entry.tsx`,
@@ -260,12 +257,14 @@ async function main() {
       id: "Template",
       inputProps: previewConfig,
       puppeteerInstance: browser,
+      onBrowserLog,
     });
     const options = {
       serveUrl,
       composition,
       inputProps: previewConfig,
       puppeteerInstance: browser,
+      onBrowserLog,
       logLevel: "error",
       timeoutInMilliseconds: 30000,
     };
@@ -314,6 +313,7 @@ async function main() {
         id: "Export",
         inputProps: {},
         puppeteerInstance: browser,
+        onBrowserLog,
       });
       await renderStill({
         ...options,

@@ -18,6 +18,7 @@ import pytest
 from fontTools.ttLib import TTCollection, TTFont
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
+from PIL import Image, ImageChops, ImageStat
 
 from server.remotion_templates.managed_fonts import FAMILY, bundled_font, managed_font, prepare_fonts
 from server.remotion_templates.overlay_render import Overlay, render_overlay, run_overlay_worker
@@ -174,24 +175,83 @@ try {{
             except ProcessLookupError:
                 pass
             process.wait()
-    assert json.loads((tmp_path / "result.json").read_text()) == {
-        "initial": {"fallbackWeights": []}, "recovered": {"fallbackWeights": [700]}, "stable": {"fallbackWeights": []},
-        "advisory": {"fallbackWeights": [400, 700]},
+    results = json.loads((tmp_path / "result.json").read_text())
+    assert {name: result["fallbackWeights"] for name, result in results.items()} == {
+        "initial": [], "recovered": [700], "stable": [], "advisory": [400, 700],
     }
+    recovered = results["recovered"]["runtime"]
+    assert recovered["font_fallback_weights"] == "[700]"
+    assert recovered["font_400_selection"] == "configured" and recovered["font_700_selection"] == "bundled"
+    assert recovered["font_700_sha256"] == hashlib.sha256(bundled_font(700).data).hexdigest()
     assert (tmp_path / "public/font-700.otf").read_bytes() == bundled_font(700).data
+
+
+@pytest.fixture(scope="module")
+def glyph_references(tmp_path_factory):
+    """Draw independent SC, JP and square-glyph controls in Chrome; none uses production font selection/loaders."""
+    root = tmp_path_factory.mktemp("glyph-references")
+    (root / "sc.otf").write_bytes(bundled_font(700).data)
+    with TTCollection(SYSTEM_FONT) as collection:
+        next(face for face in collection.fonts if face["name"].getBestFamilyName() == "Noto Sans CJK JP").save(root / "jp.otf")
+    (root / "tofu.otf").write_bytes(sc_test_font("Reference Squares", weight=700))
+    renderer = Settings(_env_file=None).renderer_dir
+    script = root / "references.mjs"
+    script.write_text(fr'''/** Independent browser glyph references for decoded-video comparison. */
+import fs from 'node:fs/promises';
+import http from 'node:http';
+import {{openBrowser}} from {json.dumps((renderer / "node_modules/@remotion/renderer/dist/esm/index.mjs").as_uri())};
+const root = {json.dumps(str(root))};
+const server=http.createServer(async (req,res)=>{{
+  if (/^\/(sc|jp|tofu)\.otf$/.test(req.url)) {{res.end(await fs.readFile(root+req.url));}}
+  else res.end('<!doctype html><html><body style="margin:0;background:black"></body></html>');
+}});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+const base='http://127.0.0.1:'+server.address().port;
+let browser;
+try {{
+  browser=await openBrowser('chrome',{{browserExecutable:{json.dumps(BROWSER)},logLevel:'error',chromiumOptions:{{gl:'swangle',enableMultiProcessOnLinux:true}}}});
+  const page=await browser.newPage({{context:()=>null,logLevel:'error',indent:false,pageIndex:0,onBrowserLog:null,onLog:()=>undefined}});
+  await page.setViewport({{width:320,height:180,deviceScaleFactor:1}});
+  for(const kind of ['sc','jp','tofu']) {{
+    await page.goto({{url:base,timeout:10000}});
+    await page.evaluate(async (url)=>{{
+      document.fonts.add(await new FontFace('Reference',`url(${{url}})`,{{weight:'700'}}).load());
+      document.body.innerHTML='<div style="font-family:Reference;font-weight:700;font-size:64px;color:white;position:absolute;top:40px;left:10px">关复</div>';
+      await document.fonts.ready;
+    }},base+'/'+kind+'.otf');
+    const shot=await page._client().send('Page.captureScreenshot',{{format:'png',fromSurface:true}});
+    await fs.writeFile(root+'/'+kind+'.png',Buffer.from(shot.value.data,'base64'));
+  }}
+}} finally {{
+  if(browser) await browser.close({{silent:true}});
+  server.closeAllConnections();
+  await new Promise(resolve=>server.close(resolve));
+}}
+''')
+    process = subprocess.Popen(["node", str(script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        output, errors = process.communicate(timeout=120)
+        assert process.returncode == 0, errors.decode()
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+    return {name: Image.open(root / f"{name}.png").convert("RGB") for name in ("sc", "jp", "tofu")}
 
 
 @needs_browser
 @pytest.mark.parametrize("worker", ["overlay-worker.mjs", "worker.mjs"])
-def test_real_render_with_jp_only_fonts_still_encodes(tmp_path, worker):
-    """叠加和普通渲染入口都能从仅含 JP 的配置自动回退 SC，输出可解码且确实绘制了中文的视频。"""
+def test_real_render_with_jp_only_fonts_still_encodes(tmp_path, worker, glyph_references):
+    """两种真实渲染都回退 SC，解码后的关/复匹配独立 SC 对照，且可区分日文字形与方块。"""
     source = tmp_path / "japanese.ttf"
     source.write_bytes(sc_test_font("Noto Sans CJK JP"))
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", browser_executable=Path(BROWSER),
                         font_regular=source, font_bold=source, overlay_render_timeout_seconds=120)
     code = '''import React from "react";
 export default function Text() { return <div style={{fontFamily: '"Noto Sans CJK SC", sans-serif', fontWeight:700,
-fontSize:32, color:"white", position:"absolute", top:40, left:10}}>关键在科学复习节奏</div>; }'''
+fontSize:64, color:"white", position:"absolute", top:40, left:10}}>关复</div>; }'''
     renderer = Renderer(settings)
     directory = tmp_path / "render"
     if worker == "overlay-worker.mjs":
@@ -214,3 +274,18 @@ fontSize:32, color:"white", position:"absolute", top:40, left:10}}>关键在科�
                              "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], capture_output=True, timeout=30, check=True)
     assert len(result.stdout) == 320 * 180 * 3
     assert sum(value > 128 for value in result.stdout) > 900
+    # Remotion disables font antialiasing, while screenshots and VP9 alpha have different edge coverage.
+    # Compare covered pixels, then focus on the strokes that distinguish the SC and JP references.
+    coverage = [0] * 65 + [255] * 191
+    decoded = Image.frombytes("RGB", (320, 180), result.stdout).convert("L").point(coverage)
+    controls = {name: image.convert("L").point(coverage) for name, image in glyph_references.items()}
+    regional_strokes = ImageChops.difference(controls["sc"], controls["jp"])
+    differences = {name: ImageStat.Stat(ImageChops.difference(decoded, image), mask=regional_strokes).mean[0]
+                   for name, image in controls.items()}
+    # Both wrong controls satisfy the old brightness-only assertion; the actual SC image must be much closer.
+    assert all(sum(value > 128 for value in glyph_references[name].tobytes()) > 900 for name in ("jp", "tofu"))
+    assert ImageStat.Stat(ImageChops.difference(decoded, controls["sc"])).mean[0] < 1
+    assert differences["sc"] < 64 and min(differences["jp"], differences["tofu"]) > 192, differences
+    runtime = json.loads((directory / "renderer.json").read_text())["runtime"]
+    assert runtime["font_700_sha256"] == hashlib.sha256(bundled_font(700).data).hexdigest()
+    assert runtime["font_700_selection"] == "bundled"

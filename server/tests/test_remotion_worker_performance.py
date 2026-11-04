@@ -23,6 +23,7 @@ import fs from 'node:fs/promises';
 export const bundle = async () => 'local-bundle';
 export const openBrowser = async () => ({close: async () => {}});
 export const verifyManagedFonts = async () => ({fallbackWeights: []});
+export const recordFontLoad = () => {};
 export const selectComposition = async () => ({id:'Overlay'});
 let active = 0, peak = 0;
 export const renderMedia = async (options) => {

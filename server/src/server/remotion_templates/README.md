@@ -416,8 +416,15 @@ style's own file.
   Layout/capacity checks and both render workers inspect Chrome's actual font for `关复` at weights 400 and 700.
   A mismatch replaces the worker's font with the bundled SC face once, before bundling/encoding, and continues;
   further diagnostic failures are logged rather than rejecting composition or retrying indefinitely. Browser loaders
-  use the local Chinese font fallback if a web font cannot load, and set `lang=zh-CN`. Explicit library font choices
+  try the primary file, then the bundled SC file, with a 10-second limit per attempt; only then use local Chinese
+  fonts. They set `lang=zh-CN`; a late page-load fallback is also recorded in the worker report. Explicit library font choices
   retain their existing behavior. Shared preview responses hash the emitted font for ETags, invalidating cached TTCs.
+  Version evidence records the source hash, selected face hash and fallback choice per weight, plus the catalog and
+  bundled-resource hashes. Version previews resolve that recorded choice and validate/serve one immutable byte snapshot;
+  legacy versions with only source hashes remain readable. Content-keyed caches cannot hide updated fallback resources.
+  Missing configured fonts still expose the system catalog URL, and `/managed-fonts/fallback` serves bundled SC even
+  when catalog installation is disabled. Local fallback after both web-font loads fail is advisory and is recorded as
+  such; its platform-selected glyphs have no managed-file fingerprint.
   Existing encoded videos need to be rendered again; immutable Sprite source and saved text are not rewritten.
 - **Agent**: the Executor rules end with the library as an enum read from the database, one entry per card with the
   styles it has (bold and italic text use the card's bold and italic files). A text effect must expose

@@ -1,6 +1,20 @@
 /** Prefer SC glyphs before layout or encoding; a bad primary font switches once to the bundled Chinese fallback. */
 import fs from "node:fs/promises";
 import http from "node:http";
+import { createHash } from "node:crypto";
+
+/** Capture a later page-load fallback as well as the pre-bundle choice; local rendering has no verifiable file hash. */
+export function recordFontLoad(runtime, { text }) {
+  const match = /^\[managed-font-load\] (400|700) (bundled|local)$/.exec(text);
+  if (!match) return;
+  const [, weight, selection] = match;
+  // Retain a local fallback warning even if another render page subsequently loads a managed font.
+  if (runtime[`font_${weight}_load_fallback`] !== "local") runtime[`font_${weight}_load_fallback`] = selection;
+  if (selection === "bundled") {
+    runtime[`font_${weight}_selection`] = "bundled";
+    runtime[`font_${weight}_sha256`] = runtime.font_fallback_sha256;
+  }
+}
 
 /** Load one face, then inspect the font Chrome actually uses for two region-sensitive Chinese glyphs. */
 async function inspectFace(page, url, weight, expected) {
@@ -45,6 +59,7 @@ async function inspectFace(page, url, weight, expected) {
 /** Switch failed primary files to the bundled SC face before bundling; diagnostic checks never veto a composition. */
 export async function checkManagedFonts(page, root) {
   const identities = JSON.parse(await fs.readFile(`${root}/public/fonts.json`, "utf8"));
+  identities.selections ??= {400: "configured", 700: "configured"};
   const fallbackWeights = [];
   // Keep large fonts off the CDP JSON channel; only these three attempt-local files are served on loopback.
   const server = http.createServer(async (request, response) => {
@@ -74,6 +89,7 @@ export async function checkManagedFonts(page, root) {
         console.warn(`[fonts] Weight ${weight}: using bundled SC fallback (${String(error.message).slice(0, 500)})`);
         await fs.copyFile(`${root}/public/font-fallback.otf`, file);
         identities[String(weight)] = identities.fallback;
+        identities.selections[weight] = "bundled";
         fallbackWeights.push(weight);
         try {
           await inspectFace(page, `${base}/font-fallback.otf`, weight, identities.fallback);
@@ -84,7 +100,14 @@ export async function checkManagedFonts(page, root) {
       }
     }
     await fs.writeFile(`${root}/public/fonts.json`, JSON.stringify(identities));
-    return { fallbackWeights };
+    // Source hashes remain host-owned; these hashes bind the files actually selected after browser diagnostics.
+    const runtime = { font_fallback_weights: JSON.stringify(fallbackWeights) };
+    for (const weight of [400, 700]) {
+      runtime[`font_${weight}_sha256`] = createHash("sha256").update(await fs.readFile(`${root}/public/font-${weight}.otf`)).digest("hex");
+      runtime[`font_${weight}_selection`] = identities.selections[weight];
+    }
+    runtime.font_fallback_sha256 = createHash("sha256").update(await fs.readFile(`${root}/public/font-fallback.otf`)).digest("hex");
+    return { fallbackWeights, runtime };
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from .evidence import digest, seal_artifacts, verify_artifacts
-from .managed_fonts import managed_font
+from .managed_fonts import font_environment
 from .models import (
     Check, CompositionConfig, TemplateCandidate, TemplateSpec, TemplateVersion, ValidationReport, validation_fingerprint,
 )
@@ -60,13 +60,13 @@ class PresentationBuilder:
             "presentation": settings.renderer_dir / "presentation.mjs",
             "presentation_worker": settings.renderer_dir / "presentation-worker.mjs",
             "preview_host": settings.renderer_dir / "preview-host.tsx",
+            "managed_font_loader": settings.renderer_dir / "font-loader.mjs",
             "host_layer": settings.renderer_dir / "host-layer.tsx",
             "dependencies": settings.renderer_dir / "bun.lock",
         }
         return {
             **{key: digest(path) for key, path in paths.items()},
-            "font_400": managed_font(settings.font_regular, 400).source_sha256,
-            "font_700": managed_font(settings.font_bold, 700).source_sha256,
+            **font_environment(settings),
         }
 
     async def build(self, sprite: SpriteDraft, defaults: dict, validation: RenderValidationReport, directory: Path):
