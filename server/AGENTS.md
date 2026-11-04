@@ -13,6 +13,7 @@
 ## 启动与配置
 
 - 在 `server/` 下用 `uv run server` 启动，仓库根目录用 `uv run --project server server`；端口取 `server/.env` 的 `PORT`，空值或非法值阻止启动。
+- 启用 CT-Punc 的服务须在恢复合成任务和接收请求前完成模型预热；依赖与失败约定见 [切片约定](src/server/segmentation/AGENTS.md)。
 - 优雅退出最多等 `startup/settings.py` 的 `GRACEFUL_SHUTDOWN_SECONDS`（10 秒），超时就断开仍未结束的连接（如作品 SSE），保证旧进程退出，不与重启后的进程同时运行字效任务队列与清理。
 - 所有配置类继承 `config_base.py` 的 `CommonSettings`，读取固定的 `server/.env`，优先级为构造参数 > 进程环境变量 > 文件 > 默认值，保留 `_env_file` 覆盖与 `None` 禁用。不做安装位置发现，不建立配置树或统一快照；运行期间不改配置，改了要重启。
 - 真实 `.env` 不入库；新增配置项时同步无密码的 `server/.env.example`。

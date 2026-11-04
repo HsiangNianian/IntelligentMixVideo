@@ -7,12 +7,11 @@ content and time as an async task that shares the overlay renders' service.
 Request and response bodies are `imv.sprite.v1` messages, mirroring the template router's framing.
 """
 
-import os
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.message import DecodeError, Message
 from starlette.concurrency import run_in_threadpool
@@ -20,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from . import sprite_events, sprites
 from .api import app as remotion_templates_app
 from .fonts import FontStore
-from .routes import player_page, require_sandbox, runtime_for
+from .routes import managed_font_response, player_page, require_sandbox, runtime_for
 from .store import NotFound
 from .runtime import Runtime
 
@@ -145,11 +144,7 @@ async def shared_font(weight: int, request: Request, service: Service) -> Respon
     if weight not in {400, 700}:
         raise NotFound("font not found")
     font = service.settings.font_regular if weight == 400 else service.settings.font_bold
-    # FileResponse 只在发送文件时才写入 ETag，这里先取得它，才能回应浏览器的确认请求（StaticFiles 之外不会自动处理）。
-    response = FileResponse(
-        font, media_type="font/collection", headers={"Cache-Control": "no-cache"},
-        stat_result=await run_in_threadpool(os.stat, font),
-    )
+    response = await run_in_threadpool(managed_font_response, font, weight, cache_control="no-cache")
     etag = response.headers["etag"]
     known = {tag.strip().removeprefix("W/") for tag in request.headers.get("if-none-match", "").split(",")}
     if etag in known:
@@ -158,7 +153,7 @@ async def shared_font(weight: int, request: Request, service: Service) -> Respon
 
 
 @router.get("/{sprite_id}/fonts/{weight}", summary="读取预览字体")
-async def sprite_font(sprite_id: str, weight: int, service: Service) -> FileResponse:
+async def sprite_font(sprite_id: str, weight: int, service: Service) -> Response:
     """预览页按相对路径读取受管字体；资产不存在或字重不支持返回 404。
 
     发布记录不保存字体指纹，这里直接提供当前配置的受管字体，只用于编辑预览。
@@ -167,10 +162,7 @@ async def sprite_font(sprite_id: str, weight: int, service: Service) -> FileResp
     if weight not in {400, 700}:
         raise NotFound("font not found")
     font = service.settings.font_regular if weight == 400 else service.settings.font_bold
-    return FileResponse(
-        font, media_type="font/collection",
-        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
-    )
+    return await run_in_threadpool(managed_font_response, font, weight, cache_control="no-store")
 
 
 @router.post(

@@ -128,7 +128,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     // 双语字效（双语字幕）的下栏是所作用对象英文文字对象的示例译文，与合成注入同一句译文一致。
     const english = asset?.bilingual && clip.text_target ? draftTracks?.find((track) => track.target === clip.text_target && track.language === "en") : undefined;
     const point = previewDraft?.split_screen?.enabled && clip.text_target === "subtitle" ? previewDraft.split_screen[text?.language === "en" ? "subtitleEn" : "subtitle"] : undefined;
-    const transform = point && asset ? { ...clip.transform, x: point.x * asset.width / 100, y: point.y * asset.height / 100 + asset.box.height * (clip.transform?.scale ?? 1) / 2 } : clip.transform;
+    // 同屏沿用普通字效的内容框中心，框高与缩放不参与位置换算。
+    const transform = point && asset ? { ...clip.transform, x: point.x * asset.width / 100, y: point.y * asset.height / 100 } : clip.transform;
     return {
       id: clip.id,
       spriteId: clip.sprite_id,

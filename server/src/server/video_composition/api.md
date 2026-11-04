@@ -1,6 +1,6 @@
 # 视频合成接口文档
 
-本文按当前 `router.py`、`schema.py`、`service.py` 实现整理，更新日期：2026-10-29。
+本文按当前 `router.py`、`schema.py`、`service.py` 实现整理，更新日期：2026-11-03。
 
 ## 1. 接口概览
 
@@ -11,6 +11,7 @@
 | POST | `/api/v1/video-compositions` | 创建异步合成任务 |
 | POST | `/api/v1/video-compositions/playground` | 复用固定中英样本，按新模板创建合成任务 |
 | GET | `/api/v1/video-compositions/{taskId}` | 查询状态和成片地址 |
+| GET | `/api/v1/video-compositions/{taskId}/logs?module=...` | 按模块读取本机任务日志或全部错误详情 |
 | POST | `/api/v1/video-compositions/{taskId}/segment-match-callback?token=...` | 素材库向 IMV 回传匹配结果 |
 
 当前模块没有任务列表、取消、删除、重试或重新发送最终通知接口。创建接口没有调用方幂等键，重复 POST 会创建新的任务；响应丢失时不要盲目重复提交。
@@ -56,7 +57,9 @@
 
 `text`／`copy` 的缺省、null、空串或全空白均视为无文案，非空正文保持原样。两个字段同时非空，或提供非空文案但未提供 `audioUrl`，均在受理前返回 422，不创建任务。两者不再是同义字段：数字人调用方使用 `text`，纯素材调用方使用 `copy`；无声请求不再允许附带非空口播文案。
 
-纯数字人模式仍对 `audioUrl` 执行 ASR，以原始音频总时长确定时间线；字幕由输入文案与 ASR 对齐后的 segmentation 切片确定，并受模板字幕对象显示区间限制。模板效果、背景音乐、IMS 渲染、ZOS 视频与 PNG 转存、查询和终态通知沿用相同流程。此前省略 `materials` 也会匹配；需要保留该行为的调用方应显式传入 `[]`。已判定模式保存在 MySQL `video_compositions.data.request.compositionMode`，后续组装、Remotion 与恢复使用该值；没有此字段的旧任务仍按原 `videoUrl`／`audioUrl` 规则解释保存的快照，不使用新规则重判，也不重新解释原始请求日志。
+纯数字人模式仍对 `audioUrl` 执行 ASR，组装前以原始音频总时长与数字人画面轨时长的较小值确定时间线；字幕由输入文案与 ASR 对齐后的 segmentation 切片确定，并受模板字幕对象显示区间限制。模板效果、背景音乐、IMS 渲染、ZOS 视频与 PNG 转存、查询和终态通知沿用相同流程。此前省略 `materials` 也会匹配；需要保留该行为的调用方应显式传入 `[]`。已判定模式保存在 MySQL `video_compositions.data.request.compositionMode`，后续组装、Remotion 与恢复使用该值；没有此字段的旧任务仍按原 `videoUrl`／`audioUrl` 规则解释保存的快照，不使用新规则重判，也不重新解释原始请求日志。
+
+普通 standard 任务（包含纯数字人与素材匹配）在组装前统一按 ASR 音频和数字人画面轨的较短时长裁尾，画面轨时长向下取整到毫秒。截点之后的切片、匹配不进入合成；跨截点的中英文字幕与关键词保留完整文字，只缩短显示时间。原始 ASR、切片、翻译和匹配流程不变，回执保留在执行日志，IMS 与 Remotion 使用同一裁后快照。恢复时复用已保存的探测与裁剪结果；已保存 Remotion 结果的历史任务和操练场封存样本保持原时长。
 
 调用 segmentation 时一并传入请求 `title`，返回的 `title_keyword` 随切片结果保存，组装及恢复时复用。标题关键词只使用该返回值，并按模板局部样式强调首次出现的位置；字段缺失或为空时仍显示完整标题，但不强调关键词，不使用模板 `titleKeyword` 或标题前两个字回退。旧快照没有该字段时不强调标题关键词；有声模式无文案但有标题时单独提取标题词。完整切片中的标题提词复用现有模型调用；无声模式有非空标题时，通过同一 `segment` 函数仅调用一次模型提取标题词，不需要正文或 ASR。仅标题分支不做词长或原文匹配校验，完整切片仍保留原有校验。
 
@@ -83,7 +86,7 @@ URL 不接受 Markdown 链接、空白、用户名密码或 `#fragment`，允许
 
 已受理任务恢复时沿用保存的转场策略，不按当前默认值重选。首尾近侧、短镜头跳过、中间按时间顺序选点与无关键词限频的完整规则见[服务端模板说明](../../../README.md#模板接口)。
 
-有字幕文案时，字数上限只在 ASR 前按冻结模板计算 `max(1, 最小单行全角字容量 - 2)`，以 `max_segment_chars` 传给切片。IMS 按模板中文字幕对象的字号与位置估算（全角字一 em）；Remotion 在共享渲染名额内加载封存源码、字体和摆放参数，用隔离浏览器测量全角样本在预览时序下的单行容量，包含字距、关键词、分栏、缩放、位置和输出画布裁切，不改变字号或位置。被新槽位字效替代的 IMS 字幕不参与；旧 `businessTarget` 两者共存取较小值。没有数字 `fontSize` 的字效也实测。样本受发布正文长度契约限制，不能保证最终任意文案都放得下；真实文字、关键词与时序仍由成片排版预检处理。容量随任务保存，恢复时复用；已有切片与操练场样本不重切。一字放不下以 `subtitle_capacity_too_small` 失败，无法测量以 `subtitle_capacity_unavailable` 失败，均在 `template` 阶段、不调用 ASR 或切片模型。
+有字幕文案时，字数告警阈值只在 ASR 前按冻结模板计算 `max(1, 最小单行全角字容量 - 2)`，以 `max_segment_chars` 传给切片（见[切分规则](../../../README.md#文案切片)）。IMS 按模板中文字幕对象的字号与位置估算（全角字一 em）；Remotion 在共享渲染名额内加载封存源码、字体和摆放参数，用隔离浏览器测量全角样本在预览时序下的单行容量，包含字距、关键词、分栏、缩放、位置和输出画布裁切，不改变字号或位置。被新槽位字效替代的 IMS 字幕不参与；旧 `businessTarget` 两者共存取较小值。没有数字 `fontSize` 的字效也实测。样本受发布正文长度契约限制，不能保证最终任意文案都放得下；真实文字、关键词与时序仍由成片排版预检处理。容量随任务保存，恢复时复用；已有切片与操练场样本不重切。一字放不下以 `subtitle_capacity_too_small` 失败，无法测量以 `subtitle_capacity_unavailable` 失败，均在 `template` 阶段、不调用 ASR 或切片模型。
 
 ### 三种模式
 
@@ -257,6 +260,47 @@ curl 'http://127.0.0.1:20070/api/v1/video-compositions/22222222-2222-4222-8222-2
 
 任务不存在返回 404；UUID 非法返回 422；历史成片已成功但暂时无法获取 IMS 播放地址返回 503，此时可重试 GET，任务不会被改成失败。查询本地任务不会主动触发素材匹配补查。
 
+### 查询任务日志
+
+`GET /api/v1/video-compositions/{taskId}/logs?module=asr`
+
+开发和运维可在 FastAPI `/docs` 的 `video-composition` 分组中打开该接口，填写任务 UUID，通过 `module` 下拉框选择日志类别并执行。不增加客户端入口，也不增加鉴权；能连接服务并知道地址的人仍可直接调用，日志可能包含业务正文、媒体签名链接和私有错误诊断。
+
+`taskId` 必须是 UUID；`module` 必填，接受下列英文值，与任务状态的 `stage` 枚举不同：
+
+| module | 返回内容 |
+| --- | --- |
+| `request` | 请求、任务级记录、查询响应与通知 |
+| `template` | 模板输入与输出 |
+| `asr` | 音频转写输入与输出 |
+| `segmentation` | 切片及翻译 |
+| `matching` | 素材匹配请求、回调与查询 |
+| `timeline` | 时间线组装、Remotion 及提交 |
+| `zos` | 渲染、取址与转存 |
+| `error` | 当前任务 `errors/` 下全部 `.log` 文件，包括普通错误、`remotion-error.log` 和 `remotion-worker.log` |
+
+七模块返回 HTTP 200 和对应 JSON 对象，保留 `input`、`output`、`execute_log`、`error_log` 四个数组；服务端读取同任务七文件并展开 `$log_ref`，返回的输入输出可独立阅读，不修改原文件。
+
+`error` 返回 HTTP 200 和下列结构，文件按名称排序，正文完整保留：
+
+```json
+{
+  "files": [
+    {"name": "remotion-error.log", "content": "Traceback...\n错误详情\n"},
+    {"name": "remotion-worker.log", "content": "渲染器输出\n"}
+  ]
+}
+```
+
+读取路径固定为本机 `server/.log/video_composition/<taskId>/`，与启动工作目录无关。接口不查询任务数据库、不调用上游服务、不等待异步日志队列，也不为这次查询追加日志；只返回读取时已落盘的内容。响应不分页、不截断，大任务日志的响应可能较大。需要最新日志时再次调用；运行中错误文件可能仍在写入。
+
+- 任务目录不存在：HTTP 404，`detail` 为 `任务日志不可用：尚未落盘、已清理或任务不存在`；不推断具体原因。
+- 任务目录存在，所选模块缺失或未执行：HTTP 200，四个空数组；`error` 没有文件时返回 `{"files":[]}`。
+- UUID 无效、`module` 缺失或不在枚举中：HTTP 422，沿用 FastAPI 参数错误结构。
+- 文件损坏或读取失败：HTTP 500，沿用服务端内部错误响应，不伪装成空日志。
+
+仅读取当前服务实例的新日志目录，不查其他实例、历史目录或旧数据库日志表；现有异步写入和容量清理规则不变。日志不是数据库状态的事务快照，任务已完成也不保证日志已写完或仍被保留。
+
 ## 4. IMV 向业务系统发送最终通知
 
 创建任务时提供 `callbackUrl` 后，IMV 在任务成功或失败落库后尝试向该地址发送 **POST JSON**。回调固定为以下四个字段，`taskId` 与创建响应的 `data` 一致：
@@ -368,11 +412,11 @@ ZOS_DELETE_OBJECTS=false
 - `COMPOSITION_PUBLIC_BASE_URL` 可填 `http://公网IP:端口` 或 HTTPS 域名，可包含部署路径前缀；不要附加 `/api/v1/video-compositions`，不能包含查询参数。应确保生成的回调路径能到达该后端。
 - 任务已保存的回调地址和截止时间不会随 `.env` 修改而更新；本地超时也不代表云端任务已被取消。
 
-素材匹配使用 `SEGMENT_MATCH_BASE_URL` 和可选的 `SEGMENT_MATCH_AUTHORIZATION`，仅 standard 显式传 `materials` 时要求匹配地址。两个纯素材模式不依赖匹配配置；包含视频素材时服务端 PATH 还须有 `ffprobe`，单个探测使用 `COMPOSITION_HTTP_TIMEOUT_SECONDS` 超时，取消或超时回收子进程。FFprobe 白名单包含 HTTP 代理所需的 `httpproxy`；探测失败的退出码及脱敏 stderr 保存到 `timeline.json` 的 `error_log`，查询与回调仍返回固定错误摘要。无语音模式不依赖 ASR，有非空标题时需要切片模型配置；有语音模式仍依赖 ASR，有文案或非空标题时要求切片配置。所有模式仍需 IMS、ZOS、数据库和 FFmpeg；缺少所需配置或工具时受理返回 503。参见 `server/.env.example`。
+素材匹配使用 `SEGMENT_MATCH_BASE_URL` 和可选的 `SEGMENT_MATCH_AUTHORIZATION`，仅 standard 显式传 `materials` 时要求匹配地址。两个纯素材模式不依赖匹配配置；普通 standard 任务及包含视频素材的纯素材任务，服务端 PATH 还须有 `ffprobe`，单个探测使用 `COMPOSITION_HTTP_TIMEOUT_SECONDS` 超时，取消或超时回收子进程。FFprobe 白名单包含 HTTP 代理所需的 `httpproxy`；探测失败的退出码及脱敏 stderr 保存到 `timeline.json` 的 `error_log`，查询与回调仍返回固定错误摘要。无语音模式不依赖 ASR，有非空标题时需要切片模型配置；有语音模式仍依赖 ASR，有文案或非空标题时要求切片配置。所有模式仍需 IMS、ZOS、数据库和 FFmpeg；缺少所需配置或工具时受理返回 503。参见 `server/.env.example`。
 
 ## 7. 可选的客户端 IMS 配置
 
-创建和查询接口支持 `X-IMS-Config` 请求头，其值为 URI 编码 JSON（JavaScript：`encodeURIComponent(JSON.stringify(config))`）。省略时使用服务端配置；提供时使用本次客户端凭据。
+创建和任务状态查询接口支持 `X-IMS-Config` 请求头，其值为 URI 编码 JSON（JavaScript：`encodeURIComponent(JSON.stringify(config))`）。省略时使用服务端配置；提供时使用本次客户端凭据。日志查询不需要此请求头。
 
 编码前对象：
 

@@ -1,7 +1,8 @@
 """Offline tests for the Outer → host plan → Executor protocol with scripted model turns.
 
 Covers the Outer control-only window, the host's standard two-step plan, tools_report_step with
-host-recorded outputs, automatic batch continuation, Plan recovery and the no-progress guard.
+host-recorded outputs, automatic batch continuation, Plan recovery, the no-progress guard and the
+Executor window that keeps the provider's prefix cache hitting.
 Run: `uv run --locked pytest tests/test_remotion_agent_layers.py -v`.
 """
 
@@ -12,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from server.remotion_templates.agent import AgentRun, Layer
+from server.remotion_templates.agent import WINDOW_BYTES, AgentRun, Layer
 from server.remotion_templates.context import AssistantMessage
 from server.remotion_templates.planning import Plan, PlanAction, default_plan
 from server.remotion_templates.provider import Budget, ExecutionFailure
@@ -42,6 +43,14 @@ class FakeSession:
     def snapshot(self, **_options):
         """Return deterministic host facts for all three prompts."""
         return {"user_intent": self.intent, "sprites": sorted(self.saved_sprites)}
+
+    def turn_state(self):
+        """Return the facts that follow the Executor's window."""
+        return {"sprites": sorted(self.saved_sprites)}
+
+    def task_facts(self):
+        """Return the facts the Executor's window starts with."""
+        return {}
 
     def saved_sprite(self, identifier):
         """Resolve only the task's exact saved Sprite."""
@@ -74,6 +83,7 @@ class FakeHarness:
         self.roles = []
         self.fonts = SimpleNamespace(guide=lambda: "")
         self.systems = {}
+        self.data = {}
         self.settings = SimpleNamespace(
             max_steps=4,
             max_tooluse=3,
@@ -81,10 +91,11 @@ class FakeHarness:
             max_no_progress_turns=Settings.model_fields["max_no_progress_turns"].default,
         )
 
-    async def _turn(self, system, _context, _tools, _budget, _images, *, phase):
+    async def _turn(self, system, _context, _tools, _budget, _images, *, phase, data=None):
         """Return the next scripted response for one exact model role."""
         self.roles.append(phase)
         self.systems.setdefault(phase, system)
+        self.data.setdefault(phase, data)
         try:
             return next(self.responses)
         except StopIteration:
@@ -137,10 +148,10 @@ def watch_feedback(run, harness):
     seen = []
     scripted = harness._turn
 
-    async def turn(system, context, tools, budget, images, *, phase):
+    async def turn(system, context, tools, budget, images, *, phase, data=None):
         """Record the feedback in force, then return the next scripted reply."""
         seen.append(list(run.session.feedback))
-        return await scripted(system, context, tools, budget, images, phase=phase)
+        return await scripted(system, context, tools, budget, images, phase=phase, data=data)
 
     harness._turn = turn
     return seen
@@ -219,8 +230,8 @@ def test_every_layer_is_told_the_protocol_it_must_follow(monkeypatch, tmp_path):
     # The Executor gets one working Preset shape to imitate instead of guessing the contract.
     assert "export default function WarmTint" in harness.systems["executor"]
     # The Executor sees its current step; the counters it sees are remaining calls, not used/limit pairs.
-    assert '"current_step"' in harness.systems["executor"] and '"tool_calls_left_in_batch"' in harness.systems["executor"]
-    assert "actual_tooluse" not in harness.systems["executor"]
+    assert '"current_step"' in harness.data["executor"] and '"tool_calls_left_in_batch"' in harness.data["executor"]
+    assert "actual_tooluse" not in harness.data["executor"]
 
 
 def test_step_done_without_saving_the_sprite_is_refused_with_the_next_tool(monkeypatch, tmp_path):
@@ -570,7 +581,7 @@ def test_executor_cannot_call_plan_control(monkeypatch, tmp_path):
 
 
 def test_the_executor_gets_the_request_and_needs_input_routes_to_outer(monkeypatch, tmp_path):
-    """审计复现（作品 72a195d7）：交给 Executor 的交接消息带着需求、快照把 user_intent 放在最前；Executor 报 needs_input 时控制交给 Outer，
+    """审计复现（作品 72a195d7）：Executor 窗口开头的交接消息带着需求与基线、Outer 快照把 user_intent 放在最前；Executor 报 needs_input 时控制交给 Outer，
     Outer 据 plan_result 提问、任务以 needs_input 结束；已经委派的任务不能再以普通回答结束。"""
     asked = call("exec-1", "tools_report_step", {"status": "needs_input", "summary": "缺少文案", "questions": ["文字是什么？"]})
     outer_asks = call("outer-2", "tools_plan_execute", {"action": "ask", "questions": ["文字是什么？"]})
@@ -580,7 +591,7 @@ def test_the_executor_gets_the_request_and_needs_input_routes_to_outer(monkeypat
     # Executor needs_input hands control straight to Outer, which asks.
     assert harness.roles == ["outer", "executor", "outer"]
     handoff = next(item["content"] for item in run.executor_context.messages() if str(item.get("content", "")).startswith("Host handoff"))
-    assert "今日灵感 打字机" in handoff and "\"big\"" not in handoff
+    assert "今日灵感 打字机" in handoff and "\"big\"" in handoff
     data, _ = run.snapshot()
     assert next(iter(data)) == "user_intent"
     run.layer = Layer.OUTER
@@ -799,9 +810,8 @@ def test_no_progress_threshold_counts_rounds_instead_of_tool_calls(monkeypatch, 
 
 
 def test_the_executor_sees_its_saved_sprites_frames_until_the_step_ends(monkeypatch, tmp_path):
-    """保存后的回看帧接在参考图之后，只在 Executor 层、该步骤结束前附带，快照给出图片序号、帧号与应显示的内容；
-    Outer 看不到它们，步骤结束（不论结果）即不再附带。"""
-    from server.remotion_templates.agent import Layer
+    """保存后的回看帧跟在窗口之后、只在 Executor 层、该步骤结束前附带，快照给出图片序号（排在窗口里的参考图之后）、帧号与应显示的内容；
+    参考图只在窗口开头给一次，Outer 看不到回看帧，步骤结束（不论结果）即不再附带。"""
     from server.remotion_templates.planning import StepResult
 
     monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
@@ -809,10 +819,12 @@ def test_the_executor_sees_its_saved_sprites_frames_until_the_step_ends(monkeypa
     run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [reference], lambda *_: None)
     run._outer_control(SimpleNamespace(action="delegate", model_dump=lambda **_: {"action": "delegate", "reason": "make it"}))
     run.layer = Layer.EXECUTOR
+    run._start_window("step_dispatched")
+    assert run.executor_context.messages()[1]["content"][1] == {"type": "image_path", "path": str(reference)}
     frame = tmp_path / "frame-7.png"
     run.session.review_frames = [(frame, 7, "half way into the entrance")]
     data, images = run.snapshot()
-    assert images == [reference, frame]
+    assert images == [frame]
     assert data["candidate_frames"] == [{"image": 2, "frame": 7, "label": "half way into the entrance"}]
     run.layer = Layer.OUTER
     data, images = run.snapshot()
@@ -820,3 +832,112 @@ def test_the_executor_sees_its_saved_sprites_frames_until_the_step_ends(monkeypa
     run.layer = Layer.EXECUTOR
     run._accept_report(StepResult(status="blocked", summary="cannot"))
     assert run.session.review_frames == []
+    assert run.snapshot()[1] == []
+
+
+def record_requests(harness):
+    """Record what each model turn sends: layer, system prompt, window messages and the snapshot after them."""
+    seen = []
+    scripted = harness._turn
+
+    async def turn(system, context, tools, budget, images, *, phase, data=None):
+        """Keep this request's prefix parts, then return the next scripted reply."""
+        seen.append({"phase": phase, "system": system, "messages": context.messages(), "data": data})
+        return await scripted(system, context, tools, budget, images, phase=phase, data=data)
+
+    harness._turn = turn
+    return seen
+
+
+def test_executor_font_library_is_window_data_not_a_mutable_system_prompt(monkeypatch, tmp_path):
+    """字体库只作为窗口开头的宿主数据发送且在窗口打开时读取一次，后续字体同步不会改变系统提示并击穿整段前缀缓存。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-search", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-report", summary="预设已就绪"),
+    ])
+    guides = []
+
+    def guide():
+        """Return a marker while recording how often the live font library is read for this window."""
+        guides.append(True)
+        return "FONT_LIBRARY_MARKER"
+
+    harness.fonts.guide = guide
+    seen = record_requests(harness)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+
+    executor = [item for item in seen if item["phase"] == "executor"]
+    assert executor and len(guides) == 1
+    assert all("FONT_LIBRARY_MARKER" not in item["system"] for item in executor)
+    assert all(any("FONT_LIBRARY_MARKER" in message.get("content", "") for message in item["messages"]) for item in executor)
+
+
+def test_each_executor_request_extends_the_previous_one(monkeypatch, tmp_path):
+    """前缀缓存要求每次请求的系统提示与窗口是上一次的严格延伸：超过八组也不淘汰，系统提示不变，每轮变化的快照只在窗口之后，
+    需求只在窗口开头给一次；任务跨步骤也不换窗口。"""
+    searches = [call(f"exec-{index}", "preset_search", {"preset_id": f"preset-{index}"}) for index in range(12)]
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        *searches,
+        report("exec-report", summary="预设已就绪"),
+        compose("exec-compose"),
+        call("exec-save", "sprite_create", {"draft_id": "sprite_draft_1"}),
+        report("exec-done", summary="已保存"),
+    ], max_tooluse=30, intent={"original_request": {"description": "今日灵感 打字机"}})
+    seen = record_requests(harness)
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
+    executor = [item for item in seen if item["phase"] == "executor"]
+    assert len(executor) == 16
+    assert len({item["system"] for item in executor}) == 1
+    for previous, current in zip(executor, executor[1:]):
+        assert current["messages"][:len(previous["messages"])] == previous["messages"]
+    assert "今日灵感 打字机" in executor[0]["messages"][0]["content"]
+    assert all("今日灵感 打字机" not in item["data"] for item in executor)
+    assert executor[0]["data"] != executor[1]["data"]
+
+
+def test_a_full_executor_window_is_replaced_whole_keeping_the_facts(monkeypatch, tmp_path):
+    """窗口超过预算才整体压缩一次：新窗口仍以需求与基线开头，留下最新一次交换（回放里 15 次压缩有 5 次丢了它，模型看不到刚做完的结果）
+    和它之前的一次小交换、不留更早的大交换，列出本步骤已备好的 Preset（它们的 ID 只在被丢掉的回执里），之后继续只追加。"""
+    big = {"description": "大", "code": "x" * (WINDOW_BYTES // 4 + 1000), "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-big-1", "preset_create", big),
+        call("exec-small", "preset_search", {"preset_id": "preset-1"}),
+        call("exec-big-2", "preset_create", big),
+        call("exec-next", "preset_search", {"preset_id": "preset-2"}),
+        call("exec-last", "preset_search", {"preset_id": "preset-3"}),
+    ], max_tooluse=30, intent={"original_request": {"description": "今日灵感 打字机"}})
+    run.session.task_facts = lambda: {"base": {"presets": "基线源码"}}
+    seen = record_requests(harness)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    executor = [item for item in seen if item["phase"] == "executor"]
+    grown, compacted, after = executor[2], executor[3], executor[4]
+    assert "window_compacted" not in grown["messages"][0]["content"]
+    assert len(json.dumps(compacted["messages"])) < WINDOW_BYTES
+    head = compacted["messages"][0]["content"]
+    assert "window_compacted" in head and "今日灵感 打字机" in head and "基线源码" in head
+    calls = [tool["id"] for message in compacted["messages"] for tool in message.get("tool_calls", [])]
+    assert calls == ["exec-small", "exec-big-2"]
+    assert json.loads(head.split("\n", 1)[1])["detail"]["presets_ready_in_this_step"] == [{"kind": "stored", "preset_id": "preset-new"}, {"kind": "stored", "preset_id": "preset-1"}]
+    assert after["messages"][:len(compacted["messages"])] == compacted["messages"]
+
+
+def test_a_newest_exchange_that_fills_the_window_budget_is_not_kept(monkeypatch, tmp_path):
+    """一次交换单独就超过窗口预算时不留，否则压缩后下一轮又要压缩，大基线下还可能超过请求上限。"""
+    huge = {"description": "大", "code": '"' * (WINDOW_BYTES // 5), "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-small", "preset_search", {"preset_id": "preset-1"}),
+        call("exec-huge", "preset_create", huge),
+        call("exec-next", "preset_search", {"preset_id": "preset-2"}),
+    ], max_tooluse=30)
+    seen = record_requests(harness)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    compacted = [item for item in seen if item["phase"] == "executor"][2]
+    assert "window_compacted" in compacted["messages"][0]["content"]
+    assert [tool["id"] for message in compacted["messages"] for tool in message.get("tool_calls", [])] == ["exec-small"]

@@ -1222,7 +1222,7 @@ def test_text_and_keywords_are_preview_samples_not_the_thing_to_ask_about():
     assert "are injected by templates on each render" in OUTER_RULES
     assert "do not ask about those unless the user clearly wants a specific wording chosen now" in OUTER_RULES
     assert "its default text and keywords are only the preview sample" in EXECUTOR_RULES
-    assert "The request is user_intent, in the host handoff and at the top of the snapshot" in EXECUTOR_RULES
+    assert "The request is user_intent, in the host handoff at the start of this conversation" in EXECUTOR_RULES
 
 
 def test_the_executor_recognizes_the_words_a_request_singles_out():

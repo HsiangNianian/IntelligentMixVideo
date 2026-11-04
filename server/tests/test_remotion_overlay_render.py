@@ -80,6 +80,7 @@ export const renderMedia = async () => { throw new Error('must not render'); };
     source = (renderer / "overlay-worker.mjs").read_text()
     source = source.replace('"@remotion/bundler"', json.dumps(stub.as_uri()))
     source = source.replace('"@remotion/renderer"', json.dumps(stub.as_uri()))
+    source = source.replace('"./managed-fonts.mjs"', json.dumps((renderer / "managed-fonts.mjs").as_uri()))
     worker = tmp_path / "overlay-worker.mjs"
     worker.write_text(source)
     (tmp_path / "request.json").write_text(json.dumps({"composition": {}, "instances": []}))
@@ -837,7 +838,7 @@ def test_probe_overlay_verifies_the_rendered_file(monkeypatch, tmp_path, payload
 
 # 场景：环境检查逐项指出缺少的工具或文件；全部具备时返回 None。
 def test_environment_problem_names_the_missing_piece(tmp_path, monkeypatch) -> None:
-    """依次缺 ffprobe、bwrap、prlimit、node，再缺浏览器和两个字体文件。"""
+    """缺少工具或浏览器仍报环境错误；配置字体缺失时由随包 SC 字体兜底。"""
     files = {name: tmp_path / name for name in ("browser", "regular.ttc", "bold.ttc")}
     for path in files.values():
         path.write_bytes(b"x")
@@ -866,7 +867,7 @@ def test_environment_problem_names_the_missing_piece(tmp_path, monkeypatch) -> N
     assert overlay_render.environment_problem(settings) is None
     for path in files.values():
         path.unlink()
-        assert overlay_render.environment_problem(settings) == str(path)
+        assert overlay_render.environment_problem(settings) == (str(path) if path == files["browser"] else None)
         path.write_bytes(b"x")
 
 

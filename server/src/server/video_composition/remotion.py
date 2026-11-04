@@ -355,8 +355,9 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                               "duration_frames": length, "width": sprite.canvas.width, "height": sprite.canvas.height}
             if layout and target == "subtitle" and intervals:
                 point = layout.subtitle_en if language == "en" else layout.subtitle
+                # 同屏沿用普通字效的内容框中心，框高与缩放不参与位置换算。
                 moved = {**host, "transform": {**host["transform"], "x": point.x * sprite.canvas.width / 100,
-                    "y": point.y * sprite.canvas.height / 100 + host["box"]["height"] * host["transform"].get("scale", 1) / 2}}
+                    "y": point.y * sprite.canvas.height / 100}}
                 cuts = sorted({first, last, *(frame for interval in intervals for frame in interval if first < frame < last)})
                 for a, b in zip(cuts, cuts[1:]):
                     # 可见区间与动画区间分开：跨布局的多行字幕保持原起点、长度和逐行时钟。

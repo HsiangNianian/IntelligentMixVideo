@@ -9,6 +9,7 @@
 - 路由、配置校验、数据库存储与效果目录都放在本模块（与示例目录 `sub_api/` 平级）：`schema.py` 做业务校验，`router.py` 在生成的 Protobuf 消息与业务模型之间转换。
 - 云端模板库是共享的：没有登录、用户隔离或旧数据迁移，配置存 MySQL（SQLAlchemy + PyMySQL）。
 - 客户端只能新建和编辑云端模板。不要恢复本地模板入口、「本地模板保存路径」设置或 Tauri `local_templates` 命令；旧版留在磁盘上的 `data/template/templates.json` 与 `$client.template_path` 不读取、不删除、不迁移。
+- 两类几何蒙版 MP4 必须支持单段 HTTP Range（206/416），供 WebKit 加载与定位；共用路由内的字节响应，不为范围读取新增落盘缓存。请求与响应规则见 `server/README.md`「模板接口」。
 
 ## 保存契约
 
@@ -20,6 +21,7 @@
 - 成功响应默认经 `MessageToDict` 转成 JSON；只有请求带单一 `Accept: application/x-protobuf` 才返回二进制，成功响应都带 `Vary: Accept`；删除返回 204 空响应。客户端按 `Content-Type` 解析，JSON 用 `ignoreUnknownFields: true` 容忍新增字段。
 - 列表逐条校验：无效记录带 `validation_error`，其详情返回 409，不影响同库的有效模板。列表消息与转场字段要求客户端、服务端一起升级。
 - `split_screen`、`avatar_effects`、`frame_mask`、`avatar_preview` 等后加的配置缺省为关闭；旧客户端省略这些字段重存时保留已有配置。
+- 同屏 `subtitle` / `subtitleEn` 坐标按画布百分比保存：IMS 沿用横向中心、纵向顶部；Remotion 沿用普通字效的内容框中心，预览与合成都不能加半框高。框中心不等于实际文字边界；旧模板保留坐标数值，重新预览与合成采用此规则。
 - 省略配置必须保留旧客户端的已有蒙版，因此删除不能沿用省略语义。保存请求中空的 `frame_mask` 消息表示明确移除，路由转换为显式 `None`；只有省略字段才保留已有配置，缺少单栏的非空配置仍按非法输入拒绝。详情省略被移除的配置。
 - 模板级 `frame_mask` 保存上下蒙版：`top`/`bottom` 各有 `enabled`、`height`（画布高度百分比 0～50）与 `color`（`#RRGGBB`）。可选 `gradient` 含必填的 enabled、endColor（`#RRGGBB`）、direction（up/down）与 range（整数 1～100），color 作为起始色；缺省为纯色，旧客户端按栏省略渐变时保留已有值，显式 false 关闭但保留参数。它不是 `tracks` 里的对象，使用它需要客户端与服务端一起升级。
 - 每栏可选 `image_id`（JSON `imageId`）：非空为图片填充，优先于 gradient/color；旧客户端省略保留原引用，显式空串清除。保存时验证提交的非空引用可读。图片归模板模块管理，由 `images.py` 校验静态格式、资源上限、方向与透明度，并居中裁成 9:16；复用 ZOS 保存不可变内容，不复用 Remotion 参考图的设备归属或 24 小时清理。切模式、替换、删除模板不物理删除图片，保证未保存草稿可撤销、已冻结任务可恢复；首版不做自动回收。接口及配置见 `server/README.md`。

@@ -13,14 +13,29 @@ A task builds first with sensible choices the user changes afterwards, but a
 genuine ambiguity may be asked: Outer's `ask`, the Executor's `needs_input` and
 the Plan's `ask` end the task as `needs_input` with the questions, and the user's
 answer resumes the same work. A task that delegated cannot end with an ordinary
-answer. The Executor's handoff carries the request (`user_intent` without the
-base spec), and the snapshot puts it first. A text effect's words and keywords are not asked for:
+answer. The handoff at the start of the Executor's window carries the request
+(`user_intent`) and, for an edit, the accepted base with its source; the Outer and
+Plan snapshots put the request first. A text effect's words and keywords are not asked for:
 templates pass them each time they render, so a work only needs sample text for
 its preview, taken from the request or a reference image or written by the
-Executor, which reads the request from the snapshot's `user_intent`
+Executor, which reads the request from the handoff's `user_intent`
 (`step_inputs` only lists earlier steps' outputs). Besides a `plan` hand-off, the
 Plan loop runs to recover a step that is blocked or used a batch without new
 evidence. The final delivery is a saved Sprite published as an isolated Player preview.
+
+Providers bill input served from their prefix cache far lower, and a hit needs an identical prefix, so the system
+prompt holds only each layer's fixed rules and the snapshot follows the window. The Executor's window
+(`context.StepWindow`) is append-only: the request, the accepted base, the font library and the reference images come
+once at its start, with the font library read once so a live registry update cannot change the cached system prefix.
+Only what changes each turn (`session.turn_state`, review frames) follows it. It is replaced whole only when it
+grows `agent.WINDOW_BYTES` (120 KB) past its start, keeping that start, the newest exchange (unless it fills the budget
+alone), one small exchange before it and a list of the Presets the current step made, whose IDs would otherwise leave with
+their receipts. The previous turn's snapshot is not written into the window: that would miss on the same bytes (the new
+exchange and the new snapshot) and only add input. Validation reports in the snapshot are capped at the newest that fit
+20 KB, since they miss on every turn and each one's outcome was already reported in its tool receipt. Providers without prefix caching may
+cost more on long tasks, because the window no longer evicts turn by turn. `model_usage` audit events record
+`cached_input_tokens` and the job usage `cached_tokens`, absent until the provider reports them, so a reported zero means
+no hit and an absent value means the provider does not say.
 
 ## Tool catalog
 
@@ -57,6 +72,11 @@ receives them, each with its `source` (`work_original`, `message` or
 `clarification_answer` plus the answered `clarification` index) and a host-written
 `meaning`. They take that asset reference, not a URL, and
 never upload anything.
+
+Each model request has a combined 30 MiB image limit, measured after conversion
+to inspection PNGs and before base64 encoding. Window reference images and
+trailing review frames share this limit; exceeding it fails before HTTP is sent.
+The transport limit allows the base64 expansion plus text and JSON framing.
 
 ## Storage
 
@@ -160,7 +180,7 @@ block with room around it, at most 720 pixels on the long side, composited onto 
 told is not content; a text effect whose defaults have no keywords is captured with the workspace preview's sample
 keyword (`sample_keywords`), listed in `review.keywords`, so keyword effects show. The receipt lists the frames in
 `review.frames` with sampling times, not claims that the result is complete or correct, and they follow the
-reference images in every Executor turn of the step (`candidate_frames` in the snapshot maps them) until the step
+window in every Executor turn of the step (`candidate_frames` in the snapshot maps them) until the step
 ends, a `sprite.compose` takes them away (they only describe the saved Sprite; seen in work eb692e7e, where frames of
 an earlier save stayed attached through 20 recompositions and the Executor kept "fixing" them) and a later save
 replaces them. The rules have the Executor compare them with the request and the reference images
@@ -388,6 +408,24 @@ style's own file.
   own `/tmp`). The browser preview registers each file as a `FontFace` with its weight and style; player bundles built
   before cards had styles skip italic files (their list entries carry no plain `weight`). macOS development without
   the sandbox does not load them.
+- **Managed Chinese fonts**: `managed_fonts.py` selects `Noto Sans CJK SC` by its internal family and requested
+  weight from `IMV_FONT_REGULAR` / `IMV_FONT_BOLD`, then supplies a standalone face to both preview APIs and workers.
+  Registering a whole TTC under an SC CSS name does not select its SC member; the first member can be Japanese.
+  Missing, damaged or mismatched configured fonts fall back to the already shipped, hash-pinned `Noto Sans SC`
+  variable font, without downloads or a registry dependency (also when catalog installation is disabled).
+  Layout/capacity checks and both render workers inspect Chrome's actual font for `关复` at weights 400 and 700.
+  A mismatch replaces the worker's font with the bundled SC face once, before bundling/encoding, and continues;
+  further diagnostic failures are logged rather than rejecting composition or retrying indefinitely. Browser loaders
+  try the primary file, then the bundled SC file, with a 10-second limit per attempt; only then use local Chinese
+  fonts. They set `lang=zh-CN`; a late page-load fallback is also recorded in the worker report. Explicit library font choices
+  retain their existing behavior. Shared preview responses hash the emitted font for ETags, invalidating cached TTCs.
+  Version evidence records the source hash, selected face hash and fallback choice per weight, plus the catalog and
+  bundled-resource hashes. Version previews resolve that recorded choice and validate/serve one immutable byte snapshot;
+  legacy versions with only source hashes remain readable. Content-keyed caches cannot hide updated fallback resources.
+  Missing configured fonts still expose the system catalog URL, and `/managed-fonts/fallback` serves bundled SC even
+  when catalog installation is disabled. Local fallback after both web-font loads fail is advisory and is recorded as
+  such; its platform-selected glyphs have no managed-file fingerprint.
+  Existing encoded videos need to be rendered again; immutable Sprite source and saved text are not rewritten.
 - **Agent**: the Executor rules end with the library as an enum read from the database, one entry per card with the
   styles it has (bold and italic text use the card's bold and italic files). A text effect must expose
   `fontFamily` (an enum of library families, defaulting to the font chosen from the reference image or description);

@@ -1,4 +1,4 @@
-"""切片客户端配置契约；服务端 Settings 继续读取 IMV_ 配置并保留 HTTP 策略。"""
+"""切片客户端配置契约；服务端 Settings 继续读取 IMV_ 配置，并保留 HTTP 策略与切片超时。"""
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import SettingsConfigDict
@@ -22,13 +22,18 @@ class ClientSettings(BaseModel):
     llm_disable_thinking: bool = Field(
         title="关闭思考模式", default=False,
         description="仅在模型服务支持 thinking 扩展字段（如 DeepSeek）时开启：请求附带 thinking=disabled，"
-                    "避免切分等待长推理；关闭时不发送该字段，采用服务默认行为。",
+                    "避免提词等待长推理；关闭时不发送该字段，采用服务默认行为。",
     )
 
 
 class Settings(ClientSettings, CommonSettings):
-    """构造参数优先于 IMV_ 环境与文件；HTTP 策略始终由服务端管理。"""
+    """构造参数优先于 IMV_ 环境与文件；HTTP 策略与切片超时始终由服务端管理，请求 config 不能覆盖。"""
 
     model_config = SettingsConfigDict(env_prefix="IMV_", extra="ignore")
 
     allow_insecure_llm_http: bool = True
+    # 提词与仅标题提词的单次请求上限，实际取它、llm_timeout_seconds 与剩余预算中的最小值。
+    segmentation_model_timeout_seconds: float = Field(
+        title="切片单次模型请求上限（秒）", default=90, gt=0, allow_inf_nan=False)
+    # 整次切片的软预算：从进入切片开始计，覆盖 CT-Punc 等锁与推理、提词请求及其重试。
+    segmentation_budget_seconds: float = Field(title="切片总预算（秒）", default=240, gt=0, allow_inf_nan=False)

@@ -6,6 +6,7 @@ import { AbsoluteFill, Html5Video } from "remotion";
 import Template from "imv:template";
 import initial from "imv:config";
 import { HostLayer, type HostBox, type HostTransform } from "./host-layer";
+import { loadManagedFonts } from "./font-loader.mjs";
 
 const channel = window.location.hash.slice(1);
 /** Sync mode (`?sync=1`): no controls or loop; the parent scrubs the Player with `imv-preview-sync` times and an optional clip length. */
@@ -323,17 +324,15 @@ async function mount() {
   registerCatalogFonts();
   try {
     const given = hostFonts ? await requestFonts() : null;
-    await Promise.all(
+    const sources = Object.fromEntries(await Promise.all(
       [400, 700].map(async (weight) => {
         const source = given
           ? await given[weight].arrayBuffer()
-          : `url("${new URL(`./fonts/${weight}`, window.location.href)}")`;
-        const font = new FontFace("Noto Sans CJK SC", source, {
-          weight: String(weight),
-        });
-        document.fonts.add(await font.load());
+          : new URL(`./fonts/${weight}`, window.location.href).href;
+        return [weight, source];
       }),
-    );
+    ));
+    await loadManagedFonts(sources, new URL("/api/templates/managed-fonts/fallback", window.location.href).href);
     createRoot(document.getElementById("root")!).render(<App />);
   } catch {
     document.getElementById("root")!.textContent = "预览字体加载失败，请重试。";

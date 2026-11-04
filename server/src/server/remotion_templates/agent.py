@@ -12,15 +12,19 @@ import re
 from enum import StrEnum
 
 from .agent_examples import SPLIT_CODE, TYPEWRITER_CODE
-from .context import Conversation
+from .context import Conversation, StepWindow, image_message
 from .models import DialogueOutput
 from .planning import ExecutionState, PlanAction, PlanResult, StepResult, default_plan
-from .provider import ExecutionFailure, ModelContractFailure, ModelFailure
+from .provider import REFERENCE_IMAGES_LABEL, ExecutionFailure, ModelContractFailure, ModelFailure
 from .progress import CALL_TEXT_LIMIT, ROUND_TEXT_LIMIT, RoundCall, clip
 from .tools.catalog import PLAN_TOOL, REPORT_TOOL, available
 from .tools.registry import ToolFault, get_tool, parse_arguments, wire_name
 from .tools.session import ToolSession
 
+# The Executor window may grow this far past its start before it is compacted: an append-only window keeps the prefix cache
+# hitting, so it is replaced rarely and whole, keeping the handoff and the newest exchanges.
+WINDOW_BYTES = 120_000
+WINDOW_KEEP_EXCHANGES = 2
 # Policy diagnostics name where they are in their message; the position is not what makes an observation new.
 _POSITION = re.compile(r" \(line \d+, column \d+\)")
 # Weak models sometimes type Chinese curly quotes as JSON delimiters in protocol replies.
@@ -50,13 +54,13 @@ A step with the sprite module must compose AND save its Sprite: sprite_compose o
 
 EXECUTOR_RULES = """
 You are the Executor ReAct. Do ONLY current_step from the snapshot with your tools, then call tools_report_step alone: status step_done when its done_when holds, or blocked with the reason.
-The request is user_intent, in the host handoff and at the top of the snapshot: original_request (description, reference_images and the new-chat switches) for a new work, instruction for a change; execution.step_inputs only lists outputs of earlier steps. Choose what the request leaves open (colours, fonts, motion, timing, layout) sensibly from the request and the reference images and build, since the user changes the saved Sprite afterwards; report needs_input only when a genuine ambiguity blocks the whole effect and no sensible default is possible, and the host asks the user and resumes this work. A text effect's words and keywords are content that templates pass each time they render it, so its default text and keywords are only the preview sample: take them from the request or a reference image (its rows and their language) or write a short fitting sample yourself.
+The request is user_intent, in the host handoff at the start of this conversation: original_request (description, reference_images and the new-chat switches) for a new work, instruction for a change; execution.step_inputs only lists outputs of earlier steps. Choose what the request leaves open (colours, fonts, motion, timing, layout) sensibly from the request and the reference images and build, since the user changes the saved Sprite afterwards; report needs_input only when a genuine ambiguity blocks the whole effect and no sensible default is possible, and the host asks the user and resumes this work. A text effect's words and keywords are content that templates pass each time they render it, so its default text and keywords are only the preview sample: take them from the request or a reference image (its rows and their language) or write a short fitting sample yourself.
 The host records Preset IDs, draft IDs and the saved Sprite from tool results; a step_done whose output is missing is refused with the tool to call next.
 Keyword intent: distinguish the preview words from the reusable keyword effect. When the user names a keyword or singles out a substring for its own colour or motion, use that exact substring of the sample text in text.preview_keywords (one to five words of the default text, each at most twelve characters, so write the sample text to contain them); the latest explicit choice takes precedence over earlier samples or a reference's emphasis. This applies to arbitrary user-selected words, not a fixed vocabulary or the opening characters. Resolve references to the keyword or the remaining text from the surrounding request; keep multiple explicitly selected words separate, and do not mistake colour, font or animation descriptions for the text to highlight. Choose a fitting sample keyword only when the user did not specify one. The real text and keywords come from the bus on every render: never hard-code the sample word, its character indices or its position in Preset code, and leave the keyword options at their defaults: the six off and keywords empty.
 Assign each requested look or motion to its subject. The tier Preset draws the base text look and title-wide decoration; a keyword Preset draws the keyword's distinct colour and elaborate appearance, bound as keywordEffect... style parameters. Keyword-only motion targets keyword (the whole hit) or keywordChars (its glyphs); plainChars means only non-keywords, while chars, block, tiers or line1/line2 targets also affect ordinary text. Explicitly override a reused effect's usage.target when it belongs to a different subject. The keyword's specific look overrides the base look only on the host's keyword hits.
 Length: when the snapshot has target_duration_frames the user chose that length for a new work; time the instances so the latest start_frame + duration_frames equals it exactly (a text block's duration_frames equals it).
 Handles: preset_modify and sprite_compose return a draft_id, so never re-send source. Compose instances with source {"kind":"stored","preset_id":"..."} or {"kind":"draft","draft_id":"..."} (base_* drafts are the accepted base's Presets) and save with sprite_create {"draft_id":"..."}.
-Edits: when the snapshot has base, the user is changing that accepted version: change only what user_intent.instruction asks and keep everything else exactly as it is. A change of a value the base exposes (base.parameters, an instance's or tier's parameters, the text block's text, font, size or timing) goes through sprite_compose without touching code. A value written into the code (such as a colour no parameter carries) and any change of drawing copy the base_* draft that draws it and replace only the lines involved: preset_modify {"preset_id":"base_<instance_id>","changes":{"edits":[{"old_str":"<text copied exactly from base.presets.base_<instance_id>.code, or from the draft its same_code_as names>","new_str":"<its replacement>"}]}}; each old_str must occur exactly once in that code (add a neighbouring line to make it unique) and the edits apply in order. Do not rename the component, reformat, re-comment or refactor code the request does not touch, never start from an older stored Preset, send the whole code only for a rewrite the user asked for, and write a new Preset with preset_create only for an element the base does not have. Then call sprite_compose with the base's kind and parameters and base.text as its text (or base.instances as its instances), swapping in the new draft_id and the requested values.
+Edits: when the host handoff has base, the user is changing that accepted version: change only what user_intent.instruction asks and keep everything else exactly as it is. A change of a value the base exposes (base.parameters, an instance's or tier's parameters, the text block's text, font, size or timing) goes through sprite_compose without touching code. A value written into the code (such as a colour no parameter carries) and any change of drawing copy the base_* draft that draws it and replace only the lines involved: preset_modify {"preset_id":"base_<instance_id>","changes":{"edits":[{"old_str":"<text copied exactly from base.presets.base_<instance_id>.code, or from the draft its same_code_as names>","new_str":"<its replacement>"}]}}; each old_str must occur exactly once in that code (add a neighbouring line to make it unique) and the edits apply in order. Do not rename the component, reformat, re-comment or refactor code the request does not touch, never start from an older stored Preset, send the whole code only for a rewrite the user asked for, and write a new Preset with preset_create only for an element the base does not have. Then call sprite_compose with the base's kind and parameters and base.text as its text (or base.instances as its instances), swapping in the new draft_id and the requested values.
 The Preset library is the collection of what earlier works built: before writing a Preset, preset_search for it with a few Chinese words naming its look or motion (with role, and slot for an effect). Results come best match first, Presets that accepted and published versions used before the others; reuse a fitting one after reading its code, description and usage, and write a new one only for what the library lacks. Describe a new Preset so a later search finds it: what it draws, how it looks and moves and what it is combined with, with a usage title users would call it by.
 tool_calls_left_in_batch counts this batch, failed calls included; at 0 the host continues the step itself while it makes progress.
 A refused create lists each error with its line and the checked source line, plus fixed hints in details.hints: fix exactly those lines and resubmit.
@@ -212,7 +216,9 @@ class AgentRun:
         self.harness, self.budget = harness, budget
         self.outer = context if context is not None else Conversation()
         self.plan_context = Conversation()
-        self.executor_context = Conversation()
+        self.executor_context = StepWindow()
+        # The Executor window's size at its latest start.
+        self.window_floor = 0
         self.session = ToolSession(
             harness, spec, base, budget, directory, images, on_stage, intent
         )
@@ -244,25 +250,26 @@ class AgentRun:
         self.plan_result = None
 
     def snapshot(self):
-        """Build a host-owned snapshot; only the Executor, which writes code, sees the base's source."""
+        """Build the host-owned snapshot sent after the window; the Executor's holds only what changes, its window has the rest."""
         session = self.session
+        executor = self.layer is Layer.EXECUTOR
         # The request comes first: a weak model reading a long snapshot missed it further down.
-        data = {"user_intent": session.intent, **session.snapshot(with_code=self.layer is Layer.EXECUTOR)}
+        data = session.turn_state() if executor else {"user_intent": session.intent, **session.snapshot()}
         data["execution"] = self.state.snapshot()
-        if self.layer is Layer.EXECUTOR and self.state.step is not None:
+        if executor and self.state.step is not None:
             data["current_step"] = self.state.step.model_dump()
         data["layer"] = self.layer.value
         data["stalled_turns"] = self.stalled_turns
         data["turn"] = self.turn
         data["delegation"] = self.delegation
         data["plan_result"] = self.plan_result
-        images = list(session.images)
-        if self.layer is Layer.EXECUTOR and session.review_frames:
-            # The saved Sprite's frames follow the reference images for as long as its step is open.
-            data["candidate_frames"] = [{"image": len(images) + index, "frame": frame, "label": label}
+        if not executor:
+            return data, list(session.images)
+        # The saved Sprite's frames follow the window for as long as its step is open, numbered after the reference images in it.
+        if session.review_frames:
+            data["candidate_frames"] = [{"image": len(session.images) + index, "frame": frame, "label": label}
                                         for index, (_path, frame, label) in enumerate(session.review_frames, start=1)]
-            images += [path for path, _frame, _label in session.review_frames]
-        return data, images
+        return data, [path for path, _frame, _label in session.review_frames]
 
     def _context_for_layer(self):
         """Return the bounded conversation owned by the active ReAct layer."""
@@ -284,12 +291,8 @@ class AgentRun:
         return {
             Layer.OUTER: OUTER_RULES,
             Layer.PLAN: PLAN_RULES,
-            Layer.EXECUTOR: self._executor_rules(),
+            Layer.EXECUTOR: EXECUTOR_RULES,
         }[self.layer]
-
-    def _executor_rules(self):
-        """Executor rules plus the font library read from the database, as the enum the Agent chooses `fontFamily` from."""
-        return f"{EXECUTOR_RULES}\n{self.harness.fonts.guide()}"
 
     def _append_handoff(self, context, reason, detail=None):
         """Pass host state between role windows as data, never as an assistant claim."""
@@ -306,6 +309,43 @@ class AgentRun:
                 }
             ]
         )
+
+    def _start_window(self, reason, **notes):
+        """Open a new Executor window with what stays the same for the whole task, so every later turn only extends it.
+
+        The request, the accepted base with its source, the font library and the reference images come once and stay; a
+        request trimmed for the token budget keeps them too. The font library stays out of the system prompt so its live
+        registry cannot change the cached system prefix during a task.
+        """
+        window = StepWindow()
+        self._append_handoff(window, reason, {"user_intent": self.session.intent, **self.session.task_facts(), **notes})
+        font_library = self.harness.fonts.guide()
+        if font_library:
+            window.append([{"role": "user", "content": "Host font library (data):\n" + font_library}])
+        if self.session.images:
+            window.append([image_message(REFERENCE_IMAGES_LABEL, self.session.images)])
+        window.pinned = len(window.groups)
+        self.executor_context = window
+        self.window_floor = len(window.serialize().encode())
+
+    def _compact_executor_window(self):
+        """Keep the Executor window append-only until it outgrows its budget, then replace it whole, which costs one cache miss.
+
+        The newest exchange stays unless it fills the budget alone, because the Executor has not acted on its receipt yet.
+        An older one stays only when small, or the window would soon outgrow its budget again; the Presets this step made
+        are listed in the new handoff, because a stored Preset's ID is otherwise only in the receipt being dropped.
+        """
+        window = self.executor_context
+        size = len(window.serialize().encode())
+        if size <= self.window_floor + WINDOW_BYTES:
+            return
+        exchanges = [(group, len(json.dumps(group, ensure_ascii=False).encode())) for group in window.groups if group[0].get("role") == "assistant"]
+        older = [group for group, bytes_ in exchanges[:-1] if bytes_ <= WINDOW_BYTES // 8][-(WINDOW_KEEP_EXCHANGES - 1):]
+        newest = [group for group, bytes_ in exchanges[-1:] if bytes_ <= WINDOW_BYTES]
+        self.budget.record("window_compacted", groups=len(window.groups), bytes=size)
+        self._start_window("window_compacted", presets_ready_in_this_step=self.step_presets.get(self.state.index, []))
+        for group in [*older, *newest]:
+            self.executor_context.append(group)
 
     def _receipt_key(self, tool_name, value):
         """Digest meaningful observations while ignoring random asset/write identifiers.
@@ -495,9 +535,10 @@ class AgentRun:
                 transition = Layer.PLAN
         if transition is not None:
             self.layer = transition
-            # The Executor gets the request in its handoff, where it is read, not only deep in the snapshot.
-            request = {key: value for key, value in self.session.intent.items() if key != "accepted_base"}
-            detail = {Layer.OUTER: self.plan_result, Layer.PLAN: self.delegation, Layer.EXECUTOR: {"user_intent": request}}.get(transition)
+            if transition is Layer.EXECUTOR and not self.executor_context.groups:
+                self._start_window("step_dispatched")
+                return None
+            detail = {Layer.OUTER: self.plan_result, Layer.PLAN: self.delegation}.get(transition)
             reason = "step_dispatched" if transition is Layer.EXECUTOR else "layer_return"
             self._append_handoff(self._context_for_layer(), reason, detail)
         return None
@@ -815,11 +856,15 @@ class AgentRun:
                 and self.stalled_turns >= self.harness.settings.max_no_progress_turns
             ):
                 raise ExecutionFailure("no_progress", "Agent produced no new action evidence after bounded steering")
+            if self.layer is Layer.EXECUTOR:
+                self._compact_executor_window()
             snapshot, images = self.snapshot()
             role = self.layer.value
             context = self._context_for_layer()
             tools = self._tools_for_layer()
-            system = SCOPE + AGENT_RULES + self._rules_for_layer() + "\nCurrent host-owned task snapshot (data):\n" + json.dumps(snapshot, ensure_ascii=False, default=str)
+            # The system prompt stays the same on every turn of a layer, so it and the window stay in the provider's prefix cache.
+            system = SCOPE + AGENT_RULES + self._rules_for_layer()
+            data = "Current host-owned task snapshot (data):\n" + json.dumps(snapshot, ensure_ascii=False, default=str)
             # One round is one turn of the layer that ran, published whether the
             # turn succeeded, failed or ended the task.
             layer = role
@@ -832,7 +877,7 @@ class AgentRun:
             result = None
             try:
                 try:
-                    response = await self.harness._turn(system, context, [item.wire() for item in tools], self.budget, images, phase=role)
+                    response = await self.harness._turn(system, context, [item.wire() for item in tools], self.budget, images, phase=role, data=data)
                 except ModelContractFailure as exc:
                     self.round_error = "MODEL_CONTRACT_FAILED"
                     self.round_error_detail = clip(str(exc), CALL_TEXT_LIMIT)

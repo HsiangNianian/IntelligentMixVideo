@@ -6,6 +6,7 @@ and need no header, like the public-read objects behind them.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -31,8 +32,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ..client_config import parse_config
 from .settings import ClientSettings
-from .evidence import digest
 from .fonts import SYSTEM_FONT_ID, Font, FontExists, FontRejected, FontStore, Slot, cards
+from .managed_fonts import ManagedFont, bundled_font, managed_font, selected_font
 from .history import WorkEvent
 from .media import save_image
 from .object_store import ObjectStoreError
@@ -507,8 +508,8 @@ def preview(version_id: UUID, service: Service, overlay: bool = False) -> HTMLRe
 @router.get(
     "/versions/{version_id}/fonts/{weight}", tags=["生成产物"], summary="读取预览字体"
 )
-def preview_font(version_id: UUID, weight: int, service: Service) -> FileResponse:
-    """仅提供与该成功版本渲染时指纹相同的受管字体；字体变更或字重不支持时返回 404。"""
+def preview_font(version_id: UUID, weight: int, service: Service) -> Response:
+    """按版本实际选择提供 SC 字体；核对与响应共用同一份字节，兼容只记录源指纹的旧版本。"""
     version = service.store.version(version_id)
     if weight not in {400, 700}:
         raise NotFound("font not found")
@@ -516,20 +517,39 @@ def preview_font(version_id: UUID, weight: int, service: Service) -> FileRespons
         service.settings.font_regular if weight == 400 else service.settings.font_bold
     )
     try:
-        if digest(font) != version.validation.runtime.get(f"font_{weight}"):
-            raise ValueError("font changed")
+        selected = selected_font(managed_font(font, weight), weight, version.validation.runtime)
     except (OSError, ValueError) as exc:
         raise NotFound("accepted font unavailable") from exc
-    return FileResponse(
-        font,
-        media_type="font/collection",
-        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
-    )
+    return font_response(selected, cache_control="no-store")
+
+
+def managed_font_response(path: Path, weight: int, *, cache_control: str) -> Response:
+    """Serve only a verified SC face; hash the emitted bytes so clients discard previously cached TTC responses."""
+    try:
+        font = managed_font(path, weight)
+    except (OSError, ValueError) as exc:
+        logger.exception("Managed SC font unavailable")
+        raise HTTPException(503, "简体中文字体不可用，请检查服务端字体配置。") from exc
+    return font_response(font, cache_control=cache_control)
+
+
+def font_response(font: ManagedFont, *, cache_control: str) -> Response:
+    """Return one already selected immutable font snapshot; never reopen its configured source after validation."""
+    return Response(font.data, media_type=font.media_type, headers={
+        "Access-Control-Allow-Origin": "*", "Cache-Control": cache_control,
+        "ETag": f'"{hashlib.sha256(font.data).hexdigest()}"',
+    })
+
+
+@router.get("/managed-fonts/fallback", tags=["字体"], summary="读取随包中文回退字体")
+def fallback_font() -> Response:
+    """Serve the pinned SC fallback independently of the configured font and optional catalog installation."""
+    return font_response(bundled_font(400), cache_control="no-cache")
 
 
 class FontFaceInfo(BaseModel):
     """One style of a font card: its file (`size`, `sha256`) and where the file and its preview strip are served; the
-    system default's file is the installed regular font (`size` 0, no `sha256`), or null when the host lacks it."""
+    system default uses the configured regular face or bundled SC (`size` 0, no registry `sha256`)."""
 
     id: str
     slot: Slot
@@ -559,17 +579,15 @@ class FontInfo(BaseModel):
     faces: list[FontFaceInfo]
 
 
-def installed_system_font(service: Service) -> Path | None:
-    """The system font file this host serves; null when it is not installed."""
-    path = service.settings.font_regular
-    return path if path.is_file() else None
+def installed_system_font(service: Service) -> Path:
+    """The managed source path; its endpoint also serves bundled SC when this path is missing."""
+    return service.settings.font_regular
 
 
 def font_info(files: Sequence[Font], *, system_file: Path | None = None) -> FontInfo:
     """Public view of a font card from its files (one `cards` entry); URLs are paths below this API's `/fonts`.
 
-    A system face has no `file_url` when `system_file` is null, so the client does not offer a specimen that would 404
-    on a host without the installed font.
+    A managed system face has a URL even if the configured path is missing, since the endpoint serves bundled SC.
     """
     faces = [
         FontFaceInfo(
@@ -645,7 +663,7 @@ async def upload_font(
 
 
 @router.get("/fonts/{font_id}", tags=["字体"], summary="读取字体文件")
-async def catalog_font(font_id: str, service: Service) -> FileResponse:
+async def catalog_font(font_id: str, service: Service) -> Response:
     """提供已登记字体的文件供预览页、字体选择器与字体详情的字样注册（本机还没缓存时先从对象存储取回并校验哈希）；
     系统默认字体提供服务端安装的常规字重文件；未知字体返回 404。
 
@@ -653,7 +671,7 @@ async def catalog_font(font_id: str, service: Service) -> FileResponse:
     """
     if font_id == SYSTEM_FONT_ID:
         regular = service.settings.font_regular
-        path = regular if regular.is_file() else None
+        return await asyncio.to_thread(managed_font_response, regular, 400, cache_control="no-cache")
     else:
         path = await asyncio.to_thread(FontStore.for_settings(service.settings).ensure, font_id)
     if path is None:
