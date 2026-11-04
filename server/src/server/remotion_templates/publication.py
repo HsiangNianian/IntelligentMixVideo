@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from .evidence import digest, seal_artifacts, verify_artifacts
+from .managed_fonts import font_environment
 from .models import (
     Check, CompositionConfig, TemplateCandidate, TemplateSpec, TemplateVersion, ValidationReport, validation_fingerprint,
 )
@@ -55,15 +56,18 @@ class PresentationBuilder:
         """Bind public artifacts to managed source, lockfile and the fonts served by the preview route."""
         settings = self.renderer.settings
         paths = {
-            "font_400": settings.font_regular,
-            "font_700": settings.font_bold,
+            "managed_fonts": Path(__file__).with_name("managed_fonts.py"),
             "presentation": settings.renderer_dir / "presentation.mjs",
             "presentation_worker": settings.renderer_dir / "presentation-worker.mjs",
             "preview_host": settings.renderer_dir / "preview-host.tsx",
+            "managed_font_loader": settings.renderer_dir / "font-loader.mjs",
             "host_layer": settings.renderer_dir / "host-layer.tsx",
             "dependencies": settings.renderer_dir / "bun.lock",
         }
-        return {key: digest(path) for key, path in paths.items()}
+        return {
+            **{key: digest(path) for key, path in paths.items()},
+            **font_environment(settings),
+        }
 
     async def build(self, sprite: SpriteDraft, defaults: dict, validation: RenderValidationReport, directory: Path):
         """Construct code and an interactive preview only after the supplied runtime checks pass."""

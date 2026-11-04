@@ -15,6 +15,7 @@ import { openBrowser } from "@remotion/renderer";
 import prettier from "prettier";
 import { exportTemplate } from "./presentation.mjs";
 import { languageDiagnostics } from "./typescript.mjs";
+import { checkManagedFonts } from "./managed-fonts.mjs";
 
 const root = process.env.IMV_WORK_ROOT ?? "/work";
 const rendererRoot = process.env.IMV_RENDERER_ROOT ?? "/renderer";
@@ -203,6 +204,7 @@ async function openPage(url) {
 /** Wait for the host bridge. Returns the error a component threw while loading, which keeps the host from ever mounting, else null. */
 async function waitReady(page) {
   await page.goto({ url: page.__imvUrl, timeout: 30000, options: { waitUntil: "load" } });
+  if (["fit", "capacity"].includes(request.mode)) await checkManagedFonts(page, root);
   return page.evaluate(async () => {
     const end = Date.now() + 15000;
     while (!(window).__imvTool?.ready && !(window).__imvRuntimeError && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 20));

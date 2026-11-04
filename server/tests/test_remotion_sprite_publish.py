@@ -26,6 +26,7 @@ from server.app import app
 from server.remotion_templates import parameters, sprite_events, sprite_store, sprites
 from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, category_problems
 from server.remotion_templates.harness import Harness
+from server.remotion_templates.managed_fonts import bundled_font
 from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.object_store import ObjectStoreError, ZosObjects
 from server.remotion_templates.provider import Budget
@@ -865,7 +866,7 @@ def test_overlay_preview_is_transparent_and_serves_managed_fonts(client: TestCli
     assert "background:transparent" in overlay.text
     assert "sandbox allow-scripts" in overlay.headers["content-security-policy"]
     font = client.get(f"/api/sprites/{summary.sprite_id}/fonts/400")
-    assert (font.status_code, font.content) == (200, b"fixture-font")
+    assert (font.status_code, font.content) == (200, bundled_font(400).data)
     assert font.headers["access-control-allow-origin"] == "*"
     assert client.get(f"/api/sprites/{summary.sprite_id}/fonts/500").status_code == 404
     assert client.get("/api/sprites/00000000-0000-4000-8000-000000000000/fonts/400").status_code == 404
@@ -879,14 +880,34 @@ def test_host_pages_read_one_cacheable_copy_of_the_preview_fonts(client: TestCli
     """
     for weight in (400, 700):
         font = client.get(f"/api/sprites/fonts/{weight}")
-        assert (font.status_code, font.content) == (200, b"fixture-font")
+        assert (font.status_code, font.content) == (200, bundled_font(weight).data)
         assert font.headers["cache-control"] == "no-cache"
         again = client.get(f"/api/sprites/fonts/{weight}", headers={"If-None-Match": font.headers["etag"]})
         assert (again.status_code, again.content) == (304, b"")
         assert again.headers["cache-control"] == "no-cache"
         stale = client.get(f"/api/sprites/fonts/{weight}", headers={"If-None-Match": '"replaced-font"'})
-        assert (stale.status_code, stale.content) == (200, b"fixture-font")
+        assert (stale.status_code, stale.content) == (200, bundled_font(weight).data)
     assert client.get("/api/sprites/fonts/500").status_code == 404
+
+
+def test_shared_font_replaces_cached_collection_with_sc_face(client: TestClient, published) -> None:
+    """旧 TTC 的 ETag 不能命中独立 SC 响应；同一路径换字体后再次返回新字形与新 ETag。"""
+    from io import BytesIO
+    from fastapi.responses import FileResponse
+    from fontTools.ttLib import TTFont
+    from .test_remotion_managed_fonts import FAMILY, collection_bytes
+
+    source = published.settings.font_regular
+    source.write_bytes(collection_bytes(["Noto Sans CJK JP", FAMILY]))
+    old_etag = FileResponse(source, stat_result=source.stat()).headers["etag"]
+    response = client.get("/api/sprites/fonts/400", headers={"If-None-Match": old_etag})
+    assert response.status_code == 200 and response.headers["etag"] != old_etag
+    assert response.content[:4] != b"ttcf" and response.headers["content-type"] == "font/ttf"
+    with TTFont(BytesIO(response.content)) as font:
+        assert font["name"].getBestFamilyName() == FAMILY
+    source.write_bytes(collection_bytes([FAMILY, "Noto Sans CJK JP"]))
+    replaced = client.get("/api/sprites/fonts/400", headers={"If-None-Match": response.headers["etag"]})
+    assert replaced.status_code == 200 and replaced.headers["etag"] != response.headers["etag"]
 
 
 def test_publish_hashes_and_copies_off_the_event_loop(client: TestClient, published, monkeypatch) -> None:

@@ -38,6 +38,7 @@ from server.remotion_templates.object_store import LocalObjects, ObjectStoreErro
 from server.remotion_templates.overlay_render import Overlay, OverlayError, require_fonts
 from server.remotion_templates.placement import resolve
 from server.remotion_templates.renderer import Renderer
+from server.remotion_templates.managed_fonts import bundled_font
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.sprites import operator_parameters
 
@@ -741,7 +742,7 @@ def test_the_font_api_lists_cards_with_their_styles(client: TestClient, served) 
 
 def test_the_font_api_lists_serves_and_uploads(client: TestClient, served, settings, monkeypatch, tmp_path) -> None:
     """字体接口：列表给出家族名、风格、字重、文件与预览地址；文件带 CORS 可被预览 iframe 加载；系统默认字体的文件是服务端安装的常规字重（字体详情的字样用它），
-    没有安装时 404 且不给出 file_url；上传（multipart）返回 201 与新字体且立即出现在列表；重复的文件返回 200 与同一张卡片（幂等，超时后重试
+    没有安装时仍给出 file_url 并使用随包中文字体；上传（multipart）返回 201 与新字体且立即出现在列表；重复的文件返回 200 与同一张卡片（幂等，超时后重试
     不会被当成失败），超大返回 413，缺少设备头返回 422；未知字体 404。"""
     system_font = tmp_path / "system.ttc"
     system_font.write_bytes(b"system-collection")
@@ -753,12 +754,13 @@ def test_the_font_api_lists_serves_and_uploads(client: TestClient, served, setti
     assert listed[2]["weights"] == [200, 900] and listed[1]["file_url"] == "/api/templates/fonts/alpha"
     monkeypatch.setattr(settings, "font_regular", tmp_path / "missing.ttc")
     missing = client.get("/api/templates/fonts").json()
-    assert missing[0]["file_url"] is None and missing[0]["faces"][0]["file_url"] is None
-    assert client.get("/api/templates/fonts/noto-sans-cjk").status_code == 404
+    assert missing[0]["file_url"] == missing[0]["faces"][0]["file_url"] == "/api/templates/fonts/noto-sans-cjk"
+    assert client.get(missing[0]["file_url"]).content == bundled_font(400).data
     system_font.write_bytes(b"system-collection")
     monkeypatch.setattr(settings, "font_regular", system_font)
     system = client.get("/api/templates/fonts/noto-sans-cjk")
-    assert (system.status_code, system.content, system.headers["content-type"]) == (200, b"system-collection", "font/collection")
+    # The fixture is not a usable font: serve the bundled SC fallback, never the malformed source bytes.
+    assert (system.status_code, system.content, system.headers["content-type"]) == (200, bundled_font(400).data, "font/ttf")
     file = client.get("/api/templates/fonts/alpha")
     assert (file.status_code, file.content) == (200, PAYLOADS["alpha"])
     assert file.headers["access-control-allow-origin"] == "*" and file.headers["content-type"] == "font/ttf"

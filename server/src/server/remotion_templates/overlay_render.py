@@ -25,6 +25,7 @@ from ..template.schema import RemotionTrackEditor
 from ..video_composition.media import ffprobe_json
 from ..video_composition.schema import PositiveSeconds
 from .fonts import FontStore
+from .managed_fonts import prepare_fonts
 from .placement import resolve
 from .renderer import CPU_SECONDS, Renderer
 from .settings import Settings
@@ -446,9 +447,9 @@ def environment_problem(settings: Settings, overlay: Overlay | None = None, *, c
     for tool in ("ffprobe", "bwrap", "prlimit", "taskset", "node", *(("ffmpeg",) if needs_join else ())):
         if shutil.which(tool) is None:
             return tool
-    for path in (settings.browser_executable, settings.font_regular, settings.font_bold):
-        if not path.is_file():
-            return str(path)
+    # Configured fonts are optional: prepare_fonts falls back to the shipped SC font without network access.
+    if not settings.browser_executable.is_file():
+        return str(settings.browser_executable)
     return None
 
 
@@ -472,10 +473,10 @@ async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Pa
         """在线程中准备字体和 worker 输入，避免复制文件阻塞其它渲染任务。"""
         directory.mkdir(parents=True, exist_ok=True)
         (directory / ".tmp").mkdir(exist_ok=True)
-        public = directory / "public"
-        public.mkdir(exist_ok=True)
-        for weight, font in ((400, settings.font_regular), (700, settings.font_bold)):
-            (public / f"font-{weight}.ttc").write_bytes(font.read_bytes())
+        try:
+            prepare_fonts(settings, directory)
+        except (OSError, ValueError) as exc:
+            raise OverlayError("font_unavailable", "渲染需要的简体中文字体尚未就绪，请检查服务端字体配置") from exc
         vp9 = {key: value for key, value in (
             ("cpu_used", settings.overlay_vp9_cpu_used), ("threads", settings.overlay_vp9_threads),
         ) if value is not None}

@@ -22,6 +22,8 @@ def test_worker_reports_each_range_and_requested_page_budget(tmp_path: Path, con
 import fs from 'node:fs/promises';
 export const bundle = async () => 'local-bundle';
 export const openBrowser = async () => ({close: async () => {}});
+export const verifyManagedFonts = async () => ({fallbackWeights: []});
+export const recordFontLoad = () => {};
 export const selectComposition = async () => ({id:'Overlay'});
 let active = 0, peak = 0;
 export const renderMedia = async (options) => {
@@ -48,6 +50,7 @@ export const renderMedia = async (options) => {
     source = (renderer / "overlay-worker.mjs").read_text(encoding="utf-8")
     source = source.replace('"@remotion/bundler"', json.dumps(stub.as_uri()))
     source = source.replace('"@remotion/renderer"', json.dumps(stub.as_uri()))
+    source = source.replace('"./managed-fonts.mjs"', json.dumps(stub.as_uri()))
     worker = tmp_path / "worker.mjs"
     worker.write_text(source, encoding="utf-8")
     request = {"composition": {"frames": 180}, "instances": [], "ranges": [[first, first + 14] for first in range(0, 180, 15)],
