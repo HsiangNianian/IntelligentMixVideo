@@ -167,21 +167,38 @@ async function bundleHost(config) {
   await fs.writeFile(`${root}/interactive.js`, output.outputFiles[0].text, "utf8");
 }
 
+/** Serve only the host bundle and attempt-local fonts; failed file reads must not commit success headers. */
 function serveBundle() {
   return new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
       try {
         if (req.url === "/interactive.js") {
+          const data = await fs.readFile(`${root}/interactive.js`);
           res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
-          res.end(await fs.readFile(`${root}/interactive.js`));
+          res.end(data);
+        } else if (/^\/font-(400|700|fallback)\.otf$/.test(req.url ?? "")) {
+          // The managed SC faces the host loads, the same files the worker's glyph check validated.
+          try {
+            const data = await fs.readFile(`${root}/public${req.url}`);
+            res.writeHead(200, { "content-type": "font/otf", "cache-control": "no-store" });
+            res.end(data);
+          } catch {
+            if (!res.headersSent) res.writeHead(404);
+            res.end();
+          }
         } else {
           res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
           // The host installs its own listeners only after the component module has evaluated, so a component that throws
           // while loading would leave no trace; the shell records that error first.
           const early = `for (const type of ["error", "unhandledrejection"]) window.addEventListener(type, (event) => { window.__imvRuntimeError = String(event.error?.message ?? event.reason?.message ?? event.reason ?? event.message ?? "Runtime error"); });`;
-          res.end(`<!doctype html><html><body style="margin:0"><div id="root"></div><script>${early}</script><script src="/interactive.js"></script></body></html>`);
+          // `lang="zh-CN"`: without a Chinese page language Chrome's Han fallback for a family that lacks the
+          // character is the TTC's Japanese face, and a sample must show the glyphs the render shows.
+          res.end(`<!doctype html><html lang="zh-CN"><body style="margin:0"><div id="root"></div><script>${early}</script><script src="/interactive.js"></script></body></html>`);
         }
-      } catch (error) { res.writeHead(500); res.end(String(error)); }
+      } catch (error) {
+        if (!res.headersSent) res.writeHead(500);
+        res.end(String(error));
+      }
     });
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => resolve({ server, url: `http://127.0.0.1:${server.address().port}/` }));
@@ -204,9 +221,9 @@ async function openPage(url) {
 /** Wait for the host bridge. Returns the error a component threw while loading, which keeps the host from ever mounting, else null. */
 async function waitReady(page) {
   await page.goto({ url: page.__imvUrl, timeout: 30000, options: { waitUntil: "load" } });
-  if (["fit", "capacity"].includes(request.mode)) await checkManagedFonts(page, root);
   return page.evaluate(async () => {
-    const end = Date.now() + 15000;
+    // Each managed weight can try primary and fallback for ten seconds each before using local fonts.
+    const end = Date.now() + 30000;
     while (!(window).__imvTool?.ready && !(window).__imvRuntimeError && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 20));
     if ((window).__imvTool?.ready) return null;
     if ((window).__imvRuntimeError) return (window).__imvRuntimeError;
@@ -1327,6 +1344,9 @@ async function fitAll() {
   try {
     const opened = await openPage(url);
     browser = opened.browser;
+    // Diagnose/replace once on the initial page, before any host can load the selected files. Navigation then
+    // discards the diagnostic FontFaces; every Sprite must load the same selected bytes as the render entrypoint.
+    await checkManagedFonts(opened.page, root);
     const answers = [];
     result[request.mode === "capacity" ? "capacities" : "fits"] = answers;
     for (const sprite of request.sprites) {

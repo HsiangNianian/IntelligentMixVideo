@@ -17,6 +17,13 @@ read-only and points fontconfig at it, so Chrome in every worker (validation, pr
 composition) resolves a family by its CSS name; the config lists each file under its registry family only. The
 browser preview cannot use fontconfig: it registers lazy `FontFace`s served by `GET /api/templates/fonts/{id}`. Uploaded font bytes are never parsed by the backend beyond a
 bounds-checked read of the font's names; only the sandboxed Chrome and the user's own browser decode them.
+
+Chinese is the default content, so a character no named family covers must never land on a Japanese face. The sandbox
+runs Chrome with `LANG=C.UTF-8` on a page whose document language is English, so Chrome's own Han fallback asks
+fontconfig without a Chinese language; on a host with `fonts-noto-cjk` the generic sans/serif match then lands on Noto
+Sans CJK JP, whose Han glyphs are Japanese variants (Chrome picks the SC face only for a Chinese page or locale). The
+generated config therefore ranks the Chinese families first for the generic families (`SC_PREFERENCES`) instead of
+relying on the page language.
 """
 
 import asyncio
@@ -56,6 +63,16 @@ CONFIG_NAME = "fonts.conf"
 SANDBOX_DIR = "/imv-fonts"
 # Always available through the system packages and the default family of every generated text effect.
 DEFAULT_FAMILY = "Noto Sans CJK SC"
+# Chinese families that cover the generic families' Han fallback, per CSS generic family, most preferred first. The
+# aliases stay weak for family-only queries; only Han charset queries get a strong preference over language scoring.
+SC_PREFERENCES = {
+    "sans-serif": ("Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans CN"),
+    "serif": ("Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif CN"),
+    "monospace": ("Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans CN"),
+    "system-ui": ("Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans CN"),
+    "cursive": ("Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans CN"),
+    "fantasy": ("Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans CN"),
+}
 # Names a user's font may not take: CSS generic families and the default font.
 RESERVED_FAMILIES = {DEFAULT_FAMILY.casefold(), "sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui", "inherit", "initial", "default"}
 SYSTEM_FONT_ID = "noto-sans-cjk"
@@ -564,8 +581,9 @@ class FontStore:
         font_store.insert(font.id, font.family, font.model_dump(exclude={"id", "family"}), None)
 
     def _write_config(self) -> None:
-        """Atomically write the fontconfig file the sandbox loads: the system config, the font folder and one scan rule
-        per font file that lists the file under its card's family only.
+        """Atomically write the fontconfig file the sandbox loads: the system config, the font folder, one scan rule
+        per font file that lists the file under its card's family only, and the Chinese families each generic family
+        prefers.
 
         Without the rule fontconfig would list a file under every name inside it, which another weight or version of
         the same font, or another file's legacy or localized name, may share (a bundled variable font also answers to
@@ -573,6 +591,11 @@ class FontStore:
         name the sandbox resolves to this file, and fontconfig picks among a card's files by their own weight and
         slant. Each sandbox scans the folder afresh (its fontconfig cache lives in its own /tmp), so a new rule applies
         to the next worker. An uploaded family comes from the file and is XML-escaped.
+
+        Weak aliases keep the system's Latin faces ahead of SC in Chromium's family-only fallback list. Queries
+        containing Han codepoints additionally receive a strong preference over language scoring: removing the
+        Han ranges changes such a charset, but leaves Latin-only charsets unchanged. Explicit families before
+        the generic keep their selection order.
         """
         rules = "".join(
             '  <match target="scan">\n'
@@ -582,10 +605,26 @@ class FontStore:
             "  </match>\n"
             for font in self.known.values() if font.has_file
         )
+        preferences = "".join(
+            f'  <alias binding="weak"><family>{generic}</family><prefer>'
+            + "".join(f"<family>{escape(family)}</family>" for family in families)
+            + '</prefer></alias>\n  <match target="pattern">\n'
+            f'    <test name="family"><string>{generic}</string></test>\n'
+            '    <test name="charset" compare="not_eq"><minus><name>charset</name><charset>'
+            '<range><int>0x3400</int><int>0x4DBF</int></range>'
+            '<range><int>0x4E00</int><int>0x9FFF</int></range>'
+            '<range><int>0xF900</int><int>0xFAFF</int></range>'
+            '<range><int>0x20000</int><int>0x323AF</int></range>'
+            '</charset></minus></test>\n'
+            '    <edit name="family" mode="prepend" binding="strong">'
+            + "".join(f"<string>{escape(family)}</string>" for family in families)
+            + "</edit>\n  </match>\n"
+            for generic, families in SC_PREFERENCES.items()
+        )
         text = (
             '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n'
             '  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>\n'
-            f"  <dir>{SANDBOX_DIR}/files</dir>\n{rules}</fontconfig>\n"
+            f"  <dir>{SANDBOX_DIR}/files</dir>\n{rules}{preferences}</fontconfig>\n"
         )
         target = self.root / CONFIG_NAME
         temporary = target.with_suffix(".tmp")
