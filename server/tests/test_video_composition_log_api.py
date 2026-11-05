@@ -1,4 +1,4 @@
-"""日志查询 API 的文件读取、引用展开和参数边界；仅使用临时目录，不启动数据库或后台调度。
+"""日志查询 API 的字段内引用、历史兼容和参数边界；仅使用临时目录，不启动数据库或后台调度。
 
 在 server/ 执行 uv run --locked pytest tests/test_video_composition_log_api.py -v。
 """
@@ -73,6 +73,31 @@ def test_module_expands_cross_file_references(log_client, task_folder):
     assert response.status_code == 200
     assert response.json()["input"][0]["data"] == raw
     assert json.loads((task_folder / "segmentation.json").read_text())["input"][0]["data"] == reference
+
+
+def test_api_keeps_local_references_and_materializes_legacy_external_sources(log_client, task_folder):
+    """新旧日志均按字段内去重返回，各字段先有原文，查询不迁移历史文件或丢弃事件。"""
+    empty = {key: [] for key in ("input", "output", "execute_log", "error_log")}
+    raw = {"text": "完整业务正文" * 100}
+    entry = {"time": "2026-11-03", "action": "asr.step_finished", "data": raw}
+    asr = {**empty, "output": [entry, {**entry, "data": {"$log_ref": "#/asr/output/0/data"}}]}
+    segmentation = {**empty, "input": [{**entry, "data": {"$log_ref": "#/asr/output/0/data"}}] * 2,
+                    "output": [entry]}
+    originals = {}
+    for module, section in (("asr", asr), ("segmentation", segmentation)):
+        path = task_folder / f"{module}.json"
+        originals[path] = json.dumps(section, ensure_ascii=False)
+        path.write_text(originals[path], encoding="utf-8")
+    for module, field in (("asr", "output"), ("segmentation", "input")):
+        response = log_client.get(f"/api/v1/video-compositions/{task_folder.name}/logs", params={"module": module})
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body[field]) == 2
+        assert body[field][0]["data"] == raw
+        assert body[field][1]["data"] == {"$log_ref": f"#/{module}/{field}/0/data"}
+        if module == "segmentation":
+            assert body["output"][0]["data"] == raw
+    assert all(path.read_text(encoding="utf-8") == text for path, text in originals.items())
 
 
 def test_old_directory_and_error_payload_are_unchanged(log_client, task_folder):

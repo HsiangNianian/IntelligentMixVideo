@@ -268,7 +268,7 @@ async def test_each_module_writes_error_detail_file(module, step, composition_ca
             await composition_runtime.step(record, step, fail, {})
     saved, = composition_logs(record["task_id"], raw=True)
     folder = execution_log.LOG_ROOT / "video_composition" / record["task_id"]
-    entries = saved[module]["error_log"]
+    entries = expand_columns(saved)[module]["error_log"]
     assert len(entries) == 2 and len(list((folder / "errors").iterdir())) == 1
     assert len({entry["error"]["detail_log_path"] for entry in entries}) == 1
     for entry in entries:
@@ -314,7 +314,7 @@ def test_different_error_details_are_preserved_even_with_the_same_message(tmp_pa
     saved = None
     for event, details in (("step_failed", first), ("step_failed", second), ("query_failed", first)):
         saved = add_event(saved, event, record, details, datetime.now(), folder=tmp_path)
-    entries = saved["ims"]["error_log"]
+    entries = expand_columns(saved)["ims"]["error_log"]
     paths = [entry["error"]["detail_log_path"] for entry in entries]
     assert paths[0] == paths[2] != paths[1]
     assert len(list((tmp_path / "errors").glob("*.log"))) == 2
@@ -337,8 +337,8 @@ def test_step_records_belong_to_exactly_one_module(step, module, tmp_path):
     assert all(not any(section.values()) for name, section in saved.items() if name != module)
 
 
-def test_three_video_urls_are_distinct_and_shared_payloads_use_references():
-    """透明叠加、IMS 临时链接、ZOS 成片分别保留；相同临时链接供转存输入引用。"""
+def test_three_video_urls_are_distinct_and_modules_keep_their_own_sources():
+    """透明叠加、IMS 临时链接、ZOS 成片分别保留；转存输入独立保存实际临时链接。"""
     record = {"stage": "rendering", "status": "processing"}
     overlay = "https://zos.test/overlay.webm"
     temporary = "https://ims.test/video.mp4?Signature=" + "signed" * 40
@@ -355,7 +355,8 @@ def test_three_video_urls_are_distinct_and_shared_payloads_use_references():
     assert expanded["ims"]["output"][0]["data"]["aliyun_video_url"] == temporary
     assert expanded["zos"]["input"][0]["data"]["aliyun_video_url"] == temporary
     assert expanded["zos"]["output"][0]["data"]["zos_video_url"] == stored
-    assert json.dumps(saved).count(temporary) == 1
+    assert saved["ims"]["output"][0]["data"]["aliyun_video_url"] == temporary
+    assert saved["zos"]["input"][0]["data"]["aliyun_video_url"] == temporary
 
 
 def test_module_files_keep_io_errors_and_only_three_execution_fields(composition_case, composition_settings, composition_logs, template_db):
@@ -402,7 +403,7 @@ def test_final_submitted_timeline_and_long_asr_are_complete(composition_case, co
     expanded = expand_columns(saved)
     assert expanded["timeline"]["output"][-1]["data"] == timeline
     assert expanded["ims"]["input"][0]["data"] == {"timeline": timeline, "output_media_config": {"Width": 1080}, "client_token": "[REDACTED]"}
-    assert saved["ims"]["input"][0]["data"]["timeline"] == {"$log_ref": "#/timeline/output/1/data"}
+    assert saved["ims"]["input"][0]["data"]["timeline"] == timeline
     assert "hidden" not in json.dumps(saved, default=str)
 
 
@@ -419,7 +420,7 @@ def test_nested_json_and_media_urls_keep_content_without_credentials():
 
 
 def test_module_references_preserve_payloads_events_and_upstream_sources():
-    """上游原文、不同版本、重试与错误无损；嵌套键可转义，业务 $ref 不误解析。"""
+    """上游原文、不同版本、重试与错误无损；不同模块及字段各自保留正文。"""
 
     columns = {name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
     transcript = {"text": "完整转写" * 100, "$ref": "业务中的普通引用"}
@@ -453,32 +454,56 @@ def test_module_references_preserve_payloads_events_and_upstream_sources():
     assert compact_columns(compacted) == compacted
     assert compacted["asr"]["output"][0]["data"] == transcript
     assert compacted["asr"]["output"][1]["data"] == {"$log_ref": "#/asr/output/0/data"}
-    assert compacted["segmentation"]["input"][0]["data"]["asr_result"] == {"$log_ref": "#/asr/output/0/data"}
-    assert compacted["matching"]["input"][0]["data"]["llm"]["segments"] == {"$log_ref": "#/segmentation/output/0/data/a~1b~0c"}
-    assert compacted["timeline"]["input"][0]["data"]["template"] == {"$log_ref": "#/template/output/0/data"}
+    assert compacted["segmentation"]["input"][0]["data"]["asr_result"] == transcript
+    assert compacted["matching"]["input"][0]["data"]["llm"]["segments"] == segments
+    assert compacted["timeline"]["input"][0]["data"]["template"] == template
     assert "$log_ref" in json.dumps(compacted["zos"])
     assert len(json.dumps(compacted)) < len(json.dumps(before))
 
 
 def test_append_rebuilds_references_after_sorting_and_keeps_distinct_versions():
-    """较早事件插入导致数组位置变化后仍指向原值；快照补录去重在展开后判断。"""
+    """较早事件插入后字段内引用仍指向原值，其他模块保留独立正文。"""
     from datetime import datetime
 
     record = {"stage": "asr", "status": "processing"}
     raw = {"text": "第一版" * 100}
     columns = add_event(None, "step_finished", record, {"step": "asr", "output": raw}, datetime.fromisoformat("2026-09-30T10:00:00+08:00"))
     columns = add_event(columns, "step_started", record, {"step": "segmentation", "input": {"asr_result": raw}}, datetime.fromisoformat("2026-09-30T11:00:00+08:00"))
+    columns = add_event(columns, "step_finished", record, {"step": "asr", "output": raw}, datetime.fromisoformat("2026-09-30T12:00:00+08:00"))
     changed = {"text": "另一版" * 100}
     columns = add_event(columns, "step_finished", record, {"step": "asr", "output": changed}, datetime.fromisoformat("2026-09-30T09:00:00+08:00"))
-    assert columns["segmentation"]["input"][0]["data"]["asr_result"] == {"$log_ref": "#/asr/output/1/data"}
+    assert columns["segmentation"]["input"][0]["data"]["asr_result"] == raw
+    assert columns["asr"]["output"][2]["data"] == {"$log_ref": "#/asr/output/1/data"}
     expanded = expand_columns(columns)
-    assert [item["data"] for item in expanded["asr"]["output"]] == [changed, raw]
+    assert [item["data"] for item in expanded["asr"]["output"]] == [changed, raw, raw]
     assert expanded["segmentation"]["input"][0]["data"]["asr_result"] == raw
-    assert len(expanded["asr"]["execute_log"]) == 2
+    assert len(expanded["asr"]["execute_log"]) == 3
+
+
+def test_nested_duplicates_stay_within_each_module_and_field():
+    """同条记录内的长正文和跨记录对象可复用，九模块各字段保留独立原文及所有事件。"""
+    columns = {name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
+    text = "必须完整保留的原文" * 100
+    payload = {"a/b~c": text, "repeat": text, "$ref": "业务引用"}
+    for section in columns.values():
+        for field, body in (("input", "data"), ("output", "data"), ("error_log", "error")):
+            section[field] = [{"time": str(i), "action": "step_failed", body: deepcopy(payload)} for i in range(2)]
+        section["execute_log"] = [{"time": "0", "action": "step_started", "status": "processing"}] * 2
+    saved = compact_columns(columns)
+    for name, section in saved.items():
+        for field, body in (("input", "data"), ("output", "data"), ("error_log", "error")):
+            first, second = section[field]
+            assert first[body]["a/b~c"] == text
+            assert first[body]["repeat"] == {"$log_ref": f"#/{name}/{field}/0/{body}/a~1b~0c"}
+            assert second[body] == {"$log_ref": f"#/{name}/{field}/0/{body}"}
+            assert [(item["time"], item["action"]) for item in section[field]] == [("0", "step_failed"), ("1", "step_failed")]
+        assert section["execute_log"] == columns[name]["execute_log"]
+    assert expand_columns(saved) == columns
+    assert compact_columns(saved) == saved
 
 
 def test_timeline_requested_fields_use_references_and_expand_completely():
-    """materials、packRules 也复用请求正文，接口展开后仍得到原始完整输入。"""
+    """materials、packRules 在各自字段内复用，展开后仍得到原始完整输入。"""
 
     columns = {name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
     request = {"materials": [{"fileUrl": "https://media.test/" + "x" * 150}],

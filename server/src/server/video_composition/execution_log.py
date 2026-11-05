@@ -118,7 +118,7 @@ GROUPS = {
 
 
 def expand_columns(columns: dict) -> dict:
-    """展开同任务输入输出中的 $log_ref（JSON Pointer）；返回副本供追加、排序和校验。"""
+    """展开正文中的 $log_ref，兼容历史跨模块引用；返回副本供追加、排序和校验。"""
     def expand(value):
         """引用只读取同任务模块；普通业务 $ref 不作日志引用处理。"""
         if isinstance(value, dict):
@@ -133,19 +133,15 @@ def expand_columns(columns: dict) -> dict:
             return [expand(child) for child in value]
         return value
 
-    return {name: {**columns[name], **{
-        direction: [{**item, "data": expand(item["data"])} for item in columns[name][direction]]
-        for direction in ("input", "output")
-    }} for name in MODULES}
+    return {name: expand(columns[name]) for name in MODULES}
 
 
 def compact_columns(columns: dict) -> dict:
-    """保留全部业务结果；同任务重复正文用更短的引用，执行/错误事件不合并。"""
+    """仅同模块同字段内复用正文，包括单条记录内的重复；时间、动作和状态不合并。"""
     columns = expand_columns(columns)
     for section in columns.values():
         for items in section.values():
             items.sort(key=lambda item: item["time"] or "")
-    seen = {}
 
     def compact(value, path):
         """先匹配完整对象，再处理子项；索引只指向仍保留的节点，避免悬空引用。"""
@@ -157,22 +153,19 @@ def compact_columns(columns: dict) -> dict:
             if len(json.dumps(reference, ensure_ascii=False, separators=(",", ":"))) < len(encoded):
                 return reference
         else:
-            pending.setdefault(encoded, path)
+            seen[encoded] = path
         if isinstance(value, list):
             return [compact(child, f"{path}/{index}") for index, child in enumerate(value)]
         if isinstance(value, str):
             return value
         return {key: compact(child, f"{path}/{key.replace('~', '~0').replace('/', '~1')}") for key, child in value.items()}
 
-    # 原始请求、上游输出优先保留，最终响应最后处理。
-    locations = [("request", "input")] + [
-        (name, direction) for name in MODULES[1:] for direction in ("output", "input")
-    ] + [("request", "output")]
-    for name, direction in locations:
-        for index, item in enumerate(columns[name][direction]):
-            pending = {}
-            item["data"] = compact(item["data"], f"#/{name}/{direction}/{index}/data")
-            seen.update(pending)
+    # 每个字段各自保留原文；执行记录只有元数据，错误记录只压缩 error 正文。
+    for name, section in columns.items():
+        for direction, key in (("input", "data"), ("output", "data"), ("error_log", "error")):
+            seen = {}
+            for index, item in enumerate(section[direction]):
+                item[key] = compact(item[key], f"#/{name}/{direction}/{index}/{key}")
     return columns
 
 
@@ -331,7 +324,7 @@ def read_log(task_id: str) -> dict:
 
 
 def query_log(task_id: str, module: str) -> dict | None:
-    """读取入口已校验的任务与模块；锁内展开已落盘日志或返回全部错误文件，不访问数据库。"""
+    """锁内返回字段内去重的日志或全部错误文件；兼容旧引用，不写回文件、不访问数据库。"""
     with LOG_LOCK:
         folder = LOG_ROOT / "video_composition" / task_id
         if not folder.is_dir():
@@ -345,7 +338,7 @@ def query_log(task_id: str, module: str) -> dict | None:
                 {"name": path.name, "content": path.read_text(encoding="utf-8")}
                 for path in paths if path.name.endswith(".log") and path.is_file()
             ]}
-        return expand_columns(read_log(task_id))[module]
+        return compact_columns(read_log(task_id))[module]
 
 
 def write_log(record: dict, event: str, details: dict, finished_tasks, *, time=None) -> None:

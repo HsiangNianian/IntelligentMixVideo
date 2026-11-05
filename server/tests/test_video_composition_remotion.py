@@ -453,12 +453,13 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     assert render_input["sources"] == sources
     plan_input = next(details["input"] for event, details in events if event == "step_started" and details["step"] == "remotion_plan")
     assert plan_input["sources"] == sources
-    # 多次排版与渲染输入复用源码，落盘只保留一份，展开后仍能还原各阶段。
+    # 多次排版与渲染在各自字段内复用源码，输入输出各留一份，展开后还原各阶段。
     columns = None
     for event, details in events:
         columns = execution_log.add_event(columns, event, {"stage": "assembling", "status": "processing"}, details,
                                           datetime.now(execution_log.BEIJING))
-    assert json.dumps(columns["remotion"]).count(json.dumps(CODE)) == 1
+    for field in ("input", "output"):
+        assert json.dumps(columns["remotion"][field]).count(json.dumps(CODE)) == 1
     expanded = execution_log.expand_columns(columns)["remotion"]
     assert all(item["data"]["sources"] == sources for item in expanded["input"] if "sources" in item["data"])
     uploaded = next(details["output"] for event, details in events if event == "step_finished" and details["step"] == "remotion_upload")
@@ -527,7 +528,7 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
     assert caught.value.error == {"code": "remotion_render_failed", "message": "叠加视频渲染失败", "stage": "assembling"}
     store.advance(record, "failed", status="failed", error=caught.value.error,
                   diagnostics=execution_log.exception_details(caught.value))
-    entries = composition_logs("task", raw=True)[0]["remotion"]["error_log"]
+    entries = execution_log.expand_columns(composition_logs("task", raw=True)[0])["remotion"]["error_log"]
     assert [entry["action"] for entry in entries] == ["remotion_render.step_failed", "remotion_render.task_finished"]
     assert "private browser connection timeout" not in json.dumps(entries)
     assert not slot.locked()
