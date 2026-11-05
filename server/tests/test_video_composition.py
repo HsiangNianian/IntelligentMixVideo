@@ -539,6 +539,14 @@ def test_avatar_tail_cutoff_keeps_original_content_preparation(
                for row in rows if row["event"] == "step_finished"}
     assert outputs["asr"]["properties"]["original_duration_in_milliseconds"] == 102960
     assert outputs["segmentation"]["segments"] == composition_case["segments"]
+    assert outputs["duration_trim"]["duration_ms"] == duration_ms
+    assert outputs["duration_trim"]["avatar_duration_ms"] == int(video_seconds * 1000)
+    trim_input = next(row["details"]["input"] for row in rows
+                      if row["event"] == "step_started" and row["stage"] == "duration_trim")
+    assert trim_input["audio_duration_ms"] == 102960
+    assert trim_input["segmentation"]["segments"] == composition_case["segments"]
+    if duration_ms < 102960:
+        assert outputs["duration_trim"]["segmentation"] == data["segmentation"]
     assert upstreams["asr_calls"] == upstreams["segment_calls"] == 1
 
 
@@ -2165,7 +2173,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     rows = composition_logs(task_id)
     started = {row["details"]["step"]: row["details"]["input"] for row in rows if row["event"] == "step_started"}
     outputs = {row["details"]["step"]: row["details"].get("output") for row in rows if row["event"] == "step_finished"}
-    assert set(started) == set(outputs) == {"template", "remotion_snapshot", "remotion_render", "asr", "segmentation", "match_submit", "material_probe", "subtitle_capacity", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
+    assert set(started) == set(outputs) == {"template", "remotion_snapshot", "remotion_render", "asr", "segmentation", "match_submit", "material_probe", "duration_trim", "subtitle_capacity", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
     assert started["template"] == {"style_id": request["styleId"]}
     assert outputs["template"] == composition_case["template"]
     assert outputs["asr"] == upstreams["raw"] == started["segmentation"]["asr_result"]
@@ -2178,6 +2186,9 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     assert outputs["ims_query"]["MediaProducingJob"]["Status"] == "Success"
     assert outputs["playback"] == {"aliyun_video_url": upstreams["zos_uploads"][0][0]}
     assert outputs["zos_upload"] == {"zos_object_key": record["data"]["zos_object_key"], "zos_video_url": record["data"]["result"]["videoUrl"]}
+    skipped = {row["stage"]: row["details"]["output"]["reason"] for row in rows if row["event"] == "step_skipped"}
+    assert {"translation", "frame_mask_upload", "avatar_opening", "split_screen"} <= skipped.keys()
+    assert all(skipped.values())
     callback = next(row for row in rows if row["event"] == "match_callback_received")
     assert "input" not in callback["details"]
     assert callback["details"]["output"]["result"]["segments"][0]["matched_candidate_reason"] == "no_candidates"

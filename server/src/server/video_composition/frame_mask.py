@@ -13,14 +13,19 @@ from ..template.images import read_image
 
 
 def upload_mask(mask: dict, width: int, height: int, task_id: str, settings: ZosSettings,
-                timeout: float, prefix: str) -> str | None:
+                timeout: float, prefix: str, *, diagnostics: dict | None = None) -> str | None:
     """使用已校验的模板快照，按成片像素四舍五入；关闭或零高度时不生成与上传。"""
     rects = []
+    bars = {}
     for edge in ("top", "bottom"):
         bar = mask[edge]
         size = floor(height * bar["height"] / 100 + 0.5) if bar["enabled"] else 0
+        bars[edge] = {"height_px": size, "fill": "disabled" if not size else "image" if bar.get("imageId")
+                      else "gradient" if (bar.get("gradient") or {}).get("enabled") else "color"}
         if size:
             rects.append((0 if edge == "top" else height - size, size, bar))
+    if diagnostics is not None:
+        diagnostics.update(width=width, height=height, bars=bars)
     if not rects:
         return None
     with TemporaryDirectory() as directory:

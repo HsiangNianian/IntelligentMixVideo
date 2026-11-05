@@ -417,6 +417,7 @@ class Job:
         subtitles = "subtitle" in enabled and bool(request.text) and request.composition_mode != "materials_silent"
         title = request.title if "title" in enabled and request.title and request.title.strip() else None
         if not subtitles and title is None:
+            await self.runtime.log(self.record, "step_skipped", step="translation", output={"reason": "没有启用且有内容的英文标题或字幕"})
             return result
         source = result if subtitles else {"segments": [], "title_keyword": result.get("title_keyword", "")}
         await self.save("translation", segmentation=result)
@@ -440,6 +441,8 @@ class Job:
                 # 入队时已冻结全部准备结果；重启也不得重放模型、ASR 或匹配调用。
                 await self.runtime.sync(render_preflight, self.runtime.client_configs.get(self.record["task_id"]))
                 await remotion.require_environment(self.record["data"])
+                for step in ("asr", "segmentation", "translation", "matching"):
+                    await self.runtime.log(self.record, "step_reused", step=step, output={"reason": "操练场复用封存的内容准备结果"})
                 await self.save("assembling")
             else:
                 await self.prepare()
@@ -522,6 +525,7 @@ class Job:
             segmented = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
         segmented = await self.translate_texts(segmented, request)
         if not needs_matching:
+            await self.runtime.log(self.record, "step_skipped", step="matching", output={"reason": "本模式或请求未启用素材匹配"})
             prepared = {"duration_ms": duration_ms}
             if request.text or (request.title and request.title.strip()):
                 prepared["segmentation"] = segmented
@@ -597,6 +601,12 @@ class Job:
         """按画面轨时长裁剪合成快照，提交前持久化完整请求、稳定 ClientToken 和总截止时间。"""
         data = self.record["data"]
         request = CompositionRequest.from_snapshot(data["request"])
+        # 明确恢复时复用的结果，不伪装为重新执行了一次媒体操作。
+        for key, step in (("avatar_duration_ms", "duration_trim"),
+                          ("material_durations", "material_probe"), ("frame_mask_url", "frame_mask_upload"),
+                          ("avatar_opening", "avatar_opening"), ("split_assets", "split_screen"), ("remotion_result", "remotion_render")):
+            if key in data:
+                await self.runtime.log(self.record, "step_reused", step=step, output={"reason": "复用任务已保存的结果", "result": data[key]})
         # 原始 ASR、切片和匹配回执保留在执行日志；只裁合成快照，不重跑内容准备。
         # 已渲染叠加的历史任务及操练场封存样本沿用原快照，避免恢复时改变时钟。
         if request.composition_mode == "standard" and not data.get("playground") and "remotion_result" not in data and "avatar_duration_ms" not in data:
@@ -604,6 +614,10 @@ class Job:
                 request.video_url, self.settings.composition_http_timeout_seconds,
             ), {"video_url": request.video_url})
             avatar_duration_ms = int(seconds * 1000)
+            await self.runtime.log(self.record, "step_started", step="duration_trim", input={
+                "audio_duration_ms": data["duration_ms"], "video_duration_ms": avatar_duration_ms,
+                "segmentation": data.get("segmentation"), "matches": data.get("matches", []),
+            })
             prepared = {"avatar_duration_ms": avatar_duration_ms}
             if avatar_duration_ms < data["duration_ms"]:
                 end = avatar_duration_ms / 1000
@@ -618,17 +632,26 @@ class Job:
                 matches = [{**item, "end_time": min(item["end_time"], end)}
                            for item in data.get("matches", []) if item["start_time"] < end]
                 prepared.update(duration_ms=avatar_duration_ms, segmentation=segmented, matches=matches)
+            await self.runtime.log(self.record, "step_finished", step="duration_trim", output={
+                "duration_ms": min(data["duration_ms"], avatar_duration_ms),
+                "reason": "采用音频与视频轨时长的较小值", **prepared,
+            })
             await self.save("assembling", **prepared)
             data = self.record["data"]
         # 上传成功但 URL 尚未落库时若进程中断，恢复会按固定任务 key 幂等覆盖同一份蒙版。
         # 允许重复上传这张小 PNG；URL 已落库时直接复用。
         if data["template"].get("frame_mask") and "frame_mask_url" not in data:
+            mask_details = {}
             mask_url = await self.runtime.step(self.record, "frame_mask_upload", lambda: self.runtime.sync(
                 upload_mask, data["template"]["frame_mask"], data["output"]["width"], data["output"]["height"],
                 self.record["task_id"], ZosSettings(), self.settings.composition_http_timeout_seconds, zos.object_prefix(data),
-            ), {"frame_mask": data["template"]["frame_mask"]})
+                diagnostics=mask_details,
+            ), {"frame_mask": data["template"]["frame_mask"], "width": data["output"]["width"], "height": data["output"]["height"]})
+            await self.runtime.log(self.record, "prepared", step="frame_mask_upload", output=mask_details)
             await self.save("assembling", frame_mask_url=mask_url)
             data = self.record["data"]
+        elif not data["template"].get("frame_mask"):
+            await self.runtime.log(self.record, "step_skipped", step="frame_mask_upload", output={"reason": "模板没有上下蒙版配置"})
         if request.composition_mode != "standard" and "material_durations" not in data:
             durations = await self.runtime.step(self.record, "material_probe", lambda: media.material_durations(
                 request.materials, data["duration_ms"] / 1000, self.settings.composition_http_timeout_seconds,
@@ -654,10 +677,15 @@ class Job:
         if request.composition_mode == "standard" and (avatar_effects.get("openingEnabled") or needs_circle):
             if "avatar_opening" not in data:
                 opening = await self.runtime.step(self.record, "avatar_opening", lambda: avatar.prepare(
-                    self.record["task_id"], data, self.settings.composition_http_timeout_seconds), {})
+                    self.record["task_id"], data, self.settings.composition_http_timeout_seconds), {
+                        "videoUrl": request.video_url, "avatar_effects": avatar_effects,
+                        "duration_ms": data["duration_ms"], "fps": data["output"]["fps"],
+                    })
                 await self.save("assembling", avatar_opening=opening)
                 data = self.record["data"]
             inputs["avatar_opening"] = data["avatar_opening"]
+        else:
+            await self.runtime.log(self.record, "step_skipped", step="avatar_opening", output={"reason": "当前模式、开场或圆形同屏无需人脸定位"})
         if request.composition_mode == "standard" and layout.get("enabled"):
             if layout.get("layout") != "circle" and avatar_effects.get("removeBackground") and any(
                 item.get("matched_candidate_url") and item["end_time"] > (data.get("avatar_opening") or {}).get("duration", 0)
@@ -666,16 +694,22 @@ class Job:
                 raise CompositionError("avatar_matting_region_unsupported", "数字人抠像仅支持 IMS 北京、上海、杭州地域", "assembling")
             if "split_assets" not in data:
                 assets = await self.runtime.step(self.record, "split_screen", lambda: split_screen.prepare(
-                    self.record["task_id"], data, self.settings.composition_http_timeout_seconds), {})
+                    self.record["task_id"], data, self.settings.composition_http_timeout_seconds), {
+                        "videoUrl": request.video_url, "matches": data.get("matches", []), "split_screen": layout,
+                        "avatar_effects": avatar_effects, "avatar_opening": data.get("avatar_opening"), "output": data["output"],
+                    })
                 await self.save("assembling", split_assets=assets)
                 data = self.record["data"]
             inputs["split_assets"] = data["split_assets"]
+        else:
+            await self.runtime.log(self.record, "step_skipped", step="split_screen", output={"reason": "当前模式或模板未启用同屏"})
         await self.runtime.log(self.record, "step_started", step="assembling", input=inputs)
         try:
             timeline, warnings = build_timeline(**inputs)
         except Exception as exc:
             await self.runtime.log(self.record, "step_failed", step="assembling", **exception_details(exc))
             raise
+        await self.runtime.log(self.record, "timeline_built", step="assembling", output={"timeline": timeline, "warnings": warnings})
         if "remotion_result" not in data:
             result = await self.runtime.step(self.record, "remotion_render",
                 lambda: remotion.render(self.record["task_id"], data, self.settings.composition_http_timeout_seconds, timeline=timeline),
