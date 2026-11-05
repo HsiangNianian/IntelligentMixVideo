@@ -96,6 +96,8 @@ URL 不接受 Markdown 链接、空白、用户名密码或 `#fragment`，允许
 - `materials_voice`：ASR 获取配音原始总时长（含静音）；有文案才进行字幕切片，没有文案不生成字幕。按素材顺序铺满完整配音，字幕间隙不影响画面，不调用素材匹配。
 - `materials_silent`：以 `processRules.videoDuration` 为总长，跳过 ASR、正文切片和匹配，有非空标题时只调用一次模型提取标题关键词；始终不生成字幕，新请求不得附带非空 `text/copy`。请求 `title` 使用模板标题样式与时间区间，保留原文换行、标点和模板花字及动画，按返回的 `title_keyword` 应用模板关键词样式。标题为空就不显示，也不调用提词模型。
 
+实际调用素材匹配时，服务端通过 FFprobe 探测 `audioUrl` 文件总秒数，以不主动舍入的浮点数写入上游请求 `audio_duration`；调用方无需新增参数。探测失败或时长无效时省略该字段并继续匹配，在任务 `matching` 日志的 `output` 中记录 `audio_duration_omitted`、`audio_duration_sent: false`、原因与脱敏异常详情。此值只用于匹配，原有 ASR 总时长和合成规则不变；不匹配的模式不探测，也不发送 `videoDuration`。
+
 两个纯素材模式均使用后端 FFprobe 读取视频流实际时长，图片每张 3 秒。按顺序探测至足够覆盖目标，不访问后续未使用素材；不足报 `materials_duration_insufficient`，视频无法读取或缺少有效视频流时长报 `material_probe_failed`，不拿可能更长的容器音轨时长代替。POST 先返回任务 ID，以上错误通过查询与终态回调报告，不提交 IMS。超长时裁切最后实际使用的素材（图片也可裁短），相等则完整使用，不循环补足。素材时长快照保存后，恢复组装不再探测。
 
 模板里有 Remotion 字效作用于标题或底部字幕（`remotion` 轨道的 `text_target`）时，这段文字由叠加视频显示，IMS 时间线不生成对应的标题或字幕，也不为它补默认样式；Remotion 片段本身不进入 IMS 时间线。
