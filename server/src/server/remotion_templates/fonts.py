@@ -64,11 +64,14 @@ SANDBOX_DIR = "/imv-fonts"
 # Always available through the system packages and the default family of every generated text effect.
 DEFAULT_FAMILY = "Noto Sans CJK SC"
 # Chinese families that cover the generic families' Han fallback, per CSS generic family, most preferred first. The
-# generic family keeps its Latin face (DejaVu, Liberation, Montserrat); these only answer characters that face lacks.
+# aliases stay weak for family-only queries; only Han charset queries get a strong preference over language scoring.
 SC_PREFERENCES = {
     "sans-serif": ("Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans CN"),
     "serif": ("Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif CN"),
-    "monospace": ("Noto Sans Mono CJK SC",),
+    "monospace": ("Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans CN"),
+    "system-ui": ("Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans CN"),
+    "cursive": ("Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans CN"),
+    "fantasy": ("Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans CN"),
 }
 # Names a user's font may not take: CSS generic families and the default font.
 RESERVED_FAMILIES = {DEFAULT_FAMILY.casefold(), "sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui", "inherit", "initial", "default"}
@@ -589,8 +592,10 @@ class FontStore:
         slant. Each sandbox scans the folder afresh (its fontconfig cache lives in its own /tmp), so a new rule applies
         to the next worker. An uploaded family comes from the file and is XML-escaped.
 
-        The generic aliases steer only characters the generic family's own face lacks: a Chinese family named first
-        there wins Chrome's Han fallback, which without a Chinese page language would be the TTC's Japanese face.
+        Weak aliases keep the system's Latin faces ahead of SC in Chromium's family-only fallback list. Queries
+        containing Han codepoints additionally receive a strong preference over language scoring: removing the
+        Han ranges changes such a charset, but leaves Latin-only charsets unchanged. Explicit families before
+        the generic keep their selection order.
         """
         rules = "".join(
             '  <match target="scan">\n'
@@ -601,9 +606,19 @@ class FontStore:
             for font in self.known.values() if font.has_file
         )
         preferences = "".join(
-            f'  <alias binding="same"><family>{generic}</family><prefer>'
+            f'  <alias binding="weak"><family>{generic}</family><prefer>'
             + "".join(f"<family>{escape(family)}</family>" for family in families)
-            + "</prefer></alias>\n"
+            + '</prefer></alias>\n  <match target="pattern">\n'
+            f'    <test name="family"><string>{generic}</string></test>\n'
+            '    <test name="charset" compare="not_eq"><minus><name>charset</name><charset>'
+            '<range><int>0x3400</int><int>0x4DBF</int></range>'
+            '<range><int>0x4E00</int><int>0x9FFF</int></range>'
+            '<range><int>0xF900</int><int>0xFAFF</int></range>'
+            '<range><int>0x20000</int><int>0x323AF</int></range>'
+            '</charset></minus></test>\n'
+            '    <edit name="family" mode="prepend" binding="strong">'
+            + "".join(f"<string>{escape(family)}</string>" for family in families)
+            + "</edit>\n  </match>\n"
             for generic, families in SC_PREFERENCES.items()
         )
         text = (

@@ -475,41 +475,79 @@ def test_an_installed_or_reserved_family_is_renamed_for_an_upload(store, monkeyp
 
 
 def test_fontconfig_prefers_simplified_chinese_for_the_generic_families(store) -> None:
-    """生成的 fonts.conf 给 sans-serif、serif、monospace 各加一条 SC 优先规则：Chrome 在英文页面、C 区域设置下
+    """生成的 fonts.conf 给六种受支持的 CSS 通用家族各加一条 SC 优先规则：Chrome 在英文页面、C 区域设置下
     回退中日共用汉字时由这些中文家族承接（沙箱里 Chrome 默认会落到 TTC 的日文面），而不是落到日文字体；
     规则只写家族名，不影响用户显式选择的字体卡片。"""
     asyncio.run(store.sync())
     text = (store.root / CONFIG_NAME).read_text(encoding="utf-8")
     aliases = {
-        alias.find("family").text: [family.text for family in alias.findall("prefer/family")]
-        for alias in ElementTree.fromstring(text).findall("alias")
+        rule.find("test[@name='family']/string").text: [family.text for family in rule.findall("edit/string")]
+        for rule in ElementTree.fromstring(text).findall("match[@target='pattern']")
     }
     assert aliases["sans-serif"][0] == "Noto Sans CJK SC" and "Noto Sans SC" in aliases["sans-serif"]
     assert aliases["serif"][0] == "Noto Serif CJK SC" and "Noto Serif SC" in aliases["serif"]
-    assert aliases["monospace"] == ["Noto Sans Mono CJK SC"]
+    assert aliases["monospace"][0] == "Noto Sans Mono CJK SC"
+    assert "Noto Sans SC" in aliases["monospace"]
+    for generic in ("system-ui", "cursive", "fantasy"):
+        assert aliases[generic] == aliases["sans-serif"]
 
 
 @pytest.mark.skipif(shutil.which("fc-match") is None, reason="needs fontconfig's fc-match")
-def test_fontconfig_gives_han_fallback_a_simplified_chinese_family(store, monkeypatch, tmp_path) -> None:
-    """真实 fontconfig：只带本机已装字体（沙箱的 /usr 原样可见）。中日共用汉字（U+5173 关）在没有中文页面语言时
-    也解析到简体中文家族，而不是 TTC 的日文面；拉丁字形仍由通用家族自己的字体绘制。"""
+@pytest.mark.parametrize("mono_sc", [False, True], ids=["without-sc-monospace", "with-sc-monospace"])
+def test_fontconfig_gives_han_fallback_a_simplified_chinese_family(store, monkeypatch, tmp_path, mono_sc) -> None:
+    """真实 fontconfig + 临时字体：不依赖系统中文字体，覆盖六种通用族、缺少 SC 等宽字体与显式字体、拉丁字形保留。"""
     monkeypatch.setattr(fonts_module, "SANDBOX_DIR", str(store.root.resolve()))
     asyncio.run(store.sync())
+    directory = tmp_path / "fixture-fonts"
+    directory.mkdir()
+    # Include Japanese competitors and Latin glyphs in SC fixtures, so missing glyphs cannot hide Latin changes.
+    families = ["Noto Sans CJK JP", "Noto Serif CJK JP", "Noto Sans Mono CJK JP", "Noto Sans SC", "Source Han Serif CN"]
+    if mono_sc:
+        families.append("Noto Sans Mono CJK SC")
+    for index, name in enumerate(families):
+        (directory / f"cjk-{index}.ttf").write_bytes(minimal_font(name, "关复r"))
+    for index, name in enumerate(("DejaVu Sans", "DejaVu Serif", "DejaVu Sans Mono")):
+        (directory / f"latin-{index}.ttf").write_bytes(minimal_font(name, "r"))
     config = tmp_path / "sandbox.conf"
-    config.write_text((store.root / CONFIG_NAME).read_text(encoding="utf-8"), encoding="utf-8")
+    tree = ElementTree.fromstring((store.root / CONFIG_NAME).read_text(encoding="utf-8"))
+    # An isolated base keeps ordinary Latin families first, without relying on /etc/fonts or host installations.
+    base = ElementTree.Element("fontconfig")
+    for generic, latin in (("sans-serif", "DejaVu Sans"), ("serif", "DejaVu Serif"), ("monospace", "DejaVu Sans Mono"),
+                           ("system-ui", "DejaVu Sans"), ("cursive", "DejaVu Serif"), ("fantasy", "DejaVu Serif")):
+        alias = ElementTree.SubElement(base, "alias")
+        ElementTree.SubElement(alias, "family").text = generic
+        ElementTree.SubElement(ElementTree.SubElement(alias, "prefer"), "family").text = latin
+    base_path = tmp_path / "base.conf"
+    base_path.write_text(ElementTree.tostring(base, encoding="unicode"), encoding="utf-8")
+    tree.find("include").text = str(base_path)
+    ElementTree.SubElement(tree, "dir").text = str(directory)
+    ElementTree.SubElement(tree, "cachedir").text = str(tmp_path / "cache")
+    config.write_text(ElementTree.tostring(tree, encoding="unicode"), encoding="utf-8")
     environment = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path), "XDG_CACHE_HOME": str(tmp_path / "cache"), "FONTCONFIG_FILE": str(config)}
 
-    def family(pattern: str) -> str:
-        """The family fontconfig picks for `pattern` under the generated config."""
-        return subprocess.run(["fc-match", "--format", "%{family}", pattern], env=environment, capture_output=True, text=True, timeout=60, check=True).stdout
+    def family(pattern: str, *, ordered: bool = False) -> str:
+        """The family fontconfig picks for `pattern` under the generated config and isolated fonts."""
+        # Fontconfig treats an unescaped '-' as the family/size separator (system-ui otherwise means 'system').
+        name, separator, properties = pattern.partition(":")
+        pattern = name.replace("-", r"\-") + separator + properties
+        return subprocess.run(["fc-match", *(["--sort"] if ordered else []), "--format", "%{family}\n", pattern],
+                              env=environment, capture_output=True, text=True, timeout=60, check=True).stdout.strip()
 
-    for generic, simplified in (("sans-serif", {"Noto Sans CJK SC", "Noto Sans SC"}), ("serif", {"Noto Serif CJK SC", "Noto Serif SC"})):
-        # Chrome asks without a Chinese language on an English page; ja proves the locale is not what decides.
+    expected = {"sans-serif": "Noto Sans SC", "serif": "Source Han Serif CN",
+                "monospace": "Noto Sans Mono CJK SC" if mono_sc else "Noto Sans SC",
+                "system-ui": "Noto Sans SC", "cursive": "Noto Sans SC", "fantasy": "Noto Sans SC"}
+    for generic, simplified in expected.items():
         for language in ("en", "ja"):
-            assert family(f"{generic}:charset=5173:lang={language}") in simplified
-        assert "CJK JP" not in family(f"{generic}:charset=5173:lang=en")
-    # Latin letters keep the generic family's own face; only its Han fallback is steered.
-    assert "CJK" not in family("sans-serif:charset=72:lang=en")
+            assert family(f"{generic}:charset=5173:lang={language}") == simplified, generic
+        # Chromium also sorts a family-only fallback list, without a charset. A charset-only fix passes fc-match
+        # above but still paints JP in Chrome; the first font in this list covering our Han fixtures must be SC.
+        ordered = family(f"{generic}:lang=en", ordered=True).splitlines()
+        assert next(name for name in ordered if name in families) == simplified, generic
+    for name in families:
+        assert family(f"{name}:charset=5173:lang=en") == name
+    for generic, latin in (("sans-serif", "DejaVu Sans"), ("serif", "DejaVu Serif"), ("monospace", "DejaVu Sans Mono")):
+        assert family(f"{generic}:charset=72:lang=en") == latin
+        assert family(f"{generic}:lang=en") == latin
 
 
 def test_fontconfig_lists_each_font_file_under_its_registry_family_only(store) -> None:
@@ -522,7 +560,7 @@ def test_fontconfig_lists_each_font_file_under_its_registry_family_only(store) -
     assert "A&amp;B &lt;Sans&gt; (2)" in text
     rules = {
         rule.find("test/string").text: [edit.find("string").text for edit in rule.findall("edit")]
-        for rule in ElementTree.fromstring(text).findall("match")
+        for rule in ElementTree.fromstring(text).findall("match[@target='scan']")
     }
     assert rules == {
         "/imv-fonts/files/alpha.ttf": ["Alpha Sans", "en"],

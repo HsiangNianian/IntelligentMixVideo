@@ -41,6 +41,8 @@ async function inspectFace(page, url, weight, expected) {
       probe.textContent = "关复";
       probe.style.cssText = `position:fixed;top:0;left:0;font:normal ${weight} 48px "Noto Sans CJK SC";`;
       document.body.append(probe);
+      // CDP can report no glyph fonts before the newly inserted probe has participated in layout/paint.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     }, { url, weight });
     const client = page._client();
     await client.send("DOM.enable");
@@ -48,7 +50,10 @@ async function inspectFace(page, url, weight, expected) {
     const { value: { root: document } } = await client.send("DOM.getDocument");
     const { value: { nodeId } } = await client.send("DOM.querySelector", { nodeId: document.nodeId, selector: "#imv-managed-font-probe" });
     const { value: { fonts } } = await client.send("CSS.getPlatformFontsForNode", { nodeId });
-    if (fonts.length !== 1 || !fonts[0].isCustomFont || fonts[0].glyphCount !== 2 || fonts[0].postScriptName !== expected) {
+    // CoreText can suffix a custom font's PostScript identity when Chrome synthesizes its bold face.
+    const name = fonts[0]?.postScriptName;
+    const matchesName = name === expected || (weight === 700 && name === `${expected}_Bold`);
+    if (fonts.length !== 1 || !fonts[0].isCustomFont || fonts[0].glyphCount !== 2 || !matchesName) {
       throw new Error(`Managed SC glyph font mismatch at weight ${weight}: ${JSON.stringify(fonts)}`);
     }
   } finally {

@@ -52,7 +52,7 @@
 - 预装字体随后端包发布，安装时不联网；增删预装字体要同时更新 `font_catalog.json`、`bundled_fonts/` 与 `bundled_fonts/LICENSES.txt`，测试会核对三者一致。
 - 上传字体只用有边界检查的纯 Python 读取 name 表，不解码字体，也不参与修复（修复在浏览器端，见 `client/src/features/fonts/AGENTS.md`）。受信任的系统字体由 `managed_fonts.py` 按内部名称与字重提取独立 SC 子字体，不能把整个 TTC 改名后交给浏览器。
 - 受管字体优先级为配置中的 SC 子字体、随包且哈希校验的 Noto Sans SC、浏览器本地中文字体；预览、排版预检与渲染共用此顺序。合成校验发现实际字形字体不符时只切换一次到随包 SC，诊断不通过只记私有日志，不能因此阻断合成或无限重试。字体库中用户明确选择的其他家族保持原有规则。
-- 生成的 `fonts.conf` 必须为 `sans-serif`、`serif`、`monospace` 声明简体中文优先家族（`fonts.SC_PREFERENCES`）：沙箱用 `LANG=C.UTF-8`、Remotion 页面语言为英文，没有这条规则时 Chrome 的中日共用汉字回退在装有 `fonts-noto-cjk` 的机器上会落到 TTC 的日文面（Noto Sans CJK JP），字效、裸 `sans-serif`/`serif` 与不在本机的家族都会显示日文字形。规则只作用于回退，不能改变拉丁字形或用户选定的中文家族。worker 侧页面语言见 `server/src/server/remotion/AGENTS.md`。
+- 生成的 `fonts.conf` 必须为 `sans-serif`、`serif`、`monospace`、`system-ui`、`cursive`、`fantasy` 声明简体中文优先家族（`fonts.SC_PREFERENCES`）：沙箱用 `LANG=C.UTF-8`、Remotion 页面语言为英文，没有这条规则时 Chrome 的中日共用汉字回退在装有 `fonts-noto-cjk` 的机器上会落到 TTC 的日文面（Noto Sans CJK JP），字效、裸 `sans-serif`/`serif` 与不在本机的家族都会显示日文字形。等宽 SC 不可用时继续回退到简体无衬线家族。通用别名使用弱绑定以保留 Chromium 无字符集查询中的拉丁字体，仅含汉字的字符集查询增加强偏好；不能对所有字符使用强别名。规则只作用于回退，不能改变拉丁字形或用户选定的中文家族。worker 侧页面语言见 `server/src/server/remotion/AGENTS.md`。
 - 版本字体证据同时保存源文件指纹、实际选择的字体指纹与回退选择，并绑定随包字体和目录；预览核对与响应共用一次读取的字节。字体加载晚于预检发生回退时也记录选择；最终本地回退仍继续合成，但不能声称其字形受文件指纹验证。
 - 字效的 `fontFamily`（及双栏的逐栏字体）保存时换成普通字符串（`open_font_schema`），之后的选择一律按实时字体库校验（`fonts.require_family`），不按生成时冻结的枚举。
 

@@ -236,18 +236,14 @@ class RuntimeBoundary extends React.Component<React.PropsWithChildren<{}>, { fai
   render() { return this.state.failed ? <div data-imv-validation-error="true" /> : this.props.children; }
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
-
 export type { Snapshot };
 
 /**
- * Load the managed SC faces before the first measurement and keep rendering, so a sample never measures a font the
- * render would not use. The worker's diagnostic check (`checkManagedFonts`) may already have replaced a bad configured
- * face with the bundled one, and serves exactly these files. Every attempt is bounded inside the loader, which
- * continues with whichever face it could get, so a page that is served no files still mounts and measures with the
- * page's fallback; the tool bridge waits for `document.fonts.ready`, which resolves once the loaded faces are added.
+ * Mount only after the selected managed faces (or bounded local fallback) are ready. document.fonts.ready alone
+ * does not wait for FontFaces still loading outside the FontFaceSet. Fit/capacity diagnostics finish before this
+ * page is loaded, so the host cannot cache a face that the worker subsequently replaces.
  */
 void loadManagedFonts(
   { 400: "/font-400.otf", 700: "/font-700.otf" },
   "/font-fallback.otf",
-);
+).then(() => createRoot(document.getElementById("root")!).render(<App />));

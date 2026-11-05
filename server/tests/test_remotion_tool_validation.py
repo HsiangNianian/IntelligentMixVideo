@@ -1238,41 +1238,45 @@ def test_real_browser_refuses_lines_of_separately_composed_instances(tmp_path):
     assert check.status == "failed" and "rendered by different instances (first, second)" in check.message, check.message
 
 
-# 场景：文字排版预检与字幕容量用的是验证宿主页面。沙箱里 Chrome 的 LANG 是 C.UTF-8、Remotion 页面语言为英文，
-# 宿主若不声明中文、也不加载受管 SC 字体，汉字回退会落到系统 TTC 的日文面，测出的字宽与成片不同。
+# 场景：使用只有测试文件才具备的汉字宽度，缺少 loader 时即使本机已装中文字体也不能误通过。
 @needs_node
 @needs_browser
-def test_the_validation_host_measures_in_the_managed_chinese_face(tmp_path):
-    """真实 worker 的 fit 模式：宿主页面声明 zh-CN，并加载了 worker 准备的受管字体；测量结果仍为请求的字号。"""
-    from server.remotion_templates.managed_fonts import prepare_fonts
+@pytest.mark.parametrize("weight", [400, 700])
+def test_the_validation_host_measures_in_the_managed_chinese_face(tmp_path, weight):
+    """真实 fit/capacity worker 使用受管字宽：两字在 150px 内保留 96px 字号，第三字放不下。"""
+    from .test_remotion_managed_fonts import sc_test_font
 
-    settings = Settings(_env_file=None, data_dir=tmp_path, allow_unsandboxed_worker=sys.platform == "darwin", **BROWSER)
-    renderer = Renderer(settings)
-    directory = tmp_path / "fit"
-    directory.mkdir()
-    prepare_fonts(settings, directory)
-    # The worker serves these files to the host, exactly as run_worker prepares them for a fit request.
-    assert (directory / "public" / "font-400.otf").is_file()
+    paths = {}
+    for current in (400, 700):
+        paths[current] = tmp_path / f"font-{current}.ttf"
+        paths[current].write_bytes(sc_test_font("Noto Sans CJK SC", weight=current, advance=600))
+    settings = Settings(_env_file=None, data_dir=tmp_path, **{
+        **BROWSER, "allow_unsandboxed_worker": sys.platform == "darwin",
+        "font_regular": paths[400], "font_bold": paths[700],
+    })
     texture = """import React from "react";
-export default function Tier(props: {text: string; fontFamily: string; fontSize: number}) {
+export default function Tier(props: {text: string; fontSize: number; fontWeight: number}) {
   return <div style={{display: "flex", justifyContent: "center", alignItems: "center", width: "100%", height: "100%"}}>
-    <span id="probe" style={{fontFamily: props.fontFamily, fontSize: props.fontSize}}>{props.text}</span></div>;
+    <span style={{fontFamily: '"Noto Sans CJK SC"', fontSize: props.fontSize, fontWeight: props.fontWeight, whiteSpace: "nowrap"}}>{props.text}</span></div>;
 }
 """
-    values = {"text": "关复骨直", "fontFamily": "Montserrat", "fontSize": 96}
-    properties = {"text": {"type": "string"}, "fontFamily": {"type": "string"}, "fontSize": {"type": "number"}}
+    values = {"text": "关复", "fontSize": 96, "fontWeight": weight}
+    properties = {"text": {"type": "string"}, "fontSize": {"type": "number"}, "fontWeight": {"type": "number"}}
     sprite = FitSprite(
         ComponentDefinition(code=texture, parameter_schema={"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False},
                            default_parameters=values),
-        {"width": 1080, "height": 1920}, {"x": 0, "y": 0, "width": 1080, "height": 1920},
+        {"width": 150, "height": 180}, {"x": 0, "y": 0, "width": 150, "height": 180},
         [{"index": 0, "values": values, "text": values["text"], "size_key": "fontSize", "min": 24,
-          "frames": [0], "length": 30, "transform": {}, "one_line": False, "grow": ""}],
+          "frames": [0], "length": 30, "transform": {}, "one_line": True, "grow": ""}],
     )
-    validator = ToolValidator(renderer, directory)
-    assert asyncio.run(validator.fit_texts([sprite], {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30})) == [[
-        {"index": 0, "fits": True, "size": 96, "lines": 1}
+    validator = ToolValidator(Renderer(settings), tmp_path)
+    composition = {"width": 150, "height": 180, "fps": 30, "duration_frames": 30}
+    # Repeat the Sprite to cover host navigation: a diagnostic's temporary FontFace cannot supply either page.
+    expected = [{"index": 0, "fits": True, "size": 96, "lines": 1}]
+    assert asyncio.run(validator.fit_texts([sprite, sprite], composition)) == [expected, expected]
+    sprite.items[:] = [{"index": 0, "frames": [0], "length": 30, "transform": {}, "lines": 1,
+                       "samples": [{"chars": count, "text": "关" * count, "values": [{**values, "text": "关" * count}]}
+                                   for count in (1, 2, 3)]}]
+    assert asyncio.run(validator.text_capacities([sprite], composition, timeout_seconds=120, cpu_seconds=120)) == [[
+        {"index": 0, "capacity": 2}
     ]]
-    # The host page the worker served declares the language the managed face is picked for, and served the faces.
-    worker = (RENDERER_DIR / "tool-validation-worker.mjs").read_text()
-    assert '<html lang="zh-CN">' in worker and 'font-(400|700|fallback)' in worker
-    assert "loadManagedFonts" in (RENDERER_DIR / "tool-validation-host.tsx").read_text()
