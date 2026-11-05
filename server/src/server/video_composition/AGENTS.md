@@ -9,6 +9,7 @@
 - 内部模式由服务端按原始 `text`／`copy` 与顶层 `audioUrl` 判定，保存在 `video_compositions.data.request.compositionMode`，调用方不能指定。`copy` 在判定之后才合并成 `text`；`videoUrl` 与背景音乐不参与分流。
 - 恢复任务经 `CompositionRequest.from_snapshot` 读取保存的模式；没有模式字段的旧任务按原 URL 规则恢复，不按新规则重判。
 - `processRules.videoDuration` 只接受 JSON 有限正数（整数或小数），布尔值与数字字符串返回 422、不创建任务。
+- 匹配请求的可选 `audio_duration` 只来自 FFprobe 音频文件总秒数，不主动舍入、不替换 ASR 合成时钟；探测失败省略字段并继续，省略原因须落到 `matching` 模块的持久化输出。跳过匹配及恢复已有匹配任务时不新增探测。
 - 普通 standard 任务在组装前将总长统一限制为 ASR 音频与数字人画面轨时长的较小值（画面时长向下取整到毫秒）。切片、匹配及旧 `subtitle_parts` 一起裁尾，跨截点的完整中英文文字和关键词保留；原始上游结果留在执行日志。探测与裁后快照一起保存，恢复不重复探测；已生成 Remotion 结果的历史任务和操练场封存样本沿用原快照。
 
 ## 字幕上限
