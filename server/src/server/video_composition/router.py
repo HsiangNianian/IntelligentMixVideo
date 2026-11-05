@@ -60,11 +60,11 @@ async def get_composition(task_id: UUID, request: Request, config: Config) -> Ta
 def get_composition_logs(
     task_id: UUID,
     module: Annotated[
-        Literal["request", "template", "asr", "segmentation", "matching", "timeline", "zos", "error"],
+        Literal["request", "template", "asr", "segmentation", "matching", "timeline", "remotion", "ims", "zos", "error"],
         Query(description="选择日志模块；error 返回该任务全部详细错误文件。"),
     ],
 ) -> dict:
-    """读取本机已落盘日志，不查询数据库；七模块展开引用，error 返回文件名与完整正文。
+    """读取本机已落盘日志，不查询数据库；九模块展开引用，error 返回文件名与完整正文。
 
     供开发和运维排障，无鉴权；未落盘或已清理的任务目录返回 404，不等待日志队列。
     """

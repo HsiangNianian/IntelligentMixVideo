@@ -204,7 +204,7 @@ def test_log_write_failure_keeps_committed_state(composition_case, composition_s
 
 @pytest.mark.anyio
 async def test_concurrent_log_append(composition_case, composition_settings, composition_logs):
-    """七文件聚合并发事件不丢失，且不改变业务任务状态、版本和时间。"""
+    """九文件聚合并发事件不丢失，且不改变业务任务状态、版本和时间。"""
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_settings.output())
     execution_log.LOG_QUEUE.join()
@@ -249,7 +249,8 @@ async def test_step_failure_and_cancellation_leave_input_log(composition_case, c
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("module,step", [("request", "notification"), ("template", "template"), ("asr", "asr"),
-    ("segmentation", "segmentation"), ("matching", "matching"), ("timeline", "assembling"), ("zos", "zos_upload")])
+    ("segmentation", "segmentation"), ("matching", "matching"), ("timeline", "assembling"),
+    ("remotion", "remotion_render"), ("ims", "ims_query"), ("zos", "zos_upload")])
 async def test_each_module_writes_error_detail_file(module, step, composition_case, composition_runtime, composition_logs):
     """各模块错误写真实文件并保存相对路径；重复失败不覆盖，成功事件不生成文件，凭证仍脱敏。"""
     store.initialize_schema()
@@ -306,8 +307,43 @@ def test_detail_file_write_failure_keeps_json_error(composition_case, compositio
     assert "详细错误日志保存失败" in caplog.text
 
 
+@pytest.mark.parametrize("step,module", [("remotion_render", "remotion"), ("remotion_text_fit", "remotion"),
+    ("ims_storage", "ims"), ("ims_submit", "ims"), ("ims_query", "ims"), ("playback", "ims"), ("zos_upload", "zos")])
+def test_step_records_belong_to_exactly_one_module(step, module, tmp_path):
+    """新步骤输入输出及执行错误均归唯一模块，不为兼容向旧模块复制。"""
+    saved = None
+    record = {"stage": "assembling", "status": "processing"}
+    for event, details in (("step_started", {"input": {"id": "job"}}),
+                           ("step_finished", {"output": {"result": "value"}}),
+                           ("step_failed", {"reason": "上游失败"})):
+        saved = add_event(saved, event, record, {"step": step, **details}, datetime.now(), folder=tmp_path)
+    assert all(saved[module][key] for key in ("input", "output", "execute_log", "error_log"))
+    assert all(not any(section.values()) for name, section in saved.items() if name != module)
+
+
+def test_three_video_urls_are_distinct_and_shared_payloads_use_references():
+    """透明叠加、IMS 临时链接、ZOS 成片分别保留；相同临时链接供转存输入引用。"""
+    record = {"stage": "rendering", "status": "processing"}
+    overlay = "https://zos.test/overlay.webm"
+    temporary = "https://ims.test/video.mp4?Signature=" + "signed" * 40
+    stored = "https://zos.test/final.mp4"
+    saved = None
+    for step, direction, value in (("remotion_render", "output", {"video_url": overlay}),
+                                   ("playback", "output", temporary),
+                                   ("zos_upload", "input", {"aliyun_video_url": temporary}),
+                                   ("zos_upload", "output", ["video.mp4", stored])):
+        saved = add_event(saved, "step_finished" if direction == "output" else "step_started", record,
+                          {"step": step, direction: value}, datetime.now())
+    expanded = expand_columns(saved)
+    assert expanded["remotion"]["output"][0]["data"]["video_url"] == overlay
+    assert expanded["ims"]["output"][0]["data"]["aliyun_video_url"] == temporary
+    assert expanded["zos"]["input"][0]["data"]["aliyun_video_url"] == temporary
+    assert expanded["zos"]["output"][0]["data"]["zos_video_url"] == stored
+    assert json.dumps(saved).count(temporary) == 1
+
+
 def test_module_files_keep_io_errors_and_only_three_execution_fields(composition_case, composition_settings, composition_logs, template_db):
-    """七文件各自存储；陈旧日志不改任务终态，中文和嵌套 JSON 保持可读。"""
+    """九文件各自存储；陈旧日志不改任务终态，中文和嵌套 JSON 保持可读。"""
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_settings.output())
     running = store.advance(record, "template")
@@ -332,14 +368,14 @@ def test_module_files_keep_io_errors_and_only_three_execution_fields(composition
 
 
 def test_final_submitted_timeline_and_long_asr_are_complete(composition_case, composition_settings, composition_logs):
-    """不把中间组装结果当最终时间线；超过一 MB 的 ASR、重复调用与末尾字段均完整保留。"""
+    """中间与最终时间线分别标明来源，超过一 MB 的 ASR 和重复调用均可完整展开。"""
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_settings.output())
     raw = {"text": "完整文字" * 100000, "tail": "结束"}
     for _ in range(2):
         store.add_log(record, "step_finished", {"step": "asr", "output": raw})
     store.add_log(record, "step_finished", {"step": "assembling", "output": {"timeline": {"Content": "中间版"}, "warnings": []}})
-    assert composition_logs(raw=True)[0]["timeline"]["output"] == []
+    assert expand_columns(composition_logs(raw=True)[0])["timeline"]["output"][0]["data"]["timeline"] == {"Content": "中间版"}
     timeline = {"Content": "最终版", "EffectColorStyle": "CS0003-000003", "AdaptMode": "AutoWrap"}
     payload = {"timeline": json.dumps(timeline), "output_media_config": '{"Width":1080}', "client_token": "hidden"}
     current = store.advance(record, "submitting", ims_request=payload)
@@ -347,9 +383,10 @@ def test_final_submitted_timeline_and_long_asr_are_complete(composition_case, co
     saved, = composition_logs(raw=True)
     assert saved["asr"]["output"][1]["data"] == {"$log_ref": "#/asr/output/0/data"}
     assert [item["data"] for item in expand_columns(saved)["asr"]["output"]] == [raw, raw]
-    assert [item["data"] for item in saved["timeline"]["output"]] == [timeline]
-    assert saved["timeline"]["input"][0]["data"] == {"output_media_config": {"Width": 1080}, "client_token": "[REDACTED]"}
-    assert "中间版" not in json.dumps(saved, ensure_ascii=False, default=str)
+    expanded = expand_columns(saved)
+    assert expanded["timeline"]["output"][-1]["data"] == timeline
+    assert expanded["ims"]["input"][0]["data"] == {"timeline": timeline, "output_media_config": {"Width": 1080}, "client_token": "[REDACTED]"}
+    assert saved["ims"]["input"][0]["data"]["timeline"] == {"$log_ref": "#/timeline/output/1/data"}
     assert "hidden" not in json.dumps(saved, default=str)
 
 
@@ -359,6 +396,8 @@ def test_nested_json_and_media_urls_keep_content_without_credentials():
     assert sanitize(nested) == {"items": [{"keyword": "关键词", "api_key": "[REDACTED]"}]}
     payload = {"videoUrl": "https://media.test/v.mp4?Signature=actual", "callbackUrl": "https://notify.test/?token=hidden"}
     assert sanitize(payload) == {"videoUrl": payload["videoUrl"], "callbackUrl": "https://notify.test/"}
+    for key in ("MediaURL", "matched_candidate_url", "video_url", "aliyun_video_url", "zos_video_url"):
+        assert sanitize({key: payload["videoUrl"]}) == {key: payload["videoUrl"]}
     assert sanitize("普通中文 C:\\users\\name") == "普通中文 C:\\users\\name"
     assert sanitize("[不是 JSON]") == "[不是 JSON]"
 
@@ -394,17 +433,14 @@ def test_module_references_preserve_payloads_events_and_upstream_sources():
     before = deepcopy(columns)
     compacted = compact_columns(columns)
     assert columns == before
-    expected = deepcopy(before)
-    expected["zos"]["output"] = [{**before["zos"]["output"][2], "data": {"aliyun_video_url": result["videoUrl"]}}]
-    assert expand_columns(compacted) == expected
+    assert expand_columns(compacted) == before
     assert compact_columns(compacted) == compacted
     assert compacted["asr"]["output"][0]["data"] == transcript
     assert compacted["asr"]["output"][1]["data"] == {"$log_ref": "#/asr/output/0/data"}
     assert compacted["segmentation"]["input"][0]["data"]["asr_result"] == {"$log_ref": "#/asr/output/0/data"}
     assert compacted["matching"]["input"][0]["data"]["llm"]["segments"] == {"$log_ref": "#/segmentation/output/0/data/a~1b~0c"}
     assert compacted["timeline"]["input"][0]["data"]["template"] == {"$log_ref": "#/template/output/0/data"}
-    assert compacted["zos"]["output"][0]["data"] == {"aliyun_video_url": result["videoUrl"]}
-    assert compacted["request"]["output"][0]["data"]["result"] == result
+    assert "$log_ref" in json.dumps(compacted["zos"])
     assert len(json.dumps(compacted)) < len(json.dumps(before))
 
 
@@ -425,8 +461,8 @@ def test_append_rebuilds_references_after_sorting_and_keeps_distinct_versions():
     assert len(expanded["asr"]["execute_log"]) == 2
 
 
-def test_timeline_requested_fields_remain_inline_even_when_parent_repeats():
-    """materials、packRules 子树与父请求均可直接阅读，其他重复字段继续引用。"""
+def test_timeline_requested_fields_use_references_and_expand_completely():
+    """materials、packRules 也复用请求正文，接口展开后仍得到原始完整输入。"""
 
     columns = {name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
     request = {"materials": [{"fileUrl": "https://media.test/" + "x" * 150}],
@@ -435,13 +471,14 @@ def test_timeline_requested_fields_remain_inline_even_when_parent_repeats():
     columns["request"]["input"] = [entry, {**entry, "data": {"request": request}}]
     columns["timeline"]["input"] = [{**entry, "data": {"request": request}}] * 2
     saved = compact_columns(columns)
-    assert saved["timeline"]["input"] == columns["timeline"]["input"]
+    assert "$log_ref" in json.dumps(saved["timeline"]["input"])
+    assert len(json.dumps(saved)) < len(json.dumps(columns))
     assert expand_columns(saved) == columns
     assert compact_columns(saved) == saved
 
 
-def test_zos_keeps_only_distinct_video_links_and_preserves_playback_signature():
-    """渲染正文丢弃前展开所有引用；两类地址原文保留，错误和每次执行记录不受影响。"""
+def test_old_zos_receipts_remain_readable_and_new_playback_belongs_to_ims():
+    """旧 ZOS 记录保留原归属和正文；新的取址记录只进 IMS 并保留可用签名。"""
     from datetime import datetime
 
     columns = {name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
@@ -455,18 +492,19 @@ def test_zos_keeps_only_distinct_video_links_and_preserves_playback_signature():
     columns["request"]["output"] = [{"time": None, "action": "response.response_ready", "data": {"$log_ref": "#/zos/output/3/data"}}]
     columns["zos"]["execute_log"] = [{"time": None, "action": action, "status": "processing"} for action, _ in payloads]
     saved = compact_columns(columns)
-    assert [item["data"] for item in saved["zos"]["output"]] == [{"aliyun_video_url": url}, {"zos_video_url": public}]
+    assert [item["data"] for item in expand_columns(saved)["zos"]["output"]] == [data for _, data in payloads]
     assert expand_columns(saved)["request"]["output"][0]["data"] == payloads[3][1]
     assert saved["zos"]["execute_log"] == columns["zos"]["execute_log"]
     assert compact_columns(saved) == saved
     added = add_event(None, "step_finished", {"stage": "rendering", "status": "processing"},
                       {"step": "playback", "output": url}, datetime.now())
-    assert added["zos"]["output"][0]["data"] == {"aliyun_video_url": url}
+    assert added["ims"]["output"][0]["data"] == {"aliyun_video_url": url}
+    assert not added["zos"]["output"]
 
 
 @pytest.fixture
 def logged_task(composition_case, composition_settings):
-    """创建真实任务与七文件日志，可设置终态、通知状态和文件年龄。"""
+    """创建真实任务与九文件日志，可设置终态、通知状态和文件年龄。"""
     store.initialize_schema()
 
     def create(*, status="succeeded", notification=None, age_days=0):
@@ -554,7 +592,7 @@ def test_first_write_counts_existing_files_and_whole_log_root(logged_task, monke
 
 
 def test_partial_temporary_write_preserves_previous_json(logged_task, monkeypatch):
-    """临时文件写入中途失败保留原七文件，清除残余临时文件。"""
+    """临时文件写入中途失败保留原九文件，清除残余临时文件。"""
     record, folder = logged_task(status="processing")
     before = {path.name: path.read_bytes() for path in folder.iterdir()}
     original = Path.write_text

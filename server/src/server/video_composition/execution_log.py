@@ -89,6 +89,8 @@ def event_group(event: str, stage: str, details: dict) -> str:
         group = "matching"
     elif event == "task_finished" and details.get("error"):
         group = details["error"].get("stage", stage)
+        if group == "assembling" and details["error"].get("code", "").startswith("remotion_"):
+            group = "remotion_render"
     return group
 
 
@@ -102,21 +104,23 @@ def error_message(details: dict) -> str:
     return "；".join(str(reason) for reason in reasons if reason) or "原调用未提供错误正文，请查看详情中的状态码或异常链"
 
 
-# 七个模块文件即持久化契约；未执行的模块保留四个空数组。
-MODULES = ("request", "template", "asr", "segmentation", "matching", "timeline", "zos")
+# 模块只决定新事件归属；历史记录留在原文件，未执行的模块保留四个空数组。
+MODULES = ("request", "template", "asr", "segmentation", "matching", "timeline", "remotion", "ims", "zos")
 GROUPS = {
-    "template": "template", "remotion_snapshot": "template", "remotion_render": "timeline", "frame_mask_upload": "timeline",
+    "template": "template", "remotion_snapshot": "template", "subtitle_capacity": "template", "frame_mask_upload": "timeline",
     "asr": "asr", "segmentation": "segmentation", "translation": "segmentation",
     "matching": "matching", "match_submit": "matching", "match_query": "matching",
-    "assembling": "timeline", "material_probe": "timeline", "split_screen": "timeline", "avatar_opening": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
-    "rendering": "zos", "ims_query": "zos", "playback": "zos", "zos_upload": "zos",
+    "assembling": "timeline", "material_probe": "timeline", "duration_trim": "timeline", "split_screen": "timeline", "avatar_opening": "timeline",
+    "remotion_render": "remotion", "remotion_plan": "remotion", "remotion_text_fit": "remotion", "remotion_video": "remotion", "remotion_upload": "remotion",
+    "ims_storage": "ims", "submitting": "ims", "ims_submit": "ims", "rendering": "ims", "ims_query": "ims", "playback": "ims",
+    "zos_upload": "zos", "zos_download": "zos", "zos_cover": "zos", "zos_publish": "zos",
 }
 
 
 def expand_columns(columns: dict) -> dict:
     """展开同任务输入输出中的 $log_ref（JSON Pointer）；返回副本供追加、排序和校验。"""
     def expand(value):
-        """引用只读取同任务七模块；普通业务 $ref 不作日志引用处理。"""
+        """引用只读取同任务模块；普通业务 $ref 不作日志引用处理。"""
         if isinstance(value, dict):
             if set(value) == {"$log_ref"}:
                 target = columns
@@ -135,57 +139,29 @@ def expand_columns(columns: dict) -> dict:
     }} for name in MODULES}
 
 
-def video_links(items: list[dict]) -> list[dict]:
-    """从已展开的ZOS 输出提取两类视频地址；以转存记录判定来源，同类同址只留一次。"""
-    stored = any(item["action"].endswith(".zos_object_key") or item["action"] == "zos_upload.step_finished"
-                 or isinstance(item["data"], dict) and "zos_video_url" in item["data"] for item in items)
-    links, seen = [], set()
-    for item in items:
-        data, action = item["data"], item["action"]
-        if isinstance(data, dict):
-            values = {key: data[key] for key in ("aliyun_video_url", "zos_video_url") if data.get(key)}
-            if data.get("videoUrl"):
-                key = "aliyun_video_url" if action.startswith("playback.") or not stored else "zos_video_url"
-                values[key] = data["videoUrl"]
-        elif action == "playback.step_finished" and isinstance(data, str):
-            values = {"aliyun_video_url": data}
-        elif action == "zos_upload.step_finished" and isinstance(data, list) and len(data) == 2:
-            values = {"zos_video_url": data[1]}
-        else:
-            continue
-        for key, url in values.items():
-            if isinstance(url, str) and url.startswith(("http://", "https://")) and (key, url) not in seen:
-                links.append({**item, "data": {key: url}})
-                seen.add((key, url))
-    return links
-
-
 def compact_columns(columns: dict) -> dict:
-    """整理模块归属和 ZOS 地址；重复正文用引用，时间线指定字段原文展示，执行/错误不变。"""
+    """保留全部业务结果；同任务重复正文用更短的引用，执行/错误事件不合并。"""
     columns = expand_columns(columns)
     for section in columns.values():
         for items in section.values():
             items.sort(key=lambda item: item["time"] or "")
-    columns["zos"]["output"] = video_links(columns["zos"]["output"])
     seen = {}
 
     def compact(value, path):
         """先匹配完整对象，再处理子项；索引只指向仍保留的节点，避免悬空引用。"""
-        if path.startswith("#/zos/output/") or (path.startswith("#/timeline/") and path.rsplit("/", 1)[-1] in ("materials", "packRules")):
-            return value
-        if not isinstance(value, (dict, list)):
+        if not isinstance(value, (dict, list, str)):
             return value
         encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         if encoded in seen:
             reference = {"$log_ref": seen[encoded]}
-            # 指定字段的父对象也不能整块引用，否则文件中仍看不到它们的原文。
-            inline = path.startswith("#/timeline/") and any(f'"{key}":' in encoded for key in ("materials", "packRules"))
-            if not inline and len(json.dumps(reference, ensure_ascii=False, separators=(",", ":"))) < len(encoded):
+            if len(json.dumps(reference, ensure_ascii=False, separators=(",", ":"))) < len(encoded):
                 return reference
         else:
             pending.setdefault(encoded, path)
         if isinstance(value, list):
             return [compact(child, f"{path}/{index}") for index, child in enumerate(value)]
+        if isinstance(value, str):
+            return value
         return {key: compact(child, f"{path}/{key.replace('~', '~0').replace('/', '~1')}") for key, child in value.items()}
 
     # 原始请求、上游输出优先保留，最终响应最后处理。
@@ -206,13 +182,6 @@ def put_data(columns: dict, group: str, direction: str, time, action: str, data,
         data = sanitize(data)
         if "timeline" in data:
             put_data(columns, "timeline", "output", time, action, data["timeline"], fallback=True)
-        data = {key: value for key, value in data.items() if key != "timeline"}
-        if not data:
-            return
-    elif group == "assembling" and direction == "output":
-        if not isinstance(data, dict) or not data.get("warnings"):
-            return
-        data = {"warnings": data["warnings"]}
     module = GROUPS.get(group, group if group in MODULES else "request")
     items = columns[module][direction]
     if not fallback or not any(item["data"] == data for item in items):
@@ -238,7 +207,9 @@ def add_event(previous: dict | None, event: str, record: dict, details: dict, ti
         name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES
     }
     if details.get("step") == "playback" and isinstance(details.get("output"), str):
-        details = {**details, "output": {"videoUrl": details["output"]}}  # 媒体字段保留实际链接签名。
+        details = {**details, "output": {"aliyun_video_url": details["output"]}}
+    if details.get("step") == "zos_upload" and isinstance(details.get("output"), (tuple, list)):
+        details = {**details, "output": dict(zip(("zos_object_key", "zos_video_url"), details["output"]))}
     details = sanitize(details)
     group, time = event_group(event, record["stage"], details), display_time(time)
     action = f"{group}.{event}"
@@ -254,7 +225,7 @@ def add_event(previous: dict | None, event: str, record: dict, details: dict, ti
             entry["error"]["detail_log_path"] = path
         if folder is not None:
             write_error_detail(entry, folder)
-    columns[GROUPS.get(group, "request")]["error_log" if failed else "execute_log"].append(entry)
+    columns[GROUPS.get(group, group if group in MODULES else "request")]["error_log" if failed else "execute_log"].append(entry)
     put_snapshots(columns, time, action, payload)
     return compact_columns(columns)
 
@@ -345,7 +316,7 @@ def close_logs() -> None:
 
 
 def read_log(task_id: str) -> dict:
-    """读取同任务七文件供追加；缺少文件视为空模块，不读取或迁移旧数据库日志。"""
+    """读取同任务文件供追加；旧目录缺少新模块时返回空数组，不迁移历史记录。"""
     folder = LOG_ROOT / "video_composition" / task_id
     return {name: json.loads(path.read_text(encoding="utf-8")) if (path := folder / f"{name}.json").exists()
             else {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}

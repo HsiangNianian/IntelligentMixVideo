@@ -39,7 +39,7 @@ def task_folder():
 
 @pytest.mark.parametrize("module", execution_log.MODULES)
 def test_module_returns_complete_content_without_writing(log_client, task_folder, module):
-    """七个模块均返回全部四类记录，保留中文、重试与长正文，查询不改写文件。"""
+    """九个模块均返回全部四类记录，保留中文、重试与长正文，查询不改写文件。"""
     section = {
         "input": [{"time": "2026-11-03", "action": "asr.step_started", "data": {"text": "完整正文" * 100000, "tail": "结束"}}],
         "output": [{"time": "2026-11-03", "action": "asr.step_finished", "data": {"value": module}}],
@@ -73,6 +73,21 @@ def test_module_expands_cross_file_references(log_client, task_folder):
     assert response.status_code == 200
     assert response.json()["input"][0]["data"] == raw
     assert json.loads((task_folder / "segmentation.json").read_text())["input"][0]["data"] == reference
+
+
+def test_old_directory_and_error_payload_are_unchanged(log_client, task_folder):
+    """旧七模块可读，新模块为空，旧内嵌异常详情和文件字节均不迁移。"""
+    legacy = {key: [] for key in ("input", "output", "execute_log", "error_log")}
+    legacy["error_log"] = [{"time": "2026-10-01", "action": "remotion_render.step_failed", "status": "processing",
+                            "error": {"exceptions": [{"type": "ValueError", "message": "旧详情"}]}}]
+    content = json.dumps(legacy, ensure_ascii=False)
+    (task_folder / "timeline.json").write_text(content)
+    for module in ("remotion", "ims"):
+        assert log_client.get(f"/api/v1/video-compositions/{task_folder.name}/logs", params={"module": module}).json() == {
+            key: [] for key in ("input", "output", "execute_log", "error_log")}
+    assert log_client.get(f"/api/v1/video-compositions/{task_folder.name}/logs", params={"module": "timeline"}).json() == legacy
+    assert (task_folder / "timeline.json").read_text() == content
+    assert len(list(task_folder.iterdir())) == 1
 
 
 def test_error_returns_all_task_error_files(log_client, task_folder):
@@ -157,7 +172,7 @@ def test_unreadable_log_is_not_reported_as_empty(log_client, task_folder):
     assert response.json() == {"detail": "服务端内部错误，请稍后重试"}
 
 
-def test_openapi_exposes_eight_required_english_options(log_client):
+def test_openapi_exposes_ten_required_english_options(log_client):
     """真实 OpenAPI 提供必填英文枚举，供 /docs 渲染模块下拉框。"""
     response = log_client.get("/openapi.json")
     assert response.status_code == 200

@@ -14,7 +14,7 @@ def sanitize(value, *, media_url: bool = False):
     if isinstance(value, BaseModel):
         value = value.model_dump(mode="json", by_alias=True)
     if isinstance(value, dict):
-        return {key: "[REDACTED]" if re.fullmatch(sensitive, key, re.I) else sanitize(child, media_url=key in ("videoUrl", "audioUrl", "fileUrl", "audio_url"))
+        return {key: "[REDACTED]" if re.fullmatch(sensitive, key, re.I) else sanitize(child, media_url=key in ("videoUrl", "audioUrl", "fileUrl", "audio_url", "video_url", "aliyun_video_url", "zos_video_url", "MediaURL", "matched_candidate_url"))
                 for key, child in value.items()}
     if isinstance(value, (list, tuple)):
         return [sanitize(child) for child in value]

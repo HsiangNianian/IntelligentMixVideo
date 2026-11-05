@@ -496,8 +496,8 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
     assert caught.value.error == {"code": "remotion_render_failed", "message": "叠加视频渲染失败", "stage": "assembling"}
     store.advance(record, "failed", status="failed", error=caught.value.error,
                   diagnostics=execution_log.exception_details(caught.value))
-    entries = composition_logs("task", raw=True)[0]["timeline"]["error_log"]
-    assert [entry["action"] for entry in entries] == ["remotion_render.step_failed", "assembling.task_finished"]
+    entries = composition_logs("task", raw=True)[0]["remotion"]["error_log"]
+    assert [entry["action"] for entry in entries] == ["remotion_render.step_failed", "remotion_render.task_finished"]
     assert "private browser connection timeout" not in json.dumps(entries)
     assert not slot.locked()
     assert not (tmp_path / "composition-overlays" / "task").exists()
@@ -740,7 +740,7 @@ async def test_snapshot_survives_binding_edit(composition_case, template_db):
 
 
 def test_render_exception_chain_does_not_leak_source():
-    """隔离编译器的原始源码片段不能通过异常链进入七模块执行日志。"""
+    """隔离编译器的原始源码片段不能通过异常链进入九模块执行日志。"""
     from server.video_composition.execution_log import exception_details
     try:
         try:

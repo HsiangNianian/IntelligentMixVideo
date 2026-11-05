@@ -2171,10 +2171,10 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     submitted_timeline = sanitize(record["data"]["ims_request"]["timeline"])
     assert any(item["data"] == submitted_timeline for item in expand_columns(saved)["timeline"]["output"])
     assert submitted_timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == "甲乙丙丁"
-    assert "timeline" not in started["ims_submit"] and outputs["ims_submit"] == {"JobId": "ims-job"}
-    assert outputs["ims_query"] is None
+    assert started["ims_submit"]["timeline"] == submitted_timeline and outputs["ims_submit"] == {"JobId": "ims-job"}
+    assert outputs["ims_query"]["MediaProducingJob"]["Status"] == "Success"
     assert outputs["playback"] == {"aliyun_video_url": upstreams["zos_uploads"][0][0]}
-    assert outputs["zos_upload"] == {"zos_video_url": record["data"]["result"]["videoUrl"]}
+    assert outputs["zos_upload"] == {"zos_object_key": record["data"]["zos_object_key"], "zos_video_url": record["data"]["result"]["videoUrl"]}
     callback = next(row for row in rows if row["event"] == "match_callback_received")
     assert "input" not in callback["details"]
     assert callback["details"]["output"]["result"]["segments"][0]["matched_candidate_reason"] == "no_candidates"
@@ -2215,7 +2215,7 @@ def test_playback_must_be_ready_before_success_and_notification(upstreams, clien
     failures = [row for row in rows if row["event"] == "step_failed" and row["details"]["step"] == "playback"]
     assert len(failures) == 2 and all(row["details"]["exceptions"][0]["type"] == "ValueError" for row in failures)
     saved, = composition_logs(task_id, raw=True)
-    assert saved["zos"]["error_log"]
+    assert saved["ims"]["error_log"]
     assert record["status"] == "succeeded" and record["data"]["notification_status"] == "sent"
     assert len(upstreams["playbacks"]) == 3 and len(upstreams["renders"]) == 1
     assert upstreams["notifications"][0]["body"]["videoUrl"].endswith(f"imv/video_composition/{task_id}.mp4")
