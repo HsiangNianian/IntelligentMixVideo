@@ -174,12 +174,23 @@ function serveBundle() {
         if (req.url === "/interactive.js") {
           res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
           res.end(await fs.readFile(`${root}/interactive.js`));
+        } else if (/^\/font-(400|700|fallback)\.otf$/.test(req.url ?? "")) {
+          // The managed SC faces the host loads, the same files the worker's glyph check validated.
+          try {
+            res.writeHead(200, { "content-type": "font/otf", "cache-control": "no-store" });
+            res.end(await fs.readFile(`${root}/public${req.url}`));
+          } catch {
+            res.writeHead(404);
+            res.end();
+          }
         } else {
           res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
           // The host installs its own listeners only after the component module has evaluated, so a component that throws
           // while loading would leave no trace; the shell records that error first.
           const early = `for (const type of ["error", "unhandledrejection"]) window.addEventListener(type, (event) => { window.__imvRuntimeError = String(event.error?.message ?? event.reason?.message ?? event.reason ?? event.message ?? "Runtime error"); });`;
-          res.end(`<!doctype html><html><body style="margin:0"><div id="root"></div><script>${early}</script><script src="/interactive.js"></script></body></html>`);
+          // `lang="zh-CN"`: without a Chinese page language Chrome's Han fallback for a family that lacks the
+          // character is the TTC's Japanese face, and a sample must show the glyphs the render shows.
+          res.end(`<!doctype html><html lang="zh-CN"><body style="margin:0"><div id="root"></div><script>${early}</script><script src="/interactive.js"></script></body></html>`);
         }
       } catch (error) { res.writeHead(500); res.end(String(error)); }
     });

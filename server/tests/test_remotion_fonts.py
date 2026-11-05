@@ -474,6 +474,44 @@ def test_an_installed_or_reserved_family_is_renamed_for_an_upload(store, monkeyp
     assert store.upload(minimal_font("serif"), None, "", "device-1").family == "serif (2)"
 
 
+def test_fontconfig_prefers_simplified_chinese_for_the_generic_families(store) -> None:
+    """生成的 fonts.conf 给 sans-serif、serif、monospace 各加一条 SC 优先规则：Chrome 在英文页面、C 区域设置下
+    回退中日共用汉字时由这些中文家族承接（沙箱里 Chrome 默认会落到 TTC 的日文面），而不是落到日文字体；
+    规则只写家族名，不影响用户显式选择的字体卡片。"""
+    asyncio.run(store.sync())
+    text = (store.root / CONFIG_NAME).read_text(encoding="utf-8")
+    aliases = {
+        alias.find("family").text: [family.text for family in alias.findall("prefer/family")]
+        for alias in ElementTree.fromstring(text).findall("alias")
+    }
+    assert aliases["sans-serif"][0] == "Noto Sans CJK SC" and "Noto Sans SC" in aliases["sans-serif"]
+    assert aliases["serif"][0] == "Noto Serif CJK SC" and "Noto Serif SC" in aliases["serif"]
+    assert aliases["monospace"] == ["Noto Sans Mono CJK SC"]
+
+
+@pytest.mark.skipif(shutil.which("fc-match") is None, reason="needs fontconfig's fc-match")
+def test_fontconfig_gives_han_fallback_a_simplified_chinese_family(store, monkeypatch, tmp_path) -> None:
+    """真实 fontconfig：只带本机已装字体（沙箱的 /usr 原样可见）。中日共用汉字（U+5173 关）在没有中文页面语言时
+    也解析到简体中文家族，而不是 TTC 的日文面；拉丁字形仍由通用家族自己的字体绘制。"""
+    monkeypatch.setattr(fonts_module, "SANDBOX_DIR", str(store.root.resolve()))
+    asyncio.run(store.sync())
+    config = tmp_path / "sandbox.conf"
+    config.write_text((store.root / CONFIG_NAME).read_text(encoding="utf-8"), encoding="utf-8")
+    environment = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path), "XDG_CACHE_HOME": str(tmp_path / "cache"), "FONTCONFIG_FILE": str(config)}
+
+    def family(pattern: str) -> str:
+        """The family fontconfig picks for `pattern` under the generated config."""
+        return subprocess.run(["fc-match", "--format", "%{family}", pattern], env=environment, capture_output=True, text=True, timeout=60, check=True).stdout
+
+    for generic, simplified in (("sans-serif", {"Noto Sans CJK SC", "Noto Sans SC"}), ("serif", {"Noto Serif CJK SC", "Noto Serif SC"})):
+        # Chrome asks without a Chinese language on an English page; ja proves the locale is not what decides.
+        for language in ("en", "ja"):
+            assert family(f"{generic}:charset=5173:lang={language}") in simplified
+        assert "CJK JP" not in family(f"{generic}:charset=5173:lang=en")
+    # Latin letters keep the generic family's own face; only its Han fallback is steered.
+    assert "CJK" not in family("sans-serif:charset=72:lang=en")
+
+
 def test_fontconfig_lists_each_font_file_under_its_registry_family_only(store) -> None:
     """生成的 fonts.conf 为每个字体文件（预装与上传）加一条扫描规则：按沙箱里的文件路径把家族名替换成注册表里的家族名（XML 转义），
     同名的两个文件因此各自只对应自己的家族名；没有文件的系统默认字体不加规则。"""

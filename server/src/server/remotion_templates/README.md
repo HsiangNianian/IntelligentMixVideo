@@ -405,7 +405,16 @@ style's own file.
   uploaded) that lists the file under its card's family only, so files that carry the same name inside them stay
   apart, including a preinstalled variable font's legacy name such as `Noto Sans SC Thin`, and fontconfig picks among
   a card's files by their own weight and slant (each sandbox scans the folder afresh, its fontconfig cache being in its
-  own `/tmp`). The browser preview registers each file as a `FontFace` with its weight and style; player bundles built
+  own `/tmp`). The config also names the Chinese families each generic family prefers (`sans-serif`, `serif`,
+  `monospace`), so a character no chosen family covers falls back to simplified Chinese glyphs. Without that rule
+  Chrome, running with `LANG=C.UTF-8` under a page whose document language is English, asks fontconfig for a Han face
+  without a Chinese language and on a host with `fonts-noto-cjk` gets the TTC's Japanese face (`Noto Sans CJK JP`):
+  there a `Montserrat` effect, a bare `sans-serif` or `serif`, or a family the host lacks draws Chinese text with
+  Japanese glyph variants. The preferred families are `Noto Sans CJK SC`, `Noto Sans SC` and `Source Han Sans CN` for
+  sans-serif (`Noto Serif CJK SC`, `Noto Serif SC` and `Source Han Serif CN` for serif, `Noto Sans Mono CJK SC` for
+  monospace), so the rule works whether or not the host installed the Noto CJK package. It changes only fallback: a
+  Latin family keeps its own glyphs and a chosen Chinese family still resolves to itself. The browser preview
+  registers each file as a `FontFace` with its weight and style; player bundles built
   before cards had styles skip italic files (their list entries carry no plain `weight`). macOS development without
   the sandbox does not load them.
 - **Managed Chinese fonts**: `managed_fonts.py` selects `Noto Sans CJK SC` by its internal family and requested
@@ -415,7 +424,12 @@ style's own file.
   variable font, without downloads or a registry dependency (also when catalog installation is disabled).
   Layout/capacity checks and both render workers inspect Chrome's actual font for `关复` at weights 400 and 700.
   A mismatch replaces the worker's font with the bundled SC face once, before bundling/encoding, and continues;
-  further diagnostic failures are logged rather than rejecting composition or retrying indefinitely. Browser loaders
+  further diagnostic failures are logged rather than rejecting composition or retrying indefinitely. The validation
+  host that measures text (`tool-validation-host.tsx`) loads those same faces on start-up and the worker serves them at
+  `/font-400.otf`, `/font-700.otf` and `/font-fallback.otf`, so fit and capacity are measured in the SC face the render
+  paints with; the worker's page also declares `lang="zh-CN"`, since the page language decides which Han face Chrome's
+  own fallback picks. A host that cannot load them still mounts and measures with the page's fallback rather than
+  failing the check. Browser loaders
   try the primary file, then the bundled SC file, with a 10-second limit per attempt; only then use local Chinese
   fonts. They set `lang=zh-CN`; a late page-load fallback is also recorded in the worker report. Explicit library font choices
   retain their existing behavior. Shared preview responses hash the emitted font for ETags, invalidating cached TTCs.

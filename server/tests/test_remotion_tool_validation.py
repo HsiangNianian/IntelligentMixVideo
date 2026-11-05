@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
@@ -16,7 +17,7 @@ from server.remotion_templates.categories import KEYWORD_COLOR
 from server.remotion_templates.publication import PREVIEW_PROTOCOL, current_bundle
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
-from server.remotion_templates.tool_validation import ToolValidator, ValidationUnavailable, render_lengths
+from server.remotion_templates.tool_validation import FitSprite, ToolValidator, ValidationUnavailable, render_lengths
 from server.remotion_templates.tools.compose import compose_source
 from server.remotion_templates.tools.contracts import (
     ComponentDefinition,
@@ -1235,3 +1236,43 @@ def test_real_browser_refuses_lines_of_separately_composed_instances(tmp_path):
     report = asyncio.run(ToolValidator(Renderer(settings), tmp_path).validate_render(request, transparency=True, text_fit=True))
     check = next(item for item in report.checks if item.name == "text_fit")
     assert check.status == "failed" and "rendered by different instances (first, second)" in check.message, check.message
+
+
+# 场景：文字排版预检与字幕容量用的是验证宿主页面。沙箱里 Chrome 的 LANG 是 C.UTF-8、Remotion 页面语言为英文，
+# 宿主若不声明中文、也不加载受管 SC 字体，汉字回退会落到系统 TTC 的日文面，测出的字宽与成片不同。
+@needs_node
+@needs_browser
+def test_the_validation_host_measures_in_the_managed_chinese_face(tmp_path):
+    """真实 worker 的 fit 模式：宿主页面声明 zh-CN，并加载了 worker 准备的受管字体；测量结果仍为请求的字号。"""
+    from server.remotion_templates.managed_fonts import prepare_fonts
+
+    settings = Settings(_env_file=None, data_dir=tmp_path, allow_unsandboxed_worker=sys.platform == "darwin", **BROWSER)
+    renderer = Renderer(settings)
+    directory = tmp_path / "fit"
+    directory.mkdir()
+    prepare_fonts(settings, directory)
+    # The worker serves these files to the host, exactly as run_worker prepares them for a fit request.
+    assert (directory / "public" / "font-400.otf").is_file()
+    texture = """import React from "react";
+export default function Tier(props: {text: string; fontFamily: string; fontSize: number}) {
+  return <div style={{display: "flex", justifyContent: "center", alignItems: "center", width: "100%", height: "100%"}}>
+    <span id="probe" style={{fontFamily: props.fontFamily, fontSize: props.fontSize}}>{props.text}</span></div>;
+}
+"""
+    values = {"text": "关复骨直", "fontFamily": "Montserrat", "fontSize": 96}
+    properties = {"text": {"type": "string"}, "fontFamily": {"type": "string"}, "fontSize": {"type": "number"}}
+    sprite = FitSprite(
+        ComponentDefinition(code=texture, parameter_schema={"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False},
+                           default_parameters=values),
+        {"width": 1080, "height": 1920}, {"x": 0, "y": 0, "width": 1080, "height": 1920},
+        [{"index": 0, "values": values, "text": values["text"], "size_key": "fontSize", "min": 24,
+          "frames": [0], "length": 30, "transform": {}, "one_line": False, "grow": ""}],
+    )
+    validator = ToolValidator(renderer, directory)
+    assert asyncio.run(validator.fit_texts([sprite], {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30})) == [[
+        {"index": 0, "fits": True, "size": 96, "lines": 1}
+    ]]
+    # The host page the worker served declares the language the managed face is picked for, and served the faces.
+    worker = (RENDERER_DIR / "tool-validation-worker.mjs").read_text()
+    assert '<html lang="zh-CN">' in worker and 'font-(400|700|fallback)' in worker
+    assert "loadManagedFonts" in (RENDERER_DIR / "tool-validation-host.tsx").read_text()
