@@ -508,16 +508,16 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
         linked = execution_log.LOG_ROOT / "video_composition" / "task" / relative
         assert linked.is_file()
         if diagnostic_writable:
-            assert relative.as_posix() == "errors/remotion-error.log"
-            assert linked.resolve() == private / "remotion-error.log"
+            assert relative.name.startswith("remotion-error-")
+            assert linked.parent == private
         else:
             assert relative.parent == Path("errors")
             assert "private browser connection timeout" not in linked.read_text()
     if diagnostic_writable:
-        assert "25000 ms" in (private / "remotion-worker.log").read_text()
-        detail = (private / "remotion-error.log").read_text()
+        assert "25000 ms" in next(private.glob("remotion-worker-*.log")).read_text()
+        detail = next(private.glob("remotion-error-*.log")).read_text()
         assert "RuntimeError: private browser connection timeout" in detail and "OverlayError" in detail
-        assert {item.name for item in private.iterdir()} == {"remotion-worker.log", "remotion-error.log"}
+        assert len(list(private.iterdir())) == 2
         assert private.stat().st_mode & 0o777 == 0o700
         # JSON 单独未超限，加入 Remotion 文件才超限；已结束任务应整体清理。
         monkeypatch.setattr(execution_log, "MAX_BYTES", sum(path.stat().st_size for path in private.parent.glob("*.json")))
@@ -545,7 +545,7 @@ async def test_plan_failure_keeps_private_cause(composition_case, monkeypatch, t
     with pytest.raises(CompositionError) as caught:
         await remotion.render("task", case(composition_case), 10)
     assert caught.value.error["code"] == "remotion_asset_not_adapted"
-    detail = (execution_log.LOG_ROOT / "video_composition" / "task" / "errors" / "remotion-error.log").read_text()
+    detail = next((execution_log.LOG_ROOT / "video_composition" / "task" / "errors").glob("remotion-error-*.log")).read_text()
     assert "CalledProcessError" in detail and "Cannot find module 'esbuild'" in detail
     assert not (tmp_path / "composition-overlays" / "task").exists()
 

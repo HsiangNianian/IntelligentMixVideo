@@ -1,5 +1,6 @@
 """任务日志入队归类、脱敏、保存与按模块查询；详细错误独立保存，调度错误保留最近一次诊断。"""
 
+import hashlib
 import json
 import logging
 import shutil
@@ -10,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Queue
 from threading import Lock, Thread
-from uuid import uuid4
 
 from pydantic import ValidationError
 from pymysql.constants import CR, ER
@@ -202,7 +202,7 @@ def put_snapshots(columns: dict, time, action: str, payload: dict) -> None:
 
 
 def add_event(previous: dict | None, event: str, record: dict, details: dict, time, *, folder: Path | None = None) -> dict:
-    """新事件生成七模块内容；后台写入提供任务目录时，额外保存新错误的独立诊断文件。"""
+    """新事件写入唯一模块；错误正文独立保存，模块只保留摘要与路径。"""
     columns = expand_columns(previous) if previous else {
         name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES
     }
@@ -225,20 +225,28 @@ def add_event(previous: dict | None, event: str, record: dict, details: dict, ti
             entry["error"]["detail_log_path"] = path
         if folder is not None:
             write_error_detail(entry, folder)
+        error = details.get("error") or details
+        entry["error"] = {"message": entry["error"]["message"][:500], **{
+            key: value for key in ("code", "detail_log_path")
+            if (value := entry["error"].get(key) or error.get(key)) is not None
+        }}
     columns[GROUPS.get(group, group if group in MODULES else "request")]["error_log" if failed else "execute_log"].append(entry)
     put_snapshots(columns, time, action, payload)
     return compact_columns(columns)
 
 
 def write_error_detail(entry: dict, folder: Path) -> None:
-    """在任务内独立保存脱敏错误快照并附相对路径；复用已有私有诊断，失败仍保留 JSON 摘要。"""
+    """按诊断正文复用同任务错误文件；不同诊断分别保存，时间和动作留在事件中。"""
     if entry["error"].get("detail_log_path"):
         return
     try:
         directory = folder / "errors"
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        path = directory / f"{uuid4().hex}.log"
-        path.write_text(json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
+        detail = {key: value for key, value in entry["error"].items() if key != "step"}
+        content = json.dumps({"error": detail}, ensure_ascii=False, sort_keys=True, indent=2)
+        path = directory / f"{hashlib.sha256(content.encode()).hexdigest()}.log"
+        if not path.exists():
+            path.write_text(content, encoding="utf-8")
     except OSError as exc:
         logging.getLogger(__name__).error("合成任务 %s 详细错误日志保存失败：%s", folder.name, type(exc).__name__)
     else:

@@ -53,10 +53,15 @@ def preserve_failure(work: Path, error: Exception) -> None:
             detail += f"\n[{type(cause).__name__} stderr]\n{stderr[-20000:]}"
         cause = cause.__cause__ or cause.__context__
     detail = execution_log.sanitize(detail)
-    (destination / "remotion-error.log").write_text(detail, encoding="utf-8")
-    error.detail_log_path = "errors/remotion-error.log"
+    name = f"remotion-error-{hashlib.sha256(detail.encode()).hexdigest()}.log"
+    if not (destination / name).exists():
+        (destination / name).write_text(detail, encoding="utf-8")
+    error.detail_log_path = f"errors/{name}"
     if (work / "worker.log").is_file():
-        shutil.copyfile(work / "worker.log", destination / "remotion-worker.log")
+        content = execution_log.sanitize((work / "worker.log").read_text(encoding="utf-8", errors="replace"))
+        worker = destination / f"remotion-worker-{hashlib.sha256(content.encode()).hexdigest()}.log"
+        if not worker.exists():
+            worker.write_text(content, encoding="utf-8")
 
 
 async def snapshot(template) -> dict:

@@ -2291,13 +2291,17 @@ async def test_pending_retry_recovers_and_stops_on_success(upstreams, notificati
     logs, = composition_logs(current["task_id"], raw=True)
     failure, = logs["request"]["error_log"]
     assert failure["action"] == "notification.notification_pending"
-    assert failure["error"]["attempt"] == 1
-    assert failure["error"]["next_at"] == current["data"]["notification_next_at"]
+    from server.video_composition.execution_log import query_log
+    detail_file, = query_log(current["task_id"], "error")["files"]
+    assert failure["error"]["detail_log_path"] == f"errors/{detail_file['name']}"
+    detail = json.loads(detail_file["content"])["error"]
+    assert detail["attempt"] == 1
+    assert detail["next_at"] == current["data"]["notification_next_at"]
     if error:
-        assert failure["error"]["exceptions"][0]["type"] == "ReadTimeout"
+        assert detail["exceptions"][0]["type"] == "ReadTimeout"
         assert failure["error"]["message"] == "private-notification-error"
     else:
-        assert failure["error"]["http_status"] == 500
+        assert detail["http_status"] == 500
     assert any(entry["action"] == "notification.notification_sent" for entry in logs["request"]["execute_log"])
     assert all(set(entry) == {"time", "action", "status"} for entry in logs["request"]["execute_log"])
 

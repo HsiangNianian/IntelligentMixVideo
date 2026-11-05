@@ -252,7 +252,7 @@ async def test_step_failure_and_cancellation_leave_input_log(composition_case, c
     ("segmentation", "segmentation"), ("matching", "matching"), ("timeline", "assembling"),
     ("remotion", "remotion_render"), ("ims", "ims_query"), ("zos", "zos_upload")])
 async def test_each_module_writes_error_detail_file(module, step, composition_case, composition_runtime, composition_logs):
-    """各模块错误写真实文件并保存相对路径；重复失败不覆盖，成功事件不生成文件，凭证仍脱敏。"""
+    """各模块相同诊断共用正文但保留两次事件；成功不生成详情，凭证仍脱敏。"""
     store.initialize_schema()
     record = store.create(composition_case["request"], {})
 
@@ -269,20 +269,19 @@ async def test_each_module_writes_error_detail_file(module, step, composition_ca
     saved, = composition_logs(record["task_id"], raw=True)
     folder = execution_log.LOG_ROOT / "video_composition" / record["task_id"]
     entries = saved[module]["error_log"]
-    assert len(entries) == 2 and len(list((folder / "errors").iterdir())) == 2
-    assert len({entry["error"]["detail_log_path"] for entry in entries}) == 2
+    assert len(entries) == 2 and len(list((folder / "errors").iterdir())) == 1
+    assert len({entry["error"]["detail_log_path"] for entry in entries}) == 1
     for entry in entries:
         relative = Path(entry["error"]["detail_log_path"])
         assert not relative.is_absolute() and relative.parent == Path("errors")
         detail = (folder / relative).read_text()
         stored = json.loads(detail)
-        assert stored["time"] == entry["time"] and stored["action"] == entry["action"]
-        assert stored["error"]["exceptions"] == entry["error"]["exceptions"]
+        assert "exceptions" not in entry["error"]
         assert stored["error"]["exceptions"][-1]["frames"][-1]["function"] == "fail"
         assert "上游连接失败" in detail and "hidden-detail" not in detail
     store.add_log(record, "step_finished", {"step": step, "output": {"ok": True}})
     execution_log.LOG_QUEUE.join()
-    assert len(list((folder / "errors").iterdir())) == 2
+    assert len(list((folder / "errors").iterdir())) == 1
 
 
 def test_detail_file_write_failure_keeps_json_error(composition_case, composition_logs, monkeypatch, caplog):
@@ -305,6 +304,23 @@ def test_detail_file_write_failure_keeps_json_error(composition_case, compositio
     assert error["message"] == "识别失败" and "detail_log_path" not in error
     assert saved["request"]["execute_log"][-1]["action"].endswith(".probe")
     assert "详细错误日志保存失败" in caplog.text
+
+
+def test_different_error_details_are_preserved_even_with_the_same_message(tmp_path):
+    """相同摘要但错误码或调用位置不同必须各存详情；完全相同的诊断跨事件复用。"""
+    record = {"stage": "rendering", "status": "processing"}
+    first = {"step": "ims_query", "reason": "查询失败", "exceptions": [{"type": "ValueError", "code": "first", "frames": [{"line": 1}]}]}
+    second = {**first, "exceptions": [{"type": "ValueError", "code": "second", "frames": [{"line": 2}]}]}
+    saved = None
+    for event, details in (("step_failed", first), ("step_failed", second), ("query_failed", first)):
+        saved = add_event(saved, event, record, details, datetime.now(), folder=tmp_path)
+    entries = saved["ims"]["error_log"]
+    paths = [entry["error"]["detail_log_path"] for entry in entries]
+    assert paths[0] == paths[2] != paths[1]
+    assert len(list((tmp_path / "errors").glob("*.log"))) == 2
+    assert json.loads((tmp_path / paths[0]).read_text())["error"]["exceptions"] == first["exceptions"]
+    assert json.loads((tmp_path / paths[1]).read_text())["error"]["exceptions"] == second["exceptions"]
+    assert all("exceptions" not in entry["error"] for entry in entries)
 
 
 @pytest.mark.parametrize("step,module", [("remotion_render", "remotion"), ("remotion_text_fit", "remotion"),
