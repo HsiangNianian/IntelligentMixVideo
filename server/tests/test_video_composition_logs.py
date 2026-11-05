@@ -5,6 +5,8 @@ from copy import deepcopy
 import json
 import os
 import shutil
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from ssl import SSLCertVerificationError
@@ -683,22 +685,135 @@ def test_first_write_counts_existing_files_and_whole_log_root(logged_task, monke
     assert execution_log.read_log(active["task_id"])["matching"]["input"][-1]["data"] == {"text": "重启后写入"}
 
 
-def test_partial_temporary_write_preserves_previous_json(logged_task, monkeypatch):
-    """临时文件写入中途失败保留原九文件，清除残余临时文件。"""
+@pytest.mark.parametrize("failure", ["write", "publish"])
+def test_incomplete_snapshot_preserves_previous_json(logged_task, monkeypatch, failure):
+    """快照正文或发布失败时原九文件不变，残缺快照不得参与读取。"""
     record, folder = logged_task(status="processing")
     before = {path.name: path.read_bytes() for path in folder.iterdir()}
-    original = Path.write_text
+    write, replace = Path.write_text, Path.replace
 
-    def fail_asr(path, *args, **kwargs):
-        """前两个模块临时写入成功后模拟磁盘写失败。"""
-        if path.name == "asr.tmp":
+    def fail_write(path, *args, **kwargs):
+        """写出残缺快照后失败；它不能成为已提交快照。"""
+        if path.name == ".pending.tmp" and failure == "write":
+            path.write_bytes(b"incomplete")
             raise OSError("disk full")
-        return original(path, *args, **kwargs)
+        return write(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "write_text", fail_asr)
+    def fail_publish(path, target):
+        """完整临时快照尚未发布时失败，旧快照仍有效。"""
+        if path.name == ".pending.tmp" and failure == "publish":
+            raise OSError("replace failed")
+        return replace(path, target)
+
+    monkeypatch.setattr(Path, "write_text", fail_write)
+    monkeypatch.setattr(Path, "replace", fail_publish)
     store.add_log(record, "probe", {"input": {"text": "写入失败"}})
     execution_log.LOG_QUEUE.join()
     assert {path.name: path.read_bytes() for path in folder.iterdir()} == before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("interrupted_file", [".pending.tmp", "asr.tmp", "zos.tmp"])
+@pytest.mark.parametrize("recovery", ["startup", "next_write"])
+async def test_interrupted_snapshot_recovers_without_duplicate_events(
+    logged_task, composition_runtime, monkeypatch, interrupted_file, recovery,
+):
+    """子进程在提交后、替换中途或替换末尾退出；查询读完整快照，恢复后只剩九文件。"""
+    record, folder = logged_task(status="processing")
+    state = {key: record[key] for key in ("task_id", "stage", "status")}
+    # 独立进程直接退出，确保没有执行 Python finally 清理，也不依赖测试进程的内存状态。
+    script = '''
+import json, os, sys
+from pathlib import Path
+from server.video_composition import execution_log as log
+log.LOG_ROOT = Path(sys.argv[1])
+replace = Path.replace
+def interrupt(path, target):
+    """在真实替换完成后直接退出，模拟进程被终止。"""
+    result = replace(path, target)
+    if path.name == sys.argv[3]:
+        os._exit(37)
+    return result
+Path.replace = interrupt
+log.write_log(json.loads(sys.argv[2]), "probe", {"input": {"marker": "committed"}, "template": {"marker": "committed"}, "matches": [{"marker": "committed"}]}, lambda: set())
+'''
+    completed = subprocess.run([sys.executable, "-c", script, str(execution_log.LOG_ROOT),
+                                json.dumps(state), interrupted_file], timeout=20, capture_output=True, text=True)
+    assert completed.returncode == 37, completed.stderr
+    pending = folder / ".pending.json"
+    snapshot = json.loads(pending.read_text())
+    if interrupted_file == "asr.tmp":
+        assert json.loads((folder / "template.json").read_text()) == snapshot["template"]
+        assert json.loads((folder / "matching.json").read_text()) != snapshot["matching"]
+    assert execution_log.read_log(record["task_id"]) == snapshot
+    before_query = {path.name: path.read_bytes() for path in folder.iterdir()}
+    assert execution_log.query_log(record["task_id"], "matching") == snapshot["matching"]
+    assert {path.name: path.read_bytes() for path in folder.iterdir()} == before_query
+    if recovery == "startup":
+        async def no_dispatch():
+            """本用例只验证真实启动恢复，不执行云端合成。"""
+        monkeypatch.setattr(composition_runtime, "_dispatch", no_dispatch)
+        await composition_runtime.start()
+        assert execution_log.read_log(record["task_id"]) == snapshot
+    else:
+        execution_log.write_log(state, "after_recovery", {"input": {"marker": "next"}}, lambda: set())
+    saved = expand_columns(execution_log.read_log(record["task_id"]))
+    assert sum(item["action"].endswith(".probe") for item in saved["matching"]["execute_log"]) == 1
+    assert {"marker": "committed"} in [item["data"] for item in saved["matching"]["input"]]
+    if recovery == "next_write":
+        assert saved["matching"]["input"][-1]["data"] == {"marker": "next"}
+    assert {path.name for path in folder.iterdir()} == {f"{module}.json" for module in MODULES}
+
+
+def test_startup_discards_unpublished_snapshot(logged_task):
+    """首次快照写到一半退出时，启动丢弃未发布文件，九份正式日志保持原样。"""
+    _, folder = logged_task(status="processing")
+    before = {path.name: path.read_bytes() for path in folder.iterdir()}
+    (folder / ".pending.tmp").write_text('{"incomplete":')
+    execution_log.recover_logs()
+    assert {path.name: path.read_bytes() for path in folder.iterdir()} == before
+
+
+def test_failed_recovery_keeps_snapshot_for_retry(logged_task, monkeypatch):
+    """恢复再次写盘失败仍保留完整快照，不阻止其他任务恢复，修复磁盘后可再次完成。"""
+    record, folder = logged_task()
+    other, other_folder = logged_task()
+    snapshots = {}
+    for task, directory in ((record, folder), (other, other_folder)):
+        snapshot = execution_log.read_log(task["task_id"])
+        snapshot["asr"]["output"] = [{"time": "2026-11-05 12:00:00", "action": "asr.step_finished", "data": "完整结果"}]
+        snapshots[task["task_id"]] = snapshot
+        (directory / ".pending.json").write_text(json.dumps(snapshot))
+    write = Path.write_text
+
+    def fail_recovery(path, *args, **kwargs):
+        """只阻断第一个任务的模块写入。"""
+        if path == folder / "asr.tmp":
+            raise OSError("disk full")
+        return write(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_recovery)
+    execution_log.recover_logs()
+    assert (folder / ".pending.json").exists()
+    assert execution_log.query_log(record["task_id"], "asr") == snapshots[record["task_id"]]["asr"]
+    assert not (other_folder / ".pending.json").exists()
+    assert execution_log.read_log(other["task_id"]) == snapshots[other["task_id"]]
+    monkeypatch.setattr(Path, "write_text", write)
+    execution_log.recover_logs()
+    assert execution_log.read_log(record["task_id"]) == snapshots[record["task_id"]]
+    assert {path.name for path in folder.iterdir()} == {f"{module}.json" for module in MODULES}
+
+
+def test_cleanup_preserves_pending_snapshot(logged_task, monkeypatch):
+    """待恢复的已完成任务不被其他任务触发的容量清理删除。"""
+    record, folder = logged_task()
+    (folder / ".pending.json").write_text(json.dumps(execution_log.read_log(record["task_id"])))
+    monkeypatch.setattr(execution_log, "MAX_BYTES", 1)
+    execution_log.cleanup(store.finished_tasks)
+    assert folder.exists()
+    execution_log.recover_logs()
+    execution_log.cleanup(store.finished_tasks)
+    assert not folder.exists()
 
 
 def test_log_root_does_not_follow_working_directory(logged_task, monkeypatch, tmp_path):

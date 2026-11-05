@@ -341,10 +341,33 @@ def close_logs() -> None:
 
 
 def read_log(task_id: str) -> dict:
-    """读取同任务文件供追加；旧目录缺少新模块时返回空数组，不迁移历史记录。"""
+    """待恢复时只读完整快照，否则读九文件；旧目录缺少新模块时返回空数组。"""
     folder = LOG_ROOT / "video_composition" / task_id
+    pending = folder / ".pending.json"
+    if pending.exists():
+        return json.loads(pending.read_text(encoding="utf-8"))
     return {name: json.loads(path.read_text(encoding="utf-8")) if (path := folder / f"{name}.json").exists()
             else {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
+
+
+def write_modules(folder: Path, columns: dict) -> None:
+    """调用方持锁且已有完整恢复快照；九文件全部替换成功后才删除快照。"""
+    for name in MODULES:
+        write_atomic(folder / f"{name}.json", json.dumps(columns[name], ensure_ascii=False, indent=2))
+    (folder / ".pending.json").unlink()
+
+
+def recover_logs() -> None:
+    """启动时补齐已提交快照、丢弃未提交的临时快照；失败保留恢复依据，不阻断合成。"""
+    with LOG_LOCK:
+        for folder in (LOG_ROOT / "video_composition").glob("*/"):
+            try:
+                pending = folder / ".pending.json"
+                if pending.exists():
+                    write_modules(folder, json.loads(pending.read_text(encoding="utf-8")))
+                (folder / ".pending.tmp").unlink(missing_ok=True)
+            except (OSError, ValueError):
+                logging.getLogger(__name__).exception("合成任务 %s 日志快照恢复失败", folder.name)
 
 
 def query_log(task_id: str, module: str) -> dict | None:
@@ -366,21 +389,14 @@ def query_log(task_id: str, module: str) -> dict | None:
 
 
 def write_log(record: dict, event: str, details: dict, finished_tasks, *, time=None) -> None:
-    """锁内追加并以临时文件替换 JSON；写入后检查容量，结束任务由调用方查询确认。"""
+    """锁内先提交完整恢复快照，再替换九文件；失败后的追加从完整快照继续。"""
     with LOG_LOCK:
         task_id = record["task_id"]
         folder = LOG_ROOT / "video_composition" / task_id
         columns = add_event(read_log(task_id), event, record, details, time or datetime.now(BEIJING), folder=folder)
         folder.mkdir(parents=True, exist_ok=True)
-        try:
-            for name, section in columns.items():
-                temporary = folder / f"{name}.tmp"
-                temporary.write_text(json.dumps(section, ensure_ascii=False, indent=2), encoding="utf-8")
-            for name in MODULES:
-                (folder / f"{name}.tmp").replace(folder / f"{name}.json")
-        finally:
-            for name in MODULES:
-                (folder / f"{name}.tmp").unlink(missing_ok=True)
+        write_atomic(folder / ".pending.json", json.dumps(columns, ensure_ascii=False))
+        write_modules(folder, columns)
         cleanup(finished_tasks)
 
 
@@ -400,6 +416,8 @@ def cleanup(finished_tasks) -> None:
     finished = finished_tasks()
     with WRITER_LOCK:
         for task_id in sorted((set(sizes) & finished) - PENDING.keys(), key=modified.get):
+            if (LOG_ROOT / "video_composition" / task_id / ".pending.json").exists():
+                continue
             shutil.rmtree(LOG_ROOT / "video_composition" / task_id)
             total -= sizes[task_id]
             if total <= MAX_BYTES:

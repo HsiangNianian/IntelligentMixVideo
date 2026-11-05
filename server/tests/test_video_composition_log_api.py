@@ -75,6 +75,20 @@ def test_module_expands_cross_file_references(log_client, task_folder):
     assert json.loads((task_folder / "segmentation.json").read_text())["input"][0]["data"] == reference
 
 
+def test_query_uses_complete_pending_snapshot_without_repairing_files(log_client, task_folder):
+    """九文件尚未替换完时，接口使用已提交完整快照；读取不修复或删除文件。"""
+    columns = {name: {field: [] for field in ("input", "output", "execute_log", "error_log")} for name in execution_log.MODULES}
+    columns["asr"]["output"] = [{"time": "2026-11-05", "action": "asr.step_finished", "data": {"text": "完整新版本"}}]
+    pending = task_folder / ".pending.json"
+    pending.write_text(json.dumps(columns))
+    # 旧文件不完整也不能影响新快照的读取。
+    (task_folder / "asr.json").write_text('{"old":')
+    before = {path.name: path.read_bytes() for path in task_folder.iterdir()}
+    response = log_client.get(f"/api/v1/video-compositions/{task_folder.name}/logs", params={"module": "asr"})
+    assert response.status_code == 200 and response.json() == columns["asr"]
+    assert {path.name: path.read_bytes() for path in task_folder.iterdir()} == before
+
+
 def test_api_keeps_local_references_and_materializes_legacy_external_sources(log_client, task_folder):
     """新旧日志均按字段内去重返回，各字段先有原文，查询不迁移历史文件或丢弃事件。"""
     empty = {key: [] for key in ("input", "output", "execute_log", "error_log")}

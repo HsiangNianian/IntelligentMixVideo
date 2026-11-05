@@ -21,7 +21,7 @@ from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
 from . import ims, media, playground, remotion, store, subtitle_capacity, zos
 from .errors import CompositionError, remaining
-from .execution_log import close_logs, exception_details, log_dispatch_error
+from .execution_log import close_logs, exception_details, log_dispatch_error, recover_logs
 from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, MatchedSegment, PlaygroundRequest, PositiveSeconds, Segment, TaskResponse
 from .settings import ClientSettings, Settings, ZosSettings
@@ -119,8 +119,9 @@ class Runtime:
             task.exception()
 
     async def start(self) -> None:
-        """数据库已初始化后建表，并从持久化非终态开始有限恢复。"""
+        """建表并恢复未完成的日志快照，再从持久化非终态开始有限恢复。"""
         await self.sync(store.initialize_schema)
+        await self.sync(recover_logs)
         self.dispatcher = asyncio.create_task(self._dispatch())
 
     async def close(self) -> None:
