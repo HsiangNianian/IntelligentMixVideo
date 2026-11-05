@@ -1,6 +1,7 @@
 """业务 Remotion 适配回归：参数、字幕区间、快照恢复与 IMS 轨道；云端与模型边界隔离。"""
 import asyncio
 from copy import deepcopy
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ from google.protobuf.json_format import MessageToDict
 
 from server.video_composition.remotion_content import ContentError, dynamic_duration, resolve_config, roles
 from server.video_composition.remotion_timing import retime_source
-from server.remotion_templates.overlay_render import OverlayError
+from server.remotion_templates.overlay_render import Overlay, OverlayError
 from server.remotion_templates.settings import Settings
 from server.remotion_templates import render_resources
 from server.remotion_templates.render_resources import RenderCapacity
@@ -431,8 +432,12 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     if playground:
         data["playground"] = {"mode": "standard", "source_task_id": "sample"}
     data["duration_ms"] = duration * 1000
+    events = []
+    async def log(event, **details):
+        """保存实际回调快照，验证源码只在 sources 中留一份，实例通过指纹关联。"""
+        events.append((event, deepcopy(details)))
     with caplog.at_level("INFO", logger=remotion.logger.name):
-        result = await remotion.render("task", data, 10)
+        result = await remotion.render("task", data, 10, log=log)
     assert result["duration"] == duration and result["frames"] == frames
     assert set(result) == {"video_url", "duration", "width", "height", "fps", "frames"}
     [entry] = [record for record in caplog.records if record.msg.startswith("Remotion performance task_id=")]
@@ -441,6 +446,32 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     assert (performance["slot_wait_ms"], performance["resource_wait_ms"]) == (0, 2000)
     assert "旧例字" not in entry.getMessage() and "https://" not in entry.getMessage()
     assert not (tmp_path / "composition-overlays" / "task").exists()
+    render_input = next(details["input"] for event, details in events if event == "step_started" and details["step"] == "remotion_video")
+    assert render_input["frames"] == frames and render_input["instances"]
+    assert all("code" not in item and len(item["code_sha256"]) == 64 for item in render_input["instances"])
+    sources = {hashlib.sha256(CODE.encode()).hexdigest(): CODE}
+    assert render_input["sources"] == sources
+    plan_input = next(details["input"] for event, details in events if event == "step_started" and details["step"] == "remotion_plan")
+    assert plan_input["sources"] == sources
+    # 多次排版与渲染输入复用源码，落盘只保留一份，展开后仍能还原各阶段。
+    columns = None
+    for event, details in events:
+        columns = execution_log.add_event(columns, event, {"stage": "assembling", "status": "processing"}, details,
+                                          datetime.now(execution_log.BEIJING))
+    assert json.dumps(columns["remotion"]).count(json.dumps(CODE)) == 1
+    expanded = execution_log.expand_columns(columns)["remotion"]
+    assert all(item["data"]["sources"] == sources for item in expanded["input"] if "sources" in item["data"])
+    uploaded = next(details["output"] for event, details in events if event == "step_finished" and details["step"] == "remotion_upload")
+    assert uploaded["video_url"] == result["video_url"] == "https://zos.test/overlay.webm"
+
+
+def test_render_source_versions_are_preserved_without_per_instance_copies():
+    """同源码的多个实例共用一份正文，不同适配版本分别保留且能按实例指纹取回。"""
+    codes = [CODE, CODE + "\n// adapted clock", CODE]
+    snapshot = remotion.render_inputs(Overlay(1080, 1920, 30, 240, [{"code": code} for code in codes]))
+    assert len(snapshot["sources"]) == 2
+    assert [snapshot["sources"][item["code_sha256"]] for item in snapshot["instances"]] == codes
+    assert all("code" not in item for item in snapshot["instances"])
 
 
 @pytest.mark.anyio

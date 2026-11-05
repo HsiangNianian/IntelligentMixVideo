@@ -502,7 +502,7 @@ def test_avatar_tail_cutoff_keeps_original_content_preparation(
         probes.append(url)
         return video_seconds
 
-    async def render(task_id, data, timeout, *, timeline):
+    async def render(task_id, data, timeout, *, timeline, log=None):
         """确认叠加渲染接到与 IMS 相同的裁剪快照，不调用真实渲染器。"""
         overlays.append(deepcopy(data))
         return None

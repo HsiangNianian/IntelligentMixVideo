@@ -377,20 +377,39 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
     return Overlay(width, height, fps, frames, instances)
 
 
-async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | None = None) -> dict | None:
+def render_inputs(overlay: Overlay) -> dict:
+    """快照实际渲染参数、文字和时序；源码按指纹收集一次，实例只保留对应指纹。"""
+    return {"width": overlay.width, "height": overlay.height, "fps": overlay.fps, "frames": overlay.frames,
+            "sources": {hashlib.sha256(item["code"].encode()).hexdigest(): item["code"] for item in overlay.instances},
+            "instances": [{**{key: value for key, value in item.items() if key != "code"},
+                           "code_sha256": hashlib.sha256(item["code"].encode()).hexdigest()} for item in overlay.instances]}
+
+
+async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | None = None, log=None) -> dict | None:
     """使用共享渲染名额输出整段视频并上传；返回后由合成任务保存，失败不降级。"""
     if not data.get("remotion", {}).get("placements"):
+        if log:
+            await log("step_skipped", step="remotion_plan", output={"reason": "模板没有 Remotion 摆放"})
         return None
     try:
         service = await sprite_runtime()
         work = service.store.root / "composition-overlays" / task_id
         started = perf_counter()
+        step = "remotion_plan"
         # 计划与打包失败同样私有保存根因：公开错误只有固定摘要，打包器输出可能含资产源码。
         try:
             await asyncio.to_thread(shutil.rmtree, work, True)
+            if log:
+                await log("step_started", step=step, input={"revision": data["remotion"].get("revision"),
+                    "placements": data["remotion"]["placements"], "timeline": timeline,
+                    "sources": {asset["code_sha256"]: asset["tsx_code"] for asset in data["remotion"]["assets"].values()}})
             overlay = await measured(work, "plan", asyncio.to_thread(plan, data, service.settings.overlay_max_seconds, timeline=timeline, transition_seed=task_id))
             if overlay is None:
+                if log:
+                    await log("step_skipped", step=step, output={"reason": "没有适用于本次成片的可见实例"})
                 return None
+            if log:
+                await log("step_finished", step=step, output=render_inputs(overlay))
             if environment_problem(service.settings, overlay):
                 raise OverlayError("render_environment_unavailable", "Remotion 渲染环境不可用")
             publications = {key: ParseDict(value, pb.PublishedSprite()) for key, value in data["remotion"]["assets"].items()}
@@ -400,14 +419,29 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
                 await asyncio.to_thread(record_performance, work, slot_wait_ms=max(0, (perf_counter() - waiting) * 1000 - grant.wait_ms),
                                         resource_wait_ms=grant.wait_ms, granted_chunks=grant.chunks, reserved_memory_mb=grant.reserved_memory_mb)
                 # 与叠加渲染相同：放不下的标题、字幕缩小字号，缩到最小仍放不下以 remotion_text_too_long 失败。
-                await measured(work, "text_fit", fit_texts(service.harness.renderer, overlay, publications, work / "fit"))
+                step = "remotion_text_fit"
+                if log:
+                    await log("step_started", step=step, input=render_inputs(overlay))
+                measurements = await measured(work, "text_fit", fit_texts(service.harness.renderer, overlay, publications, work / "fit"))
+                if log:
+                    await log("step_finished", step=step, output={"measurements": measurements, "render_input": render_inputs(overlay)})
+                step = "remotion_video"
+                if log:
+                    await log("step_started", step=step, input={**render_inputs(overlay), "chunks": grant.chunks, "pages": grant.pages})
                 output = await render_overlay(service.harness.renderer, overlay, work, chunk_concurrency=grant.chunks, frame_concurrency=grant.pages)
+                if log:
+                    await log("step_finished", step=step, output={"filename": output.name, "bytes": output.stat().st_size, "frames": overlay.frames})
             # 文件必须存活到上传线程收尾；取消任务不保存迟到结果。
             uploading = perf_counter()
+            step = "remotion_upload"
+            if log:
+                await log("step_started", step=step, input={"filename": output.name, "object_key": f"{object_prefix(data)}/{task_id}/overlay.webm"})
             upload = asyncio.create_task(asyncio.to_thread(upload_public,
                 [(output, f"{object_prefix(data)}/{task_id}/overlay.webm", "video/webm")], ZosSettings(), timeout))
             try:
                 urls = await asyncio.shield(upload)
+                if log:
+                    await log("step_finished", step=step, output={"video_url": urls[0], "content_type": "video/webm"})
             finally:
                 await asyncio.gather(upload, return_exceptions=True)
                 await asyncio.to_thread(record_performance, work, upload_ms=(perf_counter() - uploading) * 1000)
@@ -418,6 +452,9 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
                 await asyncio.to_thread(preserve_failure, work, exc)
             except OSError as diagnostic_error:
                 logger.error("合成任务 %s 私有渲染诊断保存失败：%s", task_id, type(diagnostic_error).__name__)
+            if log:
+                await log("step_failed", step=step, reason="Remotion 子步骤失败", code=getattr(exc, "code", "remotion_render_failed"),
+                          **({"detail_log_path": exc.detail_log_path} if getattr(exc, "detail_log_path", None) else {}))
             raise
         finally:
             performance = await asyncio.to_thread(record_performance, work, total_ms=(perf_counter() - started) * 1000)
