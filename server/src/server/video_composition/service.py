@@ -813,8 +813,9 @@ class Job:
                     self.record, "zos_upload",
                     lambda: self.runtime.sync(zos.copy_video, url, self.record["task_id"], ZosSettings(),
                                               self.settings.composition_http_timeout_seconds,
+                                              log=partial(store.add_log, self.record),
                                               **({"prefix": zos.object_prefix(data)} if data.get("playground") else {})),
-                    {"media_id": data["result"]["mediaId"]},
+                    {"media_id": data["result"]["mediaId"], "aliyun_video_url": url},
                 )
             except Exception:
                 await asyncio.sleep(min(self.settings.composition_poll_seconds, budget))

@@ -13,6 +13,7 @@ from botocore.config import Config
 import httpx
 
 from .settings import ZosSettings
+from .execution_log import exception_details
 
 
 def extract_third_frame(video: Path, image: Path, timeout: float) -> None:
@@ -55,12 +56,14 @@ def storage_client(settings: ZosSettings, timeout: float):
     return client
 
 
-def upload_public(files: list[tuple[Path, str, str]], settings: ZosSettings, timeout: float) -> list[str]:
+def upload_public(files: list[tuple[Path, str, str]], settings: ZosSettings, timeout: float, *, log=None) -> list[str]:
     """逐个上传为 public-read，核对大小并匿名读取首字节；返回与输入同序的公开地址。"""
     urls = [f"{settings.zos_web_url.rstrip('/')}/{key}" for _, key, _ in files]
     storage = storage_client(settings, timeout)
     with closing(storage), httpx.Client(timeout=timeout, follow_redirects=False) as client:
         for (path, object_key, content_type), url in zip(files, urls):
+            if log:
+                log("step_started", {"step": "zos_publish", "input": {"object_key": object_key, "content_type": content_type, "bytes": path.stat().st_size}})
             with path.open("rb") as file:
                 # 串行发送分片，避免 ZOS 并行上传时 TLS 连接提前断开；仍保留大文件分片能力。
                 storage.upload_fileobj(file, settings.zos_bucket, object_key,
@@ -72,6 +75,9 @@ def upload_public(files: list[tuple[Path, str, str]], settings: ZosSettings, tim
                 response.raise_for_status()
                 if response.status_code not in (200, 206) or not next(response.iter_bytes(chunk_size=1), b""):
                     raise ValueError("ZOS 对象尚不能匿名读取")
+                if log:
+                    log("step_finished", {"step": "zos_publish", "output": {"object_key": object_key, "url": url,
+                        "bytes": path.stat().st_size, "size_verified": True, "anonymous_http_status": response.status_code}})
     return urls
 
 
@@ -80,26 +86,42 @@ def object_prefix(data: dict) -> str:
     return "imv/playground" if data.get("playground") else "imv/video_composition"
 
 
-def copy_video(source_url: str, task_id: str, settings: ZosSettings, timeout: float, *, prefix: str = "imv/video_composition") -> tuple[str, str]:
+def copy_video(source_url: str, task_id: str, settings: ZosSettings, timeout: float, *, prefix: str = "imv/video_composition", log=None) -> tuple[str, str]:
     """同一次下载生成视频和公开 PNG；两者核验通过后只返回视频地址。"""
     key = f"{prefix}/{task_id}.mp4"
     image_key = f"{prefix}/{task_id}.png"
-    with TemporaryDirectory() as directory, httpx.Client(timeout=timeout, follow_redirects=False) as client:
-        video = Path(directory) / "video.mp4"
-        image = Path(directory) / "frame.png"
-        with video.open("wb") as file, client.stream("GET", source_url, headers={"Accept-Encoding": "identity"}) as response:
-            response.raise_for_status()
-            if response.headers.get("Content-Encoding", "identity").lower() != "identity":
-                raise ValueError("IMS 成片返回了压缩传输内容")
-            declared = response.headers.get("Content-Length")
-            size = 0
-            for chunk in response.iter_bytes():
-                size += len(chunk)
-                file.write(chunk)
-            if size == 0 or (declared is not None and size != int(declared)):
-                raise ValueError("IMS 成片下载不完整")
-        extract_third_frame(video, image, timeout)
-        public_url, _ = upload_public(
-            [(video, key, "video/mp4"), (image, image_key, "image/png")], settings, timeout,
-        )
+    step = "zos_download"
+    try:
+        with TemporaryDirectory() as directory, httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            video = Path(directory) / "video.mp4"
+            image = Path(directory) / "frame.png"
+            if log:
+                log("step_started", {"step": step, "input": {"aliyun_video_url": source_url}})
+            with video.open("wb") as file, client.stream("GET", source_url, headers={"Accept-Encoding": "identity"}) as response:
+                response.raise_for_status()
+                if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                    raise ValueError("IMS 成片返回了压缩传输内容")
+                declared = response.headers.get("Content-Length")
+                size = 0
+                for chunk in response.iter_bytes():
+                    size += len(chunk)
+                    file.write(chunk)
+                if size == 0 or (declared is not None and size != int(declared)):
+                    raise ValueError("IMS 成片下载不完整")
+            if log:
+                log("step_finished", {"step": step, "output": {"bytes": size, "http_status": response.status_code}})
+            step = "zos_cover"
+            if log:
+                log("step_started", {"step": step, "input": {"video_bytes": size, "frame_index": 2}})
+            extract_third_frame(video, image, timeout)
+            if log:
+                log("step_finished", {"step": step, "output": {"filename": image.name, "bytes": image.stat().st_size}})
+            step = "zos_publish"
+            public_url, _ = upload_public(
+                [(video, key, "video/mp4"), (image, image_key, "image/png")], settings, timeout, **({"log": log} if log else {}),
+            )
+    except Exception as exc:
+        if log:
+            log("step_failed", {"step": step, **exception_details(exc)})
+        raise
     return key, public_url

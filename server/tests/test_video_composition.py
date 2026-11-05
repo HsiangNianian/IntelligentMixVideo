@@ -729,7 +729,7 @@ def upstreams(monkeypatch, composition_settings, composition_case):
             raise ValueError("private-key-should-never-appear")
         return f"https://test-output.oss-cn-shanghai.aliyuncs.com/actual.mp4?Signature={len(state['playbacks'])}"
 
-    def copy_video(source_url, task_id, settings, timeout, *, prefix="imv/video_composition"):
+    def copy_video(source_url, task_id, settings, timeout, *, prefix="imv/video_composition", log=None):
         """模拟下载、公开读取校验与上传，保留源地址只供此步骤使用。"""
         state["zos_uploads"].append((source_url, task_id))
         assert settings.zos_bucket == "archives" and timeout > 0
