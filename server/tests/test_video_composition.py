@@ -1036,8 +1036,8 @@ def test_zos_query_does_not_need_ims_playback(upstreams, client, composition_cas
     assert len(upstreams["playbacks"]) == 1
 
 
-def test_legacy_playback_refresh_failure_preserves_success(upstreams, client, composition_case, composition_settings):
-    """旧成功记录仍刷新 IMS 地址，取址失败只影响本次 GET。"""
+def test_legacy_playback_refresh_failure_preserves_success(upstreams, client, composition_case, composition_settings, composition_logs):
+    """旧成功记录刷新 IMS 地址，取址失败只影响 GET；新日志不把旧 IMS 结果当作 ZOS。"""
     record = store.create(composition_case["request"], composition_settings.output())
     record = store.advance(record, "completed", status="succeeded",
                            result={"mediaId": "ims-media", "durationSeconds": 8.02,
@@ -1046,6 +1046,11 @@ def test_legacy_playback_refresh_failure_preserves_success(upstreams, client, co
     assert client.get(f"{BASE}/{record['task_id']}").status_code == 503
     upstreams["failure"] = None
     assert client.get(f"{BASE}/{record['task_id']}").json()["result"]["videoUrl"].endswith("Signature=2")
+    from server.video_composition.execution_log import expand_columns
+    saved = expand_columns(composition_logs(record["task_id"], raw=True)[0])
+    assert not saved["zos"]["output"]
+    refreshed = next(item for item in saved["ims"]["output"] if item["action"] == "response.response_ready")
+    assert refreshed["data"]["videoUrl"].endswith("Signature=2")
 
 
 def test_missing_zos_config_rejected_before_accept(upstreams, client, composition_case, monkeypatch):
@@ -2186,6 +2191,11 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     assert outputs["ims_query"]["MediaProducingJob"]["Status"] == "Success"
     assert outputs["playback"] == {"aliyun_video_url": upstreams["zos_uploads"][0][0]}
     assert outputs["zos_upload"] == {"zos_object_key": record["data"]["zos_object_key"], "zos_video_url": record["data"]["result"]["videoUrl"]}
+    expanded = expand_columns(saved)
+    cloud_result = {"mediaId": "ims-media", "durationSeconds": record["data"]["result"]["durationSeconds"]}
+    assert any(item["data"] == cloud_result for item in expanded["ims"]["output"])
+    assert not any(item["data"] == cloud_result for item in expanded["zos"]["output"])
+    assert any(item["data"] == response.json()["result"] for item in expanded["zos"]["output"])
     skipped = {row["stage"]: row["details"]["output"]["reason"] for row in rows if row["event"] == "step_skipped"}
     assert {"translation", "frame_mask_upload", "avatar_opening", "split_screen"} <= skipped.keys()
     assert all(skipped.values())

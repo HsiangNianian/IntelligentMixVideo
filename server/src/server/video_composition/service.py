@@ -254,7 +254,9 @@ class Runtime:
             result=result, error=record["data"].get("error"),
             created_at=record["created_at"], updated_at=record["updated_at"],
         )
-        await self.log(record, "response_ready", source=source, http_status=200, output=response.model_dump(mode="json", by_alias=True))
+        await self.log(record, "response_ready", source=source, http_status=200,
+                       result_module="zos" if record["data"].get("zos_object_key") else "ims",
+                       output=response.model_dump(mode="json", by_alias=True))
         return response
 
     async def receive_match_callback(self, task_id: str, token: str, callback: MatchCallback, raw: dict | None = None) -> None:

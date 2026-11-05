@@ -170,7 +170,7 @@ def compact_columns(columns: dict) -> dict:
 
 
 def put_data(columns: dict, group: str, direction: str, time, action: str, data, *, fallback=False) -> None:
-    """写入模块输入输出；统一提取最终时间线、组装警告和成片结果，快照只补缺。"""
+    """写入模块输入输出；提交参数补录最终时间线，快照只补缺。"""
     if group == "ims_submit" and direction == "input":
         data = sanitize(data)
         if "timeline" in data:
@@ -179,17 +179,19 @@ def put_data(columns: dict, group: str, direction: str, time, action: str, data,
     items = columns[module][direction]
     if not fallback or not any(item["data"] == data for item in items):
         items.append({"time": time, "action": action, "data": data})
-    if direction == "output" and action.endswith(".response_ready") and isinstance(data, dict) and data.get("result"):
-        put_data(columns, "zos", "output", time, action, data["result"], fallback=True)
 
 
 def put_snapshots(columns: dict, time, action: str, payload: dict) -> None:
     """只补录事件已保存的模块快照，不替代实际调用的输入输出。"""
     for key, group, direction in (("template", "template", "output"), ("segmentation", "segmentation", "output"),
                                   ("match_request", "matching", "input"), ("matches", "matching", "output"),
-                                  ("result", "zos", "output"), ("zos_object_key", "zos", "output")):
+                                  ("zos_object_key", "zos", "output")):
         if key in payload:
             put_data(columns, group, direction, time, f"{action}.{key}", payload[key], fallback=True)
+    if "result" in payload:
+        # 转存成功才有对象键；云端刚完成和历史未转存任务的结果均属于 IMS。
+        put_data(columns, "zos" if payload.get("zos_object_key") else "ims", "output",
+                 time, f"{action}.result", payload["result"], fallback=True)
     if "ims_request" in payload:
         put_data(columns, "ims_submit", "input", time, action, payload["ims_request"], fallback=True)
 
@@ -209,6 +211,8 @@ def add_event(previous: dict | None, event: str, record: dict, details: dict, ti
     for direction in ("input", "output"):
         if direction in details:
             put_data(columns, group, direction, time, action, details[direction])
+    if event == "response_ready" and (result := details.get("output", {}).get("result")):
+        put_data(columns, details["result_module"], "output", time, action, result, fallback=True)
     payload = {key: value for key, value in details.items() if key not in ("input", "output")}
     failed = event == "notification_pending" or event.endswith(("_failed", "_rejected", "_cancelled")) or (event == "task_finished" and record["status"] == "failed")
     entry = {"time": time, "action": action, "status": record["status"]}
