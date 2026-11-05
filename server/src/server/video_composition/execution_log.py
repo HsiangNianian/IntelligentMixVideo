@@ -197,7 +197,7 @@ def put_snapshots(columns: dict, time, action: str, payload: dict) -> None:
 
 
 def add_event(previous: dict | None, event: str, record: dict, details: dict, time, *, folder: Path | None = None) -> dict:
-    """新事件写入唯一模块；错误正文独立保存，模块只保留摘要与路径。"""
+    """新事件写入唯一模块；错误详情保存成功才缩成摘要，否则保留完整脱敏诊断。"""
     columns = expand_columns(previous) if previous else {
         name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES
     }
@@ -222,11 +222,14 @@ def add_event(previous: dict | None, event: str, record: dict, details: dict, ti
             entry["error"]["detail_log_path"] = path
         if folder is not None:
             write_error_detail(entry, folder)
-        error = details.get("error") or details
-        entry["error"] = {"message": entry["error"]["message"][:500], **{
-            key: value for key in ("code", "detail_log_path")
-            if (value := entry["error"].get(key) or error.get(key)) is not None
-        }}
+        if entry["error"].get("detail_log_path"):
+            error = details.get("error") or details
+            if error.get("code") is None:
+                error = {**error, "code": next((item["code"] for item in details.get("exceptions", []) if "code" in item), None)}
+            entry["error"] = {"message": entry["error"]["message"][:500], **{
+                key: value for key in ("code", "detail_log_path")
+                if (value := entry["error"].get(key) or error.get(key)) is not None
+            }}
     columns[GROUPS.get(group, group if group in MODULES else "request")]["error_log" if failed else "execute_log"].append(entry)
     put_snapshots(columns, time, action, payload)
     return compact_columns(columns)

@@ -285,25 +285,41 @@ async def test_each_module_writes_error_detail_file(module, step, composition_ca
 
 
 def test_detail_file_write_failure_keeps_json_error(composition_case, composition_logs, monkeypatch, caplog):
-    """仅详细文件写入失败时仍保存 JSON 错误摘要，并继续消费后续事件，不写悬空路径。"""
+    """详情写入失败时保留完整脱敏诊断；恢复写入后新事件仅留摘要，旧诊断不丢失。"""
     store.initialize_schema()
     record = store.create(composition_case["request"], {})
     original = Path.write_text
 
     def reject_detail(path, *args, **kwargs):
-        """只拒绝 .log 文件，保留 JSON 写入以检查降级行为。"""
+        """只拒绝详细错误文件，模块 JSON 仍可保存完整诊断。"""
         if path.suffix == ".log":
             raise OSError("detail disk unavailable")
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", reject_detail)
-    store.add_log(record, "step_failed", {"step": "asr", "reason": "识别失败"})
+    details = {"step": "asr", "reason": "识别失败" * 200, "http_status": 503, "exceptions": [
+        {"type": "RuntimeError", "message": "上游失败 password=hidden-detail", "code": "upstream_error",
+         "frames": [{"file": "asr.py", "line": 12, "function": "transcribe"}]},
+    ]}
+    store.add_log(record, "step_failed", details)
     store.add_log(record, "probe", {})
     saved, = composition_logs(record["task_id"], raw=True)
-    error = saved["asr"]["error_log"][0]["error"]
-    assert error["message"] == "识别失败" and "detail_log_path" not in error
+    error = expand_columns(saved)["asr"]["error_log"][0]["error"]
+    assert error["exceptions"] == execution_log.sanitize(details["exceptions"])
+    assert error["http_status"] == 503 and error["reason"] == details["reason"]
+    assert len(error["message"]) > 500 and "detail_log_path" not in error
+    assert "hidden-detail" not in json.dumps(saved["asr"])
     assert saved["request"]["execute_log"][-1]["action"].endswith(".probe")
     assert "详细错误日志保存失败" in caplog.text
+    monkeypatch.setattr(Path, "write_text", original)
+    store.add_log(record, "step_failed", details)
+    restored = expand_columns(composition_logs(record["task_id"], raw=True)[0])["asr"]["error_log"]
+    assert restored[0]["error"] == error
+    assert set(restored[1]["error"]) == {"message", "code", "detail_log_path"}
+    assert len(restored[1]["error"]["message"]) == 500
+    assert restored[1]["error"]["code"] == "upstream_error"
+    path = execution_log.LOG_ROOT / "video_composition" / record["task_id"] / restored[1]["error"]["detail_log_path"]
+    assert json.loads(path.read_text())["error"]["exceptions"] == error["exceptions"]
 
 
 def test_different_error_details_are_preserved_even_with_the_same_message(tmp_path):
@@ -321,6 +337,25 @@ def test_different_error_details_are_preserved_even_with_the_same_message(tmp_pa
     assert json.loads((tmp_path / paths[0]).read_text())["error"]["exceptions"] == first["exceptions"]
     assert json.loads((tmp_path / paths[1]).read_text())["error"]["exceptions"] == second["exceptions"]
     assert all("exceptions" not in entry["error"] for entry in entries)
+    assert [entry["error"]["code"] for entry in entries] == ["first", "second", "first"]
+
+
+@pytest.mark.parametrize("business_code", [None, "business_error", 0])
+def test_error_summary_uses_exception_code_without_overriding_business_code(tmp_path, business_code):
+    """摘要从异常链补码，显式业务码（包括零）优先，详情仍保存全部根因。"""
+    cause = ValueError("上游失败")
+    cause.code = "upstream_error"
+    error = RuntimeError("步骤失败")
+    error.__cause__ = cause
+    details = {"step": "ims_query", **exception_details(error)}
+    if business_code is not None:
+        details["error"] = {"code": business_code, "message": "业务失败"}
+    saved = add_event(None, "step_failed", {"stage": "rendering", "status": "processing"},
+                      details, datetime.now(), folder=tmp_path)
+    summary = saved["ims"]["error_log"][0]["error"]
+    assert summary["code"] == (business_code if business_code is not None else "upstream_error")
+    detail = json.loads((tmp_path / summary["detail_log_path"]).read_text())
+    assert detail["error"]["exceptions"][-1]["code"] == "upstream_error"
 
 
 @pytest.mark.parametrize("step,module", [("remotion_render", "remotion"), ("remotion_text_fit", "remotion"),
