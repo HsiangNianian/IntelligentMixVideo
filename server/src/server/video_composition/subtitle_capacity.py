@@ -89,7 +89,7 @@ async def remotion_capacities(task_id: str, data: dict, placements: list[tuple[d
             await asyncio.to_thread(shutil.rmtree, work, True)
 
 
-async def calculate(task_id: str, data: dict) -> int:
+async def calculate(task_id: str, data: dict, *, diagnostics: dict | None = None) -> int:
     """本单最小单行全角容量减二（至少一字），没有中文字幕时默认八字；恢复由调用方复用已存结果。
 
     新槽位替代隐藏的 IMS 字幕；旧 businessTarget 两者共存取较小容量。无数字字号的字效也实测。
@@ -113,5 +113,9 @@ async def calculate(task_id: str, data: dict) -> int:
     if capacities and min(capacities) < 1:
         raise CompositionError("subtitle_capacity_too_small", "当前字幕样式一行放不下一个全角字，请调整字号或位置", "template")
     limit = max(1, min(capacities) - 2) if capacities else 8
+    if diagnostics is not None:
+        diagnostics.update(capacities=capacities, max_segment_chars=limit, ims_replaced=replaced,
+                           sprite_ids=[placement["sprite_id"] for placement, _ in placements],
+                           reason="最小单行全角容量减二，至少一字；无字幕对象时使用八字")
     logger.info("Subtitle capacity task_id=%s full_width_chars=%s max_segment_chars=%s", task_id, capacities, limit)
     return limit

@@ -348,7 +348,7 @@ async def test_template_capacity_reaches_segmentation(upstreams, client, composi
 
 
 @pytest.mark.anyio
-async def test_recovery_reuses_saved_capacity(upstreams, composition_case, composition_runtime, monkeypatch):
+async def test_recovery_reuses_saved_capacity(upstreams, composition_case, composition_runtime, composition_logs, monkeypatch):
     """已经保存单行容量的任务恢复准备阶段时沿用旧值，不再次计算或取新模板样式。"""
     store.initialize_schema()
     record = await composition_runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
@@ -361,6 +361,9 @@ async def test_recovery_reuses_saved_capacity(upstreams, composition_case, compo
     restored = store.get(record["task_id"])
     await service.Job(composition_runtime, restored, composition_runtime.settings).prepare()
     assert upstreams["max_segment_chars"] == 5
+    reused, = [row for row in composition_logs(record["task_id"])
+               if row["event"] == "step_reused" and row["stage"] == "subtitle_capacity"]
+    assert reused["details"]["output"]["max_segment_chars"] == 5
 
 
 @pytest.mark.anyio
@@ -499,7 +502,7 @@ def test_avatar_tail_cutoff_keeps_original_content_preparation(
         probes.append(url)
         return video_seconds
 
-    async def render(task_id, data, timeout, *, timeline):
+    async def render(task_id, data, timeout, *, timeline, log=None):
         """确认叠加渲染接到与 IMS 相同的裁剪快照，不调用真实渲染器。"""
         overlays.append(deepcopy(data))
         return None
@@ -536,6 +539,14 @@ def test_avatar_tail_cutoff_keeps_original_content_preparation(
                for row in rows if row["event"] == "step_finished"}
     assert outputs["asr"]["properties"]["original_duration_in_milliseconds"] == 102960
     assert outputs["segmentation"]["segments"] == composition_case["segments"]
+    assert outputs["duration_trim"]["duration_ms"] == duration_ms
+    assert outputs["duration_trim"]["avatar_duration_ms"] == int(video_seconds * 1000)
+    trim_input = next(row["details"]["input"] for row in rows
+                      if row["event"] == "step_started" and row["stage"] == "duration_trim")
+    assert trim_input["audio_duration_ms"] == 102960
+    assert trim_input["segmentation"]["segments"] == composition_case["segments"]
+    if duration_ms < 102960:
+        assert outputs["duration_trim"]["segmentation"] == data["segmentation"]
     assert upstreams["asr_calls"] == upstreams["segment_calls"] == 1
 
 
@@ -718,7 +729,7 @@ def upstreams(monkeypatch, composition_settings, composition_case):
             raise ValueError("private-key-should-never-appear")
         return f"https://test-output.oss-cn-shanghai.aliyuncs.com/actual.mp4?Signature={len(state['playbacks'])}"
 
-    def copy_video(source_url, task_id, settings, timeout, *, prefix="imv/video_composition"):
+    def copy_video(source_url, task_id, settings, timeout, *, prefix="imv/video_composition", log=None):
         """模拟下载、公开读取校验与上传，保留源地址只供此步骤使用。"""
         state["zos_uploads"].append((source_url, task_id))
         assert settings.zos_bucket == "archives" and timeout > 0
@@ -1025,8 +1036,8 @@ def test_zos_query_does_not_need_ims_playback(upstreams, client, composition_cas
     assert len(upstreams["playbacks"]) == 1
 
 
-def test_legacy_playback_refresh_failure_preserves_success(upstreams, client, composition_case, composition_settings):
-    """旧成功记录仍刷新 IMS 地址，取址失败只影响本次 GET。"""
+def test_legacy_playback_refresh_failure_preserves_success(upstreams, client, composition_case, composition_settings, composition_logs):
+    """旧成功记录刷新 IMS 地址，取址失败只影响 GET；新日志不把旧 IMS 结果当作 ZOS。"""
     record = store.create(composition_case["request"], composition_settings.output())
     record = store.advance(record, "completed", status="succeeded",
                            result={"mediaId": "ims-media", "durationSeconds": 8.02,
@@ -1035,6 +1046,11 @@ def test_legacy_playback_refresh_failure_preserves_success(upstreams, client, co
     assert client.get(f"{BASE}/{record['task_id']}").status_code == 503
     upstreams["failure"] = None
     assert client.get(f"{BASE}/{record['task_id']}").json()["result"]["videoUrl"].endswith("Signature=2")
+    from server.video_composition.execution_log import expand_columns
+    saved = expand_columns(composition_logs(record["task_id"], raw=True)[0])
+    assert not saved["zos"]["output"]
+    refreshed = next(item for item in saved["ims"]["output"] if item["action"] == "response.response_ready")
+    assert refreshed["data"]["videoUrl"].endswith("Signature=2")
 
 
 def test_missing_zos_config_rejected_before_accept(upstreams, client, composition_case, monkeypatch):
@@ -2162,7 +2178,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     rows = composition_logs(task_id)
     started = {row["details"]["step"]: row["details"]["input"] for row in rows if row["event"] == "step_started"}
     outputs = {row["details"]["step"]: row["details"].get("output") for row in rows if row["event"] == "step_finished"}
-    assert set(started) == set(outputs) == {"template", "remotion_snapshot", "remotion_render", "asr", "segmentation", "match_submit", "material_probe", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
+    assert set(started) == set(outputs) == {"template", "remotion_snapshot", "remotion_render", "asr", "segmentation", "match_submit", "material_probe", "duration_trim", "subtitle_capacity", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
     assert started["template"] == {"style_id": request["styleId"]}
     assert outputs["template"] == composition_case["template"]
     assert outputs["asr"] == upstreams["raw"] == started["segmentation"]["asr_result"]
@@ -2171,10 +2187,18 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     submitted_timeline = sanitize(record["data"]["ims_request"]["timeline"])
     assert any(item["data"] == submitted_timeline for item in expand_columns(saved)["timeline"]["output"])
     assert submitted_timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == "甲乙丙丁"
-    assert "timeline" not in started["ims_submit"] and outputs["ims_submit"] == {"JobId": "ims-job"}
-    assert outputs["ims_query"] is None
+    assert started["ims_submit"]["timeline"] == submitted_timeline and outputs["ims_submit"] == {"JobId": "ims-job"}
+    assert outputs["ims_query"]["MediaProducingJob"]["Status"] == "Success"
     assert outputs["playback"] == {"aliyun_video_url": upstreams["zos_uploads"][0][0]}
-    assert outputs["zos_upload"] == {"zos_video_url": record["data"]["result"]["videoUrl"]}
+    assert outputs["zos_upload"] == {"zos_object_key": record["data"]["zos_object_key"], "zos_video_url": record["data"]["result"]["videoUrl"]}
+    expanded = expand_columns(saved)
+    cloud_result = {"mediaId": "ims-media", "durationSeconds": record["data"]["result"]["durationSeconds"]}
+    assert any(item["data"] == cloud_result for item in expanded["ims"]["output"])
+    assert not any(item["data"] == cloud_result for item in expanded["zos"]["output"])
+    assert any(item["data"] == response.json()["result"] for item in expanded["zos"]["output"])
+    skipped = {row["stage"]: row["details"]["output"]["reason"] for row in rows if row["event"] == "step_skipped"}
+    assert {"translation", "frame_mask_upload", "avatar_opening", "split_screen"} <= skipped.keys()
+    assert all(skipped.values())
     callback = next(row for row in rows if row["event"] == "match_callback_received")
     assert "input" not in callback["details"]
     assert callback["details"]["output"]["result"]["segments"][0]["matched_candidate_reason"] == "no_candidates"
@@ -2215,7 +2239,7 @@ def test_playback_must_be_ready_before_success_and_notification(upstreams, clien
     failures = [row for row in rows if row["event"] == "step_failed" and row["details"]["step"] == "playback"]
     assert len(failures) == 2 and all(row["details"]["exceptions"][0]["type"] == "ValueError" for row in failures)
     saved, = composition_logs(task_id, raw=True)
-    assert saved["zos"]["error_log"]
+    assert saved["ims"]["error_log"]
     assert record["status"] == "succeeded" and record["data"]["notification_status"] == "sent"
     assert len(upstreams["playbacks"]) == 3 and len(upstreams["renders"]) == 1
     assert upstreams["notifications"][0]["body"]["videoUrl"].endswith(f"imv/video_composition/{task_id}.mp4")
@@ -2291,13 +2315,17 @@ async def test_pending_retry_recovers_and_stops_on_success(upstreams, notificati
     logs, = composition_logs(current["task_id"], raw=True)
     failure, = logs["request"]["error_log"]
     assert failure["action"] == "notification.notification_pending"
-    assert failure["error"]["attempt"] == 1
-    assert failure["error"]["next_at"] == current["data"]["notification_next_at"]
+    from server.video_composition.execution_log import query_log
+    detail_file, = query_log(current["task_id"], "error")["files"]
+    assert failure["error"]["detail_log_path"] == f"errors/{detail_file['name']}"
+    detail = json.loads(detail_file["content"])["error"]
+    assert detail["attempt"] == 1
+    assert detail["next_at"] == current["data"]["notification_next_at"]
     if error:
-        assert failure["error"]["exceptions"][0]["type"] == "ReadTimeout"
+        assert detail["exceptions"][0]["type"] == "ReadTimeout"
         assert failure["error"]["message"] == "private-notification-error"
     else:
-        assert failure["error"]["http_status"] == 500
+        assert detail["http_status"] == 500
     assert any(entry["action"] == "notification.notification_sent" for entry in logs["request"]["execute_log"])
     assert all(set(entry) == {"time", "action", "status"} for entry in logs["request"]["execute_log"])
 

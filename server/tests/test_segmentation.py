@@ -676,7 +676,7 @@ def test_keyword_failure_response_is_saved_in_task_error_files(model, server_log
     entry, = json.loads((folder / "segmentation.json").read_text())["error_log"]
     detail = (folder / entry["error"]["detail_log_path"]).read_text()
     error = json.loads(detail)["error"]
-    assert error["exceptions"] == entry["error"]["exceptions"]
+    assert "exceptions" not in entry["error"]
     assert error["exceptions"][0]["keyword_response"] == {
         "expected_segment_count": 2, "keywords_type": "list", "keyword_group_count": 1,
         "response": {"keywords": [["甲乙"]], "api_key": "[REDACTED]"},

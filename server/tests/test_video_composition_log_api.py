@@ -1,4 +1,4 @@
-"""日志查询 API 的文件读取、引用展开和参数边界；仅使用临时目录，不启动数据库或后台调度。
+"""日志查询 API 的字段内引用、历史兼容和参数边界；仅使用临时目录，不启动数据库或后台调度。
 
 在 server/ 执行 uv run --locked pytest tests/test_video_composition_log_api.py -v。
 """
@@ -39,7 +39,7 @@ def task_folder():
 
 @pytest.mark.parametrize("module", execution_log.MODULES)
 def test_module_returns_complete_content_without_writing(log_client, task_folder, module):
-    """七个模块均返回全部四类记录，保留中文、重试与长正文，查询不改写文件。"""
+    """九个模块均返回全部四类记录，保留中文、重试与长正文，查询不改写文件。"""
     section = {
         "input": [{"time": "2026-11-03", "action": "asr.step_started", "data": {"text": "完整正文" * 100000, "tail": "结束"}}],
         "output": [{"time": "2026-11-03", "action": "asr.step_finished", "data": {"value": module}}],
@@ -73,6 +73,60 @@ def test_module_expands_cross_file_references(log_client, task_folder):
     assert response.status_code == 200
     assert response.json()["input"][0]["data"] == raw
     assert json.loads((task_folder / "segmentation.json").read_text())["input"][0]["data"] == reference
+
+
+def test_query_uses_complete_pending_snapshot_without_repairing_files(log_client, task_folder):
+    """九文件尚未替换完时，接口使用已提交完整快照；读取不修复或删除文件。"""
+    columns = {name: {field: [] for field in ("input", "output", "execute_log", "error_log")} for name in execution_log.MODULES}
+    columns["asr"]["output"] = [{"time": "2026-11-05", "action": "asr.step_finished", "data": {"text": "完整新版本"}}]
+    pending = task_folder / ".pending.json"
+    pending.write_text(json.dumps(columns))
+    # 旧文件不完整也不能影响新快照的读取。
+    (task_folder / "asr.json").write_text('{"old":')
+    before = {path.name: path.read_bytes() for path in task_folder.iterdir()}
+    response = log_client.get(f"/api/v1/video-compositions/{task_folder.name}/logs", params={"module": "asr"})
+    assert response.status_code == 200 and response.json() == columns["asr"]
+    assert {path.name: path.read_bytes() for path in task_folder.iterdir()} == before
+
+
+def test_api_keeps_local_references_and_materializes_legacy_external_sources(log_client, task_folder):
+    """新旧日志均按字段内去重返回，各字段先有原文，查询不迁移历史文件或丢弃事件。"""
+    empty = {key: [] for key in ("input", "output", "execute_log", "error_log")}
+    raw = {"text": "完整业务正文" * 100}
+    entry = {"time": "2026-11-03", "action": "asr.step_finished", "data": raw}
+    asr = {**empty, "output": [entry, {**entry, "data": {"$log_ref": "#/asr/output/0/data"}}]}
+    segmentation = {**empty, "input": [{**entry, "data": {"$log_ref": "#/asr/output/0/data"}}] * 2,
+                    "output": [entry]}
+    originals = {}
+    for module, section in (("asr", asr), ("segmentation", segmentation)):
+        path = task_folder / f"{module}.json"
+        originals[path] = json.dumps(section, ensure_ascii=False)
+        path.write_text(originals[path], encoding="utf-8")
+    for module, field in (("asr", "output"), ("segmentation", "input")):
+        response = log_client.get(f"/api/v1/video-compositions/{task_folder.name}/logs", params={"module": module})
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body[field]) == 2
+        assert body[field][0]["data"] == raw
+        assert body[field][1]["data"] == {"$log_ref": f"#/{module}/{field}/0/data"}
+        if module == "segmentation":
+            assert body["output"][0]["data"] == raw
+    assert all(path.read_text(encoding="utf-8") == text for path, text in originals.items())
+
+
+def test_old_directory_and_error_payload_are_unchanged(log_client, task_folder):
+    """旧七模块可读，新模块为空，旧内嵌异常详情和文件字节均不迁移。"""
+    legacy = {key: [] for key in ("input", "output", "execute_log", "error_log")}
+    legacy["error_log"] = [{"time": "2026-10-01", "action": "remotion_render.step_failed", "status": "processing",
+                            "error": {"exceptions": [{"type": "ValueError", "message": "旧详情"}]}}]
+    content = json.dumps(legacy, ensure_ascii=False)
+    (task_folder / "timeline.json").write_text(content)
+    for module in ("remotion", "ims"):
+        assert log_client.get(f"/api/v1/video-compositions/{task_folder.name}/logs", params={"module": module}).json() == {
+            key: [] for key in ("input", "output", "execute_log", "error_log")}
+    assert log_client.get(f"/api/v1/video-compositions/{task_folder.name}/logs", params={"module": "timeline"}).json() == legacy
+    assert (task_folder / "timeline.json").read_text() == content
+    assert len(list(task_folder.iterdir())) == 1
 
 
 def test_error_returns_all_task_error_files(log_client, task_folder):
@@ -157,7 +211,7 @@ def test_unreadable_log_is_not_reported_as_empty(log_client, task_folder):
     assert response.json() == {"detail": "服务端内部错误，请稍后重试"}
 
 
-def test_openapi_exposes_eight_required_english_options(log_client):
+def test_openapi_exposes_ten_required_english_options(log_client):
     """真实 OpenAPI 提供必填英文枚举，供 /docs 渲染模块下拉框。"""
     response = log_client.get("/openapi.json")
     assert response.status_code == 200

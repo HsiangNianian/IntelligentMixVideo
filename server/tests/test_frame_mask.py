@@ -108,7 +108,13 @@ def test_gradient_png_matches_browser_pixels(monkeypatch, case):
         return ["https://media.test/gradient.png"]
 
     monkeypatch.setattr(frame_mask, "upload_public", upload)
-    result = frame_mask.upload_mask({"top": bar, "bottom": bar}, 80, case["height"], "gradient", None, 1, "imv/playground")
+    diagnostics = {}
+    result = frame_mask.upload_mask({"top": bar, "bottom": bar}, 80, case["height"], "gradient", None, 1, "imv/playground", diagnostics=diagnostics)
+    assert diagnostics == {"width": 80, "height": case["height"], "bars": {
+        edge: {"height_px": len(case["expected"]), "fill": "disabled" if not case["expected"]
+               else "gradient" if case["gradient"]["enabled"] else "color"}
+        for edge in ("top", "bottom")
+    }}
     if not case["expected"]:
         assert result is None and not images
         return
