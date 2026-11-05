@@ -475,7 +475,7 @@ class Job:
                 raise CompositionError("template_not_found" if exc.status_code == 404 else "template_error", "模板不存在或无法读取", "template") from None
             except Exception:
                 raise CompositionError("template_error", "模板读取失败", "template") from None
-            # 两份模板一起持久化，后续恢复只读取这一份快照；源码在 Remotion 计划日志中单独保存。
+            # 两份模板一起持久化，后续恢复只读取这一份快照；源码在组装前写入 Remotion 日志。
             await self.runtime.log(self.record, "step_started", step="remotion_snapshot", input={"style_id": str(request.style_id)})
             effects = await remotion.snapshot(template)
             await self.save("template", template=template.model_dump(mode="json", by_alias=True, exclude={"avatar_preview"}), remotion=effects)
@@ -706,6 +706,10 @@ class Job:
             inputs["split_assets"] = data["split_assets"]
         else:
             await self.runtime.log(self.record, "step_skipped", step="split_screen", output={"reason": "当前模式或模板未启用同屏"})
+        if inputs["remotion_assets"]:
+            await self.runtime.log(self.record, "sources_ready", step="remotion_render", input={
+                "sources": {asset["code_sha256"]: asset["tsx_code"] for asset in inputs["remotion_assets"].values()},
+            })
         await self.runtime.log(self.record, "step_started", step="assembling", input={**inputs,
             "remotion_assets": {asset_id: {key: value for key, value in asset.items() if key != "tsx_code"}
                                 for asset_id, asset in inputs["remotion_assets"].items()}})

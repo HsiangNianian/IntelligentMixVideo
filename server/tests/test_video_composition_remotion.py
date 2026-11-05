@@ -59,6 +59,41 @@ def case(composition_case, target="subtitle"):
                          "assets": {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}}}
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", ["timeline", "runtime"])
+async def test_sources_are_logged_before_timeline_or_renderer_initialization_failure(
+    composition_case, composition_runtime, composition_logs, monkeypatch, failure,
+):
+    """组装或渲染器初始化提前失败时，Remotion 仍有原始源码，timeline 不重复保存源码。"""
+    data = case(composition_case)
+    store.initialize_schema()
+    record = store.create(data["request"], composition_runtime.settings.output())
+    record = store.advance(record, "assembling", template=composition_case["template"],
+                           duration_ms=data["duration_ms"], avatar_duration_ms=data["duration_ms"],
+                           segmentation=data["segmentation"], matches=composition_case["matches"], remotion=data["remotion"])
+
+    def fail_timeline(**inputs):
+        """使用真实组装调用入口，模拟尚未进入 Remotion 时失败。"""
+        raise RuntimeError("timeline failed before remotion")
+
+    async def fail_runtime():
+        """只拦截渲染服务初始化，确保失败发生在真实 render 的计划日志之前。"""
+        raise RuntimeError("renderer initialization failed")
+
+    if failure == "timeline":
+        monkeypatch.setattr(service, "build_timeline", fail_timeline)
+    monkeypatch.setattr(remotion, "sprite_runtime", fail_runtime)
+    with pytest.raises(RuntimeError if failure == "timeline" else CompositionError) as caught:
+        await service.Job(composition_runtime, record, composition_runtime.settings).assemble()
+    if failure == "runtime":
+        assert str(caught.value.__cause__) == "renderer initialization failed"
+    columns = execution_log.expand_columns(composition_logs(record["task_id"], raw=True)[0])
+    sources = {hashlib.sha256(CODE.encode()).hexdigest(): CODE}
+    assert any(item["data"].get("sources") == sources for item in columns["remotion"]["input"])
+    assert json.dumps(CODE) not in json.dumps(columns["timeline"])
+    assert not any(item["action"] == "remotion_plan.step_started" for item in columns["remotion"]["execute_log"])
+
+
 @pytest.mark.parametrize("role", ["title", "subtitle"])
 def test_bilingual_shared_sprite_has_independent_content_and_timing(composition_case, role):
     """同一 Sprite 的中英文摆放分别注入译文，按各自语言替换 IMS；停用后不产生英文实例。"""
