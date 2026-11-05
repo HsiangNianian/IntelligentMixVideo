@@ -348,7 +348,7 @@ async def test_template_capacity_reaches_segmentation(upstreams, client, composi
 
 
 @pytest.mark.anyio
-async def test_recovery_reuses_saved_capacity(upstreams, composition_case, composition_runtime, monkeypatch):
+async def test_recovery_reuses_saved_capacity(upstreams, composition_case, composition_runtime, composition_logs, monkeypatch):
     """已经保存单行容量的任务恢复准备阶段时沿用旧值，不再次计算或取新模板样式。"""
     store.initialize_schema()
     record = await composition_runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
@@ -361,6 +361,9 @@ async def test_recovery_reuses_saved_capacity(upstreams, composition_case, compo
     restored = store.get(record["task_id"])
     await service.Job(composition_runtime, restored, composition_runtime.settings).prepare()
     assert upstreams["max_segment_chars"] == 5
+    reused, = [row for row in composition_logs(record["task_id"])
+               if row["event"] == "step_reused" and row["stage"] == "subtitle_capacity"]
+    assert reused["details"]["output"]["max_segment_chars"] == 5
 
 
 @pytest.mark.anyio
@@ -2162,7 +2165,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     rows = composition_logs(task_id)
     started = {row["details"]["step"]: row["details"]["input"] for row in rows if row["event"] == "step_started"}
     outputs = {row["details"]["step"]: row["details"].get("output") for row in rows if row["event"] == "step_finished"}
-    assert set(started) == set(outputs) == {"template", "remotion_snapshot", "remotion_render", "asr", "segmentation", "match_submit", "material_probe", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
+    assert set(started) == set(outputs) == {"template", "remotion_snapshot", "remotion_render", "asr", "segmentation", "match_submit", "material_probe", "subtitle_capacity", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
     assert started["template"] == {"style_id": request["styleId"]}
     assert outputs["template"] == composition_case["template"]
     assert outputs["asr"] == upstreams["raw"] == started["segmentation"]["asr_result"]

@@ -479,8 +479,16 @@ class Job:
         # 恢复时同样复核：叠加渲染环境缺失要在 ASR 与切片模型产生成本前失败。
         await remotion.require_environment(self.record["data"])
         if request.text and request.composition_mode != "materials_silent" and "max_segment_chars" not in self.record["data"]:
-            limit = await subtitle_capacity.calculate(self.record["task_id"], self.record["data"])
+            measurement = {}
+            limit = await self.runtime.step(self.record, "subtitle_capacity", lambda: subtitle_capacity.calculate(
+                self.record["task_id"], self.record["data"], diagnostics=measurement),
+                {"template": template, "output": self.record["data"]["output"]})
+            await self.runtime.log(self.record, "measurement", step="subtitle_capacity", output=measurement)
             await self.save("template", max_segment_chars=limit)
+        elif "max_segment_chars" in self.record["data"]:
+            await self.runtime.log(self.record, "step_reused", step="subtitle_capacity", output={
+                "reason": "复用任务已保存的字幕容量阈值", "max_segment_chars": self.record["data"]["max_segment_chars"],
+            })
         if request.composition_mode == "materials_silent":
             prepared = dict(template=template,
                             duration_ms=request.process_rules.video_duration * 1000)

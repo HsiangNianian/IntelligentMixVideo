@@ -88,7 +88,12 @@ async def test_replacing_effect_uses_measured_capacity(monkeypatch, font_size):
     before = deepcopy(record)
     measured = AsyncMock(return_value=[8])
     monkeypatch.setattr(subtitle_capacity, "remotion_capacities", measured)
-    assert await subtitle_capacity.calculate("test", record) == 6
+    diagnostics = {}
+    assert await subtitle_capacity.calculate("test", record, diagnostics=diagnostics) == 6
+    assert diagnostics["capacities"] == [8]
+    assert diagnostics["max_segment_chars"] == 6
+    assert diagnostics["ims_replaced"] is True
+    assert diagnostics["sprite_ids"] == [SPRITE_ID]
     measured.assert_awaited_once()
     assert record == before
 
