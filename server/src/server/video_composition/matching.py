@@ -20,8 +20,9 @@ class Submission(BaseModel):
     status: str
 
 
-def payload(task_id: str, request: CompositionRequest, segments: list[Segment], callback_url: str) -> dict:
-    """直接序列化已校验的切片字段；候选缺省时省略整个字段。"""
+def payload(task_id: str, request: CompositionRequest, segments: list[Segment], callback_url: str,
+            *, audio_duration: float | None = None) -> dict:
+    """序列化已校验的切片与可选秒制音频时长；未取得时长或候选时省略对应字段。"""
     # ASR 对齐已在本地完成；用空 ASR 保留切片时间，避免上游重复对齐。
     body = {
         "taskId": task_id, "text": request.text, "asr": {}, "callback_url": callback_url,
@@ -29,6 +30,8 @@ def payload(task_id: str, request: CompositionRequest, segments: list[Segment], 
             item.model_dump(mode="json") for item in segments
         ]}, ensure_ascii=False, allow_nan=False),
     }
+    if audio_duration is not None:
+        body["audio_duration"] = audio_duration
     if request.materials:
         body["asset_url_list"] = [{"file_url": item.file_url, "type": item.type} for item in request.materials]
     return body

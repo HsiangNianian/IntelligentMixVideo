@@ -63,6 +63,7 @@ def test_material_voice_uses_order_and_full_audio(upstreams, client, composition
     assert data["timeline"]["AudioTracks"][0]["AudioTrackClips"][0]["TimelineOut"] == 8
     assert upstreams["asr_calls"] == 1 and upstreams["segment_calls"] == 1
     assert upstreams["posts"] == [] and upstreams["gets"] == [] and "match_request" not in data
+    assert upstreams["audio_probes"] == []
     assert len(data["timeline"]["SubtitleTracks"]) == (3 if with_text else 2)
     assert "copy" not in data["request"] and data["request"]["compositionMode"] == "materials_voice"
 
@@ -165,6 +166,7 @@ def test_material_silent_extracts_title_without_asr(upstreams, client, compositi
     assert factory.return_value.__exit__.call_count == 1
     assert upstreams["posts"] == upstreams["gets"] == []
     assert data["segmentation"] == {"title_keyword": expected_keyword} and "matches" not in data
+    assert upstreams["audio_probes"] == []
     assert json.loads(upstreams["submits"][0]["timeline"]) == timeline
     assert data["request"]["compositionMode"] == "materials_silent"
     assert notified(task_id)["data"]["notification_status"] == "sent"
@@ -303,6 +305,7 @@ def test_materials_presence_selects_matching(upstreams, client, composition_case
     assert ("materials" in saved["request"]) == (materials is not None)
     assert upstreams["asr_calls"] == upstreams["segment_calls"] == len(upstreams["submits"]) == 1
     assert upstreams["gets"] == []
+    assert len(upstreams["audio_probes"]) == int(materials is not None)
     timeline = saved["timeline"]
     clips = timeline["VideoTracks"][0]["VideoTrackClips"]
     if materials is None:
@@ -603,12 +606,22 @@ def upstreams(monkeypatch, composition_settings, composition_case):
              "notifications": [], "notification_code": 204, "notification_error": None, "http_clients": [],
              "notification_entered": Event(), "notification_release": notification_release,
              "playback_entered": Event(), "playback_release": playback_release, "playback_errors": 0,
-             "zos_uploads": []}
+             "zos_uploads": [], "audio_probes": [], "audio_probe": {"format": {"duration": "8.123456789"}}}
     raw = {"properties": {"original_duration_in_milliseconds": 8000}, "transcripts": [{"sentences": [{"words": [
         {"text": "甲乙丙丁。", "begin_time": 1000, "end_time": 3000},
         {"text": "戊己庚辛。", "begin_time": 4000, "end_time": 6000},
     ]}]}]}
     state["raw"] = raw
+
+    async def audio_probe(url, timeout, *options):
+        """隔离音频探测，保留调用记录与可控的 FFprobe 结果或异常。"""
+        state["audio_probes"].append(url)
+        assert url == composition_case["request"]["audioUrl"] and timeout > 0
+        assert options == ("-show_entries", "format=duration")
+        result = state["audio_probe"]
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
     async def transcribe(url, wait_seconds):
         """模拟原生 await，允许调用方在 ASR 等待期间并发查询本地任务。"""
@@ -720,6 +733,7 @@ def upstreams(monkeypatch, composition_settings, composition_case):
         return client
 
     monkeypatch.setattr("server.asr.transcribe", transcribe)
+    monkeypatch.setattr(service.media, "ffprobe_json", audio_probe)
     monkeypatch.setattr(service, "segment", segment)
     monkeypatch.setattr(service, "httpx", SimpleNamespace(AsyncClient=http_client))
     monkeypatch.setattr(ims, "IMS", lambda settings, **kwargs: SimpleNamespace(submit=submit, get=get, storage_location=storage_location, result_url=result_url))
@@ -1241,6 +1255,55 @@ def test_missing_or_invalid_audio_duration_fails(upstreams, client, composition_
     assert result["error"]["code"] == "audio_duration_missing" and upstreams["segment_calls"] == 0
 
 
+def test_matching_uses_probed_audio_duration_without_rounding(upstreams, client, composition_case, composition_logs):
+    """匹配保存探测浮点秒数及尾数，字幕与成片仍使用不同的 ASR 总长。"""
+    accepted = client.post(BASE, json=composition_case["request"])
+    assert accepted.status_code == 200
+    task_id = accepted.json()["data"]
+    assert finished(client, task_id)["status"] == "succeeded"
+    data = store.get(task_id)["data"]
+    body, = upstreams["posts"]
+    assert body == data["match_request"]
+    assert type(body["audio_duration"]) is float and body["audio_duration"] == 8.123456789
+    assert upstreams["audio_probes"] == [composition_case["request"]["audioUrl"]]
+    assert data["duration_ms"] == 8000
+    assert data["timeline"]["AudioTracks"][0]["AudioTrackClips"][0]["Out"] == 8
+    assert json.loads(body["llm"])["segments"] == composition_case["segments"]
+    logs = composition_logs(task_id)
+    submitted = next(row["details"]["input"] for row in logs
+                     if row["event"] == "step_started" and row["stage"] == "match_submit")
+    assert submitted["audio_duration"] == body["audio_duration"]
+
+
+@pytest.mark.parametrize("probe,error_type", [
+    (TimeoutError(), "TimeoutError"),
+    (OSError("音频无法读取"), "OSError"),
+    (ValueError("FFprobe 退出码 1: https://media.test/a.wav?token=probe-secret"), "ValueError"),
+    ({"format": {}}, "KeyError"),
+    *[({"format": {"duration": value}}, "ValidationError") for value in ("N/A", "NaN", "Infinity", "0")],
+])
+def test_audio_probe_failure_omits_field_and_logs_reason(
+    upstreams, client, composition_case, composition_logs, probe, error_type,
+):
+    """探测失败仍完成匹配与合成；落盘日志明确省略字段、根因并脱敏异常中的签名。"""
+    upstreams["audio_probe"] = probe
+    accepted = client.post(BASE, json=composition_case["request"])
+    assert accepted.status_code == 200
+    task_id = accepted.json()["data"]
+    assert finished(client, task_id)["status"] == "succeeded"
+    body, = upstreams["posts"]
+    assert "audio_duration" not in body and body == store.get(task_id)["data"]["match_request"]
+    omitted, = [row for row in composition_logs(task_id) if row["event"] == "audio_duration_omitted"]
+    assert omitted["stage"] == "matching" and omitted["status"] == "processing"
+    output = omitted["details"]["output"]
+    assert output["audio_duration_sent"] is False
+    assert "segment_match 未传 audio_duration" in output["reason"]
+    assert output["exceptions"][0]["type"] == error_type
+    if isinstance(probe, OSError):
+        assert output["exceptions"][0]["message"] == str(probe)
+    assert "probe-secret" not in json.dumps(output, ensure_ascii=False)
+
+
 @pytest.mark.parametrize("failures", [1, 10])
 def test_ims_unknown_submission_reuses_token_with_finite_attempts(upstreams, client, composition_case, failures):
     """提交网络结果不明时只以同请求和同 token 重试一次，仍不明则明确失败。"""
@@ -1298,6 +1361,7 @@ async def test_recovery_uses_saved_handles_and_payload(upstreams, composition_ca
     saved = dict(
         template=composition_case["template"], duration_ms=8000,
         segmentation={"segments": composition_case["segments"]}, matches=composition_case["matches"],
+        match_request={"audio_duration": 8.123456789},
         match_id="upstream", match_url=f"{composition_settings.match_base_url}/api/v1/tasks/upstream",
         match_deadline=service.deadline(-1), ims_deadline=service.deadline(10), submit_attempts=1,
         ims_request=ims.submission(record["task_id"], timeline, composition_settings.output(), "test-vod.oss-cn-shanghai.aliyuncs.com"),
@@ -1311,6 +1375,8 @@ async def test_recovery_uses_saved_handles_and_payload(upstreams, composition_ca
     else:
         assert result["status"] == "succeeded"
     assert upstreams["asr_calls"] == 0 and upstreams["posts"] == []
+    assert upstreams["audio_probes"] == []
+    assert result["data"]["match_request"] == saved["match_request"]
     assert len(upstreams["submits"]) == (1 if stage in ("matching", "assembling", "submitting") else 0)
     if stage == "submitting":
         assert upstreams["submits"][0] == saved["ims_request"]

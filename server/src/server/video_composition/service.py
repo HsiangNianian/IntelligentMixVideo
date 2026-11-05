@@ -521,10 +521,22 @@ class Job:
                 prepared["matches"] = [MatchedSegment.model_validate(item.model_dump()).model_dump(mode="json") for item in segments]
             await self.save("assembling", **prepared)
             return
+        # 仅为匹配补充文件总秒数，不舍入、不替换合成的 ASR 时钟；探测失败仍提交匹配。
+        audio_duration = None
+        try:
+            probe = await media.ffprobe_json(request.audio_url, self.settings.composition_http_timeout_seconds,
+                                             "-show_entries", "format=duration")
+            audio_duration = TypeAdapter(PositiveSeconds).validate_python(probe["format"]["duration"])
+        except (OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+            await self.runtime.log(self.record, "audio_duration_omitted", step="matching", output={
+                "audio_duration_sent": False,
+                "reason": "音频时长探测失败，segment_match 未传 audio_duration",
+                **exception_details(exc),
+            })
         token = secrets.token_urlsafe(32)
         callback_url = f"{self.record['data']['callback_base_url']}/api/v1/video-compositions/{self.record['task_id']}/segment-match-callback?token={token}"
         await self.save("matching", segmentation=segmented, match_callback_token=token,
-                        match_request=payload(self.record["task_id"], request, segments, callback_url),
+                        match_request=payload(self.record["task_id"], request, segments, callback_url, audio_duration=audio_duration),
                         match_deadline=deadline(self.settings.composition_match_wait_seconds))
 
     async def match(self, *, submit: bool) -> None:
