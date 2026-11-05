@@ -273,23 +273,27 @@ curl 'http://127.0.0.1:20070/api/v1/video-compositions/22222222-2222-4222-8222-2
 | module | 返回内容 |
 | --- | --- |
 | `request` | 请求、任务级记录、查询响应与通知 |
-| `template` | 模板输入与输出 |
+| `template` | 冻结模板、资产摘要、字幕容量依据与结果 |
 | `asr` | 音频转写输入与输出 |
 | `segmentation` | 切片及翻译 |
 | `matching` | 素材匹配请求、回调与查询 |
-| `timeline` | 时间线组装、Remotion 及提交 |
-| `zos` | 渲染、取址与转存 |
-| `error` | 当前任务 `errors/` 下全部 `.log` 文件，包括普通错误、`remotion-error.log` 和 `remotion-worker.log` |
+| `timeline` | 媒体准备、时长裁尾及时间线组装 |
+| `remotion` | 透明视频计划、排版、渲染及上传；`sources` 按指纹保存发布与实际渲染源码 |
+| `ims` | 存储位置、提交、轮询及临时播放地址 |
+| `zos` | 成片下载、封面、上传及校验 |
+| `error` | 当前任务 `errors/` 下全部 `.log` 文件，包括普通错误、`remotion-error-<hash>.log` 和 `remotion-worker-<hash>.log`，以及历史错误文件 |
 
-七模块返回 HTTP 200 和对应 JSON 对象，保留 `input`、`output`、`execute_log`、`error_log` 四个数组；服务端读取同任务七文件并展开 `$log_ref`，返回的输入输出可独立阅读，不修改原文件。
+九模块返回 HTTP 200 和对应 JSON 对象，保留 `input`、`output`、`execute_log`、`error_log` 四个数组；服务端读取同任务九文件并展开 `$log_ref`，返回的输入输出可独立阅读，不修改原文件。
+
+新事件的 `error_log[].error` 只包含安全摘要、可用错误码与 `detail_log_path`；完整诊断在错误文件中，内容相同的诊断复用路径，不同内容分别保存。历史模块与旧内嵌错误原样可读，不重新分类；缺少 `remotion` 或 `ims` 的旧任务返回空数组。
 
 `error` 返回 HTTP 200 和下列结构，文件按名称排序，正文完整保留：
 
 ```json
 {
   "files": [
-    {"name": "remotion-error.log", "content": "Traceback...\n错误详情\n"},
-    {"name": "remotion-worker.log", "content": "渲染器输出\n"}
+    {"name": "remotion-error-<hash>.log", "content": "Traceback...\n错误详情\n"},
+    {"name": "remotion-worker-<hash>.log", "content": "渲染器输出\n"}
   ]
 }
 ```
