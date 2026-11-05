@@ -235,6 +235,25 @@ def add_event(previous: dict | None, event: str, record: dict, details: dict, ti
     return compact_columns(columns)
 
 
+def write_atomic(path: Path, content: str) -> None:
+    """同目录临时文件完整写入后替换；失败不覆盖正式文件，进程退出残留由恢复处理。"""
+    temporary = path.with_suffix(".tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def write_diagnostic(folder: Path, content: str, prefix: str = "") -> Path:
+    """按正文指纹保存诊断；只复用内容一致的文件，残缺或损坏副本原子重写。"""
+    encoded = content.encode("utf-8")
+    path = folder / f"{prefix}{hashlib.sha256(encoded).hexdigest()}.log"
+    if not path.exists() or path.read_bytes() != encoded:
+        write_atomic(path, content)
+    return path
+
+
 def write_error_detail(entry: dict, folder: Path) -> None:
     """按诊断正文复用同任务错误文件；不同诊断分别保存，时间和动作留在事件中。"""
     if entry["error"].get("detail_log_path"):
@@ -244,9 +263,7 @@ def write_error_detail(entry: dict, folder: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         detail = {key: value for key, value in entry["error"].items() if key != "step"}
         content = json.dumps({"error": detail}, ensure_ascii=False, sort_keys=True, indent=2)
-        path = directory / f"{hashlib.sha256(content.encode()).hexdigest()}.log"
-        if not path.exists():
-            path.write_text(content, encoding="utf-8")
+        path = write_diagnostic(directory, content)
     except OSError as exc:
         logging.getLogger(__name__).error("合成任务 %s 详细错误日志保存失败：%s", folder.name, type(exc).__name__)
     else:

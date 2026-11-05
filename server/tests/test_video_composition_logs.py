@@ -291,8 +291,9 @@ def test_detail_file_write_failure_keeps_json_error(composition_case, compositio
     original = Path.write_text
 
     def reject_detail(path, *args, **kwargs):
-        """只拒绝详细错误文件，模块 JSON 仍可保存完整诊断。"""
-        if path.suffix == ".log":
+        """诊断只写入十字节就失败，模拟磁盘满；模块 JSON 仍可保存。"""
+        if path.parent.name == "errors":
+            path.write_bytes(b"incomplete")
             raise OSError("detail disk unavailable")
         return original(path, *args, **kwargs)
 
@@ -311,6 +312,7 @@ def test_detail_file_write_failure_keeps_json_error(composition_case, compositio
     assert "hidden-detail" not in json.dumps(saved["asr"])
     assert saved["request"]["execute_log"][-1]["action"].endswith(".probe")
     assert "详细错误日志保存失败" in caplog.text
+    assert not list((execution_log.LOG_ROOT / "video_composition" / record["task_id"] / "errors").iterdir())
     monkeypatch.setattr(Path, "write_text", original)
     store.add_log(record, "step_failed", details)
     restored = expand_columns(composition_logs(record["task_id"], raw=True)[0])["asr"]["error_log"]
@@ -320,6 +322,20 @@ def test_detail_file_write_failure_keeps_json_error(composition_case, compositio
     assert restored[1]["error"]["code"] == "upstream_error"
     path = execution_log.LOG_ROOT / "video_composition" / record["task_id"] / restored[1]["error"]["detail_log_path"]
     assert json.loads(path.read_text())["error"]["exceptions"] == error["exceptions"]
+
+
+def test_existing_corrupt_error_detail_is_repaired(tmp_path):
+    """相同诊断命中已有残缺文件时重写完整内容，不因路径存在而复用损坏正文。"""
+    record = {"stage": "asr", "status": "processing"}
+    details = {"step": "asr", "exceptions": [{"type": "ValueError", "message": "完整错误正文"}]}
+    first = add_event(None, "step_failed", record, details, datetime.now(), folder=tmp_path)
+    path = tmp_path / first["asr"]["error_log"][0]["error"]["detail_log_path"]
+    expected = path.read_bytes()
+    path.write_bytes(b"\xffbroken")
+    saved = expand_columns(add_event(first, "step_failed", record, details, datetime.now(), folder=tmp_path))
+    assert path.read_bytes() == expected
+    assert saved["asr"]["error_log"][1]["error"]["detail_log_path"] == path.relative_to(tmp_path).as_posix()
+    assert list((tmp_path / "errors").iterdir()) == [path]
 
 
 def test_different_error_details_are_preserved_even_with_the_same_message(tmp_path):

@@ -53,15 +53,13 @@ def preserve_failure(work: Path, error: Exception) -> None:
             detail += f"\n[{type(cause).__name__} stderr]\n{stderr[-20000:]}"
         cause = cause.__cause__ or cause.__context__
     detail = execution_log.sanitize(detail)
-    name = f"remotion-error-{hashlib.sha256(detail.encode()).hexdigest()}.log"
-    if not (destination / name).exists():
-        (destination / name).write_text(detail, encoding="utf-8")
-    error.detail_log_path = f"errors/{name}"
+    path = execution_log.write_diagnostic(destination, detail, "remotion-error-")
+    error.detail_log_path = f"errors/{path.name}"
     if (work / "worker.log").is_file():
         content = execution_log.sanitize((work / "worker.log").read_text(encoding="utf-8", errors="replace"))
-        worker = destination / f"remotion-worker-{hashlib.sha256(content.encode()).hexdigest()}.log"
-        if not worker.exists():
-            worker.write_text(content, encoding="utf-8")
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False)
+        execution_log.write_diagnostic(destination, content, "remotion-worker-")
 
 
 async def snapshot(template) -> dict:

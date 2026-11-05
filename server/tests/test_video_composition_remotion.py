@@ -526,10 +526,49 @@ async def test_resource_timeout_has_a_distinct_composition_error(composition_cas
     assert not overlays.slot.locked() and overlays.capacity.chunks == 0
 
 
+@pytest.mark.parametrize("prefix", ["remotion-error-", "remotion-worker-"])
+def test_partial_or_corrupt_remotion_diagnostic_is_rewritten(tmp_path, monkeypatch, prefix):
+    """异常与 worker 详情半写入后可重试，已有损坏副本也会修复，完整正文才复用。"""
+    work = tmp_path / "work" / "task"
+    work.mkdir(parents=True)
+    (work / "worker.log").write_text('worker failed password="hidden-worker"')
+    error = RuntimeError('render failed password="hidden-error"')
+    original = Path.write_text
+
+    def fail_partial(path, *args, **kwargs):
+        """指定诊断正文只写十字节后失败，不影响另一个诊断文件。"""
+        if path.name.startswith(prefix):
+            path.write_bytes(b"incomplete")
+            raise OSError("disk full")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_partial)
+    with pytest.raises(OSError, match="disk full"):
+        remotion.preserve_failure(work, error)
+    private = execution_log.LOG_ROOT / "video_composition" / "task" / "errors"
+    assert not list(private.glob(f"{prefix}*.log"))
+    monkeypatch.setattr(Path, "write_text", original)
+    remotion.preserve_failure(work, error)
+    expected = {path: path.read_bytes() for path in private.iterdir()}
+    assert len(expected) == 2
+    damaged = next(path for path in expected if path.name.startswith(prefix))
+    damaged.write_bytes(b"\xffbroken")
+    remotion.preserve_failure(work, error)
+    assert {path: path.read_bytes() for path in private.iterdir()} == expected
+    for path, content in expected.items():
+        assert hashlib.sha256(content).hexdigest() in path.name
+        assert b"hidden-" not in content
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("diagnostic_writable", [True, False])
-async def test_render_failure_keeps_private_cause_before_cleanup(composition_case, composition_runtime, composition_logs, monkeypatch, tmp_path, diagnostic_writable):
-    """失败引用已有私有根因；私有诊断写入失败时仍保存通用错误文件，不掩盖原错误。"""
+@pytest.mark.parametrize("worker_output", [
+    'Timed out after 25000 ms password="hidden-worker"',
+    '{"message":"Timed out after 25000 ms","api_key":"hidden-worker"}',
+    '[{"message":"Timed out after 25000 ms","token":"hidden-worker"}]',
+])
+async def test_render_failure_keeps_private_cause_before_cleanup(composition_case, composition_runtime, composition_logs, monkeypatch, tmp_path, diagnostic_writable, worker_output):
+    """文本或 JSON worker 日志均脱敏保存；诊断写入失败也不掩盖原渲染错误。"""
     slot = asyncio.Semaphore(1)
     runtime = SimpleNamespace(settings=Settings(_env_file=None, overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path),
                               overlays=SimpleNamespace(slot=slot, capacity=RenderCapacity(Settings(_env_file=None))), harness=SimpleNamespace(renderer="renderer"))
@@ -539,7 +578,7 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
     async def fail(renderer, overlay, work, *, chunk_concurrency, frame_concurrency):
         """模拟 Chrome 连接失败，被 overlay 层包装为安全错误。"""
         work.mkdir(parents=True, exist_ok=True)
-        (work / "worker.log").write_text("Timed out after 25000 ms while trying to connect to the browser!")
+        (work / "worker.log").write_text(worker_output)
         (work / "overlay.webm").write_bytes(b"partial-video")
         try:
             raise RuntimeError("private browser connection timeout")
@@ -581,7 +620,8 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
             assert relative.parent == Path("errors")
             assert "private browser connection timeout" not in linked.read_text()
     if diagnostic_writable:
-        assert "25000 ms" in next(private.glob("remotion-worker-*.log")).read_text()
+        worker_text = next(private.glob("remotion-worker-*.log")).read_text()
+        assert "25000 ms" in worker_text and "hidden-worker" not in worker_text
         detail = next(private.glob("remotion-error-*.log")).read_text()
         assert "RuntimeError: private browser connection timeout" in detail and "OverlayError" in detail
         assert len(list(private.iterdir())) == 2
