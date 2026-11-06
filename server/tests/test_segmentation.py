@@ -1369,7 +1369,7 @@ def test_english_spacy_clause_segmentation_and_trailing_punctuation_strip(model,
 
 
 def test_english_title_and_segment_keywords_have_no_length_limit(model, punctuation_model):
-    """英文标题与片段关键词不设 12 字上限，支持完整英文名词短语。"""
+    """英文标题与片段关键词不设 12 字上限，而中文标题配英文正文时中文标题仍保持 12 字上限。"""
     title = "Networking at the Working Museum"
     script = "We visited the working museum today."
     model[1].chat.completions.create.side_effect = [
@@ -1380,3 +1380,12 @@ def test_english_title_and_segment_keywords_have_no_length_limit(model, punctuat
     assert result["title_keyword"] == "Working Museum"
     assert result["segments"][0]["text"] == "We visited the working museum today"
     assert result["segments"][0]["keyword"] == "working museum"
+
+    chinese_title = "甲乙丙丁戊己庚辛壬癸子丑寅"
+    model[1].chat.completions.create.side_effect = [
+        reply_with({"title_keyword": chinese_title, "keywords": {"1": "working museum"}}),
+        reply_with({"title_keyword": chinese_title[:12], "keywords": {"1": "working museum"}}),
+    ]
+    mixed_result = segment({**payload(script, step=100), "title": chinese_title})
+    assert mixed_result["title_keyword"] == chinese_title[:12]
+    assert mixed_result["segments"][0]["keyword"] == "working museum"

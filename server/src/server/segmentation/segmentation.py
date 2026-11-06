@@ -423,7 +423,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
 
     english = _is_english(script)
     keyword_max_length = None if english else 12
-    title_max_length = None if (english or (title and _is_english(title))) else 12
+    title_max_length = None if (title and _is_english(title)) else 12
     diagnostics["stage"] = "alignment"
     # 先剥离相同前后缀，仅对中间差异搜索并回溯。
     prefix = suffix = 0
