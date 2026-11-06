@@ -17,6 +17,7 @@ from pydantic import SecretStr, TypeAdapter
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..segmentation import segment, translate
+from ..segmentation.segmentation import _is_english
 from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
 from . import ims, media, playground, remotion, store, subtitle_capacity, zos
@@ -415,13 +416,26 @@ class Job:
         self.record = updated
 
     async def translate_texts(self, result: dict, request: CompositionRequest) -> dict:
-        """仅翻译已启用且有实际内容的英文对象；完整译文随任务保存，失败不降为中文。"""
+        """仅翻译已启用且有实际内容的英文对象；原文已是英文时直接复用并跳过模型调用，失败不降为中文。"""
         enabled = {track["target"] for track in self.record["data"]["template"]["tracks"]
                    if track.get("language") == "en" and track.get("enabled", True) and track["target"] in {"title", "subtitle"}}
         subtitles = "subtitle" in enabled and bool(request.text) and request.composition_mode != "materials_silent"
         title = request.title if "title" in enabled and request.title and request.title.strip() else None
         if not subtitles and title is None:
             await self.runtime.log(self.record, "step_skipped", step="translation", output={"reason": "没有启用且有内容的英文标题或字幕"})
+            return result
+        result = result.copy()
+        if subtitles and _is_english(request.text):
+            result["segments"] = [
+                {**item, "text_en": item["text"], "keyword_en": item.get("keyword", "")}
+                for item in result.get("segments", [])
+            ]
+            subtitles = False
+        if title is not None and _is_english(title):
+            result.update(title_en=title, title_keyword_en=result.get("title_keyword", ""))
+            title = None
+        if not subtitles and title is None:
+            await self.runtime.log(self.record, "step_skipped", step="translation", output={"reason": "英文内容无需翻译"})
             return result
         source = result if subtitles else {"segments": [], "title_keyword": result.get("title_keyword", "")}
         await self.save("translation", segmentation=result)
