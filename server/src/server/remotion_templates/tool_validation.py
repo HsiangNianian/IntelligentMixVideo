@@ -43,6 +43,8 @@ _RENDER_CHECKS = _CODE_CHECKS + ("default_render", "configured_render")
 _TRANSPARENCY_CHECKS = _RENDER_CHECKS + ("transparency",)
 # 字效另要求最长文字排版检查，位于其余可选阶段之后。
 _TEXT_FIT_CHECK = "text_fit"
+# 自由组件（Effect.tsx）的契约探针：注入内容、关键词选项、中间帧、字号与参数接线，位于排版检查之后。
+_EFFECT_CONTRACT_CHECK = "effect_contract"
 _FAILED_STATUSES = {"failed", "fail", "error"}
 
 # 总线渲染 Sprite 时传入的时长范围（秒）；Agent 生成时选的时长只用于预览，最终时长由合成决定。
@@ -56,13 +58,15 @@ STATIC_TEXT_SECONDS = 1.5
 class FrameCapture(NamedTuple):
     """Still frames of a validated mount for the Agent to look at: the ``frames`` to capture, the canvas ``box`` to cut
     them to at ``scale``, and the ``directory`` that receives them as `frame-<n>.png` once every check has passed;
-    ``parameters`` are mounted over the configured values for them (such as sample keywords)."""
+    ``parameters`` are mounted over the configured values for them (such as sample keywords); ``trace`` lists the frames on which
+    the worker also measures each line and keyword from the running code, written to `motion.json` beside the frames."""
 
     frames: list[int]
     box: dict[str, float]
     scale: float
     directory: Path
     parameters: dict[str, Any] | None = None
+    trace: list[int] | None = None
 
 
 class FitSprite(NamedTuple):
@@ -238,6 +242,7 @@ class ToolValidator:
     async def validate_render(
         self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
         capture: FrameCapture | None = None, text_fit_parameters: dict[str, bool] | None = None,
+        effect_contract: dict[str, Any] | None = None,
     ) -> RenderValidationReport:
         """Run fixed-canvas default/configured mounts and each independent behavior script.
 
@@ -250,6 +255,8 @@ class ToolValidator:
         by them. With ``capture`` the same mount also captures still frames into ``capture.directory`` when every
         check passes; a failed report captures none. ``text_fit_parameters`` marks host-composed still text and
         disables its cue wrappers for layout measurements; it never changes runtime or review frames.
+        ``effect_contract`` runs the contract probes of a free-form effect (`tools/workspace.contract_probes`) after the
+        other checks and fails the ``effect_contract`` check with every problem it finds.
         """
         if request.duration_frames > 216000:
             raise ValueError("duration_frames exceeds the validation resource limit")
@@ -295,8 +302,10 @@ class ToolValidator:
             payload_request["lengths"] = lengths
         if text_fit and text_fit_parameters is not None:
             payload_request["text_fit_parameters"] = text_fit_parameters
+        if effect_contract is not None:
+            payload_request["effect_contract"] = effect_contract
         if capture:
-            payload_request["capture"] = {"frames": capture.frames, "box": capture.box, "scale": capture.scale, "parameters": capture.parameters or {}}
+            payload_request["capture"] = {"frames": capture.frames, "box": capture.box, "scale": capture.scale, "parameters": capture.parameters or {}, **({"trace": capture.trace} if capture.trace else {})}
         (directory / "request.json").write_text(json.dumps(payload_request), encoding="utf-8")
         try:
             payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs")
@@ -304,7 +313,7 @@ class ToolValidator:
             raise ValidationUnavailable(str(exc)) from exc
         if capture and (directory / "frames").is_dir():
             capture.directory.mkdir(parents=True, exist_ok=True)
-            for frame in (directory / "frames").glob("frame-*.png"):
+            for frame in [*(directory / "frames").glob("frame-*.png"), *(directory / "frames").glob("motion.json")]:
                 shutil.move(frame, capture.directory / frame.name)
         raw_checks = payload.get("checks")
         if not isinstance(raw_checks, list):
@@ -315,6 +324,7 @@ class ToolValidator:
                 raise ValidationUnavailable(str(item.get("message") or "Render validation worker runtime error"))
         stages = (_TRANSPARENCY_CHECKS if transparency else _RENDER_CHECKS) + (("render_lengths",) if lengths else ())
         stages += (_TEXT_FIT_CHECK,) if text_fit else ()
+        stages += (_EFFECT_CONTRACT_CHECK,) if effect_contract is not None else ()
         if _reported_stages(raw_checks, stages) is None:
             raise ValidationUnavailable("Render validation worker returned an incomplete report")
         expected_tests = [test.name for test in request.tests]

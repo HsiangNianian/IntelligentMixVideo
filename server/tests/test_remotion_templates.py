@@ -291,18 +291,19 @@ def test_a_large_edit_base_is_omitted_largest_first_to_fit_the_snapshot_budget(t
 
 
 def test_full_catalog_is_registered_but_only_implemented_tools_are_public():
-    """The documented catalog registers eleven tools; deferred ones stay out of the model window."""
+    """The documented catalog registers eleven Preset-composition tools and eight free-form effect tools; deferred ones stay out of the model window."""
+    free = {"workspace.read", "workspace.write", "workspace.edit", "preview.render", "validate.check", "effect.save", "library.search", "image.inspect"}
     names = {item.name for item in registered_tools()}
     assert names == {
         "image.info", "image.resize", "image.crop",
         "preset.search", "preset.create", "preset.modify",
         "validate.code", "validate.render", "sprite.compose", "sprite.create",
-        "tools.inspect",
+        "tools.inspect", *free,
     }
     implemented = {item.name for item in registered_tools() if item.implemented}
     assert implemented == {
         "preset.create", "preset.search", "preset.modify",
-        "sprite.compose", "sprite.create", "tools.inspect",
+        "sprite.compose", "sprite.create", "tools.inspect", *free,
     }
     assert {item.name for item in available()} == implemented | {"tools.plan_execute"}
 

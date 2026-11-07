@@ -344,9 +344,11 @@ def _properties(schema: dict) -> dict:
     return properties if isinstance(properties, dict) else {}
 
 
+# 自由组件样式参数的面板分组（字符串，同组参数在参数面板里成一张卡片）；和 title 一样只是说明，不约束取值。
+PARAMETER_GROUP = "x-imv-group"
 # 顶层参数允许的 Schema 关键字：发布时的边界抽样只认识这些约束，其他约束（如 multipleOf、exclusiveMaximum、
-# 非颜色 pattern）会让两端取值不合 Schema 而漏抽。title、description 与 default 只是说明。
-_LABELS = {"type", "title", "description", "default"}
+# 非颜色 pattern）会让两端取值不合 Schema 而漏抽。title、description、default 与面板分组只是说明。
+_LABELS = {"type", "title", "description", "default", PARAMETER_GROUP}
 _ALLOWED = {
     "number": _LABELS | {"minimum", "maximum", "enum"},
     "integer": _LABELS | {"minimum", "maximum", "enum"},
@@ -409,6 +411,7 @@ def parameter_problems(definition: object, name: str) -> str | None:
 
 def category_problems(
     kind: str | None, schema: dict, bound: set[str], defaults: dict, fonts: Collection[str] | None = None, requested: Collection[str] = (),
+    *, allow_disabled_keyword_effect: bool = False,
 ) -> list[Problem]:
     """列出某分类缺少、形状不符或默认值不合约定的必备参数；``bound`` 是作为顶层参数暴露的名称，``defaults`` 是默认参数。
 
@@ -417,7 +420,8 @@ def category_problems(
     颜色、字重与字体；画了关键词字效的字效必须暴露默认开启的 `keywordEffect` 开关，文字颜色还必须不透明（透明由带可调
     数字参数的 `role=effect` 特效实现）。``requested`` 是新会话里用户打开的
     开关（`two_tier`、`keyword_effect`、`bilingual`），生成路径据此要求双栏、关键词字效或双语字效。发布更早的版本时都不传，
-    不要求这些参数；多行字效在两条路径上都不要求整段共用的颜色与字重。
+    不要求这些参数；多行字效在两条路径上都不要求整段共用的颜色与字重。自由组件传 ``allow_disabled_keyword_effect``
+    保留清单里的关键词字效开关默认值，仍要求开关存在且值为布尔值；组合路径仍要求默认开启。
     """
     if kind not in REQUIRED:
         return [Problem("kind", None, f"kind must be one of {', '.join(KINDS)}")]
@@ -437,7 +441,7 @@ def category_problems(
             problems.append(Problem(rule.name, rule, f"{DEFAULT_REASON} {json.dumps(rule.off)} (off)"))
     if kind == "text" and fonts is not None:
         problems += _tier_problems(properties, bound, defaults, fonts) if tiered else _font_problems(FONT_FAMILY, properties, bound, defaults, fonts)
-        problems += _keyword_effect_problems(properties, bound, defaults, "keyword_effect" in requested)
+        problems += _keyword_effect_problems(properties, bound, defaults, "keyword_effect" in requested, allow_disabled_keyword_effect)
         problems += _opaque_colours(defaults, tuple(f"line{i}Color" for i in range(1, line_count(schema) + 1)) if tiered else ("color",))
         if {"two_tier", "bilingual"} <= set(requested) and (not bilingual_sprite or line_count(schema) != 4):
             problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, "双栏 + 双语字幕 requires two bilingual groups (four tiers: Chinese, English, Chinese, English); do not omit the second group"))
@@ -488,8 +492,8 @@ def has_keyword_effect(bound: Collection[str]) -> bool:
     return any(name.startswith(KEYWORD_EFFECT_PROP) for name in bound)
 
 
-def _keyword_effect_problems(properties: dict, bound: set[str], defaults: dict, requested: bool) -> list[Problem]:
-    """关键词字效（生成路径）：用户打开了开关就必须画；画了就必须暴露默认开启的 `keywordEffect` 开关。"""
+def _keyword_effect_problems(properties: dict, bound: set[str], defaults: dict, requested: bool, allow_disabled: bool) -> list[Problem]:
+    """关键词字效须暴露布尔开关；组合路径要求默认开启，自由组件可保留用户关闭的默认值。"""
     if not has_keyword_effect(bound):
         return [Problem(KEYWORD_EFFECT_PROP, None, "missing: the user switched on the keyword effect (original_request.keyword_effect), so give the "
                         "keyword hit its own effect, bind its look as keywordEffect... parameters and bind the keywordEffect switch {\"type\":\"boolean\"}")] if requested else []
@@ -497,8 +501,9 @@ def _keyword_effect_problems(properties: dict, bound: set[str], defaults: dict, 
         return [Problem(KEYWORD_EFFECT_PROP, KEYWORD_EFFECT, "missing")]
     if not KEYWORD_EFFECT.accepts(properties[KEYWORD_EFFECT_PROP]):
         return [Problem(KEYWORD_EFFECT_PROP, KEYWORD_EFFECT, "has the wrong schema")]
-    if defaults.get(KEYWORD_EFFECT_PROP) is not True:
-        return [Problem(KEYWORD_EFFECT_PROP, KEYWORD_EFFECT, "must default to true, so the keyword effect shows until the user switches it off")]
+    if defaults.get(KEYWORD_EFFECT_PROP) is not True and not (allow_disabled and defaults.get(KEYWORD_EFFECT_PROP) is False):
+        reason = "must have a boolean default" if allow_disabled else "must default to true, so the keyword effect shows until the user switches it off"
+        return [Problem(KEYWORD_EFFECT_PROP, KEYWORD_EFFECT, reason)]
     return []
 
 

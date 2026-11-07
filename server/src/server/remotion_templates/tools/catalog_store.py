@@ -78,15 +78,18 @@ class CatalogStore:
         """The stored Presets an accepted Sprite draws with, storing those it changed: an instance drawn exactly as its
         source Preset (`source_preset_id`) is that Preset; a modified copy (a fix the task made with `preset.modify`) is
         kept as a Preset of its own, or found again when an identical one is stored, so a working fix becomes reusable
-        and the broken original is not credited for it. Instances without a source (older snapshots) are skipped."""
+        and the broken original is not credited for it. A free-form effect (`sprite.effect`) has no source: its single
+        instance, the whole Effect.tsx, is kept as a role-less Preset the same way, so `library.search` finds it in later
+        works. Other instances without a source (older snapshots) are skipped."""
         drawing = lambda preset: json.dumps(preset.model_dump(mode="json", include=_DRAWING, exclude_unset=True), sort_keys=True)
         records = self.read_presets()
         stored = {drawing(record): record.preset_id for record in records}
         by_id = {record.preset_id: record for record in records}
         used: list[str] = []
+        free = sprite is not None and sprite.effect is not None
         for item in sprite.instances if sprite else []:
             source = item.preset.source_preset_id
-            if not source:
+            if not source and not free:
                 continue
             original = by_id.get(source)
             key = drawing(item.preset)

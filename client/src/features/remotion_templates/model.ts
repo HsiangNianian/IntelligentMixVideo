@@ -37,6 +37,8 @@ export interface Control {
   maxItems?: number;
   items?: Control;
   "x-imv-target"?: string;
+  /** 自由组件样式参数的面板分组（effect.json 的 group），同组参数成一张卡片；与服务端 `categories.PARAMETER_GROUP` 一致。 */
+  "x-imv-group"?: string;
   properties?: Record<string, Control>;
 }
 /** 效果分类：字效、滤镜、视频特效、转场（后两者在界面上合为「转场与视频特效」）。 */
@@ -67,7 +69,12 @@ export interface Version {
     composition: Composition;
     text_layers: { id: string; text: string }[];
     /** 组合版本的分类与顶层参数绑定，字效的文字组合另有各栏、关键词与特效的实例 ID（特效带中文名称）；更早的版本没有。 */
-    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string; targets?: { instance_id: string; parameter: string }[] }[]; text?: { tiers: string[]; keyword?: string; effects?: { instance_id: string; title: string }[]; preview_keywords?: string[]; bilingual?: true } };
+    sprite?: {
+      kind?: SpriteKindName; bindings?: { name: string; title: string; targets?: { instance_id: string; parameter: string }[] }[];
+      text?: { tiers: string[]; keyword?: string; effects?: { instance_id: string; title: string }[]; preview_keywords?: string[]; bilingual?: true };
+      /** 自由组件（Agent 写的 Effect.tsx）的清单：分类与字效的示例关键词；组合版本没有。 */
+      effect?: { kind?: SpriteKindName; text?: { keywords?: string[] } };
+    };
   };
 }
 
@@ -214,6 +221,42 @@ export function textSections(version: Version): {
   }
   return { text, keyword, instances, effects };
 }
+
+/** 文字卡片里的样式分组：Agent 把文字本身的外观（颜色、描边等）归入这一组，或不分组。 */
+const TEXT_GROUP = "文字";
+
+/**
+ * 自由组件版本（Agent 写的 Effect.tsx，`spec.sprite.effect`）的参数面板，与文字组合同样分「文字」「特效」两块：「文字」是宿主的配置参数
+ * （内容、字号、字体、排版）和分组为「文字」或没有分组的样式参数，另列关键词选项；其余样式参数按 Agent 声明的分组（`x-imv-group`）各成
+ * 一张卡片，组里第一个开关作为卡片的应用开关；关键词字效开关 `keywordEffect` 放进「关键词字效」卡片（没有这一组时单独成卡）。不是自由组件时返回 null。
+ */
+export function effectSections(version: Version): ReturnType<typeof textSections> {
+  if (!version.spec.sprite?.effect) return null;
+  const properties = version.candidate.config_schema.properties ?? {};
+  const physicalLines = properties[LINE_STARTS_KEY]?.maxItems ?? 1;
+  const lines = properties[BILINGUAL_KEY] ? Math.max(1, Math.floor(physicalLines / 2)) : physicalLines;
+  const text: ParameterField[] = [];
+  const keyword: ParameterField[] = [];
+  const groups = new Map<string, ParameterField[]>();
+  let keywordToggle: ParameterField | null = null;
+  for (const [key, control] of Object.entries(properties)) {
+    // The single instance's nested props are empty: every parameter of a free-form effect is top-level.
+    if (key === LINE_STARTS_KEY || control.type === "object") continue;
+    const item = schemaField(key, control);
+    if (!item) continue;
+    const group = control["x-imv-group"];
+    if (key === "keywordEffect") keywordToggle = item;
+    else if (TEMPLATE_KEYWORD_PARAMETERS.includes(key)) keyword.push(item);
+    else if (group && group !== TEXT_GROUP) groups.set(group, [...(groups.get(group) ?? []), item]);
+    else text.push((key === "text" || key === BILINGUAL_KEY) && item.kind === "string" && lines > 1 ? { ...item, lines } : item);
+  }
+  const effects: EffectCard[] = [...groups].map(([title, fields]) => {
+    const toggle = title === "关键词字效" && keywordToggle ? keywordToggle : fields.find((field) => field.kind === "boolean") ?? null;
+    return { id: title, title, toggle, fields: fields.filter((field) => field !== toggle), instance: null };
+  });
+  if (keywordToggle && !groups.has("关键词字效")) effects.push({ id: "关键词字效", title: "关键词字效", toggle: keywordToggle, fields: [], instance: null });
+  return { text, keyword, instances: [], effects };
+}
 /** 服务端隔离类型检查返回的零基行列；与 LSP 一致，character 以 UTF-16 计。 */
 export interface TextPosition {
   line: number;
@@ -269,11 +312,13 @@ export interface ChatMessage {
   sequence?: number;
   job_id?: string;
   image_asset_ids?: string[];
+  /** 成功结果后 Agent 给出的可选方向，显示为可直接发送的选项。 */
+  suggestions?: string[];
   created_at?: string;
 }
 
 /**
- * 预览用的示例关键词（默认关键词为空时，模板渲染时才传入真实关键词）。Agent 在文字块里标出的 `preview_keywords`（示例文字里
+ * 预览用的示例关键词（默认关键词为空时，模板渲染时才传入真实关键词）。Agent 在文字块里标出的 `preview_keywords`（自由组件为清单的示例关键词；示例文字里
  * 该是关键词的词，服务端回看帧用同一组）只要还在当前文字里就用它们；否则有以 keywordEffect 开头的顶层参数（关键词 Preset 的开关或
  * 关键词外观，与服务端 `categories.has_keyword_effect` 一致）时取当前文字首个非空行开头至多两个字（与生成校验挂载的示例相同），
  * 关键词字效开关（keywordEffect）已关时不取。已填关键词或没有文字时返回空数组；只影响预览，不改参数、不进入保存。
@@ -281,7 +326,7 @@ export interface ChatMessage {
 export function sampleKeywords(version: Version | null, values: Values): string[] {
   if (!Array.isArray(values.keywords) || values.keywords.length || typeof values.text !== "string") return [];
   const text = values.text;
-  const declared = (version?.spec.sprite?.text?.preview_keywords ?? []).filter((word) => text.includes(word));
+  const declared = (version?.spec.sprite?.text?.preview_keywords ?? version?.spec.sprite?.effect?.text?.keywords ?? []).filter((word) => text.includes(word));
   if (declared.length) return declared;
   const properties = version?.candidate.config_schema.properties ?? {};
   const effect = Object.keys(properties).some((key) => key.startsWith("keywordEffect"));

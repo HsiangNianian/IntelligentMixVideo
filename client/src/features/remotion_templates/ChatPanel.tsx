@@ -276,6 +276,17 @@ export function ChatPanel({
                 <p className="whitespace-pre-wrap break-words">
                   {message.text || "请参考这张图片制作字效。"}
                 </p>
+                {/* 最新回复里的建议方向：点选即作为下一条指令发送，与输入框发送同样受任务锁约束。 */}
+                {message.role === "assistant" && !!message.suggestions?.length && index === messages.length - 1 && (
+                  <div className="flex flex-wrap gap-2" aria-label="可选的修改方向">
+                    {message.suggestions.map((suggestion) => (
+                      <Button key={suggestion} type="button" variant="outline" size="sm" className="h-auto whitespace-normal py-1 text-left text-xs"
+                        disabled={disabled} onClick={() => onSend(suggestion, [])}>
+                        {suggestion}
+                      </Button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
             {message.job_id &&

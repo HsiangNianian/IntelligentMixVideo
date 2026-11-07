@@ -859,6 +859,40 @@ def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
     ]
 
 
+def test_a_free_form_work_carries_earlier_turns_into_the_next_task(history_store, monkeypatch):
+    """自由组件路径的多轮：之前消息附的参考图继续发送并标明来源，每个任务结束时 Outer 窗口写入结果记录（失败原因也在内），任务拿得到作品的版本列表；默认路径都没有。"""
+    runtime = Runtime(history_store, None, Settings(_env_file=None, remotion_agent="autonomous"))
+    monkeypatch.setattr(runtime, "notify", lambda *args: None)
+    original, later = (reference_image(history_store) for _ in range(2))
+    work, job = history_store.create(GenerateTemplateRequest(description="标题", images=[{"asset_id": original.id}]), DEVICE)
+    seen = []
+
+    class Harness:
+        """Record what a task receives; the first task fails, the others answer."""
+
+        renderer = None
+
+        async def generate(self, spec, budget, directory, images, on_stage, **options):
+            """Capture the images, intent, window and versions of one task."""
+            seen.append((images, options["intent"], options["context"].messages(), options.get("versions")))
+            if len(seen) == 1:
+                raise ValueError("画不出来")
+            return DialogueOutput(answer="好的")
+
+    runtime.harness = Harness()
+    asyncio.run(runtime._execute(job.id))
+    second = runtime.message(work.id, TaskMessage(instruction="参考这张", images=[{"asset_id": later.id}]))
+    asyncio.run(runtime._execute(second.id))
+    third = runtime.message(work.id, TaskMessage(instruction="再改一下"))
+    asyncio.run(runtime._execute(third.id))
+    images, intent, window, versions = seen[-1]
+    assert images == [history_store.asset_path(original.id), history_store.asset_path(later.id)]
+    assert [(entry["asset_id"], entry["source"]) for entry in intent["reference_images"]] == [(str(original.id), "work_original"), (str(later.id), "earlier_message")]
+    records = [json.loads(message["content"].split(": ", 1)[1])["task_outcome"] for message in window if message["content"].startswith("Host record (data): ")]
+    assert [record["status"] for record in records] == ["failed", "answered"] and records[0]["error"] == "画不出来"
+    assert versions == []
+
+
 def test_new_chat_switches_reach_every_job_of_the_work(history_store, monkeypatch):
     """新建会话时打开「关键词字效」与「双栏」：作品请求保存 keyword_effect 与 two_tier，第一条任务与之后的修改任务都在
     original_request 里读到它们；未选择时为 false，只接受布尔值。"""

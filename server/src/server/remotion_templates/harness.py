@@ -64,11 +64,11 @@ class Harness:
         self.presentation = PresentationBuilder(renderer)
         self.fonts = FontStore.for_settings(self.settings)
 
-    async def _turn(self, system, context, tools, budget, images, *, phase="outer", data=None):
-        """Account exactly one request for an explicit ReAct role; ``data`` is the snapshot sent after the window."""
+    async def _turn(self, system, context, tools, budget, images, *, phase="outer", **options):
+        """Account exactly one request for an explicit ReAct role; ``options`` (image detail, snapshot data) go to the provider."""
         with budget.phase(phase):
             budget.remaining(self.settings)
-            response = await self.provider.turn(system, context, tools, budget, images=images, data=data)
+            response = await self.provider.turn(system, context, tools, budget, images=images, **options)
             budget.record("agent_response", phase=phase, response=response.wire())
             return response
 
@@ -96,7 +96,7 @@ class Harness:
             duration_frames=sprite.composition.duration_frames,
         ))
 
-    async def generate(self, spec, budget: Budget, directory: Path, images, on_stage, *, base=None, parameter_patch=None, context: Conversation | None = None, intent=None):
+    async def generate(self, spec, budget: Budget, directory: Path, images, on_stage, *, base=None, parameter_patch=None, context: Conversation | None = None, intent=None, versions=None):
         """Queued manual patches use only runtime checks; natural-language work enters the three-layer loop.
 
         The runtime saves PR76 patches at once when the base's player bundle reads injected defaults; the ones that
@@ -124,4 +124,4 @@ class Harness:
             seal_artifacts(result, revised, report, directory / "attempt-1")
             return result, revised, report, directory / "attempt-1"
         from .agent import AgentRun
-        return await AgentRun(self, spec, budget, directory, images, on_stage, base=base, context=context, intent=intent).plan_execute()
+        return await AgentRun(self, spec, budget, directory, images, on_stage, base=base, context=context, intent=intent, versions=versions).plan_execute()

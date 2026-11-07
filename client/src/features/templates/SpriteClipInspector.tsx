@@ -82,11 +82,13 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   const fontSize = asset?.parameters.find(({ field }) => field.key === "fontSize");
   // 模板里只开放适用的参数；资产内部参数（颜色、速度、动画时间等）回字效工作区改，已有覆盖仍列出以便恢复默认。
   const others = asset?.parameters.filter((item) => !keywordParameters.includes(item) && shown(item.field.key)) ?? [];
-  const appearanceParameters = asset ? others.filter(({ field }) => isInstanceParameter(asset.kind, field.key)) : [];
-  // 字效特效的开关、位置与时长单列一组，排在排版与位置之后；同一个特效（effect{k}…）的参数放在一张卡片里。
-  const effectParameters = appearanceParameters.filter(({ field }) => EFFECT_PARAMETER.test(field.key));
-  const effectCards = [...new Set(effectParameters.map(({ field }) => field.key.match(/^effect\d+/)![0]))]
-    .map((name) => effectParameters.filter(({ field }) => field.key.match(/^effect\d+/)![0] === name));
+  const appearanceParameters = asset ? others.filter(({ field, group }) => isInstanceParameter(asset.kind, field.key, group)) : [];
+  // 字效特效的开关、位置与时长单列一组，排在排版与位置之后：同一个特效（effect{k}…）的参数放在一张卡片里，自由组件同一分组的样式参数
+  // 也是一张卡片（以分组名为标题）。
+  const cardName = ({ field, group }: NonNullable<typeof asset>["parameters"][number]) => group || field.key.match(/^effect\d+/)?.[0];
+  const effectParameters = appearanceParameters.filter((item) => item.group || EFFECT_PARAMETER.test(item.field.key));
+  const effectCards = [...new Set(effectParameters.map(cardName))]
+    .map((name) => ({ title: effectParameters.find((item) => item.group === name) ? name : undefined, rows: effectParameters.filter((item) => cardName(item) === name) }));
   const internalParameters = others.filter((item) => !appearanceParameters.includes(item));
   const exposedTransforms = asset ? instanceTransformFields(asset.kind) : [];
   const overriddenInternal = [
@@ -226,7 +228,10 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
         {exposedTransforms.includes("x") && <p className="text-[11px] text-muted-foreground">也可以在预览画面上拖动所选资产调整位置。</p>}
         {effectCards.length > 0 && <div className="space-y-2">
           <h3 className="text-xs font-medium">特效</h3>
-          {effectCards.map((rows) => <div key={rows[0].field.key} className="space-y-2 rounded-md border px-3 py-2">{rows.map(parameterRow)}</div>)}
+          {effectCards.map(({ title, rows }) => <section key={rows[0].field.key} aria-label={title} className="space-y-2 rounded-md border px-3 py-2">
+            {title && <h4 className="text-[11px] font-medium text-muted-foreground">{title}</h4>}
+            {rows.map(parameterRow)}
+          </section>)}
         </div>}
         {overriddenInternal.length > 0 && <div className="space-y-1.5 rounded-md border px-3 py-2">
           <p className="text-[11px] text-muted-foreground">下列设置不在模板里调整，但这次摆放仍带着覆盖值：</p>

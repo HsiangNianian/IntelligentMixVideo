@@ -538,6 +538,14 @@ class JobError(Contract):
     message: str
 
 
+class JobReply(Contract):
+    """What a finished free-form task tells the user: what it built, how it read anything ambiguous and where to go next."""
+
+    summary: Text
+    choices: list[Text] = Field(default_factory=list, max_length=5)
+    suggestions: list[Text] = Field(default_factory=list, max_length=5)
+
+
 class GenerationJob(Contract):
     """One queued execution; questions and failures retain candidate artifacts."""
 
@@ -563,6 +571,8 @@ class GenerationJob(Contract):
     answer: Text | None = None
     error: JobError | None = None
     usage: dict[str, int] = Field(default_factory=dict)
+    # The Agent's own reply to a successful free-form task, shown instead of the fixed success text.
+    reply: JobReply | None = None
     created_at: datetime
     updated_at: datetime
 

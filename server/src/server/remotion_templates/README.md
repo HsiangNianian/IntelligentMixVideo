@@ -37,6 +37,90 @@ cost more on long tasks, because the window no longer evicts turn by turn. `mode
 `cached_input_tokens` and the job usage `cached_tokens`, absent until the provider reports them, so a reported zero means
 no hit and an absent value means the provider does not say.
 
+## Free-form effects
+
+With `IMV_REMOTION_AGENT=autonomous` (default `presets`) new works, and edits of versions built this way, skip the
+role-Preset composition. The tool contracts are §13 of
+`docs/remotion-agent-tool-contracts.md`. Edits of older composed versions keep composing Presets.
+
+- **Workspace** (`tools/workspace.py`, `tools/effect_tools.py`). The Executor writes `Effect.tsx`, a default-exported
+  component that may import the content runtime `"imv"` (`remotion/imv-runtime.tsx`), and `effect.json`, the manifest
+  `EffectManifest`: kind, description, layout box, for text effects `text` (sample content, keywords, line starts,
+  bilingual, keyword look and its default switch, font size, one font per line, gaps, arrangement) and `params`, the effect's own style
+  parameters with schema, default, title and `group`. A new work starts from a still starter of its kind that passes
+  every check and follows the new-chat switches; an edit restores the accepted version's files with the user's
+  current parameter values written back into the manifest. `keyword_look` declares the keyword appearance capability;
+  `keyword_enabled` supplies its `keywordEffect` default (true when omitted). Turning it off keeps the capability and
+  controls, and the free-form category gate accepts either boolean default. Restoring older manifests with fewer font
+  entries than lines expands them before applying each line's saved font, weight and size ratio.
+- **Assembly.** `assemble` derives a text effect's configuration parameters from `text` with `text_configuration`
+  (the same names, schemas and titles as a text block, without `effect{k}`), merges the style parameters (bounds, a
+  colour pattern, titles and out-of-range defaults are corrected and noted; a host configuration name is left out)
+  and bundles the single instance `effect` with `compose_source`, which inlines the runtime. The Sprite stores the
+  manifest in `SpriteDraft.effect`; its code still imports only React and Remotion, so publication, templates, the
+  bus and video composition are unchanged. A sample that fits no shape (one line; two for 双栏; two or four
+  alternating Chinese/English lines for 双语) or misses a switch the user turned on is refused with its field.
+- **Runtime.** `useTextContent` splits `text`/`textEn` into the lines the bus fills (by `lineStartFrames`, pairing a
+  bilingual effect's lines), cuts each line at the first literal hit of each keyword and gives each line's start,
+  font and size; `TextRoot` lays the lines out (stack or overlap, `lineGap`, `translationGap`), sets the fonts, keeps
+  a line that has not started hidden with its space and carries the `data-imv-tier` markers; `KeywordRun` applies the
+  six keyword options and `data-imv-keyword`; `useTiming` and `splitGlyphs` are optional helpers. It holds no effects.
+- **Gate.** `validate.check` and `effect.save` run the component's own source policy and TypeScript check, the
+  category's required parameters and, in the isolated browser, transparency, both render lengths, `text_fit` (with an
+  empty `text_fit_parameters`, so lines may be timed independently but must not jump) and the `effect_contract`
+  probes of the validation worker: other injected text must be what it shows, a keyword hit takes keywordColor and
+  keywordBold with the keyword effect off, every default line is shown in full on frame `duration_frames // 2` (where
+  the bus freezes subtitles shorter than 1.5 s, with every line starting at zero), lowering `fontSize` between two legal
+  sizes at least 25% apart shrinks the text, and each style parameter (and `keywordEffect`) changes a sampled frame
+  between its two ends (screenshot comparison). If defaults hide a parameter, its endpoints are also compared with each
+  other boolean flipped, then all other booleans on or off, always holding those controls fixed between endpoints.
+  These bounded probes do not enumerate every combination or change saved defaults. A check failure is a
+  `passed: false` result; a save failure is `CODE_VALIDATION_FAILED` listing every problem.
+- **Observations.** `preview.render` (at most 12 per task, never cached as a publication report), `effect.save`'s
+  acceptance sheet and
+  `image.inspect` crops reach the Executor once, as a message appended to its window; that message numbers its own
+  images from 1, independently of reference images and earlier observation messages. An edit starts with the accepted
+  version's middle frame, rendered once by the host and shared with the Plan layer, which sees it after the reference images
+  (`accepted_version_images`) when it designs or recovers an edit.
+- **Motion from the running code, pictures as the fallback.** Each capture also measures every line and keyword hit on the
+  trial frames (`measureSubjects` in the validation worker: text box centre and width with transforms applied, painted
+  opacity, share of characters painted), and `tools/workspace.motion_facts` turns that into sentences in `motion` on the
+  `effect.save` and `preview.render` replies, relative to the resting position on the middle frame, such as "first painted
+  at frame 3 (0.10 s), 700 px to the right of its resting position". The Executor judges direction and order from them.
+  `effect.save` sends only the middle frame, for what cannot be measured (colours, fills, clipping, doubled text); a preview
+  shows keyframes on request. An edit gets the accepted version's measurements as `base.motion` and its middle frame.
+- **Keyframes.** Unless a preview names frames, the host shoots trial frames (every 3 frames in the opening, the closing
+  and after each later line appears; a few elsewhere; the middle frame) and `tools/workspace.keyframes` keeps at most 8:
+  the first and last visible and the middle frame, and frames spaced evenly by summed brightness change, at least 3 frames apart. A
+  step below 20% of the biggest counts as no motion, so a pulsing glow does not take an entrance's frames; a still effect gets only the fixed ones.
+- **Loop.** The three layers stay. The host's free plan is one step, `build` or `edit`, done when the latest save's
+  result reached the window and the files did not change since. Every publication route checks this, including Plan
+  completion and automatic completion at the tool limit; an exhausted task with unsaved edits fails instead of delivering
+  an older candidate. Steps with the `effect` module can supply `steps.<id>.outputs.sprite` to later steps.
+  A step the Plan layer designs without the effect module
+  is done when `validate.check` passed on the files as they stand. Outer gets low-detail images. Once a candidate is saved, `needs_input` and `ask` are refused:
+  the last step's `tools_report_step` carries `choices` and `suggestions`, stored as `GenerationJob.reply` and shown
+  as the assistant message (suggestions as options) instead of the fixed success text.
+- **Prefix cache.** Model providers bill cached input far lower, and a cache hit needs an identical prefix, so every
+  Executor request of a step extends the previous one. The system prompt and the whole free tool list stay the same for
+  the task; `StepWindow` never evicts group by group (dropping the oldest group would change everything after it), and
+  `AgentRun` replaces it whole only past `WINDOW_BYTES` or `WINDOW_IMAGES`, with the current files and the newest small
+  exchanges. The request, step, task facts, font library, files and reference images sit at its start and remain pinned
+  when the provider trims old exchanges for the token budget, both on dispatch and after compaction. Inline files have
+  a shared 64 KB serialized UTF-8 budget; larger files stay intact in the workspace, listed under `files_omitted` with
+  instructions to read them. `workspace.read` returns bounded pages; pass its `next_offset` back as `offset` until the
+  field is absent (offsets count Unicode characters). Images are held by path and
+  encoded when sent (`provider.expand_image_paths`); after the window comes only `turn_state`. A step the Plan layer
+  adds gets a new window, keeping the system prompt and tools cached.
+- **Turns.** The runtime appends a `Host record (data):` entry with each task's outcome to the Outer window and
+  re-sends the images of earlier messages (newest first, eight images in all); the Executor's handoff lists the
+  earlier turns. The snapshot lists the work's free-form `versions`, and `workspace.read {path, version}` returns an
+  earlier version's files with its parameter values, so an edit can go back to it. Style parameter schemas may carry `x-imv-group`, which publication copies into
+  `SpriteParameter.group` so the template editor shows grouped cards that templates adjust per placement.
+- **Library.** An accepted free-form version's single instance (the whole Effect.tsx with its schema) is stored as
+  a role-less Preset by `CatalogStore.solidify`, once per identical drawing, so `library.search` finds it by its
+  manifest description in later works.
+
 ## Tool catalog
 
 Eleven business tools are registered with their full input/output contracts.
@@ -613,7 +697,8 @@ otherwise.
 Outer has no publish action, so publication is the host's. Besides the last accepted step, a Plan
 `complete` (or a text `plan_done`) publishes the latest Sprite this task saved; a completion that names any
 other Sprite is refused. When the task budget allows no further batch or control call, the host publishes
-the latest task Sprite if there is one, and only otherwise returns `blocked` to Outer.
+the latest task Sprite if there is one, and only otherwise returns `blocked` to Outer. Free-form effects additionally
+require unchanged workspace files and review of the latest save on every publication route, as described above.
 A handoff counts for the no-progress guard only once it has happened: an automatic advance or a
 publication the host refuses is recorded as the return to the Plan, not as the transition it attempted.
 
