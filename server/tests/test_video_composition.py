@@ -2595,3 +2595,104 @@ async def test_preview_settings_excluded_from_composition_snapshot(upstreams, cl
     record = await composition_runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
     await service.Job(composition_runtime, record, composition_runtime.settings).prepare()
     assert "avatar_preview" not in store.get(record["task_id"])["data"]["template"]
+
+
+@pytest.mark.anyio
+async def test_english_script_and_title_skip_translation_and_preserve_internal_commas(
+    upstreams, composition_case, composition_runtime, composition_logs, monkeypatch,
+):
+    """英文口播与英文标题跳过 translate 模型调用，直接填充英文文字与关键词，且字幕保留句内逗号与词内撇号。"""
+    from server.video_composition.schema import Segment
+    from server.video_composition.text_events import subtitle_events
+
+    monkeypatch.setattr(service, "translate", lambda *args, **kwargs: pytest.fail("英文内容不应调用 translate"))
+    template = deepcopy(composition_case["template"])
+    title_track = next(track for track in template["tracks"] if track["target"] == "title")
+    subtitle_track = next(track for track in template["tracks"] if track["target"] == "subtitle")
+    template["tracks"].extend([
+        {**deepcopy(title_track), "id": "title-en", "language": "en", "enabled": True},
+        {**deepcopy(subtitle_track), "id": "subtitle-en", "language": "en", "enabled": True},
+    ])
+    request = CompositionRequest.model_validate({
+        **composition_case["request"],
+        "title": "Networking at the Working Museum",
+        "text": "By the way, look at the pretty sunset. It's a beautiful evening.",
+    })
+    segmented = {
+        "title_keyword": "Working Museum",
+        "segments": [
+            {
+                "segment_id": 1,
+                "text": "By the way, look at the pretty sunset",
+                "keyword": "pretty sunset",
+                "start_time": 0.0,
+                "end_time": 2.0,
+                "level": 2,
+                "group_id": [1, 2],
+            },
+            {
+                "segment_id": 2,
+                "text": "It's a beautiful evening",
+                "keyword": "",
+                "start_time": 2.0,
+                "end_time": 4.0,
+                "level": 1,
+                "group_id": [2, 2],
+            },
+        ],
+    }
+    store.initialize_schema()
+    record = store.create(request.model_dump(mode="json", by_alias=True), composition_runtime.settings.output())
+    record = store.advance(record, "segmentation", template=template)
+    translated = await service.Job(composition_runtime, record, composition_runtime.settings).translate_texts(segmented, request)
+    assert translated["title_en"] == "Networking at the Working Museum"
+    assert translated["title_keyword_en"] == "Working Museum"
+    assert [item["text_en"] for item in translated["segments"]] == [
+        "By the way, look at the pretty sunset",
+        "It's a beautiful evening",
+    ]
+    assert [item["keyword_en"] for item in translated["segments"]] == ["pretty sunset", ""]
+    validated = [Segment.model_validate(item) for item in translated["segments"]]
+    assert subtitle_events(validated, "zh") == [
+        ("By the way, look at the pretty sunset", "pretty sunset", 0.0, 2.0),
+        ("It's a beautiful evening", "", 2.0, 4.0),
+    ]
+    assert subtitle_events(validated, "en") == [
+        ("By the way, look at the pretty sunset", "pretty sunset", 0.0, 2.0),
+        ("It's a beautiful evening", "", 2.0, 4.0),
+    ]
+    logs = composition_logs(record["task_id"])
+    skipped = next(row for row in logs if row["event"] == "step_skipped" and row["details"]["step"] == "translation")
+    assert skipped["details"]["output"] == {"reason": "英文内容无需翻译"}
+
+
+def test_mixed_chinese_english_subtitle_keyword_shares_text_cleaning_rule():
+    """中英混排正文的英文关键词与所属正文共用同一清洗规则，普通字幕与双语字幕均不因撇号失配。"""
+    from server.template.schema import EffectTemplateEditor
+    from server.video_composition.schema import Segment
+    from server.video_composition.text_events import bilingual_events, subtitle_events
+    from server.video_composition.timeline import format_subtitle_keyword
+
+    mixed = Segment.model_validate({
+        "segment_id": 1,
+        "text": "今天介绍 McDonald's 新品。",
+        "keyword": "McDonald's",
+        "text_en": "Today we introduce McDonald's new product.",
+        "keyword_en": "McDonald's",
+        "start_time": 0.0,
+        "end_time": 2.0,
+        "level": 2,
+        "group_id": [1, 1],
+    })
+    assert subtitle_events([mixed], "zh") == [("今天介绍 McDonalds 新品", "McDonalds", 0.0, 2.0)]
+    assert subtitle_events([mixed], "en") == [("Today we introduce McDonald's new product", "McDonald's", 0.0, 2.0)]
+    assert bilingual_events([mixed]) == [(
+        "今天介绍 McDonalds 新品",
+        "McDonalds",
+        "Today we introduce McDonald's new product",
+        "McDonald's",
+        0.0,
+        2.0,
+    )]
+    editor = EffectTemplateEditor(subtitle_keyword_bold=True)
+    assert format_subtitle_keyword("今天介绍 McDonalds 新品", "McDonalds", editor) == r"今天介绍 {\b1}McDonalds{\b0} 新品"

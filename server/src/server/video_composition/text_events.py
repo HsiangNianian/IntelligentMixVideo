@@ -2,17 +2,21 @@
 
 双语字效（双语字幕）另由 `bilingual_events` 同时给出每条切片的中文与英文，两种语言一起注入同一个字效。
 """
-from ..segmentation.segmentation import SUBTITLE_PUNCTUATION
+from ..segmentation.segmentation import SUBTITLE_PUNCTUATION, _is_english
 
 
 def _subtitle_text(text, language="zh"):
-    """正文与展示关键词共用过滤规则：保留问号和数字内部的小数点；英文额外保留词内撇号。"""
+    """正文与展示关键词共用过滤规则：保留问号和数字内部的小数点；英文额外保留句内逗号与词内撇号。"""
+    english = language == "en"
     return "".join(char for i, char in enumerate(text) if char not in SUBTITLE_PUNCTUATION or (
         char in ".．" and 0 < i < len(text) - 1
         and text[i - 1].isdecimal() and text[i + 1].isdecimal()
     ) or (
-        language == "en" and char in "'’" and 0 < i < len(text) - 1
+        english and char in "'’" and 0 < i < len(text) - 1
         and text[i - 1].isalnum() and text[i + 1].isalnum()
+    ) or (
+        english and char == "," and 0 < i < len(text) - 1
+        and text[i - 1].isalnum()
     )).strip()
 
 
@@ -35,9 +39,10 @@ def _sentence_events(segments, language="zh"):
             continue
         used = False
         for part in item.subtitle_parts or [item]:
-            text = _subtitle_text(part.text)
+            part_language = "en" if _is_english(part.text) else "zh"
+            text = _subtitle_text(part.text, part_language)
             # 先确认原词属于此子段，避免清洗后误命中其他子段；不修改素材召回的原关键词。
-            keyword = _subtitle_text(item.keyword) if not used and item.keyword and item.keyword in part.text else ""
+            keyword = _subtitle_text(item.keyword, part_language) if not used and item.keyword and item.keyword in part.text else ""
             used = used or bool(keyword)
             if text:
                 yield sentence, (text, keyword, part.start_time, part.end_time)
@@ -76,8 +81,9 @@ def bilingual_events(segments):
     for item in segments:
         if not item.text_en or not item.text_en.strip():
             raise ValueError("缺少英文字幕译文")
-        text = _subtitle_text(item.text)
-        keyword = _subtitle_text(item.keyword) if item.keyword and item.keyword in item.text else ""
+        item_language = "en" if _is_english(item.text) else "zh"
+        text = _subtitle_text(item.text, item_language)
+        keyword = _subtitle_text(item.keyword, item_language) if item.keyword and item.keyword in item.text else ""
         english = _subtitle_text(item.text_en, "en")
         english_keyword = _subtitle_text(item.keyword_en, "en") if item.keyword_en and item.keyword_en in item.text_en else ""
         if text:

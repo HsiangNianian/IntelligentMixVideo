@@ -1,7 +1,8 @@
-"""文案切片与标题提词：无 ASR 时仅提取标题词，其余完成字符对齐、CT-Punc 恢复并叠加原标点、按句读标点切分与时间投射；
+"""文案切片与标题提词：无 ASR 时仅提取标题词，其余完成字符对齐、中文 CT-Punc 标点切分或英文 spaCy 依存句法意群切分与时间投射；
 另提供独立的 translate，把切片结果一次性译成英文并校验英文关键词。"""
 
 from collections import Counter
+from functools import lru_cache
 import json
 import logging
 import re
@@ -11,6 +12,7 @@ from urllib.parse import urlparse
 
 from pydantic import ValidationError
 from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
+import spacy
 
 from ..log_sanitization import sanitize
 from .settings import ClientSettings, Settings
@@ -27,6 +29,109 @@ SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
 def _is_punctuation(char: str) -> bool:
     """识别去标点及正文对齐使用的字符；是否断句由独立的切点规则判断。"""
     return char in PUNCTUATION or unicodedata.category(char).startswith("P")
+
+
+def _is_english(text: str) -> bool:
+    """含英文字母且不含中文汉字或中文全角标点时走英文路径。"""
+    return bool(re.search(r"[A-Za-z]", text)) and not re.search(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]", text)
+
+
+@lru_cache(maxsize=1)
+def _english_nlp():
+    """加载 en_core_web_sm 并补充无空格句末标点的分词规则。"""
+    nlp = spacy.load("en_core_web_sm")
+    infixes = [*nlp.Defaults.infixes, r"(?<=[A-Za-z0-9])[\.\!\?](?=[A-Za-z])"]
+    nlp.tokenizer.infix_finditer = spacy.util.compile_infix_regex(infixes).finditer
+    return nlp
+
+
+def _english_boundary_weights(sent) -> dict[int, float]:
+    """根据依存句法树计算句内每个 token 起点作为语义切点的优先级权重。"""
+    doc = sent.doc
+    blocked = set()
+    for chunk in sent.noun_chunks:
+        blocked.update(range(chunk.start + 1, chunk.end))
+    for tok in sent:
+        if tok.is_punct:
+            blocked.add(tok.i)
+        if tok.dep_ in ("aux", "auxpass", "neg", "prt", "expl", "det", "amod", "compound", "nummod", "poss") and tok.head.i > tok.i:
+            blocked.update(range(tok.i + 1, tok.head.i + 1))
+        if tok.dep_ == "prep" and tok.i + 1 < sent.end:
+            blocked.add(tok.i + 1)
+        if tok.dep_ in ("dobj", "dative", "attr", "acomp") and tok.pos_ == "PRON" and tok.head.i < tok.i:
+            blocked.update(range(tok.head.i + 1, tok.i + 1))
+
+    weights: dict[int, float] = {}
+
+    def offer(index: int, weight: float) -> None:
+        if sent.start < index < sent.end and index not in blocked:
+            weights[index] = max(weights.get(index, 0.0), weight)
+
+    for tok in sent:
+        if tok.text in (",", ";", ":", "—", "-") and tok.i + 1 < sent.end:
+            offer(tok.i + 1, 4.0)
+        if tok.dep_ == "cc" and tok.head.pos_ in ("VERB", "AUX"):
+            offer(tok.i, 3.5)
+        if tok.dep_ == "mark" and tok.head.dep_ in ("ccomp", "advcl", "relcl", "acl", "pcomp"):
+            prev = doc[tok.i - 1] if tok.i > sent.start else None
+            offer(prev.i, 3.8) if prev is not None and prev.dep_ == "cc" else offer(tok.i, 3.2)
+        if tok.dep_ in ("relcl", "advcl", "ccomp", "parataxis"):
+            left = tok.left_edge.i
+            prev = doc[left - 1] if left > sent.start else None
+            offer(prev.i, 3.8) if prev is not None and prev.dep_ == "cc" else offer(left, 3.0)
+        if tok.dep_ == "prep" and (tok.right_edge.i - tok.i + 1) >= 4:
+            offer(tok.i, 2.2)
+        if tok.dep_ in ("nsubj", "nsubjpass", "csubj") and (tok.right_edge.i - tok.left_edge.i + 1) >= 4:
+            offer(tok.right_edge.i + 1, 2.0)
+    return weights
+
+
+def _split_english(script: str, offsets: list[int], max_chars: int, min_words: int = 3) -> list[tuple[int, int, str]]:
+    """使用 spaCy 断句与依存句法意群规则切分英文文案，并去掉每段句末标点。"""
+    doc = _english_nlp()(script)
+
+    def char_len(start: int, end: int) -> int:
+        return doc[end - 1].idx + len(doc[end - 1].text) - doc[start].idx
+
+    def word_count(start: int, end: int) -> int:
+        return sum(1 for t in doc[start:end] if not t.is_punct and not t.is_space)
+
+    token_spans: list[tuple[int, int]] = []
+    for sent in doc.sents:
+        weights = _english_boundary_weights(sent)
+
+        def split_span(start: int, end: int) -> list[tuple[int, int]]:
+            length = char_len(start, end)
+            if length <= max_chars or word_count(start, end) < min_words * 2:
+                return [(start, end)]
+            best_idx, best_score = None, -1e9
+            for idx, weight in weights.items():
+                if not (start < idx < end):
+                    continue
+                if word_count(start, idx) < min_words or word_count(idx, end) < min_words:
+                    continue
+                left_len, right_len = char_len(start, idx), char_len(idx, end)
+                balance = 1.0 - abs(left_len - right_len) / max(length, 1)
+                fits_bonus = 0.6 if (left_len <= max_chars or right_len <= max_chars) else 0.0
+                score = weight + 1.5 * balance + fits_bonus
+                if score > best_score:
+                    best_score, best_idx = score, idx
+            if best_idx is None:
+                return [(start, end)]
+            return split_span(start, best_idx) + split_span(best_idx, end)
+
+        for s, e in split_span(sent.start, sent.end):
+            if any(not _is_punctuation(c) and not c.isspace() for c in doc[s:e].text):
+                token_spans.append((s, e))
+
+    spans: list[tuple[int, int, str]] = []
+    for index, (start_tok, _) in enumerate(token_spans):
+        raw_begin = 0 if index == 0 else doc[start_tok].idx
+        raw_end = len(script) if index == len(token_spans) - 1 else doc[token_spans[index + 1][0]].idx
+        char_indices = [pos for pos, offset in enumerate(offsets) if raw_begin <= offset < raw_end]
+        text = re.sub(r"[.,!?;:—\-…]+$", "", script[raw_begin:raw_end].strip())
+        spans.append((char_indices[0], char_indices[-1] + 1, text))
+    return spans
 
 
 def _slice_boundaries(text: str, offsets: list[int]) -> dict[int, int]:
@@ -316,7 +421,9 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     if not timeline:
         raise ValueError("ASR 缺少有效发音字符。")
 
-    keyword_max_length = 12
+    english = _is_english(script)
+    keyword_max_length = None if english else 12
+    title_max_length = None if (title and _is_english(title)) else 12
     diagnostics["stage"] = "alignment"
     # 先剥离相同前后缀，仅对中间差异搜索并回溯。
     prefix = suffix = 0
@@ -429,36 +536,46 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         repair_block_count += 1
     trace["repair_block_count"] = repair_block_count
 
-    # 先去标点恢复，再按原字符间隙叠加原标点；随后独立判断切点。
-    # 只按计数位置取 CT-Punc 的标点，正文始终用原文，模型改写英文大小写等不影响结果。
     offsets = [c[0] for c in chars]
-    diagnostics["stage"] = "punctuation"
-    request_timeout()
-    started = perf_counter()
-    restored = punctuation.restore("".join(c for c in script if not _is_punctuation(c)), deadline=deadline)
-    trace["model_elapsed_ms"] = {"punctuation": round((perf_counter() - started) * 1000, 1)}
-    request_timeout()
-    additions, position = {}, 0
-    for char in restored:
-        if not _is_punctuation(char) and not char.isspace():
-            position += 1
-        elif _is_punctuation(char):
-            begin = offsets[position - 1] + 1 if position else 0
-            end = offsets[position] if position < len(offsets) else len(script)
-            if not any(_is_punctuation(c) for c in script[begin:end]):
-                additions[begin] = additions.get(begin, "") + char
-    script = additions.get(0, "") + "".join(char + additions.get(i + 1, "") for i, char in enumerate(script))
-    offsets = [i for i, c in enumerate(script) if not c.isspace() and not _is_punctuation(c)]
-    diagnostics["stage"] = "punctuation_split"
-    boundaries = _slice_boundaries(script, offsets)
-    edges = list(boundaries)
-    spans = list(zip(edges, edges[1:]))
-    trace.update(punctuation_piece_count=len(spans), keyword_candidates={})
-    remaining = [script[offsets[a]:offsets[b - 1] + 1] for a, b in spans if b - a > segment_max_length]
-    trace["over_limit_pieces"] = remaining
-    if remaining:
-        warnings.append({"code": "segment_over_max_chars",
-                         "message": f"{len(remaining)} 个片段超过每行 {segment_max_length} 字，已按标点完整保留。"})
+    if english:
+        diagnostics["stage"] = "punctuation_split"
+        started = perf_counter()
+        english_spans = _split_english(script, offsets, max(18, segment_max_length * 6))
+        trace["model_elapsed_ms"] = {"punctuation": round((perf_counter() - started) * 1000, 1)}
+        spans = [(a, b) for a, b, _ in english_spans]
+        segment_texts = [text for _, _, text in english_spans]
+        trace.update(punctuation_piece_count=len(spans), keyword_candidates={}, over_limit_pieces=[])
+    else:
+        # 先去标点恢复，再按原字符间隙叠加原标点；随后独立判断切点。
+        # 只按计数位置取 CT-Punc 的标点，正文始终用原文，模型改写英文大小写等不影响结果。
+        diagnostics["stage"] = "punctuation"
+        request_timeout()
+        started = perf_counter()
+        restored = punctuation.restore("".join(c for c in script if not _is_punctuation(c)), deadline=deadline)
+        trace["model_elapsed_ms"] = {"punctuation": round((perf_counter() - started) * 1000, 1)}
+        request_timeout()
+        additions, position = {}, 0
+        for char in restored:
+            if not _is_punctuation(char) and not char.isspace():
+                position += 1
+            elif _is_punctuation(char):
+                begin = offsets[position - 1] + 1 if position else 0
+                end = offsets[position] if position < len(offsets) else len(script)
+                if not any(_is_punctuation(c) for c in script[begin:end]):
+                    additions[begin] = additions.get(begin, "") + char
+        script = additions.get(0, "") + "".join(char + additions.get(i + 1, "") for i, char in enumerate(script))
+        offsets = [i for i, c in enumerate(script) if not c.isspace() and not _is_punctuation(c)]
+        diagnostics["stage"] = "punctuation_split"
+        boundaries = _slice_boundaries(script, offsets)
+        edges = list(boundaries)
+        spans = list(zip(edges, edges[1:]))
+        segment_texts = [script[boundaries[a]:boundaries[b]] for a, b in spans]
+        trace.update(punctuation_piece_count=len(spans), keyword_candidates={})
+        remaining = [script[offsets[a]:offsets[b - 1] + 1] for a, b in spans if b - a > segment_max_length]
+        trace["over_limit_pieces"] = remaining
+        if remaining:
+            warnings.append({"code": "segment_over_max_chars",
+                             "message": f"{len(remaining)} 个片段超过每行 {segment_max_length} 字，已按标点完整保留。"})
 
     # 段落按其首字归属 ASR 句：句内序号从 1 递增，total 为该句的最终段数。
     # 跨句片段整体计入起始句，使同句编号连续且不因归属再切分文本。
@@ -474,10 +591,9 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     attribution = [first_sentence if s is None else s for s in attribution]
     segments, rejected = [], 0
     with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
-        for index, (a, b) in enumerate(spans, 1):
-            begin, end = boundaries[a], boundaries[b]
+        for index, ((a, b), text) in enumerate(zip(spans, segment_texts), 1):
             segments.append({
-                "segment_id": index, "text": script[begin:end],
+                "segment_id": index, "text": text,
                 "start_time_ms": round(starts[a]), "end_time_ms": round(ends[b - 1]), "keyword": "", "level": 1,
             })
         trace["segment_texts"] = [item["text"] for item in segments]
@@ -485,10 +601,11 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         # 按最终片段提关键词，与标题共用一次调用；纠错时回填原回复与错误。
         diagnostics["stage"] = "keywords"
         diagnostics["model_response"] = None
+        limit_rule = "每段最多1个词；" if keyword_max_length is None else f"每段最多1个词，每词最多{keyword_max_length}字；"
         prompt = (
             '为短视频素材召回提取关键词，只返回 JSON 对象。'
             "全篇关键词总数不限，逐段判断是否有值得检索画面的具体对象，无合适对象时省略该编号，不凑词。"
-            f"每段最多1个词，每词最多{keyword_max_length}字；"
+            f"{limit_rule}"
             "优先选择本段核心的具体名词或名词短语，如产品、动物、人物、食材、部位、工具、场景。"
             "保留有助于区分画面的必要修饰语，例如原文连续出现的‘散养的土鸡’；‘蛋清’‘蛋黄’也适合召回。"
             "不要只提取‘散养’‘新鲜’‘饱满’等动作或属性，也不要选‘囤一点’等营销引导。"
@@ -536,7 +653,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                     output = _json_output(response)
                     if title is not None:
                         title_keyword = _check_title_keyword(
-                            output.get("title_keyword"), title, keyword_max_length, "title_keyword")
+                            output.get("title_keyword"), title, title_max_length, "title_keyword")
                     keywords = output.get("keywords")
                     diagnostics["keyword_response"].update(
                         keywords_type=type(keywords).__name__,
@@ -578,7 +695,8 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     # 保留原始停顿，检查文本覆盖和输出时间。
     diagnostics["stage"] = "output_validation"
     trace.update(segment_count=len(segments), keyword_rejected_count=rejected)
-    if "".join(s["text"] for s in segments) != script:
+    if (_core("".join(s["text"] for s in segments)) != _core(script) if english
+            else "".join(s["text"] for s in segments) != script):
         raise AssertionError("片段未完整覆盖文案。")
     previous_end = 0
     for item in segments:
