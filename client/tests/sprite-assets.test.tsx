@@ -1030,6 +1030,37 @@ test("重命名资产，失败可重试，使用中的资产也能改名", async
   expect(await screen.findByRole("button", { name: "设置 AI 资产：冷色标题" })).toBeTruthy();
 });
 
+// 场景：手动分类或按名称推断的字效打开改名弹窗后，别人修改分类并推送刷新；只改名称不得覆盖新分类，输入草稿仍保留。
+test.each([TextEffectCategory.UNSPECIFIED, TextEffectCategory.TITLE])("只改名称保留他人并发保存的分类（原分类 %s）", async (textCategory) => {
+  const catalog: ReturnType<typeof textAsset>[] = [{ ...textAsset(), textCategory }];
+  sprites({ catalog });
+  const fallback = fetchMock.getMockImplementation()!;
+  const renames: ReturnType<typeof fromBinary<typeof RenameSpriteRequestSchema>>[] = [];
+  fetchMock.mockImplementation((async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (!path.endsWith("/rename")) return fallback(url, init);
+    const request = fromBinary(RenameSpriteRequestSchema, new Uint8Array(init!.body as Uint8Array));
+    renames.push(request);
+    catalog[0] = { ...catalog[0], name: request.name, textCategory: request.textCategory ?? catalog[0].textCategory };
+    return binary(RenameSpriteResponseSchema, create(RenameSpriteResponseSchema, { sprite: catalog[0] }));
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={{ templateId: savedTemplate().template_id }} onHome={() => {}} />);
+  const region = await openAssets();
+  fireEvent.click(await within(region).findByRole("button", { name: "重命名 AI 资产：金色标题" }));
+  const dialog = await screen.findByRole("dialog", { name: "重命名 AI 资产" });
+  const input = within(dialog).getByLabelText<HTMLInputElement>("资产名称");
+  fireEvent.change(input, { target: { value: "新的名称" } });
+  catalog[0] = { ...catalog[0], textCategory: TextEffectCategory.SUBTITLE };
+  await act(async () => { FakeEventSource.instances.find((item) => item.url.endsWith("/api/sprites/stream"))!.emit("catalog.changed"); });
+  await waitFor(() => expect(within(region).getByRole("radio", { name: "字幕字效", hidden: true }).textContent).toBe("字幕字效 1"));
+  expect(input.value).toBe("新的名称");
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存修改" }));
+  await waitForElementToBeRemoved(() => screen.queryByRole("dialog", { name: "重命名 AI 资产" }));
+  expect(renames.map(({ name, textCategory }) => ({ name, textCategory }))).toEqual([{ name: "新的名称", textCategory: undefined }]);
+  expect(catalog[0].textCategory).toBe(TextEffectCategory.SUBTITLE);
+  expect(await within(region).findByRole("button", { name: "添加 AI 资产：新的名称" })).toBeTruthy();
+});
+
 // 场景：字效可以只改分类，失败保留选择；保存、刷新后进入新分类，重开弹窗仍显示手动选择，即使名称含「标题」。
 test("重命名弹窗持久保存字效分类并在失败后保留草稿", async () => {
   const catalog = [textAsset()];

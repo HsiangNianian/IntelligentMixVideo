@@ -64,14 +64,16 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
     } finally { setRemoving(false); catalog.refresh(); }
   }
 
-  /** 一起保存名称和字效分类；失败保留草稿供重试，成功刷新目录及模板中显示的名称。 */
+  /** 保存名称及用户改过的字效分类；失败保留草稿供重试，成功刷新目录及模板中显示的名称。 */
   async function rename() {
     if (!renaming || saving) return;
     const trimmed = newName.trim();
     if (!trimmed) { setRenameError("请输入资产名称"); return; }
     setSaving(true); setRenameError("");
     try {
-      const asset = await renameSprite(renaming.id, trimmed, renaming.kind === SpriteKind.TEXT ? newTextCategory : undefined);
+      // 与打开弹窗时的分类比较；只改名称时省略分类，保留其他用户在此期间保存的选择。
+      const textCategory = renaming.kind === SpriteKind.TEXT && newTextCategory !== textCategoryOf(renaming) ? newTextCategory : undefined;
+      const asset = await renameSprite(renaming.id, trimmed, textCategory);
       toast(renaming.kind === SpriteKind.TEXT ? `已保存资产「${asset.name}」` : `已重命名为「${asset.name}」`);
       setRenaming(null); catalog.refresh();
     } catch (reason) { setRenameError(reason instanceof Error ? reason.message : "重命名失败"); }
