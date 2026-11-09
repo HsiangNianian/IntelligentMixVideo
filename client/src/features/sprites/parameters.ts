@@ -8,19 +8,20 @@ export const TEXT_CATEGORIES = [
   { id: "subtitle", value: TextEffectCategory.SUBTITLE, label: "字幕字效" },
 ] as const;
 
-/** 资产库的五个并列分类，未指定类型的历史资产沿用视频特效的展示。 */
+/** 资产库的六个并列分类；双语按实际参数识别，未指定类型的历史资产沿用视频特效的展示。 */
 export const CATEGORIES = [
   ...TEXT_CATEGORIES,
+  { id: "bilingual", label: "双语字效" },
   { id: "filter", label: "滤镜" },
   { id: "transition", label: "转场特效" },
   { id: "video", label: "视频特效" },
 ] as const;
 export type CategoryId = (typeof CATEGORIES)[number]["id"];
 
-/** 按内容类型和字效分类确定目录页签；历史未分类字效从名称推断。 */
-export function categoryOf(asset: { kind: SpriteKind; name: string; textCategory?: TextEffectCategory }): CategoryId {
+/** 双语字效单独归类；普通字效沿用手动分类或历史名称推断，不以名称判断是否支持双语。 */
+export function categoryOf(asset: { kind: SpriteKind; name: string; textCategory?: TextEffectCategory; bilingual?: boolean }): CategoryId {
   switch (asset.kind) {
-    case SpriteKind.TEXT: return textCategoryOf(asset) === TextEffectCategory.TITLE ? "title" : "subtitle";
+    case SpriteKind.TEXT: return asset.bilingual ? "bilingual" : textCategoryOf(asset) === TextEffectCategory.TITLE ? "title" : "subtitle";
     case SpriteKind.FILTER_OVERLAY: return "filter";
     case SpriteKind.TRANSITION_OVERLAY: return "transition";
     default: return "video";
@@ -85,7 +86,7 @@ export const EFFECT_PARAMETER = /^effect[1-9][0-9]*(?:Target|Seconds|Delay|Stagg
 
 /**
  * 双语字效（双语字幕）的英文文字参数，与服务端 `categories.BILINGUAL_PROP` 一致：上栏是中文、下栏是同一句的英文，
- * 模板把它按所绑定文字对象的英文（菜单里开启中英双语）填给资产，合成时由切片译文注入。
+ * 绑定时自动开启对应的英文对象，模板用其示例预览，合成时由实际切片译文注入。
  */
 export const BILINGUAL_PROP = "textEn";
 

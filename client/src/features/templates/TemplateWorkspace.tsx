@@ -178,6 +178,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const selectedText = clipText ?? selectedTrack;
   const bilingualTarget = selectedText?.target === "title" || selectedText?.target === "subtitle" ? selectedText.target : undefined;
   const english = draft?.tracks.find((track) => track.target === bilingualTarget && track.language === "en");
+  // 中英文对象共用双语字效时，任何一个对象的面板都不能单独关闭翻译。
+  const bilingualRequired = !!bilingualTarget && draft?.clips.some((clip) => clip.text_target === bilingualTarget && clip.language !== "en"
+    && spriteCatalog.assets?.some((asset) => asset.id === clip.sprite_id && asset.bilingual)) === true;
 
   useEffect(() => {
     mounted.current = true;
@@ -402,12 +405,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 }, true)} /></div>
-                <div hidden={assetSource !== "ai"}><SpriteCatalog catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => {
-                  // 双语字效（双语字幕）的下栏是同一句的英文：添加时开启所作用对象的中英双语，合成才有译文可注入。
-                  const role = textTarget === "title" || textTarget === "subtitle" ? textTarget : undefined;
-                  const prepared = asset.bilingual && role ? setBilingual(draft, role, true) : draft;
-                  return addClip(prepared, asset, spriteCatalog.assets ?? [], textTarget, prepared.tracks.find((track) => track.id === lastTextTrack.current)?.language);
-                }, true)} /></div>
+                <div hidden={assetSource !== "ai"}><SpriteCatalog catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() =>
+                  addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} /></div>
                 <div hidden={assetSource !== "masks"}><FrameMaskCard mask={draft.frame_mask} onSelect={() => {
                   if (!draft.frame_mask) editTrack(() => ({ ...draft, frame_mask: newFrameMask() }));
                   setTarget(FRAME_MASK_OBJECT_ID);
@@ -434,8 +433,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   {avatarPreviewControls}
                 </>}</SplitScreenEditor>
                 {bilingualTarget && <div className="space-y-2 border-b px-4 py-3">
-                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!english && english.enabled !== false} onChange={(event) => {
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!english && english.enabled !== false} disabled={bilingualRequired && !!english && english.enabled !== false} onChange={(event) => {
                     const enabled = event.target.checked;
+                    if (!enabled && bilingualRequired) return;
                     editTrack(() => {
                       const next = setBilingual(draft, bilingualTarget, enabled);
                       if (!enabled && selectedText?.language === "en") {
@@ -445,6 +445,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                       return next;
                     });
                   }} />中英双语</label>
+                  <p className="text-[11px] text-muted-foreground">{bilingualRequired
+                    ? "双语字效已自动启用中英双语，合成时会翻译实际文案。若要关闭，请先移除该双语字效。"
+                    : "开启后，合成时会翻译实际文案并显示英文；关闭时不翻译此对象，也不输出英文。"}</p>
                   {english?.enabled !== false && english && <Button type="button" variant="outline" size="sm" onClick={() => { selectTarget(english.id); setInspectorTab("appearance"); }}>编辑英文{bilingualTarget === "title" ? "标题" : "字幕"}</Button>}
                   {selectedText?.language === "en" && <p className="text-[11px] text-muted-foreground">时间跟随中文{bilingualTarget === "title" ? "标题" : "字幕"}，合成时自动翻译实际文案。</p>}
                 </div>}
@@ -468,7 +471,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   onTransform={(patch) => editTrack(() => setClipTransform(draft, selectedClip.id, patch))}
                   onStart={(start) => editTrack(() => moveClip(draft, selectedClip.id, start))}
                   onBind={(binding) => editTrack(() => {
-                    const next = bindClip(draft, selectedClip.id, binding);
+                    const next = bindClip(draft, selectedClip.id, binding, spriteCatalog.assets ?? []);
                     const text = boundText(next.tracks, next.clips.find((clip) => clip.id === selectedClip.id)!);
                     if (text && isTextTarget(text.target)) { setTextTarget(text.target); lastTextTrack.current = text.id; }
                     return next;

@@ -114,7 +114,7 @@ export function TemplateInspector({ track, draft, catalog, duration, resolved, t
 }) {
   const id = useId();
   const hasKeywords = track.target === "title" || track.target === "subtitle";
-  const textSprites = hasKeywords ? (sprites ?? []).filter((asset) => asset.kind === SpriteKind.TEXT) : [];
+  const textSprites = hasKeywords ? (sprites ?? []).filter((asset) => asset.kind === SpriteKind.TEXT && !(track.language === "en" && asset.bilingual)) : [];
   useEffect(() => { if (hasKeywords) onNeedSprites(); }, [hasKeywords, onNeedSprites]);
   const tabs: InspectorTab[] = track.target === "subtitle" || track.language === "en" ? ["appearance", "keyword"] : hasKeywords ? ["appearance", "timing", "keyword"] : ["appearance", "timing"];
   const activeTab = tabs.includes(tab) ? tab : tabs[0];
@@ -131,7 +131,9 @@ export function TemplateInspector({ track, draft, catalog, duration, resolved, t
       <Label htmlFor={`${id}-sprite`} className="text-xs">用 Remotion 字效显示</Label>
       {textSprites.length ? <EffectCombobox id={`${id}-sprite`} value="" ariaLabel="用 Remotion 字效显示" placeholder="选择字效" searchPlaceholder="搜索字效"
         options={textSprites.map((asset) => ({ value: asset.id, label: asset.name }))} onChange={onBindSprite} />
-        : <p className="text-[11px] text-muted-foreground">资产库里还没有字效，可以先去字效工作区做好并保存为资产。</p>}
+        : <p className="text-[11px] text-muted-foreground">{track.language === "en" && sprites.some((asset) => asset.kind === SpriteKind.TEXT && asset.bilingual)
+          ? "双语字效请绑定中文标题或字幕，它会同时显示对应英文。"
+          : "资产库里还没有字效，可以先去字效工作区做好并保存为资产。"}</p>}
       <p className="text-[11px] text-muted-foreground">IMS 只能用自带字体，字效可以用共享字体库里的字体；选中后在「外观与位置」里换字体，文字与时间仍取自这个{effectTargets[track.target]}。</p>
     </div>}
     <div id={`${id}-panel-appearance`} role="tabpanel" aria-labelledby={`${id}-appearance`} hidden={activeTab !== "appearance"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} language={track.language} onRemove={onRemove} onClose={onClose} view="appearance" showHeader={false} /></div>

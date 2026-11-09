@@ -251,7 +251,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
           {textOptions.map((option) => <ToggleGroupItem key={option.value} value={option.value} className="flex-1 text-xs">{option.label}</ToggleGroupItem>)}
         </ToggleGroup>
         <p className="text-[11px] text-muted-foreground">{clip.text_target ? `由这个字效显示${textRoles[clip.text_target]}${bilingual ? sampleLines > 1 ? "的两组中英字幕" : "的中英两行（上栏中文、下栏英文）" : ""}：文字与关键词取自${textRoles[clip.text_target]}${bilingual ? "和它的英文译文" : ""}，时间跟随它。` : legacyTextTarget ? `当前与 IMS ${textRoles[legacyTextTarget]}同时显示。重新选择作用对象后，将改为仅显示 Remotion 字效。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
-        {bilingual && <p className="text-[11px] text-muted-foreground">双语字效自己显示中英两种语言，所以中英文的 IMS 文字都不再显示，也只能作用于中文对象；英文{clip.text_target === "title" ? "标题" : "字幕"}的启用与文字由下方「中英双语」与英文示例文字提供。</p>}
+        {bilingual && <p className="text-[11px] text-muted-foreground">双语字效同时显示中英两种语言，只能作用于中文对象。绑定后自动启用双语并在合成时翻译实际文案；中英文示例仅用于预览，无需另绑英文字效。</p>}
       </div> : isTransition ? <div className="space-y-2">
         <h3 className="text-xs font-medium">转场 {clip.transition_boundary}</h3>
         <p className="text-[11px] text-muted-foreground">使用资产自身持续时间，选择方式在「镜头转场」中设置。</p>
