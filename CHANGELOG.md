@@ -3,6 +3,35 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.21] - 2026-11-09
+### New Features
+- [`a281636`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a281636de3a157e512e98d296b04c804245e2fa7) - **server**: send probed audio duration to segment matching *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`7f27338`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7f27338a062b632955949a760bccd05ef437dabe) - **server**: improve video composition execution logs *(PR [#316](https://github.com/HsiangNianian/IntelligentMixVideo/pull/316) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`fe8cfea`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/fe8cfea88c68f3c459cbacf6becf8347fa01ba84) - **segmentation**: add spaCy English clause segmentation and skip translation *(PR [#317](https://github.com/HsiangNianian/IntelligentMixVideo/pull/317) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`f24a0b7`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f24a0b7c8d32cbc83a3544b995495824c15a9fea) - **sprites**: split AI assets into five categories *(PR [#319](https://github.com/HsiangNianian/IntelligentMixVideo/pull/319) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Bug Fixes
+- [`83d09a8`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/83d09a889449da998e03b6845b4c368a6f97b6a7) - **remotion**: fall back to simplified Chinese glyphs instead of Japanese *(PR [#315](https://github.com/HsiangNianian/IntelligentMixVideo/pull/315) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`481cc73`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/481cc737dc1465be8d415074e9fa7c6bd909ce58) - **client**: refresh AI assets when returning to the editor *(PR [#318](https://github.com/HsiangNianian/IntelligentMixVideo/pull/318) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`4f7c23b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4f7c23bcdb7b57a2ebdbe5f1c1540a15d0b702c1) - **client**: classify bilingual assets and enable translation *(PR [#320](https://github.com/HsiangNianian/IntelligentMixVideo/pull/320) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`18c9ec9`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/18c9ec9245aa3eec790f02adf237f24a53a76692) - **ci**: Fix Windows built-in back-end startup deadlock and packaging instability *(PR [#321](https://github.com/HsiangNianian/IntelligentMixVideo/pull/321) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`82f9907`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/82f990757dc653c87290a933b3139f4bf01b99cf) - update CHANGELOG.md for v0.9.20 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+- [`bbfc875`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/bbfc87584f8cada388c273675fd4a361024dd40d) - **server**: document optional matching audio duration *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Chores
+- [`6b886c5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6b886c5622a57f37b6192c9144da07f5f04f35e0) - **release**: merge main into the v0.9.21 release branch *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`9b6ceb1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9b6ceb1ed3c6919b1bbd5ea7c261a5bdc190df5b) - **release**: prepare v0.9.21 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`8db550f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8db550f7c70efe247a5bb920f2097387678785f7) - Merge pull request [#314](https://github.com/HsiangNianian/IntelligentMixVideo/pull/314) from IT-coder-Yy/feat/segment-match-audio-duration
+
+feat(server): send probed audio duration to segment matching *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`ebb25f5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ebb25f57ba8c21d75a3660147704cbc9f1dabfcd) - Merge pull request [#323](https://github.com/HsiangNianian/IntelligentMixVideo/pull/323) from HsiangNianian/codex/release-v0.9.21
+
+chore(release): promote dev to main for v0.9.21 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.20] - 2026-11-04
 ### New Features
 - [`3ac80b6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3ac80b6058f9ef7ddc28fc06b5efdce246f00aed) - **segmentation**: restore punctuation with official FunASR CT-Punc *(PR [#306](https://github.com/HsiangNianian/IntelligentMixVideo/pull/306) by [@muyuzhong](https://github.com/muyuzhong))*
@@ -1922,3 +1951,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.19]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.18...v0.9.19
 
 [v0.9.20]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.19...v0.9.20
+
+[v0.9.21]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.20...v0.9.21
