@@ -27,7 +27,7 @@ from server.remotion_templates import parameters, sprite_events, sprite_store, s
 from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, category_problems
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.managed_fonts import bundled_font
-from server.remotion_templates.models import GenerateTemplateRequest
+from server.remotion_templates.models import GenerateTemplateRequest, JobInput
 from server.remotion_templates.object_store import ObjectStoreError, ZosObjects
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.publication import PREVIEW_PROTOCOL, current_bundle
@@ -176,9 +176,9 @@ def objects(store: Store) -> Path:
 
 def another_version(
     published, *, code: str = CODE, defaults: dict | None = None, description: str = "新版标题",
-    schema: dict | None = None, bound: list[str] | None = None,
+    schema: dict | None = None, bound: list[str] | None = None, same_work: bool = False,
 ):
-    """用同一份临时数据再封存一个成功版本（新的会话），供覆盖保存用例验证资产确实换成了新内容。"""
+    """封存另一个成功版本，默认新建会话，也可继续原会话，验证覆盖保存与整条会话删除。"""
     settings = published.settings
     harness = Harness(SimpleNamespace(settings=settings), OfflineRenderer(settings, CodeOnlyRenderer(settings)))
     schema = SCHEMA if schema is None else schema
@@ -200,7 +200,12 @@ def another_version(
         bindings=[{"name": name, "title": name, "targets": [{"instance_id": "title", "parameter": name}]} for name in bound],
         kind="text",
     )
-    _work, job = published.store.create(GenerateTemplateRequest(description="新版本"), DEVICE)
+    if same_work:
+        job = published.store.enqueue(
+            published.version.project_id, JobInput(mode="edit", instruction=description), published.version.id,
+        )
+    else:
+        _work, job = published.store.create(GenerateTemplateRequest(description="新版本"), DEVICE)
     published.store.claim()
     result = asyncio.run(harness.finalize_sprite(
         SimpleNamespace(saved_sprite=lambda _id: _SavedSprite(sprite), validation_for=lambda _r: runtime_report(sprite)),
@@ -587,6 +592,54 @@ def test_published_sprite_survives_deleting_its_source_version(client: TestClien
     assert "sandbox allow-scripts" in preview.headers["content-security-policy"]
 
 
+@pytest.mark.parametrize(("overwrite", "same_work"), [(False, True), (True, True), (True, False)])
+def test_published_sprite_survives_chat_delete_api(
+    client: TestClient, published, template_payload, monkeypatch, overwrite: bool, same_work: bool,
+) -> None:
+    """保存旧版或覆盖后删除整条来源会话；同一会话的多个版本一起清理，资产仍可列出、预览并保存到模板。"""
+    from server.remotion_templates.api import app as template_app
+    from server.remotion_templates.routes import runtime
+    from server.remotion_templates.runtime import Runtime
+
+    service = Runtime(published.store, None, published.settings)
+    monkeypatch.setitem(template_app.dependency_overrides, runtime, lambda: service)
+    source = published.version
+    summary = published_sprite(client, source.id, name="删聊后应保留的资产")
+    newer = another_version(published, defaults={"text": "覆盖后的标题"}, same_work=same_work)
+    if overwrite:
+        source = newer
+        summary = published_sprite(client, source.id, target_sprite_id=summary.sprite_id)
+    before = sprite_store.get(summary.sprite_id)
+    bundle = bundle_copy(published.store, summary.sprite_id).read_bytes()
+
+    response = client.delete(f"/api/templates/works/{source.project_id}", headers=DEVICE_HEADERS)
+    assert response.status_code == 204, response.text
+    assert client.delete(f"/api/templates/works/{source.project_id}", headers=DEVICE_HEADERS).status_code == 204
+    assert client.get(f"/api/templates/works/{source.project_id}", headers=DEVICE_HEADERS).status_code == 404
+    for version in (published.version, newer):
+        if version.project_id == source.project_id:
+            assert client.get(f"/api/templates/versions/{version.id}", headers=DEVICE_HEADERS).status_code == 404
+            assert not (objects(published.store) / "versions" / str(version.id)).exists()
+    assert sprite_store.get(summary.sprite_id) == before
+    assert bundle_copy(published.store, summary.sprite_id).read_bytes() == bundle
+
+    # 换一个 Store 并清空读取缓存，防止仅靠进程内状态或旧缓存把已丢失的资产暂时显示出来。
+    shutil.rmtree(published.store.root / "cache", ignore_errors=True)
+    restarted = Store(published.store.root)
+    restarted.initialize()
+    published.service.store = restarted
+    listed = client.get("/api/sprites")
+    assert listed.status_code == 200
+    assert listed.headers["cache-control"] == "no-store"
+    assert list(pb.ListSpritesResponse.FromString(listed.content).sprites) == [summary]
+    preview = client.get(summary.preview_url)
+    assert preview.status_code == 200 and "// rebuilt" in preview.text
+    template_payload["tracks"].append(remotion_track(sprite_id=summary.sprite_id, text_target="title"))
+    saved = post_template(client, template_payload)
+    assert saved.status_code == 201, saved.text
+    assert saved_template(saved)["tracks"][-1]["sprite_id"] == summary.sprite_id
+
+
 def test_losing_a_publish_race_returns_the_winner_and_cleans_up(published) -> None:
     """并发的相同发布在写库时撞上唯一键：落败者返回胜者的资产，并删除自己刚上传的副本与暂存文件。"""
     request = publish_request(published.version.id)
@@ -634,16 +687,19 @@ def test_preview_is_unavailable_when_a_lost_bundle_cannot_be_rebuilt(client: Tes
     assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites] == [summary.sprite_id]
 
 
-def slow_rebuilds(published) -> None:
-    """让重建在事件循环上停留片刻，使并发的预览或删除必然在它完成前到达。"""
+def slow_rebuilds(published) -> asyncio.Event:
+    """通知调用方重建已开始，并停留片刻供并发预览或删除进入，避免靠固定等待猜测启动时间。"""
     run_worker = published.renderer.run_worker
+    started = asyncio.Event()
 
     async def slow_worker(*args, **kwargs):
         """延迟后照常重建。"""
+        started.set()
         await asyncio.sleep(0.05)
         return await run_worker(*args, **kwargs)
 
     published.renderer.run_worker = slow_worker
+    return started
 
 
 def test_concurrent_previews_of_a_lost_bundle_rebuild_it_once(client: TestClient, published) -> None:
@@ -684,12 +740,12 @@ def test_deleting_during_a_rebuild_leaves_no_bundle_behind(client: TestClient, p
 
     summary = published_sprite(client, published.version.id)
     drop_bundle(published.store, summary.sprite_id)
-    slow_rebuilds(published)
+    started = slow_rebuilds(published)
 
     async def preview_then_delete():
         """预览开始重建后立即删除资产。"""
         preview = asyncio.create_task(sprites.preview_script(published.service, summary.sprite_id))
-        await asyncio.sleep(0.01)
+        await asyncio.wait_for(started.wait(), timeout=2)
         await delete_sprite(summary.sprite_id, published.service)
         await preview
 

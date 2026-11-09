@@ -757,6 +757,47 @@ test("删除失败后刷新目录，资产已不存在时按删除完成处理",
   expect(deletes).toBe(2);
 });
 
+// 场景（回归）：模板页保留挂载，切到字效页保存资产后返回；实时通知未送达、窗口也未失焦时，仍应读到新资产。
+test("返回模板页时补读目录，显示未收到推送的新资产", async () => {
+  const catalog: ReturnType<typeof summary>[] = [];
+  sprites({ catalog });
+  const selection = { templateId: null, name: "新模板", description: "" };
+  const { rerender } = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
+  const region = await openAssets();
+  await within(region).findByText("还没有资产，请在字效工作区预览成功版本后点击右上角「保存资产」。");
+  const [source] = FakeEventSource.instances;
+  // 主导航只隐藏工作区；另一页保存成功后，服务端目录已有记录，但没有收到 catalog.changed。
+  rerender(<TemplateWorkspace selection={selection} onHome={() => {}} active={false} />);
+  catalog.push(textAsset());
+  rerender(<TemplateWorkspace selection={selection} onHome={() => {}} active />);
+  await waitFor(() => expect(within(region).queryByRole("button", { name: "添加 AI 资产：金色标题" }) !== null).toBe(true));
+  expect(screen.getByRole("tab", { name: "AI 资产" }).getAttribute("aria-selected")).toBe("true");
+  expect(FakeEventSource.instances).toEqual([source]);
+  expect(source.readyState).not.toBe(FakeEventSource.CLOSED);
+});
+
+// 场景（回归）：旧请求的空目录延迟交付，刷新后已出现的新资产不能再被过期结果抹掉。
+test("目录刷新后忽略迟到的旧空列表", async () => {
+  sprites({ catalog: [textAsset()] });
+  const fallback = fetchMock.getMockImplementation()!;
+  const stale = Promise.withResolvers<Response>();
+  let delayed = false;
+  fetchMock.mockImplementation((async (url, init) => {
+    if (new URL(String(url)).pathname === "/api/sprites" && !delayed) {
+      delayed = true;
+      return stale.promise;
+    }
+    return fallback(url, init);
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={{ templateId: null, name: "新模板", description: "" }} onHome={() => {}} />);
+  await waitFor(() => expect(delayed).toBe(true));
+  const region = await openAssets();
+  await within(region).findByRole("button", { name: "添加 AI 资产：金色标题" });
+  // 模拟已读取的响应在请求取消后完成后续处理；刷新不能仅靠 fetch 取消保证结果顺序。
+  await act(async () => { stale.resolve(binary(ListSpritesResponseSchema, create(ListSpritesResponseSchema, { sprites: [] }))); });
+  expect(within(region).queryByRole("button", { name: "添加 AI 资产：金色标题" }) !== null).toBe(true);
+});
+
 // 场景（回归）：资产库共享，资产在别处被删除后，本窗口目录原先要手动刷新才更新；现在窗口重新聚焦时重新读取。
 // 右栏的字效入口也需要目录，进入页面时读一次，但资产区未展开时不订阅推送、聚焦也不再重读。
 test("窗口重新聚焦时刷新 AI 资产目录", async () => {
