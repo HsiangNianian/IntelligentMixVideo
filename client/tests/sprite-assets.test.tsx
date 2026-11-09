@@ -20,6 +20,7 @@ import {
   RenameSpriteRequestSchema,
   RenameSpriteResponseSchema,
   SpriteKind,
+  TextEffectCategory,
   SpriteParameterFormat,
   SpriteParameterSchema,
 } from "@/generated/imv/sprite/v1/sprite_pb";
@@ -42,6 +43,7 @@ function summary(id = "sprite-1", kind = SpriteKind.VIDEO_OVERLAY, keywords = fa
     contentBox: { x: 90, y: 760, width: 900, height: 400 },
     parameters,
     lineCount: 0,
+    textCategory: TextEffectCategory.UNSPECIFIED,
   };
 }
 
@@ -429,17 +431,38 @@ test("字效特效的开关、位置与时长在模板里按摆放调整", async
   expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.boolValue ?? item.numberValue]))).toEqual([[["effect1", false], ["effect1Seconds", 1.2]]]);
 });
 
-// 场景：资产库按字效、滤镜、转场与视频特效分类，显示各类数量，默认打开第一个有资产的分类。
-test("AI 资产目录按三类分栏", async () => {
-  sprites({ catalog: [textAsset(), summary("sprite-f", SpriteKind.FILTER_OVERLAY), summary("sprite-v"), summary("sprite-x", SpriteKind.TRANSITION_OVERLAY)] });
+// 场景：五个一级分类各自计数；旧字效按名称推断，字幕优先、无关键词默认字幕，手动分类优先；搜索与分类共同筛选。
+test("AI 资产目录按五类分栏并兼容旧字效名称", async () => {
+  sprites({ catalog: [
+    textAsset(),
+    { ...textAsset("subtitle"), name: "白色字幕" },
+    { ...textAsset("both"), name: "标题字幕通用" },
+    { ...textAsset("fallback"), name: "跳动文字" },
+    { ...textAsset("manual-title"), name: "手动字幕", textCategory: TextEffectCategory.TITLE },
+    { ...textAsset("manual-subtitle"), name: "手动标题", textCategory: TextEffectCategory.SUBTITLE },
+    { ...summary("sprite-f", SpriteKind.FILTER_OVERLAY), name: "暖色滤镜" },
+    { ...summary("sprite-v"), name: "粒子动效" },
+    { ...summary("sprite-x", SpriteKind.TRANSITION_OVERLAY), name: "闪白转场" },
+    { ...summary("legacy", SpriteKind.UNSPECIFIED), name: "历史动效" },
+  ] });
   render(<TemplateWorkspace selection={{ templateId: null, name: "新模板", description: "" }} onHome={() => {}} />);
   const catalog = await openAssets();
   const tabs = await within(catalog).findByRole("radiogroup", { name: "AI 资产分类" });
-  expect(within(tabs).getAllByRole("radio").map((item) => item.textContent)).toEqual(["字效 1", "滤镜 1", "转场与视频特效 2"]);
-  expect(within(catalog).getByRole("button", { name: "添加 AI 资产：金色标题" })).toBeTruthy();
-  fireEvent.click(within(tabs).getByRole("radio", { name: /转场与视频特效/ }));
-  expect(within(catalog).getAllByRole("button", { name: "添加 AI 资产：霓虹标题" })).toHaveLength(2);
-  expect(within(catalog).queryByRole("button", { name: "添加 AI 资产：金色标题" })).toBeNull();
+  expect(within(tabs).getAllByRole("radio").map((item) => item.textContent)).toEqual(["标题字效 2", "字幕字效 4", "滤镜 1", "转场特效 1", "视频特效 2"]);
+  /** 读取当前分类实际可添加的卡片，避免只检查页签文字。 */
+  const names = () => within(catalog).queryAllByRole("button", { name: /^添加 AI 资产：/ }).map((item) => item.getAttribute("aria-label")!.replace("添加 AI 资产：", ""));
+  expect(names()).toEqual(["金色标题", "手动字幕"]);
+  fireEvent.click(within(tabs).getByRole("radio", { name: "字幕字效" }));
+  expect(names()).toEqual(["白色字幕", "标题字幕通用", "跳动文字", "手动标题"]);
+  fireEvent.change(within(catalog).getByRole("searchbox"), { target: { value: "手动" } });
+  expect(names()).toEqual(["手动标题"]);
+  fireEvent.click(within(tabs).getByRole("radio", { name: "标题字效" }));
+  expect(names()).toEqual(["手动字幕"]);
+  fireEvent.change(within(catalog).getByRole("searchbox"), { target: { value: "" } });
+  for (const [label, expected] of [["滤镜", ["暖色滤镜"]], ["转场特效", ["闪白转场"]], ["视频特效", ["粒子动效", "历史动效"]]] as const) {
+    fireEvent.click(within(tabs).getByRole("radio", { name: label }));
+    expect(names()).toEqual([...expected]);
+  }
 });
 
 // 场景：模板里只调这次摆放的示例文字、字号与位置（百分比，像 IMS 文字）：恢复默认的参数不再出现在请求里；颜色、光晕等资产内部参数不提供控件，只在「资产默认参数」里说明并给出回字效工作区的入口。
@@ -991,6 +1014,7 @@ test("重命名资产，失败可重试，使用中的资产也能改名", async
   const dialog = await screen.findByRole("dialog", { name: "重命名 AI 资产" });
   const input = within(dialog).getByLabelText<HTMLInputElement>("资产名称");
   expect(input.value).toBe("霓虹标题");
+  expect(within(dialog).queryByRole("combobox", { name: "字效分类" }) === null).toBe(true);
   fireEvent.change(input, { target: { value: "  冷色标题  " } });
   fireEvent.click(within(dialog).getByRole("button", { name: "保存名称" }));
   expect((await within(dialog).findByRole("alert")).textContent).toBe("名称去除首尾空白后需为 1～100 个字符");
@@ -1004,6 +1028,85 @@ test("重命名资产，失败可重试，使用中的资产也能改名", async
   ]);
   expect(await within(region).findByRole("button", { name: "添加 AI 资产：冷色标题" })).toBeTruthy();
   expect(await screen.findByRole("button", { name: "设置 AI 资产：冷色标题" })).toBeTruthy();
+});
+
+// 场景：手动分类或按名称推断的字效打开改名弹窗后，别人修改分类并推送刷新；只改名称不得覆盖新分类，输入草稿仍保留。
+test.each([TextEffectCategory.UNSPECIFIED, TextEffectCategory.TITLE])("只改名称保留他人并发保存的分类（原分类 %s）", async (textCategory) => {
+  const catalog: ReturnType<typeof textAsset>[] = [{ ...textAsset(), textCategory }];
+  sprites({ catalog });
+  const fallback = fetchMock.getMockImplementation()!;
+  const renames: ReturnType<typeof fromBinary<typeof RenameSpriteRequestSchema>>[] = [];
+  fetchMock.mockImplementation((async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (!path.endsWith("/rename")) return fallback(url, init);
+    const request = fromBinary(RenameSpriteRequestSchema, new Uint8Array(init!.body as Uint8Array));
+    renames.push(request);
+    catalog[0] = { ...catalog[0], name: request.name, textCategory: request.textCategory ?? catalog[0].textCategory };
+    return binary(RenameSpriteResponseSchema, create(RenameSpriteResponseSchema, { sprite: catalog[0] }));
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={{ templateId: savedTemplate().template_id }} onHome={() => {}} />);
+  const region = await openAssets();
+  fireEvent.click(await within(region).findByRole("button", { name: "重命名 AI 资产：金色标题" }));
+  const dialog = await screen.findByRole("dialog", { name: "重命名 AI 资产" });
+  const input = within(dialog).getByLabelText<HTMLInputElement>("资产名称");
+  fireEvent.change(input, { target: { value: "新的名称" } });
+  catalog[0] = { ...catalog[0], textCategory: TextEffectCategory.SUBTITLE };
+  await act(async () => { FakeEventSource.instances.find((item) => item.url.endsWith("/api/sprites/stream"))!.emit("catalog.changed"); });
+  await waitFor(() => expect(within(region).getByRole("radio", { name: "字幕字效", hidden: true }).textContent).toBe("字幕字效 1"));
+  expect(input.value).toBe("新的名称");
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存修改" }));
+  await waitForElementToBeRemoved(() => screen.queryByRole("dialog", { name: "重命名 AI 资产" }));
+  expect(renames.map(({ name, textCategory }) => ({ name, textCategory }))).toEqual([{ name: "新的名称", textCategory: undefined }]);
+  expect(catalog[0].textCategory).toBe(TextEffectCategory.SUBTITLE);
+  expect(await within(region).findByRole("button", { name: "添加 AI 资产：新的名称" })).toBeTruthy();
+});
+
+// 场景：字效可以只改分类，失败保留选择；保存、刷新后进入新分类，重开弹窗仍显示手动选择，即使名称含「标题」。
+test("重命名弹窗持久保存字效分类并在失败后保留草稿", async () => {
+  const catalog = [textAsset()];
+  sprites({ catalog });
+  const fallback = fetchMock.getMockImplementation()!;
+  const renames: ReturnType<typeof fromBinary<typeof RenameSpriteRequestSchema>>[] = [];
+  fetchMock.mockImplementation((async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (!path.endsWith("/rename")) return fallback(url, init);
+    const request = fromBinary(RenameSpriteRequestSchema, new Uint8Array(init!.body as Uint8Array));
+    renames.push(request);
+    if (renames.length === 1) return new Response(JSON.stringify({ detail: "保存失败，请重试" }), { status: 503 });
+    catalog[0] = { ...catalog[0], name: request.name, textCategory: request.textCategory! };
+    return binary(RenameSpriteResponseSchema, create(RenameSpriteResponseSchema, { sprite: catalog[0] }));
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={{ templateId: savedTemplate().template_id }} onHome={() => {}} />);
+  const region = await openAssets();
+  const tabs = await within(region).findByRole("radiogroup", { name: "AI 资产分类" });
+  fireEvent.click(within(tabs).getByRole("radio", { name: "字幕字效" }));
+  fireEvent.click(within(tabs).getByRole("radio", { name: "标题字效" }));
+  fireEvent.click(within(region).getByRole("button", { name: "重命名 AI 资产：金色标题" }));
+  const dialog = await screen.findByRole("dialog", { name: "重命名 AI 资产" });
+  const selector = within(dialog).getByRole("combobox", { name: "字效分类" });
+  expect(selector.textContent).toContain("标题字效");
+  fireEvent.keyDown(selector, { key: "ArrowDown" });
+  fireEvent.keyDown(await screen.findByRole("option", { name: "字幕字效" }), { key: "Enter" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存修改" }));
+  expect((await within(dialog).findByRole("alert")).textContent).toBe("保存失败，请重试");
+  expect(selector.textContent).toContain("字幕字效");
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存修改" }));
+  await waitForElementToBeRemoved(() => screen.queryByRole("dialog", { name: "重命名 AI 资产" }));
+  expect(renames.map(({ name, textCategory }) => ({ name, textCategory }))).toEqual([
+    { name: "金色标题", textCategory: TextEffectCategory.SUBTITLE },
+    { name: "金色标题", textCategory: TextEffectCategory.SUBTITLE },
+  ]);
+  await waitFor(() => expect(within(tabs).getByRole("radio", { name: "标题字效" }).textContent).toBe("标题字效 0"));
+  expect(within(region).queryByRole("button", { name: "添加 AI 资产：金色标题" }) === null).toBe(true);
+  fireEvent.click(within(tabs).getByRole("radio", { name: "字幕字效" }));
+  expect(within(region).getByRole("button", { name: "添加 AI 资产：金色标题" })).toBeTruthy();
+  fireEvent.click(within(region).getByRole("button", { name: "刷新目录" }));
+  await waitFor(() => expect(within(tabs).getByRole("radio", { name: "字幕字效" }).textContent).toBe("字幕字效 1"));
+  fireEvent.click(within(region).getByRole("button", { name: "重命名 AI 资产：金色标题" }));
+  const reopened = await screen.findByRole("dialog", { name: "重命名 AI 资产" });
+  expect(within(reopened).getByRole("combobox", { name: "字效分类" }).textContent).toContain("字幕字效");
+  fireEvent.click(within(reopened).getByRole("button", { name: "取消" }));
+  expect(renames).toHaveLength(2);
 });
 
 // 场景：当前草稿（含尚未保存的添加）摆放的资产不能删除，并说明原因；否则之后保存模板会因资产未发布被拒绝。移除片段后恢复可删除。

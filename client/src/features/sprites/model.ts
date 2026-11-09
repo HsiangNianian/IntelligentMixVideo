@@ -1,5 +1,5 @@
 /** Remotion Sprite 资产的客户端视图：发布目录条目，含分类、内容区域与可在模板里逐次修改的参数；摆放见 templates/model.ts 的 RemotionClip。 */
-import type { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
+import type { SpriteKind, TextEffectCategory } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { AssetParameter, ContentBox } from "./parameters";
 
 /** 公开目录条目；seconds 是生成时的预览长度，只作为片段的默认时长，渲染时长由摆放或总线决定。 */
@@ -7,6 +7,8 @@ export interface SpriteAsset {
   id: string;
   name: string;
   kind: SpriteKind;
+  /** 资产库手动分类；旧资产未设置时按名称推断，不改变模板里的文字绑定。 */
+  textCategory?: TextEffectCategory;
   /** 发布它的字效会话版本；工作区据此找出本会话上次保存的资产，用来默认覆盖保存。旧服务端可能不返回。 */
   sourceVersionId?: string;
   seconds: number;

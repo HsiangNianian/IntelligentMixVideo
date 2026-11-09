@@ -39,7 +39,7 @@ export interface Control {
   "x-imv-target"?: string;
   properties?: Record<string, Control>;
 }
-/** 效果分类：字效、滤镜、视频特效、转场（后两者在界面上合为「转场与视频特效」）。 */
+/** 效果分类：字效、滤镜、视频特效、转场。 */
 export type SpriteKindName = "text" | "filter_overlay" | "video_overlay" | "transition_overlay";
 /** 新会话首条消息附带的生成选择：预览时长（整帧）与「关键词字效」「双栏」「双语字幕」三个开关。 */
 export interface NewWork {

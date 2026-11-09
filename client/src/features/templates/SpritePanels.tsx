@@ -7,10 +7,12 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Hint } from "@/components/Hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { deleteSprite, listSprites, renameSprite } from "@/features/sprites/api";
 import { cn } from "@/lib/utils";
 import type { SpriteAsset } from "@/features/sprites/model";
-import { CATEGORIES, categoryOf, type CategoryId } from "@/features/sprites/parameters";
+import { CATEGORIES, TEXT_CATEGORIES, categoryOf, textCategoryOf, type CategoryId } from "@/features/sprites/parameters";
+import { SpriteKind, TextEffectCategory } from "@/generated/imv/sprite/v1/sprite_pb";
 import { textRoles, type RemotionClip } from "./model";
 import { clipSlot } from "./clips";
 import { effectTargets } from "./effects";
@@ -21,7 +23,7 @@ import { SpriteCover } from "./SpriteCover";
 type Catalog = ReturnType<typeof useSpriteCatalog>;
 
 /**
- * 左侧资产区：由素材来源页签触发目录读取，按字效、滤镜、转场与视频特效分类，用与特效资产相同的搜索与封面卡片浏览，可重命名或确认后删除共享资产。
+ * 左侧资产区：标题字效、字幕字效、滤镜、转场特效、视频特效五类分别浏览；搜索、重命名/分类和删除共用目录。
  * `placed` 是当前草稿（含未保存的修改）摆放的资产：它们不能删除，否则之后保存模板会因资产未发布被拒绝；重命名不受影响，
  * 模板只保存资产 ID，名称都从目录读取，改名后刷新目录即可。
  */
@@ -31,13 +33,14 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
   const [removeError, setRemoveError] = useState("");
   const [renaming, setRenaming] = useState<SpriteAsset | null>(null);
   const [newName, setNewName] = useState("");
+  const [newTextCategory, setNewTextCategory] = useState(TextEffectCategory.SUBTITLE);
   const [saving, setSaving] = useState(false);
   const [renameError, setRenameError] = useState("");
   const renameId = useId();
   // 未手动选择时打开第一个有资产的分类，新保存的资产不会藏在空分类后面。
   const [chosen, setChosen] = useState<CategoryId | null>(null);
-  const category = chosen ?? CATEGORIES.find((item) => catalog.assets?.some((asset) => categoryOf(asset.kind) === item.id))?.id ?? "text";
-  const shown = catalog.assets?.filter((asset) => categoryOf(asset.kind) === category);
+  const category = chosen ?? CATEGORIES.find((item) => catalog.assets?.some((asset) => categoryOf(asset) === item.id))?.id ?? "subtitle";
+  const shown = catalog.assets?.filter((asset) => categoryOf(asset) === category);
 
   /**
    * 删除确认的资产；仍被模板使用等失败原因留在弹窗里。成功或资产已不存在时关闭弹窗并刷新目录。
@@ -61,15 +64,17 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
     } finally { setRemoving(false); catalog.refresh(); }
   }
 
-  /** 提交新名称；失败原因（如 422）留在弹窗里允许修改后重试，成功后刷新目录，卡片、片段列表与时间轴标签随之更新。 */
+  /** 保存名称及用户改过的字效分类；失败保留草稿供重试，成功刷新目录及模板中显示的名称。 */
   async function rename() {
     if (!renaming || saving) return;
     const trimmed = newName.trim();
     if (!trimmed) { setRenameError("请输入资产名称"); return; }
     setSaving(true); setRenameError("");
     try {
-      const asset = await renameSprite(renaming.id, trimmed);
-      toast(`已重命名为「${asset.name}」`);
+      // 与打开弹窗时的分类比较；只改名称时省略分类，保留其他用户在此期间保存的选择。
+      const textCategory = renaming.kind === SpriteKind.TEXT && newTextCategory !== textCategoryOf(renaming) ? newTextCategory : undefined;
+      const asset = await renameSprite(renaming.id, trimmed, textCategory);
+      toast(renaming.kind === SpriteKind.TEXT ? `已保存资产「${asset.name}」` : `已重命名为「${asset.name}」`);
       setRenaming(null); catalog.refresh();
     } catch (reason) { setRenameError(reason instanceof Error ? reason.message : "重命名失败"); }
     finally { setSaving(false); }
@@ -85,7 +90,7 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
       {catalog.assets && !catalog.assets.length && <p role="status" className="text-[11px] text-muted-foreground">还没有资产，请在字效工作区预览成功版本后点击右上角「保存资产」。</p>}
       {!!catalog.assets?.length && shown && (
         <AssetBrowser
-          categories={CATEGORIES.map((item) => ({ value: item.id, label: item.label, count: catalog.assets!.filter((asset) => categoryOf(asset.kind) === item.id).length }))}
+          categories={CATEGORIES.map((item) => ({ value: item.id, label: item.label, count: catalog.assets!.filter((asset) => categoryOf(asset) === item.id).length }))}
           category={category}
           onCategory={(value) => setChosen(value as CategoryId)}
           categoriesLabel="AI 资产分类"
@@ -105,7 +110,7 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
               onSelect: () => onAdd(asset),
               // 禁用的按钮不触发悬停提示，原因以卡片下方文字说明。
               actions: <>
-                <Hint label="重命名资产"><Button type="button" variant="secondary" size="icon" className="size-6" aria-label={`重命名 AI 资产：${asset.name}`} onClick={() => { setRenaming(asset); setNewName(asset.name); setRenameError(""); }}><Pencil className="size-3.5" aria-hidden="true" /></Button></Hint>
+                <Hint label="重命名资产"><Button type="button" variant="secondary" size="icon" className="size-6" aria-label={`重命名 AI 资产：${asset.name}`} onClick={() => { setRenaming(asset); setNewName(asset.name); setNewTextCategory(textCategoryOf(asset)); setRenameError(""); }}><Pencil className="size-3.5" aria-hidden="true" /></Button></Hint>
                 <Hint label="删除资产" disabled={inUse}><Button type="button" variant="secondary" size="icon" className="size-6" disabled={inUse} aria-describedby={inUse ? `sprite-in-use-${asset.id}` : undefined} aria-label={`删除 AI 资产：${asset.name}`} onClick={() => { setDeleting(asset); setRemoveError(""); }}><Trash2 className="size-3.5" aria-hidden="true" /></Button></Hint>
               </>,
               // 画布规格必须一致才能叠加，所以每张卡片都标出预览长度与画布；双语字效额外标明中英两行。
@@ -117,14 +122,21 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
       <Button type="button" variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px]" onClick={catalog.refresh}><RefreshCw className="size-3" aria-hidden="true" />刷新目录</Button>
       <Dialog open={renaming !== null} onOpenChange={(next) => { if (!next && !saving) setRenaming(null); }}>
         <DialogContent>
-          <DialogHeader><DialogTitle>重命名 AI 资产</DialogTitle><DialogDescription>只修改资产库里显示的名称，所有人可见；代码、参数和已使用它的模板不受影响，名称不要求唯一。</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>重命名 AI 资产</DialogTitle><DialogDescription>{renaming?.kind === SpriteKind.TEXT ? "修改资产名称和字效分类，所有人可见；分类用于资产筛选，不改变模板中的作用对象。名称不要求唯一。" : "只修改资产库里显示的名称，所有人可见；代码、参数和已使用它的模板不受影响，名称不要求唯一。"}</DialogDescription></DialogHeader>
           <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void rename(); }}>
             <div className="space-y-2">
               <Label htmlFor={`${renameId}-name`}>资产名称</Label>
               <Input id={`${renameId}-name`} required maxLength={100} value={newName} disabled={saving} onChange={(event) => { setNewName(event.target.value); setRenameError(""); }} />
             </div>
+            {renaming?.kind === SpriteKind.TEXT && <div className="space-y-2">
+              <Label htmlFor={`${renameId}-category`}>字效分类</Label>
+              <Select value={String(newTextCategory)} disabled={saving} onValueChange={(value) => { setNewTextCategory(Number(value) as TextEffectCategory); setRenameError(""); }}>
+                <SelectTrigger id={`${renameId}-category`} className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>{TEXT_CATEGORIES.map((item) => <SelectItem key={item.value} value={String(item.value)}>{item.label}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>}
             {renameError && <p role="alert" className="text-sm text-destructive">{renameError}</p>}
-            <DialogFooter><Button type="button" variant="outline" disabled={saving} onClick={() => setRenaming(null)}>取消</Button><Button type="submit" disabled={saving}>{saving ? "正在保存…" : "保存名称"}</Button></DialogFooter>
+            <DialogFooter><Button type="button" variant="outline" disabled={saving} onClick={() => setRenaming(null)}>取消</Button><Button type="submit" disabled={saving}>{saving ? "正在保存…" : renaming?.kind === SpriteKind.TEXT ? "保存修改" : "保存名称"}</Button></DialogFooter>
           </form>
         </DialogContent>
       </Dialog>

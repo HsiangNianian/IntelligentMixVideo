@@ -132,6 +132,14 @@ refreshes a file's time). Each step and each work is isolated, so one storage fa
 next hour.
 Published Sprites survive all of these.
 
+Existing records may contain metadata written by the free-form agent: `spec.sprite.effect` keeps the sealed
+component manifest, jobs may carry a structured `reply`, and published Sprite parameters may carry `group`.
+These known fields are preserved when reading versions, acknowledging jobs, or renaming assets; other unknown
+contract fields still fail validation. Reading such records does not enable a different generation pipeline.
+When running a separate checkout against the same local database without ZOS, copy its missing `objects/` files
+as well: database rows alone do not contain the sealed exports, previews, or reference images. Keep existing
+objects in the target checkout, since a preview may have been rebuilt there.
+
 ## Preset storage
 
 `preset.create` writes through `tools/catalog_store.py` to the MySQL table `remotion_presets`, shared by every
@@ -688,11 +696,17 @@ and cache. While a cloud template's `remotion` track still references it the ans
 removed before the row (on ZOS only with `ZOS_DELETE_OBJECTS`; by default they stay and only the row and cache go):
 when the object store fails the answer is a retryable 503 and the asset stays listed, so a retry finishes it; the store's own error (code, number of failed keys and the store's request ID, Aliyun OSS's
 `x-oss-request-id`) is logged as `Sprite files not deleted`. The source work and its versions are untouched, so the version can be saved to the library again.
-`POST /api/sprites/{id}/rename` (`imv.sprite.v1.RenameSpriteRequest`, anyone may rename) changes only the catalog name:
+`POST /api/sprites/{id}/rename` (`imv.sprite.v1.RenameSpriteRequest`, anyone may rename) changes the catalog name:
 trimmed, 1 to 100 characters, not required to be unique (422 otherwise), an unknown ID is a 404. A placed asset can
 be renamed since templates store IDs only. The name lives in the stored JSON; `sprite_store.update_data` locks the
-row and merges one field, so a rename and a preview-hash refresh never overwrite each other. Republishing the same
-version returns the renamed asset.
+row and merges changed fields, so a rename and a preview-hash refresh never overwrite each other. Republishing the same
+version returns the renamed asset. The optional `text_category` accepts `TITLE` or `SUBTITLE` for text assets only
+(422 for other kinds or invalid enum values); omitting it preserves the stored choice for older clients.
+Name and category are saved atomically in the existing JSON record without changing the database schema, rendering or
+template bindings. Overwrites preserve the latest manual category, including edits made during sampling.
+The catalog presents five peer categories: title text effects, subtitle text effects, filters, transitions and
+video effects. For text assets with no manual category, the client matches `字幕` first, then `标题`, and defaults
+to subtitle effects if neither appears. Legacy unspecified kinds remain in video effects.
 Publishing re-verifies the sealed version files (409 when changed) and only accepts versions composed
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
 422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be

@@ -1,18 +1,37 @@
 /** AI 资产的分类、宿主变换与参数声明：与服务端 `categories.py`、`placement.py` 的规则一致，模板编辑据此生成控件并在本地校验。 */
-import { OperatorAccess, SpriteKind, SpriteParameterFormat, type SpriteParameter } from "@/generated/imv/sprite/v1/sprite_pb";
+import { OperatorAccess, SpriteKind, SpriteParameterFormat, TextEffectCategory, type SpriteParameter } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { ParameterField, ParameterValue } from "@/components/ParameterControl";
 
-/** 资产库的三个分类；视频特效与转场合为一类，未指定类型的历史资产也归入其中。 */
+/** 字效分类也用于重命名弹窗，持久值与目录标签共用这份选项。 */
+export const TEXT_CATEGORIES = [
+  { id: "title", value: TextEffectCategory.TITLE, label: "标题字效" },
+  { id: "subtitle", value: TextEffectCategory.SUBTITLE, label: "字幕字效" },
+] as const;
+
+/** 资产库的五个并列分类，未指定类型的历史资产沿用视频特效的展示。 */
 export const CATEGORIES = [
-  { id: "text", label: "字效", kinds: [SpriteKind.TEXT] },
-  { id: "filter", label: "滤镜", kinds: [SpriteKind.FILTER_OVERLAY] },
-  { id: "effect", label: "转场与视频特效", kinds: [SpriteKind.VIDEO_OVERLAY, SpriteKind.TRANSITION_OVERLAY, SpriteKind.UNSPECIFIED] },
+  ...TEXT_CATEGORIES,
+  { id: "filter", label: "滤镜" },
+  { id: "transition", label: "转场特效" },
+  { id: "video", label: "视频特效" },
 ] as const;
 export type CategoryId = (typeof CATEGORIES)[number]["id"];
 
-/** 资产所属的分类。 */
-export function categoryOf(kind: SpriteKind): CategoryId {
-  return CATEGORIES.find((item) => (item.kinds as readonly SpriteKind[]).includes(kind))?.id ?? "effect";
+/** 按内容类型和字效分类确定目录页签；历史未分类字效从名称推断。 */
+export function categoryOf(asset: { kind: SpriteKind; name: string; textCategory?: TextEffectCategory }): CategoryId {
+  switch (asset.kind) {
+    case SpriteKind.TEXT: return textCategoryOf(asset) === TextEffectCategory.TITLE ? "title" : "subtitle";
+    case SpriteKind.FILTER_OVERLAY: return "filter";
+    case SpriteKind.TRANSITION_OVERLAY: return "transition";
+    default: return "video";
+  }
+}
+
+/** 手动分类优先；旧名称按正则匹配，字幕优先于标题，未匹配时默认字幕。 */
+export function textCategoryOf(asset: { name: string; textCategory?: TextEffectCategory }): TextEffectCategory {
+  if (asset.textCategory === TextEffectCategory.TITLE || asset.textCategory === TextEffectCategory.SUBTITLE) return asset.textCategory;
+  if (/字幕/.test(asset.name)) return TextEffectCategory.SUBTITLE;
+  return /标题/.test(asset.name) ? TextEffectCategory.TITLE : TextEffectCategory.SUBTITLE;
 }
 
 /** 宿主变换的字段：x、y 是内容区域中心在画布上的坐标。 */
