@@ -175,10 +175,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mysql-server-core-8.0 fonts-noto-cjk bubblewrap util-linux xvfb xauth nasm
       - name: Install FFmpeg assembler (macOS)
-        if: runner.os == 'macOS' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        if: runner.os == 'macOS' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: brew install nasm
       - name: Set up FFmpeg build tools (Windows)
-        if: runner.os == 'Windows' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        if: runner.os == 'Windows' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
         id: msys2
         uses: msys2/setup-msys2@v2
         with:
