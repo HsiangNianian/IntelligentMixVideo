@@ -15,6 +15,8 @@ import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspa
 import { VersionCard } from "@/features/remotion_templates/VersionCard";
 import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
 import { useTemplateVersions } from "@/features/remotion_templates/useTemplateVersions";
+import { SpriteCatalog } from "@/features/templates/SpritePanels";
+import { useSpriteCatalog } from "@/features/templates/useSpriteCatalog";
 import * as api from "@/features/remotion_templates/api";
 import { apply } from "@/features/remotion_templates/localSessions";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
@@ -80,6 +82,55 @@ function spriteCatalog(name = "今日灵感") {
     }],
   }))), { headers: { "Content-Type": "application/x-protobuf" } });
 }
+
+// 场景：资产库先读到空目录，切到字效页保存并删除来源聊天；没有目录推送时返回仍显示资产，重新挂载也可以添加。
+test("保存资产后删除聊天，资产库仍可读取和添加", async () => {
+  let saved = false;
+  const fake = await history((path) => {
+    if (path === "/api/sprites/publish") {
+      saved = true;
+      return publishedAsset();
+    }
+    if (path === "/api/sprites" && saved) return spriteCatalog();
+  });
+  const added: string[] = [];
+  /** 使用真实目录组件和读取 hook，HTTP 替身保留服务端已发布资产。 */
+  function Library({ active = true }: { active?: boolean }) {
+    const catalog = useSpriteCatalog(true, active);
+    return <SpriteCatalog catalog={catalog} placed={new Set()} onAdd={(asset) => added.push(asset.id)} />;
+  }
+  /** 与主导航一致：工作区保持挂载，只切换可见性。 */
+  function Workspaces({ editor }: { editor: boolean }) {
+    return <>
+      <div hidden={!editor}><Library active={editor} /></div>
+      <div hidden={editor}><RemotionWorkspace /></div>
+    </>;
+  }
+  const view = render(<Workspaces editor />);
+  await screen.findByText("还没有资产，请在字效工作区预览成功版本后点击右上角「保存资产」。");
+  view.rerender(<Workspaces editor={false} />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  const save = screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" });
+  await waitFor(() => expect(save.disabled).toBe(false));
+  fireEvent.click(save);
+  await screen.findByRole("combobox", { name: "保存方式" });
+  await waitFor(() => expect(save.disabled).toBe(false));
+  const row = screen.getByRole("button", { name: /最初标题/ }).parentElement!;
+  fireEvent.click(within(row).getByRole("button", { name: "删除聊天" }));
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "确认删除" }));
+  await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
+  expect(fake.works.has("work-1")).toBe(false);
+  expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "DELETE")
+    .map(([url]) => new URL(String(url)).pathname)).toEqual(["/api/templates/works/work-1"]);
+
+  view.rerender(<Workspaces editor />);
+  fireEvent.click(await screen.findByRole("button", { name: "添加 AI 资产：今日灵感" }));
+  expect(added).toEqual(["sprite-1"]);
+  view.unmount();
+  render(<Library />);
+  expect(await screen.findByRole("button", { name: "添加 AI 资产：今日灵感" })).toBeTruthy();
+});
 
 // 顶部保存是唯一的保存入口，使用当前预览（含历史）版本与它卡片上选择的分类；重复点击不会重复写入，左侧仍可新建会话。
 test("顶栏保存当前预览版本为资产并防止重复提交", async () => {

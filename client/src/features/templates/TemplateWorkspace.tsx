@@ -95,7 +95,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const form = useRef<HTMLFormElement>(null);
   const mounted = useRef(false);
   const handledSelection = useRef<TemplateSelection | null>(null);
-  const spriteCatalog = useSpriteCatalog((draft?.clips.length ?? 0) > 0);
+  const spriteCatalog = useSpriteCatalog((draft?.clips.length ?? 0) > 0, active);
   const [transitionRandom, setTransitionRandom] = useState<readonly [number, number]>(() => [Math.random(), Math.random()]);
   const visibleDraft = useMemo(() => draft ? activeDraft(draft) : null, [draft]);
   const previewSelection = useMemo(() => visibleDraft ? previewTransitions(visibleDraft, transitionRandom, spriteCatalog.assets ?? []) : null, [visibleDraft, transitionRandom, spriteCatalog.assets]);
