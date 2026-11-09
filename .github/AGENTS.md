@@ -52,7 +52,7 @@
 - `server.desktop` 监督私有 MySQL 与完整 FastAPI：
   - `DB_SOCKET` 仅用于本地 Unix socket，去库建库连接也必须保留 socket。
   - 数据和无密钥初始 `.env` 保存在 app_data_dir/backend，运行时按归档摘要缓存于 app_cache_dir/backend；保留用户配置和数据库。
-  - 父进程管道关闭时先停 API 再停 MySQL。
+  - 父进程管道先复制到独立描述符，并将 stdin 指向空设备，再启动监控读取，避免 Windows 原生依赖初始化检查 fd 0 时死锁；管道关闭时先停 API 再停 MySQL。
   - Unix 内置数据库不开放 TCP；Windows 使用随机密码和动态回环 TCP，初始化时不监听网络，通过 SQL SHUTDOWN 落盘退出。
   - 均不读取宿主配置，密钥不得打包；随包库只提供给后端和渲染沙箱，禁止暴露用户目录、凭据或网络。
 - AppImage/MSI/DMG 上传前启用 `IMV_TEST_BUNDLE` 验证真实启动、重启持久化、重复实例、关闭与桌面连接；常规 pytest 跳过这些真实集成用例。

@@ -175,10 +175,23 @@ async def serve(listener: socket.socket, mysql: subprocess.Popen, stopped: threa
         await task
 
 
-def wait_for_parent(stopped: threading.Event) -> None:
-    """等父进程关闭 stdin 管道，再通知 API 和数据库退出；正常退出与崩溃均适用。"""
-    sys.stdin.buffer.read()
-    stopped.set()
+def monitor_parent(stopped: threading.Event) -> threading.Thread:
+    """把生命周期管道移到独立描述符，EOF 时通知退出；stdin 留空供原生依赖初始化。"""
+    parent = os.fdopen(os.dup(sys.stdin.fileno()), "rb")
+    # Windows 的 NumPy/OpenBLAS 加载会检查 fd 0；与管道阻塞读取并发时会死锁。
+    # 不仅避开 Python 缓冲锁，还须把 fd 0 指向 NUL，避免原生 fstat 等待同一个管道。
+    with open(os.devnull, "rb") as empty:
+        os.dup2(empty.fileno(), sys.stdin.fileno())
+
+    def parent_closed() -> None:
+        """只读保留的控制管道，关闭副本后通知 API/MySQL；不持有标准流缓冲锁。"""
+        with parent:
+            parent.read()
+        stopped.set()
+
+    monitor = threading.Thread(target=parent_closed, daemon=True)
+    monitor.start()
+    return monitor
 
 
 def main() -> None:
@@ -202,7 +215,7 @@ def main() -> None:
             raise RuntimeError("已有测试客户端正在使用此数据库，请使用已打开的窗口。") from None
         stopped = threading.Event()
 
-        threading.Thread(target=wait_for_parent, args=(stopped,), daemon=True).start()
+        monitor_parent(stopped)
         for number in (signal.SIGTERM, signal.SIGINT):
             signal.signal(number, lambda *_: stopped.set())
         with tempfile.TemporaryDirectory(prefix="imv-db-") as temporary:

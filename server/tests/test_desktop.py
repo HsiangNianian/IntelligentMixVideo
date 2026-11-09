@@ -213,13 +213,14 @@ import faulthandler
 import sys
 import threading
 import time
-from server.desktop import wait_for_parent
+from server.desktop import monitor_parent
 
 faulthandler.dump_traceback_later(20)
 stopped = threading.Event()
-monitor = threading.Thread(target=wait_for_parent, args=(stopped,), daemon=True)
-monitor.start()
+monitor = monitor_parent(stopped)
 time.sleep(0.1)
+# 业务依赖看到空标准输入，父进程的生命周期管道仍保持打开。
+assert sys.stdin.buffer.read() == b""
 import server.app
 assert not stopped.is_set()
 print("ready", flush=True)
