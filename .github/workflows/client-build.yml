@@ -139,6 +139,7 @@ jobs:
         working-directory: .
         # 先离线验证锁文件，再冻结安装；避免启动检查重新联网解析直链模型元数据。
         run: |
+          uv python install 3.12
           uv lock --check --offline --project server
           uv run --frozen --project server pytest server/tests/test_desktop.py -k "parent_monitor or startup_diagnostics" -v
       - name: Set up backend Node
