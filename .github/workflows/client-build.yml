@@ -52,6 +52,8 @@ jobs:
     env:
       # 编译进客户端；用户双击不需要设置环境变量，各平台测试包携带本机后端。
       IMV_DEBUG: ${{ inputs.debug-backend && 'true' || 'false' }}
+      # 冷缓存必须下载模型与 Python；为临时 5xx 保留有界 HTTP 重试。
+      UV_HTTP_RETRIES: '5'
       IMV_UPDATE_PUBLIC_KEY: ${{ vars.IMV_UPDATE_PUBLIC_KEY }}
       IMV_UPDATE_MIRRORS: ${{ vars.IMV_UPDATE_MIRRORS }}
       IMV_UPDATE_METADATA_PATH: ${{ github.workspace }}/client/src-tauri/target/update-native-id

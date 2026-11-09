@@ -47,7 +47,7 @@
 - `.github/workflows/client-debug.yml`（Debug client）在 `main` / `dev` push 或 `workflow_dispatch` 时运行，不监听 PR；复用 `client-build.yml` 并传入 `build-mode: package`、`debug-backend: true`。手动入口要求工作流存在于默认分支，分支 push 触发不绕过此限制。
 - 共享构建的 `debug-backend` 是布尔输入，默认 false，只由它设置 `IMV_DEBUG`，不绑定分支名；普通构建和正式发布默认不携带后端，普通非 debug 构建不启动内置服务。Debug artifact 名称为 `intelligent-mix-video-debug-<平台>-<提交 SHA>`。
 - 各平台打包时由 `.github/scripts/bundle-backend.py` 生成 `backend.tar`、`backend.id` 和临时 Tauri 资源配置，均不入库。随包带完整服务、Python 3.12、MySQL（Linux 8.0，其余 8.4.8）、Node 24、Bun/Remotion、Chrome、FFmpeg/ffprobe 及字体，Linux 另带 bubblewrap/prlimit 隔离工具。
-- Python 依赖用 `uv export --locked --offline` 从锁文件导出，避免重复获取直链模型元数据；安装仍按锁定的 URL 和哈希完成。打包前先安装指定 Python、离线检查锁文件，再冻结安装测试依赖，验证父进程保持管道打开时可加载完整 API、EOF 退出及 UTF-8 启动诊断，最终安装包验收继续必需。
+- Python 依赖用 `uv export --locked --offline` 从锁文件导出，避免重复获取直链模型元数据；安装仍按锁定的 URL 和哈希完成，冷缓存下载通过 `UV_HTTP_RETRIES=5` 有限重试临时网络错误。打包前先安装指定 Python、离线检查锁文件，再冻结安装测试依赖，验证父进程保持管道打开时可加载完整 API、EOF 退出及 UTF-8 启动诊断，最终安装包验收继续必需。
 - 客户端 `start_backend` 等到实际就绪回执再挂载页面；模板、字效与设置 API 模块共享动态回环地址，不改变业务接口。
 - `server.desktop` 监督私有 MySQL 与完整 FastAPI：
   - `DB_SOCKET` 仅用于本地 Unix socket，去库建库连接也必须保留 socket。
