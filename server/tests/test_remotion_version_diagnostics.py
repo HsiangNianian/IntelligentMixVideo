@@ -17,7 +17,9 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select, update
 
+from server.remotion_templates.evidence import digest
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.provider import Budget
@@ -25,6 +27,7 @@ from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Store
+from server.remotion_templates.tables import versions
 from server.remotion_templates.tool_validation import ToolValidator, ValidationUnavailable
 from server.remotion_templates.tools.contracts import (
     CodeValidationReport,
@@ -195,6 +198,40 @@ def tamper(published, name: str, contents: str) -> None:
     root = published.store.root
     for path in (root / "objects" / "imv" / "remotion" / "versions" / version / name, root / "cache" / "accepted" / version / name):
         path.write_text(contents)
+
+
+def test_saved_effect_manifest_allows_version_and_artifact_reads(published):
+    """自由组件的封存清单在版本详情、列表、源码和预览包读取中完整保留，不改写记录或绕过文件校验。"""
+    version = published.version
+    manifest = {
+        "kind": "text", "description": "标题字效",
+        "layout": {"x": 0, "y": 0, "width": 1080, "height": 1920},
+        "params": [{"name": "opacity", "schema": {"type": "number"}, "default": 1, "group": "入场·滑入"}],
+    }
+    data = version.model_dump(mode="json")
+    data["spec"]["sprite"]["effect"] = manifest
+    sealed = published.store.root / "objects" / "imv" / "remotion" / "versions" / str(version.id)
+    (sealed / "spec.json").write_text(json.dumps(data["spec"], ensure_ascii=False))
+    data["validation"]["artifacts"]["spec.json"] = digest(sealed / "spec.json")
+    with published.store.transaction() as db:
+        db.execute(update(versions).where(versions.c.id == str(version.id)).values(data=json.dumps(data)))
+    shutil.rmtree(published.store.root / "cache", ignore_errors=True)
+
+    with client_for(published) as client:
+        response = client.get(f"/api/templates/versions/{version.id}")
+        assert response.status_code == 200, response.text
+        assert response.json()["spec"]["sprite"]["effect"] == manifest
+        listing = client.get(f"/api/templates/works/{version.project_id}/versions")
+        assert listing.status_code == 200
+        assert listing.json()[0]["spec"]["sprite"]["effect"] == manifest
+        for name in ("Export.tsx", "interactive.js"):
+            artifact = client.get(f"/api/templates/versions/{version.id}/artifacts/{name}")
+            assert artifact.status_code == 200, artifact.text
+            assert artifact.content == (sealed / name).read_bytes()
+
+    with published.store.reading() as db:
+        assert json.loads(db.execute(select(versions.c.data).where(versions.c.id == str(version.id))).scalar_one()) == data
+    assert json.loads((sealed / "spec.json").read_text())["sprite"]["effect"] == manifest
 
 
 def test_diagnostics_return_real_lsp_ranges(published):

@@ -538,6 +538,14 @@ class JobError(Contract):
     message: str
 
 
+class JobReply(Contract):
+    """Preserve structured replies saved by the free-form agent when reading existing jobs."""
+
+    summary: Text
+    choices: list[Text] = Field(default_factory=list, max_length=5)
+    suggestions: list[Text] = Field(default_factory=list, max_length=5)
+
+
 class GenerationJob(Contract):
     """One queued execution; questions and failures retain candidate artifacts."""
 
@@ -563,6 +571,7 @@ class GenerationJob(Contract):
     answer: Text | None = None
     error: JobError | None = None
     usage: dict[str, int] = Field(default_factory=dict)
+    reply: JobReply | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -63,6 +63,7 @@ def test_material_voice_uses_order_and_full_audio(upstreams, client, composition
     assert data["timeline"]["AudioTracks"][0]["AudioTrackClips"][0]["TimelineOut"] == 8
     assert upstreams["asr_calls"] == 1 and upstreams["segment_calls"] == 1
     assert upstreams["posts"] == [] and upstreams["gets"] == [] and "match_request" not in data
+    assert upstreams["audio_probes"] == []
     assert len(data["timeline"]["SubtitleTracks"]) == (3 if with_text else 2)
     assert "copy" not in data["request"] and data["request"]["compositionMode"] == "materials_voice"
 
@@ -165,6 +166,7 @@ def test_material_silent_extracts_title_without_asr(upstreams, client, compositi
     assert factory.return_value.__exit__.call_count == 1
     assert upstreams["posts"] == upstreams["gets"] == []
     assert data["segmentation"] == {"title_keyword": expected_keyword} and "matches" not in data
+    assert upstreams["audio_probes"] == []
     assert json.loads(upstreams["submits"][0]["timeline"]) == timeline
     assert data["request"]["compositionMode"] == "materials_silent"
     assert notified(task_id)["data"]["notification_status"] == "sent"
@@ -303,6 +305,7 @@ def test_materials_presence_selects_matching(upstreams, client, composition_case
     assert ("materials" in saved["request"]) == (materials is not None)
     assert upstreams["asr_calls"] == upstreams["segment_calls"] == len(upstreams["submits"]) == 1
     assert upstreams["gets"] == []
+    assert len(upstreams["audio_probes"]) == int(materials is not None)
     timeline = saved["timeline"]
     clips = timeline["VideoTracks"][0]["VideoTrackClips"]
     if materials is None:
@@ -345,7 +348,7 @@ async def test_template_capacity_reaches_segmentation(upstreams, client, composi
 
 
 @pytest.mark.anyio
-async def test_recovery_reuses_saved_capacity(upstreams, composition_case, composition_runtime, monkeypatch):
+async def test_recovery_reuses_saved_capacity(upstreams, composition_case, composition_runtime, composition_logs, monkeypatch):
     """已经保存单行容量的任务恢复准备阶段时沿用旧值，不再次计算或取新模板样式。"""
     store.initialize_schema()
     record = await composition_runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
@@ -358,6 +361,9 @@ async def test_recovery_reuses_saved_capacity(upstreams, composition_case, compo
     restored = store.get(record["task_id"])
     await service.Job(composition_runtime, restored, composition_runtime.settings).prepare()
     assert upstreams["max_segment_chars"] == 5
+    reused, = [row for row in composition_logs(record["task_id"])
+               if row["event"] == "step_reused" and row["stage"] == "subtitle_capacity"]
+    assert reused["details"]["output"]["max_segment_chars"] == 5
 
 
 @pytest.mark.anyio
@@ -496,7 +502,7 @@ def test_avatar_tail_cutoff_keeps_original_content_preparation(
         probes.append(url)
         return video_seconds
 
-    async def render(task_id, data, timeout, *, timeline):
+    async def render(task_id, data, timeout, *, timeline, log=None):
         """确认叠加渲染接到与 IMS 相同的裁剪快照，不调用真实渲染器。"""
         overlays.append(deepcopy(data))
         return None
@@ -533,6 +539,14 @@ def test_avatar_tail_cutoff_keeps_original_content_preparation(
                for row in rows if row["event"] == "step_finished"}
     assert outputs["asr"]["properties"]["original_duration_in_milliseconds"] == 102960
     assert outputs["segmentation"]["segments"] == composition_case["segments"]
+    assert outputs["duration_trim"]["duration_ms"] == duration_ms
+    assert outputs["duration_trim"]["avatar_duration_ms"] == int(video_seconds * 1000)
+    trim_input = next(row["details"]["input"] for row in rows
+                      if row["event"] == "step_started" and row["stage"] == "duration_trim")
+    assert trim_input["audio_duration_ms"] == 102960
+    assert trim_input["segmentation"]["segments"] == composition_case["segments"]
+    if duration_ms < 102960:
+        assert outputs["duration_trim"]["segmentation"] == data["segmentation"]
     assert upstreams["asr_calls"] == upstreams["segment_calls"] == 1
 
 
@@ -603,12 +617,22 @@ def upstreams(monkeypatch, composition_settings, composition_case):
              "notifications": [], "notification_code": 204, "notification_error": None, "http_clients": [],
              "notification_entered": Event(), "notification_release": notification_release,
              "playback_entered": Event(), "playback_release": playback_release, "playback_errors": 0,
-             "zos_uploads": []}
+             "zos_uploads": [], "audio_probes": [], "audio_probe": {"format": {"duration": "8.123456789"}}}
     raw = {"properties": {"original_duration_in_milliseconds": 8000}, "transcripts": [{"sentences": [{"words": [
         {"text": "甲乙丙丁。", "begin_time": 1000, "end_time": 3000},
         {"text": "戊己庚辛。", "begin_time": 4000, "end_time": 6000},
     ]}]}]}
     state["raw"] = raw
+
+    async def audio_probe(url, timeout, *options):
+        """隔离音频探测，保留调用记录与可控的 FFprobe 结果或异常。"""
+        state["audio_probes"].append(url)
+        assert url == composition_case["request"]["audioUrl"] and timeout > 0
+        assert options == ("-show_entries", "format=duration")
+        result = state["audio_probe"]
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
     async def transcribe(url, wait_seconds):
         """模拟原生 await，允许调用方在 ASR 等待期间并发查询本地任务。"""
@@ -705,7 +729,7 @@ def upstreams(monkeypatch, composition_settings, composition_case):
             raise ValueError("private-key-should-never-appear")
         return f"https://test-output.oss-cn-shanghai.aliyuncs.com/actual.mp4?Signature={len(state['playbacks'])}"
 
-    def copy_video(source_url, task_id, settings, timeout, *, prefix="imv/video_composition"):
+    def copy_video(source_url, task_id, settings, timeout, *, prefix="imv/video_composition", log=None):
         """模拟下载、公开读取校验与上传，保留源地址只供此步骤使用。"""
         state["zos_uploads"].append((source_url, task_id))
         assert settings.zos_bucket == "archives" and timeout > 0
@@ -720,6 +744,7 @@ def upstreams(monkeypatch, composition_settings, composition_case):
         return client
 
     monkeypatch.setattr("server.asr.transcribe", transcribe)
+    monkeypatch.setattr(service.media, "ffprobe_json", audio_probe)
     monkeypatch.setattr(service, "segment", segment)
     monkeypatch.setattr(service, "httpx", SimpleNamespace(AsyncClient=http_client))
     monkeypatch.setattr(ims, "IMS", lambda settings, **kwargs: SimpleNamespace(submit=submit, get=get, storage_location=storage_location, result_url=result_url))
@@ -1011,8 +1036,8 @@ def test_zos_query_does_not_need_ims_playback(upstreams, client, composition_cas
     assert len(upstreams["playbacks"]) == 1
 
 
-def test_legacy_playback_refresh_failure_preserves_success(upstreams, client, composition_case, composition_settings):
-    """旧成功记录仍刷新 IMS 地址，取址失败只影响本次 GET。"""
+def test_legacy_playback_refresh_failure_preserves_success(upstreams, client, composition_case, composition_settings, composition_logs):
+    """旧成功记录刷新 IMS 地址，取址失败只影响 GET；新日志不把旧 IMS 结果当作 ZOS。"""
     record = store.create(composition_case["request"], composition_settings.output())
     record = store.advance(record, "completed", status="succeeded",
                            result={"mediaId": "ims-media", "durationSeconds": 8.02,
@@ -1021,6 +1046,11 @@ def test_legacy_playback_refresh_failure_preserves_success(upstreams, client, co
     assert client.get(f"{BASE}/{record['task_id']}").status_code == 503
     upstreams["failure"] = None
     assert client.get(f"{BASE}/{record['task_id']}").json()["result"]["videoUrl"].endswith("Signature=2")
+    from server.video_composition.execution_log import expand_columns
+    saved = expand_columns(composition_logs(record["task_id"], raw=True)[0])
+    assert not saved["zos"]["output"]
+    refreshed = next(item for item in saved["ims"]["output"] if item["action"] == "response.response_ready")
+    assert refreshed["data"]["videoUrl"].endswith("Signature=2")
 
 
 def test_missing_zos_config_rejected_before_accept(upstreams, client, composition_case, monkeypatch):
@@ -1241,6 +1271,55 @@ def test_missing_or_invalid_audio_duration_fails(upstreams, client, composition_
     assert result["error"]["code"] == "audio_duration_missing" and upstreams["segment_calls"] == 0
 
 
+def test_matching_uses_probed_audio_duration_without_rounding(upstreams, client, composition_case, composition_logs):
+    """匹配保存探测浮点秒数及尾数，字幕与成片仍使用不同的 ASR 总长。"""
+    accepted = client.post(BASE, json=composition_case["request"])
+    assert accepted.status_code == 200
+    task_id = accepted.json()["data"]
+    assert finished(client, task_id)["status"] == "succeeded"
+    data = store.get(task_id)["data"]
+    body, = upstreams["posts"]
+    assert body == data["match_request"]
+    assert type(body["audio_duration"]) is float and body["audio_duration"] == 8.123456789
+    assert upstreams["audio_probes"] == [composition_case["request"]["audioUrl"]]
+    assert data["duration_ms"] == 8000
+    assert data["timeline"]["AudioTracks"][0]["AudioTrackClips"][0]["Out"] == 8
+    assert json.loads(body["llm"])["segments"] == composition_case["segments"]
+    logs = composition_logs(task_id)
+    submitted = next(row["details"]["input"] for row in logs
+                     if row["event"] == "step_started" and row["stage"] == "match_submit")
+    assert submitted["audio_duration"] == body["audio_duration"]
+
+
+@pytest.mark.parametrize("probe,error_type", [
+    (TimeoutError(), "TimeoutError"),
+    (OSError("音频无法读取"), "OSError"),
+    (ValueError("FFprobe 退出码 1: https://media.test/a.wav?token=probe-secret"), "ValueError"),
+    ({"format": {}}, "KeyError"),
+    *[({"format": {"duration": value}}, "ValidationError") for value in ("N/A", "NaN", "Infinity", "0")],
+])
+def test_audio_probe_failure_omits_field_and_logs_reason(
+    upstreams, client, composition_case, composition_logs, probe, error_type,
+):
+    """探测失败仍完成匹配与合成；落盘日志明确省略字段、根因并脱敏异常中的签名。"""
+    upstreams["audio_probe"] = probe
+    accepted = client.post(BASE, json=composition_case["request"])
+    assert accepted.status_code == 200
+    task_id = accepted.json()["data"]
+    assert finished(client, task_id)["status"] == "succeeded"
+    body, = upstreams["posts"]
+    assert "audio_duration" not in body and body == store.get(task_id)["data"]["match_request"]
+    omitted, = [row for row in composition_logs(task_id) if row["event"] == "audio_duration_omitted"]
+    assert omitted["stage"] == "matching" and omitted["status"] == "processing"
+    output = omitted["details"]["output"]
+    assert output["audio_duration_sent"] is False
+    assert "segment_match 未传 audio_duration" in output["reason"]
+    assert output["exceptions"][0]["type"] == error_type
+    if isinstance(probe, OSError):
+        assert output["exceptions"][0]["message"] == str(probe)
+    assert "probe-secret" not in json.dumps(output, ensure_ascii=False)
+
+
 @pytest.mark.parametrize("failures", [1, 10])
 def test_ims_unknown_submission_reuses_token_with_finite_attempts(upstreams, client, composition_case, failures):
     """提交网络结果不明时只以同请求和同 token 重试一次，仍不明则明确失败。"""
@@ -1298,6 +1377,7 @@ async def test_recovery_uses_saved_handles_and_payload(upstreams, composition_ca
     saved = dict(
         template=composition_case["template"], duration_ms=8000,
         segmentation={"segments": composition_case["segments"]}, matches=composition_case["matches"],
+        match_request={"audio_duration": 8.123456789},
         match_id="upstream", match_url=f"{composition_settings.match_base_url}/api/v1/tasks/upstream",
         match_deadline=service.deadline(-1), ims_deadline=service.deadline(10), submit_attempts=1,
         ims_request=ims.submission(record["task_id"], timeline, composition_settings.output(), "test-vod.oss-cn-shanghai.aliyuncs.com"),
@@ -1311,6 +1391,8 @@ async def test_recovery_uses_saved_handles_and_payload(upstreams, composition_ca
     else:
         assert result["status"] == "succeeded"
     assert upstreams["asr_calls"] == 0 and upstreams["posts"] == []
+    assert upstreams["audio_probes"] == []
+    assert result["data"]["match_request"] == saved["match_request"]
     assert len(upstreams["submits"]) == (1 if stage in ("matching", "assembling", "submitting") else 0)
     if stage == "submitting":
         assert upstreams["submits"][0] == saved["ims_request"]
@@ -2096,7 +2178,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     rows = composition_logs(task_id)
     started = {row["details"]["step"]: row["details"]["input"] for row in rows if row["event"] == "step_started"}
     outputs = {row["details"]["step"]: row["details"].get("output") for row in rows if row["event"] == "step_finished"}
-    assert set(started) == set(outputs) == {"template", "remotion_snapshot", "remotion_render", "asr", "segmentation", "match_submit", "material_probe", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
+    assert set(started) == set(outputs) == {"template", "remotion_snapshot", "remotion_render", "asr", "segmentation", "match_submit", "material_probe", "duration_trim", "subtitle_capacity", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
     assert started["template"] == {"style_id": request["styleId"]}
     assert outputs["template"] == composition_case["template"]
     assert outputs["asr"] == upstreams["raw"] == started["segmentation"]["asr_result"]
@@ -2105,10 +2187,18 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     submitted_timeline = sanitize(record["data"]["ims_request"]["timeline"])
     assert any(item["data"] == submitted_timeline for item in expand_columns(saved)["timeline"]["output"])
     assert submitted_timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == "甲乙丙丁"
-    assert "timeline" not in started["ims_submit"] and outputs["ims_submit"] == {"JobId": "ims-job"}
-    assert outputs["ims_query"] is None
+    assert started["ims_submit"]["timeline"] == submitted_timeline and outputs["ims_submit"] == {"JobId": "ims-job"}
+    assert outputs["ims_query"]["MediaProducingJob"]["Status"] == "Success"
     assert outputs["playback"] == {"aliyun_video_url": upstreams["zos_uploads"][0][0]}
-    assert outputs["zos_upload"] == {"zos_video_url": record["data"]["result"]["videoUrl"]}
+    assert outputs["zos_upload"] == {"zos_object_key": record["data"]["zos_object_key"], "zos_video_url": record["data"]["result"]["videoUrl"]}
+    expanded = expand_columns(saved)
+    cloud_result = {"mediaId": "ims-media", "durationSeconds": record["data"]["result"]["durationSeconds"]}
+    assert any(item["data"] == cloud_result for item in expanded["ims"]["output"])
+    assert not any(item["data"] == cloud_result for item in expanded["zos"]["output"])
+    assert any(item["data"] == response.json()["result"] for item in expanded["zos"]["output"])
+    skipped = {row["stage"]: row["details"]["output"]["reason"] for row in rows if row["event"] == "step_skipped"}
+    assert {"translation", "frame_mask_upload", "avatar_opening", "split_screen"} <= skipped.keys()
+    assert all(skipped.values())
     callback = next(row for row in rows if row["event"] == "match_callback_received")
     assert "input" not in callback["details"]
     assert callback["details"]["output"]["result"]["segments"][0]["matched_candidate_reason"] == "no_candidates"
@@ -2149,7 +2239,7 @@ def test_playback_must_be_ready_before_success_and_notification(upstreams, clien
     failures = [row for row in rows if row["event"] == "step_failed" and row["details"]["step"] == "playback"]
     assert len(failures) == 2 and all(row["details"]["exceptions"][0]["type"] == "ValueError" for row in failures)
     saved, = composition_logs(task_id, raw=True)
-    assert saved["zos"]["error_log"]
+    assert saved["ims"]["error_log"]
     assert record["status"] == "succeeded" and record["data"]["notification_status"] == "sent"
     assert len(upstreams["playbacks"]) == 3 and len(upstreams["renders"]) == 1
     assert upstreams["notifications"][0]["body"]["videoUrl"].endswith(f"imv/video_composition/{task_id}.mp4")
@@ -2225,13 +2315,17 @@ async def test_pending_retry_recovers_and_stops_on_success(upstreams, notificati
     logs, = composition_logs(current["task_id"], raw=True)
     failure, = logs["request"]["error_log"]
     assert failure["action"] == "notification.notification_pending"
-    assert failure["error"]["attempt"] == 1
-    assert failure["error"]["next_at"] == current["data"]["notification_next_at"]
+    from server.video_composition.execution_log import query_log
+    detail_file, = query_log(current["task_id"], "error")["files"]
+    assert failure["error"]["detail_log_path"] == f"errors/{detail_file['name']}"
+    detail = json.loads(detail_file["content"])["error"]
+    assert detail["attempt"] == 1
+    assert detail["next_at"] == current["data"]["notification_next_at"]
     if error:
-        assert failure["error"]["exceptions"][0]["type"] == "ReadTimeout"
+        assert detail["exceptions"][0]["type"] == "ReadTimeout"
         assert failure["error"]["message"] == "private-notification-error"
     else:
-        assert failure["error"]["http_status"] == 500
+        assert detail["http_status"] == 500
     assert any(entry["action"] == "notification.notification_sent" for entry in logs["request"]["execute_log"])
     assert all(set(entry) == {"time", "action", "status"} for entry in logs["request"]["execute_log"])
 
@@ -2501,3 +2595,104 @@ async def test_preview_settings_excluded_from_composition_snapshot(upstreams, cl
     record = await composition_runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
     await service.Job(composition_runtime, record, composition_runtime.settings).prepare()
     assert "avatar_preview" not in store.get(record["task_id"])["data"]["template"]
+
+
+@pytest.mark.anyio
+async def test_english_script_and_title_skip_translation_and_preserve_internal_commas(
+    upstreams, composition_case, composition_runtime, composition_logs, monkeypatch,
+):
+    """英文口播与英文标题跳过 translate 模型调用，直接填充英文文字与关键词，且字幕保留句内逗号与词内撇号。"""
+    from server.video_composition.schema import Segment
+    from server.video_composition.text_events import subtitle_events
+
+    monkeypatch.setattr(service, "translate", lambda *args, **kwargs: pytest.fail("英文内容不应调用 translate"))
+    template = deepcopy(composition_case["template"])
+    title_track = next(track for track in template["tracks"] if track["target"] == "title")
+    subtitle_track = next(track for track in template["tracks"] if track["target"] == "subtitle")
+    template["tracks"].extend([
+        {**deepcopy(title_track), "id": "title-en", "language": "en", "enabled": True},
+        {**deepcopy(subtitle_track), "id": "subtitle-en", "language": "en", "enabled": True},
+    ])
+    request = CompositionRequest.model_validate({
+        **composition_case["request"],
+        "title": "Networking at the Working Museum",
+        "text": "By the way, look at the pretty sunset. It's a beautiful evening.",
+    })
+    segmented = {
+        "title_keyword": "Working Museum",
+        "segments": [
+            {
+                "segment_id": 1,
+                "text": "By the way, look at the pretty sunset",
+                "keyword": "pretty sunset",
+                "start_time": 0.0,
+                "end_time": 2.0,
+                "level": 2,
+                "group_id": [1, 2],
+            },
+            {
+                "segment_id": 2,
+                "text": "It's a beautiful evening",
+                "keyword": "",
+                "start_time": 2.0,
+                "end_time": 4.0,
+                "level": 1,
+                "group_id": [2, 2],
+            },
+        ],
+    }
+    store.initialize_schema()
+    record = store.create(request.model_dump(mode="json", by_alias=True), composition_runtime.settings.output())
+    record = store.advance(record, "segmentation", template=template)
+    translated = await service.Job(composition_runtime, record, composition_runtime.settings).translate_texts(segmented, request)
+    assert translated["title_en"] == "Networking at the Working Museum"
+    assert translated["title_keyword_en"] == "Working Museum"
+    assert [item["text_en"] for item in translated["segments"]] == [
+        "By the way, look at the pretty sunset",
+        "It's a beautiful evening",
+    ]
+    assert [item["keyword_en"] for item in translated["segments"]] == ["pretty sunset", ""]
+    validated = [Segment.model_validate(item) for item in translated["segments"]]
+    assert subtitle_events(validated, "zh") == [
+        ("By the way, look at the pretty sunset", "pretty sunset", 0.0, 2.0),
+        ("It's a beautiful evening", "", 2.0, 4.0),
+    ]
+    assert subtitle_events(validated, "en") == [
+        ("By the way, look at the pretty sunset", "pretty sunset", 0.0, 2.0),
+        ("It's a beautiful evening", "", 2.0, 4.0),
+    ]
+    logs = composition_logs(record["task_id"])
+    skipped = next(row for row in logs if row["event"] == "step_skipped" and row["details"]["step"] == "translation")
+    assert skipped["details"]["output"] == {"reason": "英文内容无需翻译"}
+
+
+def test_mixed_chinese_english_subtitle_keyword_shares_text_cleaning_rule():
+    """中英混排正文的英文关键词与所属正文共用同一清洗规则，普通字幕与双语字幕均不因撇号失配。"""
+    from server.template.schema import EffectTemplateEditor
+    from server.video_composition.schema import Segment
+    from server.video_composition.text_events import bilingual_events, subtitle_events
+    from server.video_composition.timeline import format_subtitle_keyword
+
+    mixed = Segment.model_validate({
+        "segment_id": 1,
+        "text": "今天介绍 McDonald's 新品。",
+        "keyword": "McDonald's",
+        "text_en": "Today we introduce McDonald's new product.",
+        "keyword_en": "McDonald's",
+        "start_time": 0.0,
+        "end_time": 2.0,
+        "level": 2,
+        "group_id": [1, 1],
+    })
+    assert subtitle_events([mixed], "zh") == [("今天介绍 McDonalds 新品", "McDonalds", 0.0, 2.0)]
+    assert subtitle_events([mixed], "en") == [("Today we introduce McDonald's new product", "McDonald's", 0.0, 2.0)]
+    assert bilingual_events([mixed]) == [(
+        "今天介绍 McDonalds 新品",
+        "McDonalds",
+        "Today we introduce McDonald's new product",
+        "McDonald's",
+        0.0,
+        2.0,
+    )]
+    editor = EffectTemplateEditor(subtitle_keyword_bold=True)
+    assert format_subtitle_keyword("今天介绍 McDonalds 新品", "McDonalds", editor) == r"今天介绍 {\b1}McDonalds{\b0} 新品"

@@ -47,15 +47,16 @@
 - `.github/workflows/client-debug.yml`（Debug client）在 `main` / `dev` push 或 `workflow_dispatch` 时运行，不监听 PR；复用 `client-build.yml` 并传入 `build-mode: package`、`debug-backend: true`。手动入口要求工作流存在于默认分支，分支 push 触发不绕过此限制。
 - 共享构建的 `debug-backend` 是布尔输入，默认 false，只由它设置 `IMV_DEBUG`，不绑定分支名；普通构建和正式发布默认不携带后端，普通非 debug 构建不启动内置服务。Debug artifact 名称为 `intelligent-mix-video-debug-<平台>-<提交 SHA>`。
 - 各平台打包时由 `.github/scripts/bundle-backend.py` 生成 `backend.tar`、`backend.id` 和临时 Tauri 资源配置，均不入库。随包带完整服务、Python 3.12、MySQL（Linux 8.0，其余 8.4.8）、Node 24、Bun/Remotion、Chrome、FFmpeg/ffprobe 及字体，Linux 另带 bubblewrap/prlimit 隔离工具。
+- Python 依赖用 `uv export --locked --offline` 从锁文件导出，避免重复获取直链模型元数据；安装仍按锁定的 URL 和哈希完成，冷缓存下载通过 `UV_HTTP_RETRIES=5` 有限重试临时网络错误。打包前先安装指定 Python、离线检查锁文件，再冻结安装测试依赖，验证父进程保持管道打开时可加载完整 API、EOF 退出及 UTF-8 启动诊断，最终安装包验收继续必需。
 - 客户端 `start_backend` 等到实际就绪回执再挂载页面；模板、字效与设置 API 模块共享动态回环地址，不改变业务接口。
 - `server.desktop` 监督私有 MySQL 与完整 FastAPI：
   - `DB_SOCKET` 仅用于本地 Unix socket，去库建库连接也必须保留 socket。
   - 数据和无密钥初始 `.env` 保存在 app_data_dir/backend，运行时按归档摘要缓存于 app_cache_dir/backend；保留用户配置和数据库。
-  - 父进程管道关闭时先停 API 再停 MySQL。
+  - 父进程管道先复制到独立描述符，并将 stdin 指向空设备，再启动监控读取，避免 Windows 原生依赖初始化检查 fd 0 时死锁；管道关闭时先停 API 再停 MySQL。
   - Unix 内置数据库不开放 TCP；Windows 使用随机密码和动态回环 TCP，初始化时不监听网络，通过 SQL SHUTDOWN 落盘退出。
   - 均不读取宿主配置，密钥不得打包；随包库只提供给后端和渲染沙箱，禁止暴露用户目录、凭据或网络。
-- AppImage/MSI/DMG 上传前启用 `IMV_TEST_BUNDLE` 验证真实启动、重启持久化、重复实例、关闭与桌面连接；常规 pytest 跳过这些真实集成用例。
-- FFmpeg/ffprobe 在 CI 从官方 `FFmpeg/FFmpeg` 最新稳定 tag 的固定提交下载源码并原生编译，归档包含版本、提交与许可证；不使用 nightly 或第三方 Release 二进制。
+- AppImage/MSI/DMG 上传前启用 `IMV_TEST_BUNDLE` 验证真实启动、重启持久化、重复实例、关闭与桌面连接；复用前置安装的测试依赖，通过 `uv run --locked --offline` 执行，避免验收时重新下载模型元数据。常规 pytest 跳过这些真实集成用例。
+- FFmpeg/ffprobe 在 CI 从官方 `FFmpeg/FFmpeg` 最新稳定 tag 的固定提交下载源码并原生编译，归档包含版本、提交与许可证；不使用 nightly 或第三方 Release 二进制。编译缓存命中时跳过仅用于编译的 Windows MSYS2 和 macOS NASM 安装，缓存未命中时仍安装后构建。
 - 真实 Remotion 渲染目前仅 Linux 支持，Windows/macOS 不得绕过沙箱执行生成代码。macOS 使用 macos-15 / macos-15-intel 原生构建依赖，dylib 转为相对加载路径；Windows 使用 app-local VC 运行库，打包无特权符号链接依赖。
 
 ### Linux AppImage

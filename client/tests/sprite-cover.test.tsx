@@ -149,6 +149,7 @@ test("Remotion 目录在分类内按名称搜索并添加", async () => {
   render(<SpriteCatalog catalog={catalog} placed={new Set()} onAdd={(item) => added.push(item)} />);
   const region = screen.getByRole("region", { name: "AI 资产" });
   expect(within(region).getAllByRole("radio").length).toBeGreaterThan(0);
+  fireEvent.click(within(region).getByRole("radio", { name: "字幕字效" }));
   fireEvent.change(within(region).getByRole("searchbox", { name: "搜索 AI 资产" }), { target: { value: "流光" } });
   expect(within(region).queryByRole("button", { name: "添加 AI 资产：霓虹标题" })).toBeNull();
   fireEvent.click(within(region).getByRole("button", { name: "添加 AI 资产：流光字幕" }));

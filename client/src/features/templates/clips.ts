@@ -7,7 +7,7 @@ import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { BILINGUAL_PROP, type ClipTransform, type TransformField } from "@/features/sprites/parameters";
 import { boundText, textKey, textRoles, type Draft, type RemotionClip, type TextRole, type TextLanguage } from "./model";
-import type { ResolvedTimeline } from "./tracks";
+import { setBilingual, type ResolvedTimeline } from "./tracks";
 import { compactTransitions, nextTransitionBoundary } from "./transitions";
 
 /** 片段与 IMS 对象共用的轨道上限，与服务端和本地文件一致。 */
@@ -49,6 +49,17 @@ function textClip(draft: Draft, role: TextRole, except?: string, language?: Text
   return draft.clips.find((clip) => clip.id !== except && clip.text_target === role && textKey(role, clip.language) === textKey(role, language));
 }
 
+/** 添加与改绑共用的文字检查：双语字效占用中英两种语言，并自动创建或恢复对应英文对象。 */
+function prepareTextBinding(draft: Draft, asset: SpriteAsset | undefined, known: SpriteAsset[], role: "title" | "subtitle", language?: TextLanguage, except?: string): Draft {
+  if (asset?.bilingual && language === "en") throw new Error(`「${asset.name}」是双语字效，已同时显示中英两种语言，请作用于中文${role === "title" ? "标题" : "字幕"}`);
+  if (textClip(draft, role, except, language)) throw new Error(`${textRoles[role]}已有 Remotion 字效，请先移除再添加`);
+  const chinese = textClip(draft, role, except);
+  if ((asset?.bilingual && textClip(draft, role, except, "en"))
+    || (language === "en" && known.some((item) => item.id === chinese?.sprite_id && item.bilingual)))
+    throw new Error("双语字效已显示英文，不能同时绑定独立英文字效，请先移除已有字效");
+  return asset?.bilingual ? setBilingual(draft, role, true) : draft;
+}
+
 /**
  * 添加一次摆放并按分类占用模板对象：字效作用于 `role`（当前选择的文字对象），转场追加到统一列表，视频特效占用 VFX 名额；
  * 名额已被占用时拒绝并说明原因，占用文字或交界处的片段起点与时长由 `timeClips` 按所占对象计算。
@@ -70,10 +81,7 @@ export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], 
   };
   if (asset.kind === SpriteKind.TEXT) {
     if (role === "bubble") throw new Error("Remotion 字效只能作用于标题或底部字幕，请先在左侧选择标题或字幕");
-    // 双语字效自己同时显示中英两种语言，只能绑定中文对象；否则英文文字对象里没有中文可取。
-    if (asset.bilingual && language === "en") throw new Error(`「${asset.name}」是双语字效，已同时显示中英两种语言，请作用于中文${role === "title" ? "标题" : "字幕"}`);
-    const existing = textClip(draft, role, undefined, language);
-    if (existing) throw new Error(`${textRoles[role]}已有 Remotion 字效，请先移除再添加`);
+    draft = prepareTextBinding(draft, asset, known, role, language);
     clip.text_target = role;
     if (language) clip.language = language;
   } else if (asset.kind === SpriteKind.TRANSITION_OVERLAY) {
@@ -81,13 +89,17 @@ export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], 
   } else if (asset.kind !== SpriteKind.FILTER_OVERLAY && vfxTaken(draft, known)) {
     throw new Error("画面特效最多一个，Remotion 视频特效也占用这个名额，请先移除已有的画面特效");
   }
+  // 自动新增英文对象也计入上限；失败时纯函数不会改变调用方的草稿。
+  if (draft.tracks.length + draft.clips.length >= maxTracks) throw new Error("轨道数量不能超过 100");
   return { ...draft, clips: [...draft.clips, clip] };
 }
 
-/** 改变字效作用的文字对象或转场所在的交界处；目标已被占用时拒绝。作用于文字后，文字与关键词由该对象提供，清除对应的参数覆盖。 */
-export function bindClip(draft: Draft, id: string, binding: { text_target: "title" | "subtitle"; language?: TextLanguage } | { transition_boundary: number }): Draft {
-  if ("text_target" in binding && textClip(draft, binding.text_target, id, binding.language))
-    throw new Error(`${textRoles[binding.text_target]}已有 Remotion 字效，请先移除`);
+/** 改变作用对象并检查占用；双语字效自动启用新对象的英文，清除由文字对象提供的正文与关键词覆盖。 */
+export function bindClip(draft: Draft, id: string, binding: { text_target: "title" | "subtitle"; language?: TextLanguage } | { transition_boundary: number }, known: SpriteAsset[] = []): Draft {
+  if ("text_target" in binding) {
+    const clip = draft.clips.find((item) => item.id === id);
+    draft = prepareTextBinding(draft, known.find((item) => item.id === clip?.sprite_id), known, binding.text_target, binding.language, id);
+  }
   if ("transition_boundary" in binding && boundaryTaken(draft, binding.transition_boundary, id))
     throw new Error(`交界处 ${binding.transition_boundary} 已有转场，请先移除`);
   return { ...draft, clips: draft.clips.map((clip) => {

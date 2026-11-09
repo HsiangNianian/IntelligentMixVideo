@@ -188,15 +188,15 @@ def test_whitespace_without_punctuation_does_not_split(model):
     ("甲；乙;丙：丁:戊…己...庚——辛-壬", ["甲；乙;丙：丁:戊…己...庚——辛-壬"]),
     ("3.14、１．２、1,234,567.89，结束", ["3.14、１．２、1,234,567.89，", "结束"]),
     ("99,3件，1,2999元", ["99,", "3件，", "1,", "2999元"]),
-    ("Dr. Smith met the U.S.A. team. Next!", ["Dr. Smith met the U.S.A. team. ", "Next!"]),
+    ("Dr. Smith 见到了 U.S.A. 团队. Next!", ["Dr. Smith 见到了 U.S.A. 团队. ", "Next!"]),
     ("例如 e.g. 和 i.e.、Ph.D. 都保留。结束", ["例如 e.g. 和 i.e.、Ph.D. 都保留。", "结束"]),
     ("甲.乙．丙", ["甲.", "乙．", "丙"]),
     ("访问 example.com。完成", ["访问 example.com。", "完成"]),
     ("甲，（乙。）丙", ["甲，", "（乙。）", "丙"]),
     ("甲。 【《乙！》】 丙", ["甲。 ", "【《乙！》】 ", "丙"]),
     ("他说：“你好！”“再见。”结束", ["他说：“你好！”", "“再见。”", "结束"]),
-    ('"Hello!" "World." Next.', ['"Hello!" ', '"World." ', 'Next.']),
-    ("It's good. 'Next!' Done.", ["It's good. ", "'Next!' ", "Done."]),
+    ('他说 "Hello!" "World." Next.', ['他说 "Hello!" ', '"World." ', 'Next.']),
+    ("他说 It's good. 'Next!' Done.", ["他说 It's good. ", "'Next!' ", "Done."]),
     ("？！甲？！）“乙！！”……", ["？！甲？！）", "“乙！！”……"]),
 ])
 def test_boundary_policy_preserves_text_and_timing(model, punctuation_model, script, expected):
@@ -253,7 +253,7 @@ def test_limit_only_warns_and_never_splits_again(model, punctuation_model, clien
 
 
 @pytest.mark.parametrize("restored,expected", [
-    ("Open，AI", ["Open，", "AI"]),
+    ("Open，AI时代", ["Open，", "AI时代"]),
     ("甲（乙）丙", ["甲（乙）丙"]),
     ("「甲？！乙……」", ["「甲？！", "乙……」"]),
     ("心肝、脾、肺、肾，下一句。", ["心肝、脾、肺、肾，", "下一句。"]),
@@ -676,7 +676,7 @@ def test_keyword_failure_response_is_saved_in_task_error_files(model, server_log
     entry, = json.loads((folder / "segmentation.json").read_text())["error_log"]
     detail = (folder / entry["error"]["detail_log_path"]).read_text()
     error = json.loads(detail)["error"]
-    assert error["exceptions"] == entry["error"]["exceptions"]
+    assert "exceptions" not in entry["error"]
     assert error["exceptions"][0]["keyword_response"] == {
         "expected_segment_count": 2, "keywords_type": "list", "keyword_group_count": 1,
         "response": {"keywords": [["甲乙"]], "api_key": "[REDACTED]"},
@@ -695,13 +695,13 @@ def test_original_english_punctuation_splits(model):
 
 
 def test_english_predicted_boundary_preserves_original_space(model, punctuation_model):
-    """CT-Punc 预测英文词间的标点时切分，原空格仍保留在前段。"""
+    """中英混排时 CT-Punc 预测英文词间的标点切分，原空格仍保留在前段。"""
     punctuation_model.side_effect = None
-    punctuation_model.return_value = "Hello， world。"
-    result = segment(payload("Hello world", step=900))
-    assert [s["text"] for s in result["segments"]] == ["Hello， ", "world。"]
-    assert result["segments"][-1]["end_time"] == 9.9
-    assert [s["keyword"] for s in result["segments"]] == ["He", "wo"]
+    punctuation_model.return_value = "Hello， world。你好。"
+    result = segment(payload("Hello world 你好", step=900))
+    assert [s["text"] for s in result["segments"]] == ["Hello， ", "world。 ", "你好。"]
+    assert result["segments"][-1]["end_time"] == 12.6
+    assert [s["keyword"] for s in result["segments"]] == ["He", "wo", "你好"]
     assert result["warnings"] == []
 
 
@@ -1330,3 +1330,62 @@ def test_disable_thinking_is_sent_only_when_enabled(model, monkeypatch):
     calls = model[1].chat.completions.create.call_args_list
     assert len(calls) == 3
     assert all(call.kwargs["extra_body"] == {"thinking": {"type": "disabled"}} for call in calls)
+
+
+def test_english_spacy_clause_segmentation_and_trailing_punctuation_strip(model, punctuation_model):
+    """英文文案走 spaCy + 依存句法意群切分，跳过 CT-Punc，去掉每段句末标点并保留段内逗号与词内撇号。"""
+    script = (
+        "This morning I went to a fin tac match working museum and met a guy."
+        "This guy offered me three jobs without me asking whether he is hired. "
+        "Within 10 minutes he asked me whether I'm looking for a new job he just offered."
+        "I also said that I am becoming creator and he just ask, do you know any young people "
+        "that we can potentially hire and that's why I keep saying if you want to get a job, "
+        "the best and quickest way is to go to a networking event and start talking to people, "
+        "know that everyone out there is nervous, everyone out there is self conscious."
+        "Including me. And when you feel like the conversation keeps a little dry, "
+        "that this person is not giving you anything useful and you're absolutely not giving him "
+        "anything interesting either, it's okay to walk away from a conversation. "
+        "By the way, look at the pretty sunset.Oh my god, it's a beautifu"
+    )
+    model[1].chat.completions.create.side_effect = [reply_with({"keywords": {"2": "working museum", "16": "networking event"}})]
+    result = segment(payload(script, step=50))
+    punctuation_model.assert_not_called()
+    texts = [s["text"] for s in result["segments"]]
+    assert texts[:5] == [
+        "This morning I went",
+        "to a fin tac match working museum",
+        "and met a guy",
+        "This guy offered me three jobs without me asking",
+        "whether he is hired",
+    ]
+    assert "By the way, look at the pretty sunset" in texts
+    assert texts[-1] == "Oh my god, it's a beautifu"
+    assert all(not text.endswith((".", ",", "!", "?", ";", ":")) for text in texts)
+    assert segmentation._core("".join(texts)) == segmentation._core(script)
+    assert result["segments"][1]["keyword"] == "working museum"
+    assert result["segments"][15]["keyword"] == "networking event"
+    assert result["warnings"] == []
+    assert "每词最多" not in model[1].chat.completions.create.call_args.kwargs["messages"][0]["content"]
+
+
+def test_english_title_and_segment_keywords_have_no_length_limit(model, punctuation_model):
+    """英文标题与片段关键词不设 12 字上限，而中文标题配英文正文时中文标题仍保持 12 字上限。"""
+    title = "Networking at the Working Museum"
+    script = "We visited the working museum today."
+    model[1].chat.completions.create.side_effect = [
+        reply_with({"title_keyword": "Working Museum", "keywords": {"1": "working museum"}})
+    ]
+    result = segment({**payload(script, step=100), "title": title})
+    punctuation_model.assert_not_called()
+    assert result["title_keyword"] == "Working Museum"
+    assert result["segments"][0]["text"] == "We visited the working museum today"
+    assert result["segments"][0]["keyword"] == "working museum"
+
+    chinese_title = "甲乙丙丁戊己庚辛壬癸子丑寅"
+    model[1].chat.completions.create.side_effect = [
+        reply_with({"title_keyword": chinese_title, "keywords": {"1": "working museum"}}),
+        reply_with({"title_keyword": chinese_title[:12], "keywords": {"1": "working museum"}}),
+    ]
+    mixed_result = segment({**payload(script, step=100), "title": chinese_title})
+    assert mixed_result["title_keyword"] == chinese_title[:12]
+    assert mixed_result["segments"][0]["keyword"] == "working museum"

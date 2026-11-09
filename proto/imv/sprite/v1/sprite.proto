@@ -10,7 +10,7 @@ package imv.sprite.v1;
 import "google/protobuf/timestamp.proto";
 
 // 发布版本的内容类型；发布后不能把同一个 Sprite 改成另一种类型。
-// 界面分为三类：TEXT 为「字效」，FILTER_OVERLAY 为「滤镜」，VIDEO_OVERLAY 与 TRANSITION_OVERLAY 合为「转场与视频特效」。
+// 目录并列展示标题字效、字幕字效、滤镜、转场特效、视频特效；前两类由 TextEffectCategory 区分。
 // 所有类型都是透明叠加层，不读取也不修改底片像素；类型决定发布时必备的参数和宿主可调的变换。
 enum SpriteKind {
   // 未指定；不能作为可发布的类型。
@@ -23,6 +23,16 @@ enum SpriteKind {
   SPRITE_KIND_VIDEO_OVERLAY = 3;
   // 转场：按秒摆放在切点附近的闪白、漏光、色块擦除等叠加层，必备 color、speed；宿主只调不透明度。
   SPRITE_KIND_TRANSITION_OVERLAY = 4;
+}
+
+// 字效在资产库中的分类，仅用于浏览，不改变模板里绑定的文字对象或渲染契约。
+enum TextEffectCategory {
+  // 未手动分类：名称含「字幕」归字幕，否则含「标题」归标题，其余默认字幕。
+  TEXT_EFFECT_CATEGORY_UNSPECIFIED = 0;
+  // 标题字效。
+  TEXT_EFFECT_CATEGORY_TITLE = 1;
+  // 字幕字效。
+  TEXT_EFFECT_CATEGORY_SUBTITLE = 2;
 }
 
 // 参数在运营界面的展示与编辑权限；运营不能用参数覆盖源码或真实时间。
@@ -96,6 +106,8 @@ message SpriteParameter {
   optional uint32 max_length = 10;
   // 可选字符串列表的最大项数。
   optional uint32 max_items = 11;
+  // 自由组件保存的参数分组（Schema 的 x-imv-group）；空串表示没有分组。
+  string group = 12;
 }
 
 // 画布上的矩形区域，单位为画布像素，原点在左上角。
@@ -172,6 +184,8 @@ message PublishedSprite {
   // 内容区域：发布时各实例布局的并集与画布求交；宿主的位置、缩放和旋转以其中心为原点。
   // 历史发布未记录时视为整块画布。
   SpriteBox content_box = 20;
+  // 手动选择的字效分类；未设置时由目录按名称匹配，覆盖发布保留已有选择。
+  TextEffectCategory text_category = 21;
 }
 
 // 公开目录使用的发布摘要；只包含运营选择与预览需要的信息，不返回 TSX 源码。
@@ -198,6 +212,8 @@ message SpriteSummary {
   // 字效的固定行数：多行字效（声明 lineStartFrames 参数）为 2～4，文字用换行分隔各行，
   // 字幕的连续切片逐行填入；单行字效为 1，其他分类为 0。
   uint32 line_count = 10;
+  // 手动选择的字效分类；未设置时客户端按名称匹配，非字效不使用。
+  TextEffectCategory text_category = 11;
 }
 
 // GET /api/sprites 的响应，返回可供运营选择的不可变发布条目。
@@ -230,10 +246,12 @@ message PublishSpriteResponse {
   SpriteSummary sprite = 1;
 }
 
-// POST /api/sprites/{sprite_id}/rename 的请求；只改目录里显示的名称，代码、参数与预览不变。
+// POST /api/sprites/{sprite_id}/rename 的请求；修改名称和可选的字效分类，代码、参数与预览不变。
 message RenameSpriteRequest {
   // 新名称，去除首尾空白后为 1～100 个字符；不要求唯一。
   string name = 1;
+  // 仅字效可选 TITLE 或 SUBTITLE；省略时保留现有分类，兼容旧客户端的重命名请求。
+  optional TextEffectCategory text_category = 2;
 }
 
 // 重命名后的目录条目。

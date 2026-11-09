@@ -436,7 +436,12 @@ def composition_logs(template_db):
                     if entry["time"] is None:
                         continue
                     group, event = entry["action"].split(".", 1)
-                    details = {**entry.get("error", {}), "step": group}
+                    details = entry.get("error", {})
+                    # 新日志的完整诊断只在详情文件；夹具展开普通 JSON 详情，供业务用例检查原始根因。
+                    path = details.get("detail_log_path")
+                    if path and not Path(path).name.startswith("remotion-"):
+                        details = {**json.loads((LOG_ROOT / "video_composition" / row["task_id"] / path).read_text())["error"], **details}
+                    details = {**details, "step": group}
                     key = (entry["time"], entry["action"])
                     if key in inputs:
                         details["input"] = inputs[key]

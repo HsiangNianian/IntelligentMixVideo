@@ -192,8 +192,8 @@ def get(sprite_id: str) -> pb.PublishedSprite:
     return published_from(data)
 
 
-def rename(sprite_id: str, name: str) -> pb.SpriteSummary:
-    """Change the name shown in the catalog; the code, parameters and preview bundle are untouched.
+def rename(sprite_id: str, name: str, text_category: int | None = None) -> pb.SpriteSummary:
+    """Change the catalog name and optional text category, leaving rendering and template bindings untouched.
 
     The name is trimmed and must be 1 to 100 characters; it need not be unique, like the names publishing derives.
     Unknown or malformed IDs are a 404. Assets that templates place can be renamed, since templates store only IDs.
@@ -205,7 +205,14 @@ def rename(sprite_id: str, name: str) -> pb.SpriteSummary:
         identifier = str(UUID(sprite_id))
     except ValueError:
         raise NotFound("sprite not found") from None
-    data = sprite_store.update_data(identifier, {"name": name})
+    fields = {"name": name}
+    if text_category is not None:
+        if text_category not in {pb.TEXT_EFFECT_CATEGORY_TITLE, pb.TEXT_EFFECT_CATEGORY_SUBTITLE}:
+            raise _invalid("字效分类需为标题字效或字幕字效")
+        if get(identifier).kind != pb.SPRITE_KIND_TEXT:
+            raise _invalid("只有字效资产可以设置标题或字幕分类")
+        fields["text_category"] = pb.TextEffectCategory.Name(text_category)
+    data = sprite_store.update_data(identifier, fields)
     if data is None:
         raise NotFound("sprite not found")
     return summarize(published_from(data))
@@ -266,6 +273,7 @@ def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
         keywords_supported=bool(sprite.keywords_prop),
         content_box=content_box(sprite),
         line_count=line_count(json.loads(sprite.config_schema_json or "{}")) if sprite.kind == pb.SPRITE_KIND_TEXT else 0,
+        text_category=sprite.text_category,
     )
 
 

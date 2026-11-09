@@ -27,7 +27,7 @@ from server.remotion_templates import parameters, sprite_events, sprite_store, s
 from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, category_problems
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.managed_fonts import bundled_font
-from server.remotion_templates.models import GenerateTemplateRequest
+from server.remotion_templates.models import GenerateTemplateRequest, JobInput
 from server.remotion_templates.object_store import ObjectStoreError, ZosObjects
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.publication import PREVIEW_PROTOCOL, current_bundle
@@ -176,9 +176,9 @@ def objects(store: Store) -> Path:
 
 def another_version(
     published, *, code: str = CODE, defaults: dict | None = None, description: str = "新版标题",
-    schema: dict | None = None, bound: list[str] | None = None,
+    schema: dict | None = None, bound: list[str] | None = None, same_work: bool = False,
 ):
-    """用同一份临时数据再封存一个成功版本（新的会话），供覆盖保存用例验证资产确实换成了新内容。"""
+    """封存另一个成功版本，默认新建会话，也可继续原会话，验证覆盖保存与整条会话删除。"""
     settings = published.settings
     harness = Harness(SimpleNamespace(settings=settings), OfflineRenderer(settings, CodeOnlyRenderer(settings)))
     schema = SCHEMA if schema is None else schema
@@ -200,7 +200,12 @@ def another_version(
         bindings=[{"name": name, "title": name, "targets": [{"instance_id": "title", "parameter": name}]} for name in bound],
         kind="text",
     )
-    _work, job = published.store.create(GenerateTemplateRequest(description="新版本"), DEVICE)
+    if same_work:
+        job = published.store.enqueue(
+            published.version.project_id, JobInput(mode="edit", instruction=description), published.version.id,
+        )
+    else:
+        _work, job = published.store.create(GenerateTemplateRequest(description="新版本"), DEVICE)
     published.store.claim()
     result = asyncio.run(harness.finalize_sprite(
         SimpleNamespace(saved_sprite=lambda _id: _SavedSprite(sprite), validation_for=lambda _r: runtime_report(sprite)),
@@ -490,14 +495,14 @@ def test_repeated_publish_can_rename_without_creating_another_asset(client: Test
 
 @pytest.mark.parametrize("name", ["", "  覆盖时填写的新名称  "])
 def test_overwrite_resolves_the_name_at_commit(client: TestClient, published, monkeypatch, name) -> None:
-    """覆盖期间成功的重命名不能被旧快照还原；用户在本次保存显式填了名称时随新内容一起更新。"""
+    """覆盖期间成功的名称和字效分类修改不能被旧快照还原；显式发布名称优先，手动分类始终保留。"""
     first = published_sprite(client, published.version.id)
     newer = another_version(published)
     sample = sprites._sample
 
     async def renamed_during_sampling(service, version, kind):
         """在读取目标之后、提交覆盖之前完成另一次重命名，模拟实际的并发顺序。"""
-        sprites.rename(first.sprite_id, "模板编辑处的新名称")
+        sprites.rename(first.sprite_id, "模板编辑处的新名称", pb.TEXT_EFFECT_CATEGORY_SUBTITLE)
         await sample(service, version, kind)
 
     monkeypatch.setattr(sprites, "_sample", renamed_during_sampling)
@@ -505,6 +510,7 @@ def test_overwrite_resolves_the_name_at_commit(client: TestClient, published, mo
     assert summary.name == (name.strip() or "模板编辑处的新名称")
     assert sprites.get(first.sprite_id).name == summary.name
     assert summary.source_version_id == str(newer.id)
+    assert summary.text_category == sprites.get(first.sprite_id).text_category == pb.TEXT_EFFECT_CATEGORY_SUBTITLE
 
 
 def test_an_overlong_publish_name_does_not_change_the_catalog(client: TestClient, published) -> None:
@@ -587,6 +593,54 @@ def test_published_sprite_survives_deleting_its_source_version(client: TestClien
     assert "sandbox allow-scripts" in preview.headers["content-security-policy"]
 
 
+@pytest.mark.parametrize(("overwrite", "same_work"), [(False, True), (True, True), (True, False)])
+def test_published_sprite_survives_chat_delete_api(
+    client: TestClient, published, template_payload, monkeypatch, overwrite: bool, same_work: bool,
+) -> None:
+    """保存旧版或覆盖后删除整条来源会话；同一会话的多个版本一起清理，资产仍可列出、预览并保存到模板。"""
+    from server.remotion_templates.api import app as template_app
+    from server.remotion_templates.routes import runtime
+    from server.remotion_templates.runtime import Runtime
+
+    service = Runtime(published.store, None, published.settings)
+    monkeypatch.setitem(template_app.dependency_overrides, runtime, lambda: service)
+    source = published.version
+    summary = published_sprite(client, source.id, name="删聊后应保留的资产")
+    newer = another_version(published, defaults={"text": "覆盖后的标题"}, same_work=same_work)
+    if overwrite:
+        source = newer
+        summary = published_sprite(client, source.id, target_sprite_id=summary.sprite_id)
+    before = sprite_store.get(summary.sprite_id)
+    bundle = bundle_copy(published.store, summary.sprite_id).read_bytes()
+
+    response = client.delete(f"/api/templates/works/{source.project_id}", headers=DEVICE_HEADERS)
+    assert response.status_code == 204, response.text
+    assert client.delete(f"/api/templates/works/{source.project_id}", headers=DEVICE_HEADERS).status_code == 204
+    assert client.get(f"/api/templates/works/{source.project_id}", headers=DEVICE_HEADERS).status_code == 404
+    for version in (published.version, newer):
+        if version.project_id == source.project_id:
+            assert client.get(f"/api/templates/versions/{version.id}", headers=DEVICE_HEADERS).status_code == 404
+            assert not (objects(published.store) / "versions" / str(version.id)).exists()
+    assert sprite_store.get(summary.sprite_id) == before
+    assert bundle_copy(published.store, summary.sprite_id).read_bytes() == bundle
+
+    # 换一个 Store 并清空读取缓存，防止仅靠进程内状态或旧缓存把已丢失的资产暂时显示出来。
+    shutil.rmtree(published.store.root / "cache", ignore_errors=True)
+    restarted = Store(published.store.root)
+    restarted.initialize()
+    published.service.store = restarted
+    listed = client.get("/api/sprites")
+    assert listed.status_code == 200
+    assert listed.headers["cache-control"] == "no-store"
+    assert list(pb.ListSpritesResponse.FromString(listed.content).sprites) == [summary]
+    preview = client.get(summary.preview_url)
+    assert preview.status_code == 200 and "// rebuilt" in preview.text
+    template_payload["tracks"].append(remotion_track(sprite_id=summary.sprite_id, text_target="title"))
+    saved = post_template(client, template_payload)
+    assert saved.status_code == 201, saved.text
+    assert saved_template(saved)["tracks"][-1]["sprite_id"] == summary.sprite_id
+
+
 def test_losing_a_publish_race_returns_the_winner_and_cleans_up(published) -> None:
     """并发的相同发布在写库时撞上唯一键：落败者返回胜者的资产，并删除自己刚上传的副本与暂存文件。"""
     request = publish_request(published.version.id)
@@ -634,16 +688,19 @@ def test_preview_is_unavailable_when_a_lost_bundle_cannot_be_rebuilt(client: Tes
     assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites] == [summary.sprite_id]
 
 
-def slow_rebuilds(published) -> None:
-    """让重建在事件循环上停留片刻，使并发的预览或删除必然在它完成前到达。"""
+def slow_rebuilds(published) -> asyncio.Event:
+    """通知调用方重建已开始，并停留片刻供并发预览或删除进入，避免靠固定等待猜测启动时间。"""
     run_worker = published.renderer.run_worker
+    started = asyncio.Event()
 
     async def slow_worker(*args, **kwargs):
         """延迟后照常重建。"""
+        started.set()
         await asyncio.sleep(0.05)
         return await run_worker(*args, **kwargs)
 
     published.renderer.run_worker = slow_worker
+    return started
 
 
 def test_concurrent_previews_of_a_lost_bundle_rebuild_it_once(client: TestClient, published) -> None:
@@ -684,12 +741,12 @@ def test_deleting_during_a_rebuild_leaves_no_bundle_behind(client: TestClient, p
 
     summary = published_sprite(client, published.version.id)
     drop_bundle(published.store, summary.sprite_id)
-    slow_rebuilds(published)
+    started = slow_rebuilds(published)
 
     async def preview_then_delete():
         """预览开始重建后立即删除资产。"""
         preview = asyncio.create_task(sprites.preview_script(published.service, summary.sprite_id))
-        await asyncio.sleep(0.01)
+        await asyncio.wait_for(started.wait(), timeout=2)
         await delete_sprite(summary.sprite_id, published.service)
         await preview
 
@@ -1289,9 +1346,12 @@ def test_deleting_an_unknown_sprite_is_a_404(client: TestClient, published, spri
     assert summary.sprite_id
 
 
-def rename(client: TestClient, sprite_id: str, name: str):
-    """发送二进制重命名请求，不带设备头（资产库共享）。"""
-    return client.post(f"/api/sprites/{sprite_id}/rename", content=pb.RenameSpriteRequest(name=name).SerializeToString(), headers=PROTOBUF)
+def rename(client: TestClient, sprite_id: str, name: str, text_category: int | None = None):
+    """发送二进制重命名/分类请求，不带设备头；省略分类模拟旧客户端。"""
+    return client.post(
+        f"/api/sprites/{sprite_id}/rename",
+        content=pb.RenameSpriteRequest(name=name, text_category=text_category).SerializeToString(), headers=PROTOBUF,
+    )
 
 
 def test_renaming_a_sprite_changes_only_its_catalog_name(client: TestClient, published) -> None:
@@ -1306,6 +1366,68 @@ def test_renaming_a_sprite_changes_only_its_catalog_name(client: TestClient, pub
     assert sprite_store.get(summary.sprite_id) == {**before, "name": "新的名称"}
     assert client.get(summary.preview_url).status_code == 200
     assert published_sprite(client, published.version.id).name == "新的名称"
+
+
+def test_saved_parameter_groups_survive_catalog_reads_and_reclassification(client: TestClient, published) -> None:
+    """带参数分组的历史资产仍显示在目录；重命名并改为字幕分类时不丢分组、源码或预览。"""
+    summary = published_sprite(client, published.version.id)
+    before = sprite_store.get(summary.sprite_id)
+    next(item for item in before["parameters"] if item["key"] == "shadow")["group"] = "文字阴影"
+    sprite_store.update_data(summary.sprite_id, {"parameters": before["parameters"]})
+
+    listing = client.get("/api/sprites")
+    assert listing.status_code == 200
+    listed = pb.ListSpritesResponse.FromString(listing.content).sprites
+    assert [item.sprite_id for item in listed] == [summary.sprite_id]
+    assert next(item for item in listed[0].parameters if item.key == "shadow").group == "文字阴影"
+    response = rename(client, summary.sprite_id, "字幕字效", pb.TEXT_EFFECT_CATEGORY_SUBTITLE)
+    assert response.status_code == 200, response.text
+    assert sprite_store.get(summary.sprite_id) == {
+        **before, "name": "字幕字效", "text_category": "TEXT_EFFECT_CATEGORY_SUBTITLE",
+    }
+    assert client.get(summary.preview_url).status_code == 200
+
+
+@pytest.mark.parametrize("category", [pb.TEXT_EFFECT_CATEGORY_TITLE, pb.TEXT_EFFECT_CATEGORY_SUBTITLE])
+def test_text_category_is_persisted_without_changing_rendering(client: TestClient, published, category) -> None:
+    """字效分类随名称原子保存并返回目录，内容和预览不变；旧客户端改名、重复发布和覆盖发布都保留选择。"""
+    summary = published_sprite(client, published.version.id)
+    before = sprite_store.get(summary.sprite_id)
+    response = rename(client, summary.sprite_id, "  不带分类词的名字  ", category)
+    assert response.status_code == 200
+    changed = pb.RenameSpriteResponse.FromString(response.content).sprite
+    assert changed.text_category == category and changed.name == "不带分类词的名字"
+    assert sprite_store.get(summary.sprite_id) == {
+        **before, "name": changed.name, "text_category": pb.TextEffectCategory.Name(category),
+    }
+    listed = client.get("/api/sprites")
+    assert listed.status_code == 200
+    assert pb.ListSpritesResponse.FromString(listed.content).sprites[0].text_category == category
+    assert rename(client, summary.sprite_id, "标题字幕都出现").status_code == 200
+    assert sprites.get(summary.sprite_id).text_category == category
+    assert published_sprite(client, published.version.id).text_category == category
+    newer = another_version(published)
+    overwritten = published_sprite(client, newer.id, target_sprite_id=summary.sprite_id, name="新的标题")
+    assert overwritten.text_category == category and overwritten.sprite_id == summary.sprite_id
+
+
+@pytest.mark.parametrize("category", [pb.TEXT_EFFECT_CATEGORY_UNSPECIFIED, 99])
+def test_invalid_text_category_changes_nothing(client: TestClient, published, category) -> None:
+    """显式提交空分类或未知枚举返回 422，名称和分类均不得部分写入。"""
+    summary = published_sprite(client, published.version.id)
+    before = sprite_store.get(summary.sprite_id)
+    response = rename(client, summary.sprite_id, "不应写入", category)
+    assert response.status_code == 422 and "字效分类" in response.json()["detail"]
+    assert sprite_store.get(summary.sprite_id) == before
+
+
+def test_non_text_asset_rejects_text_category(client: TestClient, published) -> None:
+    """视觉资产不能伪装为标题或字幕；请求返回 422，原名称与内容保持不变。"""
+    summary = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
+    before = sprite_store.get(summary.sprite_id)
+    response = rename(client, summary.sprite_id, "不应写入", pb.TEXT_EFFECT_CATEGORY_TITLE)
+    assert response.status_code == 422 and "只有字效" in response.json()["detail"]
+    assert sprite_store.get(summary.sprite_id) == before
 
 
 def test_a_sprite_placed_in_a_template_can_be_renamed(client: TestClient, published) -> None:

@@ -96,6 +96,8 @@ URL 不接受 Markdown 链接、空白、用户名密码或 `#fragment`，允许
 - `materials_voice`：ASR 获取配音原始总时长（含静音）；有文案才进行字幕切片，没有文案不生成字幕。按素材顺序铺满完整配音，字幕间隙不影响画面，不调用素材匹配。
 - `materials_silent`：以 `processRules.videoDuration` 为总长，跳过 ASR、正文切片和匹配，有非空标题时只调用一次模型提取标题关键词；始终不生成字幕，新请求不得附带非空 `text/copy`。请求 `title` 使用模板标题样式与时间区间，保留原文换行、标点和模板花字及动画，按返回的 `title_keyword` 应用模板关键词样式。标题为空就不显示，也不调用提词模型。
 
+实际调用素材匹配时，服务端通过 FFprobe 探测 `audioUrl` 文件总秒数，以不主动舍入的浮点数写入上游请求 `audio_duration`；调用方无需新增参数。探测失败或时长无效时省略该字段并继续匹配，在任务 `matching` 日志的 `output` 中记录 `audio_duration_omitted`、`audio_duration_sent: false`、原因与脱敏异常详情。此值只用于匹配，原有 ASR 总时长和合成规则不变；不匹配的模式不探测，也不发送 `videoDuration`。
+
 两个纯素材模式均使用后端 FFprobe 读取视频流实际时长，图片每张 3 秒。按顺序探测至足够覆盖目标，不访问后续未使用素材；不足报 `materials_duration_insufficient`，视频无法读取或缺少有效视频流时长报 `material_probe_failed`，不拿可能更长的容器音轨时长代替。POST 先返回任务 ID，以上错误通过查询与终态回调报告，不提交 IMS。超长时裁切最后实际使用的素材（图片也可裁短），相等则完整使用，不循环补足。素材时长快照保存后，恢复组装不再探测。
 
 模板里有 Remotion 字效作用于标题或底部字幕（`remotion` 轨道的 `text_target`）时，这段文字由叠加视频显示，IMS 时间线不生成对应的标题或字幕，也不为它补默认样式；Remotion 片段本身不进入 IMS 时间线。
@@ -271,35 +273,39 @@ curl 'http://127.0.0.1:20070/api/v1/video-compositions/22222222-2222-4222-8222-2
 | module | 返回内容 |
 | --- | --- |
 | `request` | 请求、任务级记录、查询响应与通知 |
-| `template` | 模板输入与输出 |
+| `template` | 冻结模板、资产摘要、字幕容量依据与结果 |
 | `asr` | 音频转写输入与输出 |
 | `segmentation` | 切片及翻译 |
 | `matching` | 素材匹配请求、回调与查询 |
-| `timeline` | 时间线组装、Remotion 及提交 |
-| `zos` | 渲染、取址与转存 |
-| `error` | 当前任务 `errors/` 下全部 `.log` 文件，包括普通错误、`remotion-error.log` 和 `remotion-worker.log` |
+| `timeline` | 媒体准备、时长裁尾及时间线组装 |
+| `remotion` | 透明视频计划、排版、渲染及上传；`sources` 按指纹保存发布与实际渲染源码 |
+| `ims` | 存储位置、提交、轮询及临时播放地址 |
+| `zos` | 成片下载、封面、上传及校验 |
+| `error` | 当前任务 `errors/` 下全部 `.log` 文件，包括普通错误、`remotion-error-<hash>.log` 和 `remotion-worker-<hash>.log`，以及历史错误文件 |
 
-七模块返回 HTTP 200 和对应 JSON 对象，保留 `input`、`output`、`execute_log`、`error_log` 四个数组；服务端读取同任务七文件并展开 `$log_ref`，返回的输入输出可独立阅读，不修改原文件。
+九模块返回 HTTP 200 和对应 JSON 对象，保留 `input`、`output`、`execute_log`、`error_log` 四个数组。正文仅在同模块、同字段内去重：先保留原文，后续重复对象、数组或长文本使用更短的 `$log_ref`，同条记录内部也适用。例如 `{"$log_ref":"#/matching/input/0/data"}` 指向当前 `matching` 模块的 `input[0].data`，不需要读取其他模块或字段。每次调用和错误事件的时间、动作、状态都保留；`execute_log` 只有这些元数据，保持原样。未执行的字段为空数组。读取旧日志时展开历史跨模块引用，再转换为上述字段内引用返回，不修改原文件。
+
+新事件的 `error_log[].error` 在详情保存成功后只包含安全摘要、可用错误码与 `detail_log_path`；完整诊断在错误文件中，内容相同且完整的诊断复用路径，不同内容分别保存，残缺文件重写。详情保存失败时保留完整脱敏诊断和未截断消息，不添加无效路径。历史模块与旧内嵌错误原样可读，不重新分类；缺少 `remotion` 或 `ims` 的旧任务返回空数组。
 
 `error` 返回 HTTP 200 和下列结构，文件按名称排序，正文完整保留：
 
 ```json
 {
   "files": [
-    {"name": "remotion-error.log", "content": "Traceback...\n错误详情\n"},
-    {"name": "remotion-worker.log", "content": "渲染器输出\n"}
+    {"name": "remotion-error-<hash>.log", "content": "Traceback...\n错误详情\n"},
+    {"name": "remotion-worker-<hash>.log", "content": "渲染器输出\n"}
   ]
 }
 ```
 
-读取路径固定为本机 `server/.log/video_composition/<taskId>/`，与启动工作目录无关。接口不查询任务数据库、不调用上游服务、不等待异步日志队列，也不为这次查询追加日志；只返回读取时已落盘的内容。响应不分页、不截断，大任务日志的响应可能较大。需要最新日志时再次调用；运行中错误文件可能仍在写入。
+读取路径固定为本机 `server/.log/video_composition/<taskId>/`，与启动工作目录无关。接口不查询任务数据库、不调用上游服务、不等待异步日志队列，也不为这次查询追加日志；只返回读取时已落盘的内容。存在已发布的 `.pending.json` 恢复快照时，九模块优先读取该完整版本，查询本身不修复或删除文件；启动或下次写入恢复完成后删除快照。响应不分页、不截断，大任务日志的响应可能较大。需要最新日志时再次调用；新错误详情完整写入后才替换正式文件，查询不返回临时文件。
 
 - 任务目录不存在：HTTP 404，`detail` 为 `任务日志不可用：尚未落盘、已清理或任务不存在`；不推断具体原因。
 - 任务目录存在，所选模块缺失或未执行：HTTP 200，四个空数组；`error` 没有文件时返回 `{"files":[]}`。
 - UUID 无效、`module` 缺失或不在枚举中：HTTP 422，沿用 FastAPI 参数错误结构。
 - 文件损坏或读取失败：HTTP 500，沿用服务端内部错误响应，不伪装成空日志。
 
-仅读取当前服务实例的新日志目录，不查其他实例、历史目录或旧数据库日志表；现有异步写入和容量清理规则不变。日志不是数据库状态的事务快照，任务已完成也不保证日志已写完或仍被保留。
+仅读取当前服务实例的新日志目录，不查其他实例、历史目录或旧数据库日志表；异步写入、恢复及容量清理规则见 `server/README.md`「执行日志」。日志不是数据库状态的事务快照，任务已完成也不保证日志已写完或仍被保留。
 
 ## 4. IMV 向业务系统发送最终通知
 

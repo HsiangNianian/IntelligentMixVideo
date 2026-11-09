@@ -1,10 +1,10 @@
-/** 云端 AI 资产目录状态：展开资产区、模板已有片段或右栏需要时读取，展开后随服务端推送与窗口重新聚焦再读；刷新、取消和卸载都不会写入过期结果。 */
+/** 云端 AI 资产目录状态：工作区可见时按需读取，返回模板页、服务端推送与窗口重新聚焦时补读；刷新、取消和卸载都不会写入过期结果。 */
 import { useCallback, useEffect, useState } from "react";
 import { listSprites, watchCatalog } from "@/features/sprites/api";
 import type { SpriteAsset } from "@/features/sprites/model";
 
-/** 目录只在需要时读取：用户展开资产区、模板已有片段需要显示名称与时长，或右栏的字效入口要列出资产。 */
-export function useSpriteCatalog(hasClips: boolean) {
+/** 目录只在需要且工作区可见时读取；主导航保留挂载，返回时补读以恢复漏掉推送的变化，隐藏期间保留已有目录和订阅。 */
+export function useSpriteCatalog(hasClips: boolean, active = true) {
   const [assets, setAssets] = useState<SpriteAsset[] | null>(null);
   const [error, setError] = useState("");
   // wanted 表示资产区已展开，read 表示右栏只借这份目录列出字效（读完不订阅推送，也不随推送重读）。
@@ -14,14 +14,16 @@ export function useSpriteCatalog(hasClips: boolean) {
   const needed = wanted || read || hasClips;
 
   useEffect(() => {
-    if (!needed) return;
+    if (!needed || !active) return;
     const controller = new AbortController();
     setError("");
-    listSprites(controller.signal).then(setAssets, (reason) => {
+    listSprites(controller.signal).then((items) => {
+      if (!controller.signal.aborted) setAssets(items);
+    }, (reason) => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "AI 资产读取失败");
     });
     return () => controller.abort();
-  }, [attempt, needed]);
+  }, [attempt, needed, active]);
 
   // 资产库共享，任何人都能保存、改名或删除：目录在用时订阅服务端推送，每次变化重新读取，别人删掉的资产随即从目录消失
   // （否则之后点删除只会得到 404）。代理挡住推送时，切回窗口也会重新读取。

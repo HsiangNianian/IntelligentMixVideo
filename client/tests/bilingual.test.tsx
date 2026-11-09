@@ -23,8 +23,7 @@ const asset: SpriteAsset = { id: "text-asset", name: "字效", kind: SpriteKind.
 // 场景：双语字效（双语字幕）自己显示中英两种语言：只绑定中文对象，英文对象不能再绑字效，中英 IMS 文字一起交给字效显示。
 test("双语字效绑定中文对象并同时替换中英文字", () => {
   const bilingual: SpriteAsset = { ...asset, id: "bilingual-asset", name: "双语字幕", lines: 2, bilingual: true };
-  let draft = setBilingual(newDraft(), "subtitle", true);
-  draft = addClip(draft, bilingual, [bilingual], "subtitle");
+  const draft = addClip(newDraft(), bilingual, [bilingual], "subtitle");
   const clip = draft.clips[0];
   // 双语字效连它所作用对象的英文字幕一起替换，普通字效只替换自己绑定的那一个。
   expect([...remotionTexts(draft, new Set([clip.id]))].sort()).toEqual(["subtitle", "subtitle:en"]);
@@ -33,6 +32,35 @@ test("双语字效绑定中文对象并同时替换中英文字", () => {
   expect(buildTestTimeline(draft, []).SubtitleTracks).toHaveLength(2);
   // 英文已由双语字效显示，不能再给英文对象绑字效。
   expect(() => addClip(draft, bilingual, [bilingual], "subtitle", "en")).toThrow("中英两种语言");
+  expect(() => addClip(draft, asset, [bilingual, asset], "subtitle", "en")).toThrow("不能同时绑定独立英文字效");
+});
+
+// 场景：已有但停用的英文对象在绑定双语字效时恢复，保留 ID、示例和样式；改绑只为新用途创建英文。
+test("双语字效恢复英文设置，改绑时也自动开启对应翻译", () => {
+  const bilingual: SpriteAsset = { ...asset, id: "bilingual-asset", bilingual: true };
+  const original = setBilingual(setBilingual(newDraft(), "subtitle", true), "subtitle", false);
+  const english = original.tracks.find((track) => track.language === "en")!;
+  const draft = addClip(original, bilingual, [bilingual], "subtitle");
+  expect(draft.tracks.find((track) => track.id === english.id)).toEqual({ ...english, enabled: true });
+  expect(original.tracks.find((track) => track.id === english.id)?.enabled).toBe(false);
+  const rebound = bindClip(draft, draft.clips[0].id, { text_target: "title" }, [bilingual]);
+  expect(rebound.tracks.filter((track) => track.language === "en").map((track) => [track.target, track.enabled !== false])).toEqual([["subtitle", true], ["title", true]]);
+  expect(boundText(rebound.tracks, rebound.clips[0])?.target).toBe("title");
+  expect(() => bindClip(draft, draft.clips[0].id, { text_target: "subtitle", language: "en" }, [bilingual])).toThrow("中英两种语言");
+  const occupied = addClip(setBilingual(newDraft(), "subtitle", true), asset, [asset], "subtitle", "en");
+  expect(() => addClip(occupied, bilingual, [asset, bilingual], "subtitle")).toThrow("不能同时绑定独立英文字效");
+});
+
+// 场景：只剩一个轨道名额时不能同时添加字效和英文对象，失败保持原草稿；已有英文时可用最后一个名额。
+test("自动开启双语遵守轨道上限且失败不修改草稿", () => {
+  const bilingual: SpriteAsset = { ...asset, bilingual: true };
+  const draft = newDraft();
+  draft.tracks.push(...Array.from({ length: 97 }, (_, index) => ({ ...draft.tracks[0], id: `bubble-${index}`, target: "bubble" as const })));
+  expect(() => addClip(draft, bilingual, [bilingual], "title")).toThrow("轨道数量不能超过 100");
+  expect(draft.tracks.some((track) => track.language === "en")).toBe(false);
+  const enabled = setBilingual({ ...draft, tracks: draft.tracks.slice(0, -1) }, "title", true);
+  const added = addClip(enabled, bilingual, [bilingual], "title");
+  expect(added.tracks.length + added.clips.length).toBe(100);
 });
 
 // 场景：数字人预览与双语字效共存时，圆形取景仍使用指定圆心，中英字幕仍统一由字效显示。

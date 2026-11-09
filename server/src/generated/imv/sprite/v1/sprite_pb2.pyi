@@ -18,6 +18,12 @@ class SpriteKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     SPRITE_KIND_VIDEO_OVERLAY: _ClassVar[SpriteKind]
     SPRITE_KIND_TRANSITION_OVERLAY: _ClassVar[SpriteKind]
 
+class TextEffectCategory(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    TEXT_EFFECT_CATEGORY_UNSPECIFIED: _ClassVar[TextEffectCategory]
+    TEXT_EFFECT_CATEGORY_TITLE: _ClassVar[TextEffectCategory]
+    TEXT_EFFECT_CATEGORY_SUBTITLE: _ClassVar[TextEffectCategory]
+
 class OperatorAccess(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     OPERATOR_ACCESS_UNSPECIFIED: _ClassVar[OperatorAccess]
@@ -35,6 +41,9 @@ SPRITE_KIND_TEXT: SpriteKind
 SPRITE_KIND_FILTER_OVERLAY: SpriteKind
 SPRITE_KIND_VIDEO_OVERLAY: SpriteKind
 SPRITE_KIND_TRANSITION_OVERLAY: SpriteKind
+TEXT_EFFECT_CATEGORY_UNSPECIFIED: TextEffectCategory
+TEXT_EFFECT_CATEGORY_TITLE: TextEffectCategory
+TEXT_EFFECT_CATEGORY_SUBTITLE: TextEffectCategory
 OPERATOR_ACCESS_UNSPECIFIED: OperatorAccess
 OPERATOR_ACCESS_VISIBLE_READ_ONLY: OperatorAccess
 OPERATOR_ACCESS_VISIBLE_EDITABLE: OperatorAccess
@@ -62,7 +71,7 @@ class ScalarValue(_message.Message):
     def __init__(self, string_value: _Optional[str] = ..., number_value: _Optional[float] = ..., bool_value: _Optional[bool] = ..., string_list_value: _Optional[_Union[StringList, _Mapping]] = ...) -> None: ...
 
 class SpriteParameter(_message.Message):
-    __slots__ = ("key", "label", "access", "default_value", "minimum", "maximum", "allowed_values", "format", "min_length", "max_length", "max_items")
+    __slots__ = ("key", "label", "access", "default_value", "minimum", "maximum", "allowed_values", "format", "min_length", "max_length", "max_items", "group")
     KEY_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
     ACCESS_FIELD_NUMBER: _ClassVar[int]
@@ -74,6 +83,7 @@ class SpriteParameter(_message.Message):
     MIN_LENGTH_FIELD_NUMBER: _ClassVar[int]
     MAX_LENGTH_FIELD_NUMBER: _ClassVar[int]
     MAX_ITEMS_FIELD_NUMBER: _ClassVar[int]
+    GROUP_FIELD_NUMBER: _ClassVar[int]
     key: str
     label: str
     access: OperatorAccess
@@ -85,7 +95,8 @@ class SpriteParameter(_message.Message):
     min_length: int
     max_length: int
     max_items: int
-    def __init__(self, key: _Optional[str] = ..., label: _Optional[str] = ..., access: _Optional[_Union[OperatorAccess, str]] = ..., default_value: _Optional[_Union[ScalarValue, _Mapping]] = ..., minimum: _Optional[float] = ..., maximum: _Optional[float] = ..., allowed_values: _Optional[_Iterable[_Union[ScalarValue, _Mapping]]] = ..., format: _Optional[_Union[SpriteParameterFormat, str]] = ..., min_length: _Optional[int] = ..., max_length: _Optional[int] = ..., max_items: _Optional[int] = ...) -> None: ...
+    group: str
+    def __init__(self, key: _Optional[str] = ..., label: _Optional[str] = ..., access: _Optional[_Union[OperatorAccess, str]] = ..., default_value: _Optional[_Union[ScalarValue, _Mapping]] = ..., minimum: _Optional[float] = ..., maximum: _Optional[float] = ..., allowed_values: _Optional[_Iterable[_Union[ScalarValue, _Mapping]]] = ..., format: _Optional[_Union[SpriteParameterFormat, str]] = ..., min_length: _Optional[int] = ..., max_length: _Optional[int] = ..., max_items: _Optional[int] = ..., group: _Optional[str] = ...) -> None: ...
 
 class SpriteBox(_message.Message):
     __slots__ = ("x", "y", "width", "height")
@@ -112,7 +123,7 @@ class SpriteCanvas(_message.Message):
     def __init__(self, width: _Optional[int] = ..., height: _Optional[int] = ..., fps: _Optional[int] = ..., preview_frames: _Optional[int] = ...) -> None: ...
 
 class PublishedSprite(_message.Message):
-    __slots__ = ("sprite_id", "source_version_id", "name", "kind", "canvas", "tsx_code", "code_sha256", "parameters", "text_prop", "keywords_prop", "published_at", "preview_sha256", "config_schema_json", "default_config_json", "animation_frames", "static_frame", "bubble_asset_url", "bubble_asset_width", "bubble_asset_height", "content_box")
+    __slots__ = ("sprite_id", "source_version_id", "name", "kind", "canvas", "tsx_code", "code_sha256", "parameters", "text_prop", "keywords_prop", "published_at", "preview_sha256", "config_schema_json", "default_config_json", "animation_frames", "static_frame", "bubble_asset_url", "bubble_asset_width", "bubble_asset_height", "content_box", "text_category")
     SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
     SOURCE_VERSION_ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
@@ -133,6 +144,7 @@ class PublishedSprite(_message.Message):
     BUBBLE_ASSET_WIDTH_FIELD_NUMBER: _ClassVar[int]
     BUBBLE_ASSET_HEIGHT_FIELD_NUMBER: _ClassVar[int]
     CONTENT_BOX_FIELD_NUMBER: _ClassVar[int]
+    TEXT_CATEGORY_FIELD_NUMBER: _ClassVar[int]
     sprite_id: str
     source_version_id: str
     name: str
@@ -153,10 +165,11 @@ class PublishedSprite(_message.Message):
     bubble_asset_width: int
     bubble_asset_height: int
     content_box: SpriteBox
-    def __init__(self, sprite_id: _Optional[str] = ..., source_version_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., canvas: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., tsx_code: _Optional[str] = ..., code_sha256: _Optional[str] = ..., parameters: _Optional[_Iterable[_Union[SpriteParameter, _Mapping]]] = ..., text_prop: _Optional[str] = ..., keywords_prop: _Optional[str] = ..., published_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., preview_sha256: _Optional[str] = ..., config_schema_json: _Optional[str] = ..., default_config_json: _Optional[str] = ..., animation_frames: _Optional[int] = ..., static_frame: _Optional[int] = ..., bubble_asset_url: _Optional[str] = ..., bubble_asset_width: _Optional[int] = ..., bubble_asset_height: _Optional[int] = ..., content_box: _Optional[_Union[SpriteBox, _Mapping]] = ...) -> None: ...
+    text_category: TextEffectCategory
+    def __init__(self, sprite_id: _Optional[str] = ..., source_version_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., canvas: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., tsx_code: _Optional[str] = ..., code_sha256: _Optional[str] = ..., parameters: _Optional[_Iterable[_Union[SpriteParameter, _Mapping]]] = ..., text_prop: _Optional[str] = ..., keywords_prop: _Optional[str] = ..., published_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., preview_sha256: _Optional[str] = ..., config_schema_json: _Optional[str] = ..., default_config_json: _Optional[str] = ..., animation_frames: _Optional[int] = ..., static_frame: _Optional[int] = ..., bubble_asset_url: _Optional[str] = ..., bubble_asset_width: _Optional[int] = ..., bubble_asset_height: _Optional[int] = ..., content_box: _Optional[_Union[SpriteBox, _Mapping]] = ..., text_category: _Optional[_Union[TextEffectCategory, str]] = ...) -> None: ...
 
 class SpriteSummary(_message.Message):
-    __slots__ = ("sprite_id", "name", "kind", "canvas", "parameters", "source_version_id", "preview_url", "keywords_supported", "content_box", "line_count")
+    __slots__ = ("sprite_id", "name", "kind", "canvas", "parameters", "source_version_id", "preview_url", "keywords_supported", "content_box", "line_count", "text_category")
     SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     KIND_FIELD_NUMBER: _ClassVar[int]
@@ -167,6 +180,7 @@ class SpriteSummary(_message.Message):
     KEYWORDS_SUPPORTED_FIELD_NUMBER: _ClassVar[int]
     CONTENT_BOX_FIELD_NUMBER: _ClassVar[int]
     LINE_COUNT_FIELD_NUMBER: _ClassVar[int]
+    TEXT_CATEGORY_FIELD_NUMBER: _ClassVar[int]
     sprite_id: str
     name: str
     kind: SpriteKind
@@ -177,7 +191,8 @@ class SpriteSummary(_message.Message):
     keywords_supported: bool
     content_box: SpriteBox
     line_count: int
-    def __init__(self, sprite_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., canvas: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., parameters: _Optional[_Iterable[_Union[SpriteParameter, _Mapping]]] = ..., source_version_id: _Optional[str] = ..., preview_url: _Optional[str] = ..., keywords_supported: _Optional[bool] = ..., content_box: _Optional[_Union[SpriteBox, _Mapping]] = ..., line_count: _Optional[int] = ...) -> None: ...
+    text_category: TextEffectCategory
+    def __init__(self, sprite_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., canvas: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., parameters: _Optional[_Iterable[_Union[SpriteParameter, _Mapping]]] = ..., source_version_id: _Optional[str] = ..., preview_url: _Optional[str] = ..., keywords_supported: _Optional[bool] = ..., content_box: _Optional[_Union[SpriteBox, _Mapping]] = ..., line_count: _Optional[int] = ..., text_category: _Optional[_Union[TextEffectCategory, str]] = ...) -> None: ...
 
 class ListSpritesResponse(_message.Message):
     __slots__ = ("sprites",)
@@ -208,10 +223,12 @@ class PublishSpriteResponse(_message.Message):
     def __init__(self, sprite: _Optional[_Union[SpriteSummary, _Mapping]] = ...) -> None: ...
 
 class RenameSpriteRequest(_message.Message):
-    __slots__ = ("name",)
+    __slots__ = ("name", "text_category")
     NAME_FIELD_NUMBER: _ClassVar[int]
+    TEXT_CATEGORY_FIELD_NUMBER: _ClassVar[int]
     name: str
-    def __init__(self, name: _Optional[str] = ...) -> None: ...
+    text_category: TextEffectCategory
+    def __init__(self, name: _Optional[str] = ..., text_category: _Optional[_Union[TextEffectCategory, str]] = ...) -> None: ...
 
 class RenameSpriteResponse(_message.Message):
     __slots__ = ("sprite",)

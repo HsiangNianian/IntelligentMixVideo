@@ -46,6 +46,11 @@ def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch,
     image_public = f"https://oss.joyfile.net/{image_key}"
     requests = []
     uploaded = []
+    events = []
+
+    def log(event, details):
+        """收集实际下载、封面和对象校验事件，不用任务数据库替代执行结果。"""
+        events.append((event, details))
 
     def handle(request):
         """模拟 IMS 下载与两个对象的匿名读取。"""
@@ -95,9 +100,13 @@ def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch,
 
     if denied_suffix:
         with pytest.raises(httpx.HTTPStatusError):
-            zos.copy_video(source, task_id, ZosSettings(), 10, prefix=prefix)
+            zos.copy_video(source, task_id, ZosSettings(), 10, prefix=prefix, log=log)
+        assert events[-1][0] == "step_failed" and events[-1][1]["step"] == "zos_publish"
     else:
-        assert zos.copy_video(source, task_id, ZosSettings(), 10, prefix=prefix) == (key, public)
+        assert zos.copy_video(source, task_id, ZosSettings(), 10, prefix=prefix, log=log) == (key, public)
+        outputs = [details["output"] for event, details in events if event == "step_finished" and details["step"] == "zos_publish"]
+        assert [item["url"] for item in outputs] == [public, image_public]
+        assert all(item["size_verified"] and item["anonymous_http_status"] == 206 for item in outputs)
     expected = [{"data": b"video", "bucket": "archives", "key": key,
                  "extra": {"ACL": "public-read", "ContentType": "video/mp4"}}]
     if denied_suffix != ".mp4":

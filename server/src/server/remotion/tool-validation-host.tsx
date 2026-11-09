@@ -2,6 +2,10 @@
  * Browser host for PR76 behavior validation.  It mounts one accepted component
  * in a fixed-size Remotion Player and exposes only frame, length and parameter
  * operations and DOM snapshots to the worker's test-context bridge.
+ *
+ * Text is measured in the same managed SC face the render paints with: without it the page (no document language, and
+ * a Chrome started with `LANG=C.UTF-8`) falls back to the TTC's Japanese face, so fit and capacity would measure
+ * Japanese glyph widths and the published text would lay out differently.
  */
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -11,6 +15,7 @@ import Template from "imv:template";
 import initial from "imv:config";
 import Ajv2020 from "ajv/dist/2020.js";
 import { HostLayer, type HostBox, type HostTransform } from "./host-layer";
+import { loadManagedFonts } from "./font-loader.mjs";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 type JsonObject = { [key: string]: JsonValue };
@@ -231,6 +236,14 @@ class RuntimeBoundary extends React.Component<React.PropsWithChildren<{}>, { fai
   render() { return this.state.failed ? <div data-imv-validation-error="true" /> : this.props.children; }
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
-
 export type { Snapshot };
+
+/**
+ * Mount only after the selected managed faces (or bounded local fallback) are ready. document.fonts.ready alone
+ * does not wait for FontFaces still loading outside the FontFaceSet. Fit/capacity diagnostics finish before this
+ * page is loaded, so the host cannot cache a face that the worker subsequently replaces.
+ */
+void loadManagedFonts(
+  { 400: "/font-400.otf", 700: "/font-700.otf" },
+  "/font-fallback.otf",
+).then(() => createRoot(document.getElementById("root")!).render(<App />));

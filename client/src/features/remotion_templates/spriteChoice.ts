@@ -3,7 +3,7 @@ import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { PublishChoice } from "@/features/sprites/api";
 import type { SpriteKindName, Version } from "./model";
 
-/** 发布时可选的类型；视频特效与转场在资产库里同属「转场与视频特效」。 */
+/** 发布时可选的内容类型；资产目录另将字效分成标题和字幕两类。 */
 export const PUBLISH_KINDS: { kind: SpriteKind; name: SpriteKindName; label: string }[] = [
   { kind: SpriteKind.TEXT, name: "text", label: "字效" },
   { kind: SpriteKind.FILTER_OVERLAY, name: "filter_overlay", label: "滤镜" },

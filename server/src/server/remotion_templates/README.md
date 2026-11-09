@@ -132,6 +132,14 @@ refreshes a file's time). Each step and each work is isolated, so one storage fa
 next hour.
 Published Sprites survive all of these.
 
+Existing records may contain metadata written by the free-form agent: `spec.sprite.effect` keeps the sealed
+component manifest, jobs may carry a structured `reply`, and published Sprite parameters may carry `group`.
+These known fields are preserved when reading versions, acknowledging jobs, or renaming assets; other unknown
+contract fields still fail validation. Reading such records does not enable a different generation pipeline.
+When running a separate checkout against the same local database without ZOS, copy its missing `objects/` files
+as well: database rows alone do not contain the sealed exports, previews, or reference images. Keep existing
+objects in the target checkout, since a preview may have been rebuilt there.
+
 ## Preset storage
 
 `preset.create` writes through `tools/catalog_store.py` to the MySQL table `remotion_presets`, shared by every
@@ -405,7 +413,19 @@ style's own file.
   uploaded) that lists the file under its card's family only, so files that carry the same name inside them stay
   apart, including a preinstalled variable font's legacy name such as `Noto Sans SC Thin`, and fontconfig picks among
   a card's files by their own weight and slant (each sandbox scans the folder afresh, its fontconfig cache being in its
-  own `/tmp`). The browser preview registers each file as a `FontFace` with its weight and style; player bundles built
+  own `/tmp`). The config also names the Chinese families each generic family prefers (`sans-serif`, `serif`,
+  `monospace`, `system-ui`, `cursive`, `fantasy`), so a character no chosen family covers falls back to simplified Chinese glyphs. Without that rule
+  Chrome, running with `LANG=C.UTF-8` under a page whose document language is English, asks fontconfig for a Han face
+  without a Chinese language and on a host with `fonts-noto-cjk` gets the TTC's Japanese face (`Noto Sans CJK JP`):
+  there a `Montserrat` effect, a bare `sans-serif` or `serif`, or a family the host lacks draws Chinese text with
+  Japanese glyph variants. The preferred families are `Noto Sans CJK SC`, `Noto Sans SC` and `Source Han Sans CN` for
+  sans-serif, system-ui, cursive and fantasy (`Noto Serif CJK SC`, `Noto Serif SC` and `Source Han Serif CN` for serif).
+  Monospace prefers `Noto Sans Mono CJK SC`, then the sans-serif SC families when that face is unavailable. These
+  alternatives cover hosts using the bundled library without the Noto CJK system package. Weak aliases preserve the
+  generic Latin faces in Chromium's family-only fallback list; Han charset queries additionally use a strong preference
+  over language scoring. Unconditional strong aliases would also replace Latin monospace glyphs. It changes only fallback: a
+  Latin family keeps its own glyphs and a chosen Chinese family still resolves to itself. The browser preview
+  registers each file as a `FontFace` with its weight and style; player bundles built
   before cards had styles skip italic files (their list entries carry no plain `weight`). macOS development without
   the sandbox does not load them.
 - **Managed Chinese fonts**: `managed_fonts.py` selects `Noto Sans CJK SC` by its internal family and requested
@@ -413,9 +433,18 @@ style's own file.
   Registering a whole TTC under an SC CSS name does not select its SC member; the first member can be Japanese.
   Missing, damaged or mismatched configured fonts fall back to the already shipped, hash-pinned `Noto Sans SC`
   variable font, without downloads or a registry dependency (also when catalog installation is disabled).
-  Layout/capacity checks and both render workers inspect Chrome's actual font for `关复` at weights 400 and 700.
+  Layout/capacity checks and both render workers inspect Chrome's actual font for `关复` at weights 400 and 700,
+  after the diagnostic probe has painted so CDP cannot mistake an empty pre-layout font list for a rejected face.
+  The identity check also accepts CoreText's exact `_Bold` suffix at weight 700; other font names still fail.
   A mismatch replaces the worker's font with the bundled SC face once, before bundling/encoding, and continues;
-  further diagnostic failures are logged rather than rejecting composition or retrying indefinitely. Browser loaders
+  further diagnostic failures are logged rather than rejecting composition or retrying indefinitely. The validation
+  host that measures text (`tool-validation-host.tsx`) loads those same faces before mounting and exposing its bridge.
+  Fit/capacity diagnostics run once before the first host navigation, so replacement cannot race the page loader;
+  later Sprite pages reload the selected files. The worker serves them at
+  `/font-400.otf`, `/font-700.otf` and `/font-fallback.otf`, so fit and capacity are measured in the SC face the render
+  paints with; the worker's page also declares `lang="zh-CN"`, since the page language decides which Han face Chrome's
+  own fallback picks. A host that cannot load them still mounts and measures with the page's fallback rather than
+  failing the check; missing or unreadable font files return 404 without terminating the worker. Browser loaders
   try the primary file, then the bundled SC file, with a 10-second limit per attempt; only then use local Chinese
   fonts. They set `lang=zh-CN`; a late page-load fallback is also recorded in the worker report. Explicit library font choices
   retain their existing behavior. Shared preview responses hash the emitted font for ETags, invalidating cached TTCs.
@@ -667,11 +696,17 @@ and cache. While a cloud template's `remotion` track still references it the ans
 removed before the row (on ZOS only with `ZOS_DELETE_OBJECTS`; by default they stay and only the row and cache go):
 when the object store fails the answer is a retryable 503 and the asset stays listed, so a retry finishes it; the store's own error (code, number of failed keys and the store's request ID, Aliyun OSS's
 `x-oss-request-id`) is logged as `Sprite files not deleted`. The source work and its versions are untouched, so the version can be saved to the library again.
-`POST /api/sprites/{id}/rename` (`imv.sprite.v1.RenameSpriteRequest`, anyone may rename) changes only the catalog name:
+`POST /api/sprites/{id}/rename` (`imv.sprite.v1.RenameSpriteRequest`, anyone may rename) changes the catalog name:
 trimmed, 1 to 100 characters, not required to be unique (422 otherwise), an unknown ID is a 404. A placed asset can
 be renamed since templates store IDs only. The name lives in the stored JSON; `sprite_store.update_data` locks the
-row and merges one field, so a rename and a preview-hash refresh never overwrite each other. Republishing the same
-version returns the renamed asset.
+row and merges changed fields, so a rename and a preview-hash refresh never overwrite each other. Republishing the same
+version returns the renamed asset. The optional `text_category` accepts `TITLE` or `SUBTITLE` for text assets only
+(422 for other kinds or invalid enum values); omitting it preserves the stored choice for older clients.
+Name and category are saved atomically in the existing JSON record without changing the database schema, rendering or
+template bindings. Overwrites preserve the latest manual category, including edits made during sampling.
+The catalog presents five peer categories: title text effects, subtitle text effects, filters, transitions and
+video effects. For text assets with no manual category, the client matches `字幕` first, then `标题`, and defaults
+to subtitle effects if neither appears. Legacy unspecified kinds remain in video effects.
 Publishing re-verifies the sealed version files (409 when changed) and only accepts versions composed
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
 422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be

@@ -1,5 +1,6 @@
 """任务日志入队归类、脱敏、保存与按模块查询；详细错误独立保存，调度错误保留最近一次诊断。"""
 
+import hashlib
 import json
 import logging
 import shutil
@@ -10,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Queue
 from threading import Lock, Thread
-from uuid import uuid4
 
 from pydantic import ValidationError
 from pymysql.constants import CR, ER
@@ -89,6 +89,8 @@ def event_group(event: str, stage: str, details: dict) -> str:
         group = "matching"
     elif event == "task_finished" and details.get("error"):
         group = details["error"].get("stage", stage)
+        if group == "assembling" and details["error"].get("code", "").startswith("remotion_"):
+            group = "remotion_render"
     return group
 
 
@@ -102,21 +104,23 @@ def error_message(details: dict) -> str:
     return "；".join(str(reason) for reason in reasons if reason) or "原调用未提供错误正文，请查看详情中的状态码或异常链"
 
 
-# 七个模块文件即持久化契约；未执行的模块保留四个空数组。
-MODULES = ("request", "template", "asr", "segmentation", "matching", "timeline", "zos")
+# 模块只决定新事件归属；历史记录留在原文件，未执行的模块保留四个空数组。
+MODULES = ("request", "template", "asr", "segmentation", "matching", "timeline", "remotion", "ims", "zos")
 GROUPS = {
-    "template": "template", "remotion_snapshot": "template", "remotion_render": "timeline", "frame_mask_upload": "timeline",
+    "template": "template", "remotion_snapshot": "template", "subtitle_capacity": "template", "frame_mask_upload": "timeline",
     "asr": "asr", "segmentation": "segmentation", "translation": "segmentation",
     "matching": "matching", "match_submit": "matching", "match_query": "matching",
-    "assembling": "timeline", "material_probe": "timeline", "split_screen": "timeline", "avatar_opening": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
-    "rendering": "zos", "ims_query": "zos", "playback": "zos", "zos_upload": "zos",
+    "assembling": "timeline", "material_probe": "timeline", "duration_trim": "timeline", "split_screen": "timeline", "avatar_opening": "timeline",
+    "remotion_render": "remotion", "remotion_plan": "remotion", "remotion_text_fit": "remotion", "remotion_video": "remotion", "remotion_upload": "remotion",
+    "ims_storage": "ims", "submitting": "ims", "ims_submit": "ims", "rendering": "ims", "ims_query": "ims", "playback": "ims",
+    "zos_upload": "zos", "zos_download": "zos", "zos_cover": "zos", "zos_publish": "zos",
 }
 
 
 def expand_columns(columns: dict) -> dict:
-    """展开同任务输入输出中的 $log_ref（JSON Pointer）；返回副本供追加、排序和校验。"""
+    """展开正文中的 $log_ref，兼容历史跨模块引用；返回副本供追加、排序和校验。"""
     def expand(value):
-        """引用只读取同任务七模块；普通业务 $ref 不作日志引用处理。"""
+        """引用只读取同任务模块；普通业务 $ref 不作日志引用处理。"""
         if isinstance(value, dict):
             if set(value) == {"$log_ref"}:
                 target = columns
@@ -129,122 +133,86 @@ def expand_columns(columns: dict) -> dict:
             return [expand(child) for child in value]
         return value
 
-    return {name: {**columns[name], **{
-        direction: [{**item, "data": expand(item["data"])} for item in columns[name][direction]]
-        for direction in ("input", "output")
-    }} for name in MODULES}
-
-
-def video_links(items: list[dict]) -> list[dict]:
-    """从已展开的ZOS 输出提取两类视频地址；以转存记录判定来源，同类同址只留一次。"""
-    stored = any(item["action"].endswith(".zos_object_key") or item["action"] == "zos_upload.step_finished"
-                 or isinstance(item["data"], dict) and "zos_video_url" in item["data"] for item in items)
-    links, seen = [], set()
-    for item in items:
-        data, action = item["data"], item["action"]
-        if isinstance(data, dict):
-            values = {key: data[key] for key in ("aliyun_video_url", "zos_video_url") if data.get(key)}
-            if data.get("videoUrl"):
-                key = "aliyun_video_url" if action.startswith("playback.") or not stored else "zos_video_url"
-                values[key] = data["videoUrl"]
-        elif action == "playback.step_finished" and isinstance(data, str):
-            values = {"aliyun_video_url": data}
-        elif action == "zos_upload.step_finished" and isinstance(data, list) and len(data) == 2:
-            values = {"zos_video_url": data[1]}
-        else:
-            continue
-        for key, url in values.items():
-            if isinstance(url, str) and url.startswith(("http://", "https://")) and (key, url) not in seen:
-                links.append({**item, "data": {key: url}})
-                seen.add((key, url))
-    return links
+    return {name: expand(columns[name]) for name in MODULES}
 
 
 def compact_columns(columns: dict) -> dict:
-    """整理模块归属和 ZOS 地址；重复正文用引用，时间线指定字段原文展示，执行/错误不变。"""
+    """仅同模块同字段内复用正文，包括单条记录内的重复；时间、动作和状态不合并。"""
     columns = expand_columns(columns)
     for section in columns.values():
         for items in section.values():
             items.sort(key=lambda item: item["time"] or "")
-    columns["zos"]["output"] = video_links(columns["zos"]["output"])
-    seen = {}
 
     def compact(value, path):
         """先匹配完整对象，再处理子项；索引只指向仍保留的节点，避免悬空引用。"""
-        if path.startswith("#/zos/output/") or (path.startswith("#/timeline/") and path.rsplit("/", 1)[-1] in ("materials", "packRules")):
-            return value
-        if not isinstance(value, (dict, list)):
+        if not isinstance(value, (dict, list, str)):
             return value
         encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         if encoded in seen:
             reference = {"$log_ref": seen[encoded]}
-            # 指定字段的父对象也不能整块引用，否则文件中仍看不到它们的原文。
-            inline = path.startswith("#/timeline/") and any(f'"{key}":' in encoded for key in ("materials", "packRules"))
-            if not inline and len(json.dumps(reference, ensure_ascii=False, separators=(",", ":"))) < len(encoded):
+            if len(json.dumps(reference, ensure_ascii=False, separators=(",", ":"))) < len(encoded):
                 return reference
         else:
-            pending.setdefault(encoded, path)
+            seen[encoded] = path
         if isinstance(value, list):
             return [compact(child, f"{path}/{index}") for index, child in enumerate(value)]
+        if isinstance(value, str):
+            return value
         return {key: compact(child, f"{path}/{key.replace('~', '~0').replace('/', '~1')}") for key, child in value.items()}
 
-    # 原始请求、上游输出优先保留，最终响应最后处理。
-    locations = [("request", "input")] + [
-        (name, direction) for name in MODULES[1:] for direction in ("output", "input")
-    ] + [("request", "output")]
-    for name, direction in locations:
-        for index, item in enumerate(columns[name][direction]):
-            pending = {}
-            item["data"] = compact(item["data"], f"#/{name}/{direction}/{index}/data")
-            seen.update(pending)
+    # 每个字段各自保留原文；执行记录只有元数据，错误记录只压缩 error 正文。
+    for name, section in columns.items():
+        for direction, key in (("input", "data"), ("output", "data"), ("error_log", "error")):
+            seen = {}
+            for index, item in enumerate(section[direction]):
+                item[key] = compact(item[key], f"#/{name}/{direction}/{index}/{key}")
     return columns
 
 
 def put_data(columns: dict, group: str, direction: str, time, action: str, data, *, fallback=False) -> None:
-    """写入模块输入输出；统一提取最终时间线、组装警告和成片结果，快照只补缺。"""
+    """写入模块输入输出；提交参数补录最终时间线，快照只补缺。"""
     if group == "ims_submit" and direction == "input":
         data = sanitize(data)
         if "timeline" in data:
             put_data(columns, "timeline", "output", time, action, data["timeline"], fallback=True)
-        data = {key: value for key, value in data.items() if key != "timeline"}
-        if not data:
-            return
-    elif group == "assembling" and direction == "output":
-        if not isinstance(data, dict) or not data.get("warnings"):
-            return
-        data = {"warnings": data["warnings"]}
     module = GROUPS.get(group, group if group in MODULES else "request")
     items = columns[module][direction]
     if not fallback or not any(item["data"] == data for item in items):
         items.append({"time": time, "action": action, "data": data})
-    if direction == "output" and action.endswith(".response_ready") and isinstance(data, dict) and data.get("result"):
-        put_data(columns, "zos", "output", time, action, data["result"], fallback=True)
 
 
 def put_snapshots(columns: dict, time, action: str, payload: dict) -> None:
     """只补录事件已保存的模块快照，不替代实际调用的输入输出。"""
     for key, group, direction in (("template", "template", "output"), ("segmentation", "segmentation", "output"),
                                   ("match_request", "matching", "input"), ("matches", "matching", "output"),
-                                  ("result", "zos", "output"), ("zos_object_key", "zos", "output")):
+                                  ("zos_object_key", "zos", "output")):
         if key in payload:
             put_data(columns, group, direction, time, f"{action}.{key}", payload[key], fallback=True)
+    if "result" in payload:
+        # 转存成功才有对象键；云端刚完成和历史未转存任务的结果均属于 IMS。
+        put_data(columns, "zos" if payload.get("zos_object_key") else "ims", "output",
+                 time, f"{action}.result", payload["result"], fallback=True)
     if "ims_request" in payload:
         put_data(columns, "ims_submit", "input", time, action, payload["ims_request"], fallback=True)
 
 
 def add_event(previous: dict | None, event: str, record: dict, details: dict, time, *, folder: Path | None = None) -> dict:
-    """新事件生成七模块内容；后台写入提供任务目录时，额外保存新错误的独立诊断文件。"""
+    """新事件写入唯一模块；错误详情保存成功才缩成摘要，否则保留完整脱敏诊断。"""
     columns = expand_columns(previous) if previous else {
         name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES
     }
     if details.get("step") == "playback" and isinstance(details.get("output"), str):
-        details = {**details, "output": {"videoUrl": details["output"]}}  # 媒体字段保留实际链接签名。
+        details = {**details, "output": {"aliyun_video_url": details["output"]}}
+    if details.get("step") == "zos_upload" and isinstance(details.get("output"), (tuple, list)):
+        details = {**details, "output": dict(zip(("zos_object_key", "zos_video_url"), details["output"]))}
     details = sanitize(details)
     group, time = event_group(event, record["stage"], details), display_time(time)
     action = f"{group}.{event}"
     for direction in ("input", "output"):
         if direction in details:
             put_data(columns, group, direction, time, action, details[direction])
+    if event == "response_ready" and (result := details.get("output", {}).get("result")):
+        put_data(columns, details["result_module"], "output", time, action, result, fallback=True)
     payload = {key: value for key, value in details.items() if key not in ("input", "output")}
     failed = event == "notification_pending" or event.endswith(("_failed", "_rejected", "_cancelled")) or (event == "task_finished" and record["status"] == "failed")
     entry = {"time": time, "action": action, "status": record["status"]}
@@ -254,20 +222,48 @@ def add_event(previous: dict | None, event: str, record: dict, details: dict, ti
             entry["error"]["detail_log_path"] = path
         if folder is not None:
             write_error_detail(entry, folder)
-    columns[GROUPS.get(group, "request")]["error_log" if failed else "execute_log"].append(entry)
+        if entry["error"].get("detail_log_path"):
+            error = details.get("error") or details
+            if error.get("code") is None:
+                error = {**error, "code": next((item["code"] for item in details.get("exceptions", []) if "code" in item), None)}
+            entry["error"] = {"message": entry["error"]["message"][:500], **{
+                key: value for key in ("code", "detail_log_path")
+                if (value := entry["error"].get(key) or error.get(key)) is not None
+            }}
+    columns[GROUPS.get(group, group if group in MODULES else "request")]["error_log" if failed else "execute_log"].append(entry)
     put_snapshots(columns, time, action, payload)
     return compact_columns(columns)
 
 
+def write_atomic(path: Path, content: str) -> None:
+    """同目录临时文件完整写入后替换；失败不覆盖正式文件，进程退出残留由恢复处理。"""
+    temporary = path.with_suffix(".tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def write_diagnostic(folder: Path, content: str, prefix: str = "") -> Path:
+    """按正文指纹保存诊断；只复用内容一致的文件，残缺或损坏副本原子重写。"""
+    encoded = content.encode("utf-8")
+    path = folder / f"{prefix}{hashlib.sha256(encoded).hexdigest()}.log"
+    if not path.exists() or path.read_bytes() != encoded:
+        write_atomic(path, content)
+    return path
+
+
 def write_error_detail(entry: dict, folder: Path) -> None:
-    """在任务内独立保存脱敏错误快照并附相对路径；复用已有私有诊断，失败仍保留 JSON 摘要。"""
+    """按诊断正文复用同任务错误文件；不同诊断分别保存，时间和动作留在事件中。"""
     if entry["error"].get("detail_log_path"):
         return
     try:
         directory = folder / "errors"
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        path = directory / f"{uuid4().hex}.log"
-        path.write_text(json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
+        detail = {key: value for key, value in entry["error"].items() if key != "step"}
+        content = json.dumps({"error": detail}, ensure_ascii=False, sort_keys=True, indent=2)
+        path = write_diagnostic(directory, content)
     except OSError as exc:
         logging.getLogger(__name__).error("合成任务 %s 详细错误日志保存失败：%s", folder.name, type(exc).__name__)
     else:
@@ -345,14 +341,37 @@ def close_logs() -> None:
 
 
 def read_log(task_id: str) -> dict:
-    """读取同任务七文件供追加；缺少文件视为空模块，不读取或迁移旧数据库日志。"""
+    """待恢复时只读完整快照，否则读九文件；旧目录缺少新模块时返回空数组。"""
     folder = LOG_ROOT / "video_composition" / task_id
+    pending = folder / ".pending.json"
+    if pending.exists():
+        return json.loads(pending.read_text(encoding="utf-8"))
     return {name: json.loads(path.read_text(encoding="utf-8")) if (path := folder / f"{name}.json").exists()
             else {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
 
 
+def write_modules(folder: Path, columns: dict) -> None:
+    """调用方持锁且已有完整恢复快照；九文件全部替换成功后才删除快照。"""
+    for name in MODULES:
+        write_atomic(folder / f"{name}.json", json.dumps(columns[name], ensure_ascii=False, indent=2))
+    (folder / ".pending.json").unlink()
+
+
+def recover_logs() -> None:
+    """启动时补齐已提交快照、丢弃未提交的临时快照；失败保留恢复依据，不阻断合成。"""
+    with LOG_LOCK:
+        for folder in (LOG_ROOT / "video_composition").glob("*/"):
+            try:
+                pending = folder / ".pending.json"
+                if pending.exists():
+                    write_modules(folder, json.loads(pending.read_text(encoding="utf-8")))
+                (folder / ".pending.tmp").unlink(missing_ok=True)
+            except (OSError, ValueError):
+                logging.getLogger(__name__).exception("合成任务 %s 日志快照恢复失败", folder.name)
+
+
 def query_log(task_id: str, module: str) -> dict | None:
-    """读取入口已校验的任务与模块；锁内展开已落盘日志或返回全部错误文件，不访问数据库。"""
+    """锁内返回字段内去重的日志或全部错误文件；兼容旧引用，不写回文件、不访问数据库。"""
     with LOG_LOCK:
         folder = LOG_ROOT / "video_composition" / task_id
         if not folder.is_dir():
@@ -366,25 +385,18 @@ def query_log(task_id: str, module: str) -> dict | None:
                 {"name": path.name, "content": path.read_text(encoding="utf-8")}
                 for path in paths if path.name.endswith(".log") and path.is_file()
             ]}
-        return expand_columns(read_log(task_id))[module]
+        return compact_columns(read_log(task_id))[module]
 
 
 def write_log(record: dict, event: str, details: dict, finished_tasks, *, time=None) -> None:
-    """锁内追加并以临时文件替换 JSON；写入后检查容量，结束任务由调用方查询确认。"""
+    """锁内先提交完整恢复快照，再替换九文件；失败后的追加从完整快照继续。"""
     with LOG_LOCK:
         task_id = record["task_id"]
         folder = LOG_ROOT / "video_composition" / task_id
         columns = add_event(read_log(task_id), event, record, details, time or datetime.now(BEIJING), folder=folder)
         folder.mkdir(parents=True, exist_ok=True)
-        try:
-            for name, section in columns.items():
-                temporary = folder / f"{name}.tmp"
-                temporary.write_text(json.dumps(section, ensure_ascii=False, indent=2), encoding="utf-8")
-            for name in MODULES:
-                (folder / f"{name}.tmp").replace(folder / f"{name}.json")
-        finally:
-            for name in MODULES:
-                (folder / f"{name}.tmp").unlink(missing_ok=True)
+        write_atomic(folder / ".pending.json", json.dumps(columns, ensure_ascii=False))
+        write_modules(folder, columns)
         cleanup(finished_tasks)
 
 
@@ -404,6 +416,8 @@ def cleanup(finished_tasks) -> None:
     finished = finished_tasks()
     with WRITER_LOCK:
         for task_id in sorted((set(sizes) & finished) - PENDING.keys(), key=modified.get):
+            if (LOG_ROOT / "video_composition" / task_id / ".pending.json").exists():
+                continue
             shutil.rmtree(LOG_ROOT / "video_composition" / task_id)
             total -= sizes[task_id]
             if total <= MAX_BYTES:

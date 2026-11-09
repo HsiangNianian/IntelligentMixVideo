@@ -31,6 +31,7 @@ def test_match_request_mapping_and_optional_candidates(composition_case, materia
         {"segment_id": 2, "text": "戊己庚辛。", "start_time": 4, "end_time": 6, "keyword": "", "level": 1, "group_id": [2, 2]},
     ]
     assert body["asr"] == {}
+    assert "audio_duration" not in body
     assert body["callback_url"] == "https://composition.test/callback?token=test"
     if materials:
         assert body["asset_url_list"] == [{"file_url": materials[0]["fileUrl"], "type": "image"}]
