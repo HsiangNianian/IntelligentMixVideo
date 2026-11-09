@@ -8,17 +8,25 @@ import { execFileSync } from "node:child_process";
 import { classifyChanges, changedFiles, planCi, assertCiResults } from "./ci-scope.mjs";
 
 for (const [description, files, expected] of [
-  ["documentation", ["README.md", "client/README.md"], [false, false, false, false]],
-  ["frontend", ["client/src/pages/HomePage.tsx"], [true, false, false, false]],
-  ["frontend assets", ["client/public/icon.svg"], [true, false, false, false]],
-  ["server", ["server/tests/test_api.py"], [false, false, true, false]],
-  ["server manifest", ["server/pyproject.toml"], [false, false, true, true]],
-  ["server lockfile", ["server/uv.lock"], [false, false, true, true]],
-  ["native", ["client/src-tauri/src/lib.rs"], [true, true, false, true]],
-  ["native config", ["client/src-tauri/tauri.conf.json"], [true, true, false, true]],
-  ["dependency update", ["client/bun.lock"], [true, true, false, true]],
-  ["workflow", [".github/workflows/validation.yml"], [true, true, true, true]],
-  ["CI script", [".github/scripts/ci-scope.mjs"], [true, true, true, true]],
+  ["documentation", ["README.md", "client/README.md"], [false, false, false, false, false]],
+  ["frontend", ["client/src/pages/HomePage.tsx"], [true, false, false, false, true]],
+  ["frontend assets", ["client/public/icon.svg"], [true, false, false, false, true]],
+  ["frontend fixtures", ["client/tests/fixtures.ts"], [true, false, false, false, true]],
+  ["frontend config", ["client/vite.config.ts"], [true, false, false, false, true]],
+  ["frontend documentation", ["client/src/features/templates/README.md"], [false, false, false, false, false]],
+  ["shared effect catalog", ["server/src/server/template/sdk_catalog.json"], [false, false, true, false, true]],
+  ["server", ["server/tests/test_api.py"], [false, false, true, false, false]],
+  ["server manifest", ["server/pyproject.toml"], [false, false, true, true, false]],
+  ["server lockfile", ["server/uv.lock"], [false, false, true, true, false]],
+  ["native", ["client/src-tauri/src/lib.rs"], [true, true, false, true, false]],
+  ["native config", ["client/src-tauri/tauri.conf.json"], [true, true, false, true, false]],
+  ["dependency update", ["client/bun.lock"], [true, true, false, true, true]],
+  ["workflow", [".github/workflows/validation.yml"], [true, true, true, true, true]],
+  ["CI script", [".github/scripts/ci-scope.mjs"], [true, true, true, true, true]],
+  ["tutorial content", ["docs/tutorial/index.html"], [false, false, false, false, true]],
+  ["tutorial capture", ["docs/tutorial/capture.ts"], [false, false, false, false, true]],
+  ["tutorial builder", [".github/scripts/build-tutorial.mjs"], [false, false, false, false, true]],
+  ["tutorial tests", [".github/scripts/build-tutorial.test.mjs"], [false, false, false, false, true]],
 ]) {
   test(`scope: ${description} selects the required checks`, () => {
     assert.deepEqual(Object.values(classifyChanges(files)), expected);
@@ -68,9 +76,10 @@ test("default branch packages integrated client changes even with an open PR", a
   assert.equal(plan.native, true);
 });
 
-test("frontend PR builds only frontend; native PR checks without packaging", async () => {
+test("frontend PR builds frontend and tutorial; native PR checks without packaging", async () => {
   const frontend = await planCi(github(), context("pull_request"), () => ["client/src/App.tsx"]);
   assert.equal(frontend.client, true);
+  assert.equal(frontend.tutorial, true);
   assert.equal(frontend.native, false);
   assert.equal(frontend.hygiene, false);
   const native = await planCi(github(), context("pull_request"), () => ["client/src-tauri/Cargo.lock"]);
@@ -158,7 +167,7 @@ test("workflow keeps PR gate unfiltered and packaging exclusive to package mode"
   assert.equal(validation.jobs.result.if, "always()");
   assert(validation.jobs.result.name.includes("'CI result'"));
   assert(validation.jobs.result.name.includes("'Push result'"));
-  assert.deepEqual(validation.jobs.result.needs.sort(), ["scope", "hygiene", "tooling", "client", "server", "desktop", "integration"].sort());
+  assert.deepEqual(validation.jobs.result.needs.sort(), ["scope", "hygiene", "tooling", "client", "server", "desktop", "integration", "tutorial"].sort());
   assert.equal(build.on.push, undefined);
   assert.equal(build.on.pull_request, undefined);
   assert.equal(build.on.workflow_call.inputs["build-mode"].default, "package");
@@ -183,4 +192,17 @@ test("integration uses isolated services, locked dependencies and real renderer 
   assert(run.run.includes("test_mysql_integration.py"));
   assert(run.run.includes("test_remotion_templates.py"));
   assert.equal(job.steps.find((step) => step.name === "Upload integration evidence").if, "always()");
+});
+
+// 教程文档与导出失败必须阻止最终检查，纯教程改动不构建客户端安装包。
+test("tutorial is selected independently and participates in the final gate", async () => {
+  const plan = await planCi(github(), context("push", "trunk"), () => ["docs/tutorial/index.html"]);
+  assert.equal(plan.tutorial, true);
+  assert.equal(plan.native, false);
+  assert.equal(plan.client, false);
+  const needs = { scope: { result: "success", outputs: { run: "true", tutorial: "true" } }, tutorial: { result: "success" } };
+  assertCiResults(needs);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.throws(() => assertCiResults({ ...needs, tutorial: { result } }), /tutorial/);
+  }
 });

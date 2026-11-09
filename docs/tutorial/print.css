@@ -1,0 +1,38 @@
+/* Shared screen and A4 print layout. Each .page is checked for overflow before PDF export. */
+@page { size: A4; margin: 14mm 12mm 14mm; }
+* { box-sizing: border-box; }
+html { color: #17202c; background: #eef1f5; }
+body { margin: 0; font: 13px/1.8 "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; }
+.page { width: 186mm; height: 265mm; margin: 24px auto; padding: 0; background: white; break-after: page; }
+.page:last-child { break-after: auto; }
+h1 { margin: 15px 0 18px; font-size: 32px; line-height: 1.4; letter-spacing: -.5px; }
+h2 { margin: 0 0 16px; padding-bottom: 9px; border-bottom: 2px solid #243b53; font-size: 22px; line-height: 1.5; }
+h3 { margin: 20px 0 8px; font-size: 16px; line-height: 1.5; }
+p { margin: 8px 0 12px; }
+li { margin: 5px 0; }
+ol, ul { padding-left: 24px; margin: 10px 0; }
+strong { font-weight: 700; }
+a { color: #1d4a6d; text-decoration: none; }
+figure { margin: 14px 0; break-inside: avoid; }
+figure img { display: block; width: 100%; height: auto; border: 1px solid #dce2e8; border-radius: 5px; }
+figcaption { margin-top: 5px; color: #5c6879; font-size: 11px; line-height: 1.6; }
+.note { border-left: 3px solid #678ba6; padding: 9px 13px; background: #f0f5f8; margin: 13px 0; }
+.eyebrow { font-size: 11px; letter-spacing: 1.3px; color: #596a7d; text-transform: uppercase; }
+.lead { font-size: 16px; line-height: 2; }
+.muted, .source { color: #596a7d; font-size: 11px; }
+.cover { padding-top: 28px; }
+.cover .note { margin-top: 28px; }
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 28px 0; }
+.card { border: 1px solid #dce2e8; border-radius: 7px; padding: 16px; }
+.card strong { display: block; margin-bottom: 5px; }
+.toc { padding: 0; list-style: none; }
+.toc a { display: flex; justify-content: space-between; border-bottom: 1px solid #e6ebef; padding: 8px 0; }
+table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 12px; }
+th, td { padding: 9px 10px; border: 1px solid #dce2e8; text-align: left; vertical-align: top; }
+th { background: #f0f5f8; }
+code { font: .95em ui-monospace, monospace; overflow-wrap: anywhere; }
+.compact { font-size: 12px; }
+.compact li { margin: 4px 0; }
+@media screen { .page { outline: 1px solid #dce2e8; box-shadow: 0 5px 25px #17202c12; } }
+@media print { html { background: white; } .page { margin: 0; } body { print-color-adjust: exact; -webkit-print-color-adjust: exact; } }
+@media screen and (max-width: 740px) { .page { width: calc(100% - 28px); height: auto; min-height: 70vh; padding: 16px; } .cards { grid-template-columns: 1fr; } }

@@ -157,6 +157,8 @@ Then visit [http://localhost:1420](http://localhost:1420). Templates require a s
 
 ## Basic Usage
 
+The [illustrated Chinese tutorial](docs/tutorial/README.md) covers templates, bilingual subtitles, AI assets, masks, fonts, and the playground. Its prose is reviewed for each release; CI captures the current interface, adds numbered callouts, and exports PDF and standalone HTML artifacts without AI integration. The tutorial identifies the reviewed development commit; released installers may have a different feature set. Build commands and download instructions are included in the linked guide.
+
 ### Creating and Saving a Template
 
 1. On Home, create a cloud template and enter its name and description.
