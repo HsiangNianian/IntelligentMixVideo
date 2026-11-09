@@ -34,8 +34,9 @@ def main() -> None:
             runtime.mkdir()
             # 与真实客户端相同的系统 tar；Windows 归档不包含需要特权的符号链接。
             subprocess.run(["tar", "-xf", str(archive), "-C", str(runtime)], check=True, timeout=180)
+            # 前置启动检查已安装测试依赖；验收离线校验锁文件，避免再次获取模型元数据。
             subprocess.run(
-                ["uv", "run", "--locked", "--project", "server", "pytest", "server/tests/test_desktop.py", "-k", "bundle", "-v"],
+                ["uv", "run", "--locked", "--offline", "--project", "server", "pytest", "server/tests/test_desktop.py", "-k", "bundle", "-v"],
                 cwd=ROOT, env={**os.environ, "IMV_TEST_BUNDLE": str(runtime), "IMV_TEST_DESKTOP_EXECUTABLE": str(executable)},
                 check=True, timeout=720,
             )

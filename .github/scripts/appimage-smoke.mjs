@@ -54,7 +54,8 @@ if (import.meta.main) {
       mkdirSync(runtime);
       execFileSync("tar", ["-xf", join(root, archive), "-C", runtime], { timeout: 120_000 });
       const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-      execFileSync("uv", ["run", "--locked", "--project", "server", "pytest", "server/tests/test_desktop.py", "-k", "bundle", "-v"], {
+      // 复用前置启动检查安装的测试依赖，验收时离线校验锁文件，不再获取模型元数据。
+      execFileSync("uv", ["run", "--locked", "--offline", "--project", "server", "pytest", "server/tests/test_desktop.py", "-k", "bundle", "-v"], {
         cwd: repository,
         env: { ...process.env, IMV_TEST_BUNDLE: runtime, IMV_TEST_APPDIR: root },
         stdio: "inherit", timeout: 720_000,
