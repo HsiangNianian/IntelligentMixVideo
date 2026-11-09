@@ -52,6 +52,8 @@ jobs:
     env:
       # 编译进客户端；用户双击不需要设置环境变量，各平台测试包携带本机后端。
       IMV_DEBUG: ${{ inputs.debug-backend && 'true' || 'false' }}
+      # 冷缓存必须下载模型与 Python；为临时 5xx 保留有界 HTTP 重试。
+      UV_HTTP_RETRIES: '5'
       IMV_UPDATE_PUBLIC_KEY: ${{ vars.IMV_UPDATE_PUBLIC_KEY }}
       IMV_UPDATE_MIRRORS: ${{ vars.IMV_UPDATE_MIRRORS }}
       IMV_UPDATE_METADATA_PATH: ${{ github.workspace }}/client/src-tauri/target/update-native-id
@@ -134,6 +136,14 @@ jobs:
           python-version: '3.12'
           enable-cache: true
           cache-dependency-glob: server/uv.lock
+      - name: Test backend startup monitoring
+        if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        working-directory: .
+        # 先离线验证锁文件，再冻结安装；避免启动检查重新联网解析直链模型元数据。
+        run: |
+          uv python install 3.12
+          uv lock --check --offline --project server
+          uv run --frozen --project server pytest server/tests/test_desktop.py -k "parent_monitor or startup_diagnostics" -v
       - name: Set up backend Node
         if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
         uses: actions/setup-node@v6
@@ -167,10 +177,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mysql-server-core-8.0 fonts-noto-cjk bubblewrap util-linux xvfb xauth nasm
       - name: Install FFmpeg assembler (macOS)
-        if: runner.os == 'macOS' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        if: runner.os == 'macOS' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: brew install nasm
       - name: Set up FFmpeg build tools (Windows)
-        if: runner.os == 'Windows' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        if: runner.os == 'Windows' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
         id: msys2
         uses: msys2/setup-msys2@v2
         with:

@@ -97,7 +97,8 @@ def main() -> None:
         shutil.copytree(python_source, runtime / "python", symlinks=sys.platform != "win32")
         bundled_python = runtime / ("python/python.exe" if sys.platform == "win32" else "python/bin/python3")
         requirements = work / "requirements.txt"
-        run("uv", "export", "--locked", "--project", ROOT / "server", "--no-dev", "--no-emit-project", "--output-file", requirements)
+        # 仅从锁文件导出；避免为 GitHub 直链模型再次联网获取元数据，安装阶段仍下载并校验依赖。
+        run("uv", "export", "--locked", "--offline", "--project", ROOT / "server", "--no-dev", "--no-emit-project", "--output-file", requirements)
         # 后续会修补 ELF；复制依赖而非硬链接，避免改变 uv 缓存或原解释器。
         run("uv", "pip", "install", "--link-mode=copy", "--break-system-packages", "--python", bundled_python, "--requirements", requirements)
         run("uv", "build", "--project", ROOT / "server", "--wheel", "--out-dir", work / "wheels")
