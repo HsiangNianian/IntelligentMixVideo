@@ -175,6 +175,12 @@ async def serve(listener: socket.socket, mysql: subprocess.Popen, stopped: threa
         await task
 
 
+def wait_for_parent(stopped: threading.Event) -> None:
+    """等父进程关闭 stdin 管道，再通知 API 和数据库退出；正常退出与崩溃均适用。"""
+    sys.stdin.buffer.read()
+    stopped.set()
+
+
 def main() -> None:
     """持有实例锁，初始化空数据库并监督 API；不删除已有数据，不连接宿主数据库。"""
     runtime, data = (Path(value).resolve() for value in sys.argv[1:3])
@@ -196,12 +202,7 @@ def main() -> None:
             raise RuntimeError("已有测试客户端正在使用此数据库，请使用已打开的窗口。") from None
         stopped = threading.Event()
 
-        def parent_closed() -> None:
-            """stdin 管道关闭覆盖正常退出与桌面进程崩溃，不依赖可复用的 PID。"""
-            sys.stdin.buffer.read()
-            stopped.set()
-
-        threading.Thread(target=parent_closed, daemon=True).start()
+        threading.Thread(target=wait_for_parent, args=(stopped,), daemon=True).start()
         for number in (signal.SIGTERM, signal.SIGINT):
             signal.signal(number, lambda *_: stopped.set())
         with tempfile.TemporaryDirectory(prefix="imv-db-") as temporary:

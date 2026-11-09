@@ -134,6 +134,10 @@ jobs:
           python-version: '3.12'
           enable-cache: true
           cache-dependency-glob: server/uv.lock
+      - name: Test backend startup monitoring
+        if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        working-directory: .
+        run: uv run --locked --project server pytest server/tests/test_desktop.py -k "parent_monitor or startup_diagnostics" -v
       - name: Set up backend Node
         if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
         uses: actions/setup-node@v6

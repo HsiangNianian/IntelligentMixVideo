@@ -206,6 +206,53 @@ def test_failed_mysql_and_child_cleanup():
         desktop.wait_mysql(process, Path("/nonexistent/mysql.sock"), threading.Event())
 
 
+def test_parent_monitor_allows_startup_and_stops_on_eof(tmp_path):
+    """父进程保持管道打开时仍可导入完整 API，关闭后监控线程及时退出。"""
+    script = '''
+import faulthandler
+import sys
+import threading
+import time
+from server.desktop import wait_for_parent
+
+faulthandler.dump_traceback_later(20)
+stopped = threading.Event()
+monitor = threading.Thread(target=wait_for_parent, args=(stopped,), daemon=True)
+monitor.start()
+time.sleep(0.1)
+import server.app
+assert not stopped.is_set()
+print("ready", flush=True)
+assert stopped.wait(30)
+monitor.join(timeout=5)
+assert not monitor.is_alive()
+faulthandler.cancel_dump_traceback_later()
+'''
+    with (tmp_path / "startup.log").open("w+b") as log:
+        process = subprocess.Popen(
+            [sys.executable, "-I", "-X", "utf8", "-c", script],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+        )
+        lines = queue.Queue()
+        reader = threading.Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True)
+        reader.start()
+        try:
+            try:
+                response = lines.get(timeout=30)
+            except queue.Empty:
+                log.seek(0)
+                pytest.fail("Backend startup blocked while parent pipe is open:\n" + log.read().decode("utf-8", errors="replace"))
+            assert response.strip() == b"ready", response
+            process.stdin.close()
+            assert process.wait(timeout=10) == 0
+        finally:
+            if not process.stdin.closed:
+                process.stdin.close()
+            desktop.stop(process)
+            reader.join(timeout=5)
+            process.stdout.close()
+
+
 def test_readiness_protocol_excludes_http_logs(monkeypatch):
     """真实 Uvicorn 访问日志只能进入诊断流，桌面读取的首行必须是就绪 JSON。"""
     application = FastAPI()
@@ -275,7 +322,24 @@ def launch_bundle(runtime, data, env, log):
         process.stdin.close()
         process.wait(timeout=45)
         log.flush()
-        raise AssertionError(f"{error}\n{Path(log.name).read_text()}") from error
+        raise AssertionError(f"{error}\n{Path(log.name).read_text(encoding='utf-8', errors='replace')}") from error
+
+
+def test_bundle_startup_diagnostics_preserve_utf8(tmp_path, monkeypatch):
+    """启动失败的中文 traceback 必须可见，不能被 Windows 默认编码错误覆盖。"""
+    popen = subprocess.Popen
+
+    def failed_backend(command, **kwargs):
+        """仅替换后端程序，用真实子进程写出 UTF-8 错误并提前退出。"""
+        return popen(
+            [sys.executable, "-I", "-X", "utf8", "-c", "raise RuntimeError('MySQL 初始化失败或已取消。')"],
+            **kwargs,
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", failed_backend)
+    with (tmp_path / "failure.log").open("wb") as log:
+        with pytest.raises(AssertionError, match="MySQL 初始化失败或已取消。"):
+            launch_bundle(tmp_path, tmp_path / "data", os.environ.copy(), log)
 
 
 def close_bundle(process):
@@ -490,7 +554,7 @@ def test_bundle_native_desktop_starts_api_before_home(tmp_path):
                 shutil.copy2(server_log, diagnostics / "server.log")
             if sys.platform == "darwin":
                 subprocess.run(["/usr/sbin/screencapture", "-x", str(diagnostics / "desktop.png")], timeout=15, check=False)
-            pytest.fail(output.read_text(errors="replace") + (server_log.read_text(errors="replace") if server_log.exists() else "\nNo bundled API log"))
+            pytest.fail(output.read_text(encoding="utf-8", errors="replace") + (server_log.read_text(encoding="utf-8", errors="replace") if server_log.exists() else "\nNo bundled API log"))
         finally:
             if sys.platform == "win32":
                 subprocess.run(["taskkill", "/PID", str(process.pid)], capture_output=True, timeout=15)
