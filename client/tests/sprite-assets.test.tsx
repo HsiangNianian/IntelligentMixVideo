@@ -65,6 +65,15 @@ function textAsset(id = "sprite-t") {
   ]), name: "金色标题" };
 }
 
+/** 用实际 textEn 参数声明双语能力，目录与模板通过正式接口识别，名称不参与判断。 */
+function bilingualAsset(id = "sprite-b", lines = 2) {
+  const asset = textAsset(id);
+  return { ...asset, name: "中英字幕", lineCount: lines, parameters: [...asset.parameters,
+    { key: "textEn", label: "英文文字", access: OperatorAccess.VISIBLE_EDITABLE,
+      defaultValue: { value: { case: "stringValue" as const, value: "English sample" } }, minLength: 1, maxLength: 100 },
+  ] };
+}
+
 /** 构造二进制响应。 */
 function binary(schema: Parameters<typeof toBinary>[0], message: unknown, status = 200): Response {
   return new Response(Uint8Array.from(toBinary(schema, message as never)), { status, headers: HEADERS });
@@ -431,8 +440,8 @@ test("字效特效的开关、位置与时长在模板里按摆放调整", async
   expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.boolValue ?? item.numberValue]))).toEqual([[["effect1", false], ["effect1Seconds", 1.2]]]);
 });
 
-// 场景：五个一级分类各自计数；旧字效按名称推断，字幕优先、无关键词默认字幕，手动分类优先；搜索与分类共同筛选。
-test("AI 资产目录按五类分栏并兼容旧字效名称", async () => {
+// 场景：双语能力优先于手动分类和名称，单组/双组归同一独立分类；普通字效保留旧归类，搜索与分类共同筛选。
+test("AI 资产目录按六类分栏，双语字效独立且兼容旧字效名称", async () => {
   sprites({ catalog: [
     textAsset(),
     { ...textAsset("subtitle"), name: "白色字幕" },
@@ -440,6 +449,9 @@ test("AI 资产目录按五类分栏并兼容旧字效名称", async () => {
     { ...textAsset("fallback"), name: "跳动文字" },
     { ...textAsset("manual-title"), name: "手动字幕", textCategory: TextEffectCategory.TITLE },
     { ...textAsset("manual-subtitle"), name: "手动标题", textCategory: TextEffectCategory.SUBTITLE },
+    { ...textAsset("misleading"), name: "名字叫双语字幕" },
+    { ...bilingualAsset(), name: "金色双语标题", textCategory: TextEffectCategory.TITLE },
+    { ...bilingualAsset("bilingual-four", 4), name: "四行字幕", textCategory: TextEffectCategory.SUBTITLE },
     { ...summary("sprite-f", SpriteKind.FILTER_OVERLAY), name: "暖色滤镜" },
     { ...summary("sprite-v"), name: "粒子动效" },
     { ...summary("sprite-x", SpriteKind.TRANSITION_OVERLAY), name: "闪白转场" },
@@ -448,21 +460,69 @@ test("AI 资产目录按五类分栏并兼容旧字效名称", async () => {
   render(<TemplateWorkspace selection={{ templateId: null, name: "新模板", description: "" }} onHome={() => {}} />);
   const catalog = await openAssets();
   const tabs = await within(catalog).findByRole("radiogroup", { name: "AI 资产分类" });
-  expect(within(tabs).getAllByRole("radio").map((item) => item.textContent)).toEqual(["标题字效 2", "字幕字效 4", "滤镜 1", "转场特效 1", "视频特效 2"]);
+  expect(within(tabs).getAllByRole("radio").map((item) => item.textContent)).toEqual(["标题字效 2", "字幕字效 5", "双语字效 2", "滤镜 1", "转场特效 1", "视频特效 2"]);
   /** 读取当前分类实际可添加的卡片，避免只检查页签文字。 */
   const names = () => within(catalog).queryAllByRole("button", { name: /^添加 AI 资产：/ }).map((item) => item.getAttribute("aria-label")!.replace("添加 AI 资产：", ""));
   expect(names()).toEqual(["金色标题", "手动字幕"]);
   fireEvent.click(within(tabs).getByRole("radio", { name: "字幕字效" }));
-  expect(names()).toEqual(["白色字幕", "标题字幕通用", "跳动文字", "手动标题"]);
+  expect(names()).toEqual(["白色字幕", "标题字幕通用", "跳动文字", "手动标题", "名字叫双语字幕"]);
   fireEvent.change(within(catalog).getByRole("searchbox"), { target: { value: "手动" } });
   expect(names()).toEqual(["手动标题"]);
   fireEvent.click(within(tabs).getByRole("radio", { name: "标题字效" }));
   expect(names()).toEqual(["手动字幕"]);
   fireEvent.change(within(catalog).getByRole("searchbox"), { target: { value: "" } });
-  for (const [label, expected] of [["滤镜", ["暖色滤镜"]], ["转场特效", ["闪白转场"]], ["视频特效", ["粒子动效", "历史动效"]]] as const) {
+  for (const [label, expected] of [["双语字效", ["金色双语标题", "四行字幕"]], ["滤镜", ["暖色滤镜"]], ["转场特效", ["闪白转场"]], ["视频特效", ["粒子动效", "历史动效"]]] as const) {
     fireEvent.click(within(tabs).getByRole("radio", { name: label }));
     expect(names()).toEqual([...expected]);
   }
+});
+
+// 场景：两个添加入口与后续改绑均开启对应双语，英文对象也不能误关；保存协议携带启用状态。
+test.each(["资产目录", "右侧选择"])("双语字效从%s添加及改绑时自动开启翻译", async (entry) => {
+  const { template, saved } = sprites({ catalog: [bilingualAsset()] });
+  render(<TemplateWorkspace selection={{ templateId: template.template_id }} onHome={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: "编辑底部字幕" }));
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" }).checked).toBe(false);
+  if (entry === "资产目录") {
+    const catalog = await openAssets();
+    fireEvent.click(await within(catalog).findByRole("button", { name: "添加 AI 资产：中英字幕" }));
+  } else {
+    fireEvent.click(await screen.findByRole("combobox", { name: "用 Remotion 字效显示" }));
+    fireEvent.click(await screen.findByRole("option", { name: "中英字幕" }));
+  }
+  const toggle = screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" });
+  expect(toggle.checked).toBe(true);
+  expect(toggle.disabled).toBe(true);
+  expect(screen.getByText(/双语字效已自动启用中英双语/)).toBeTruthy();
+  fireEvent.click(screen.getAllByRole("button", { name: "编辑英文字幕" })[0]);
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" }).disabled).toBe(true);
+  expect(screen.getByText("双语字效请绑定中文标题或字幕，它会同时显示对应英文。")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "设置 AI 资产：中英字幕" }));
+  fireEvent.click(screen.getByRole("radio", { name: "顶部标题" }));
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" }).checked).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("textbox", { name: "示例文字（英文）" }).disabled).toBe(false);
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  const tracks = saved[0].tracks!.tracks;
+  expect(tracks.filter((track) => track.language === "en").map((track) => [track.target, track.enabled !== false])).toEqual([["subtitle", true], ["title", true]]);
+  expect(tracks.find((track) => track.target === "remotion")?.textTarget).toBe("title");
+});
+
+// 场景：移除双语字效后不擅自删除英文设置，恢复手动开关后可关闭该对象的翻译。
+test("移除双语字效后恢复手动控制翻译", async () => {
+  const { template } = sprites({ catalog: [bilingualAsset()] });
+  render(<TemplateWorkspace selection={{ templateId: template.template_id }} onHome={() => {}} />);
+  const catalog = await openAssets();
+  fireEvent.click(await within(catalog).findByRole("button", { name: "添加 AI 资产：中英字幕" }));
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" }).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "移除 AI 资产：中英字幕" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑中文标题" }));
+  const toggle = screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" });
+  expect(toggle.disabled).toBe(false);
+  expect(toggle.checked).toBe(true);
+  fireEvent.click(toggle);
+  expect(toggle.checked).toBe(false);
 });
 
 // 场景：模板里只调这次摆放的示例文字、字号与位置（百分比，像 IMS 文字）：恢复默认的参数不再出现在请求里；颜色、光晕等资产内部参数不提供控件，只在「资产默认参数」里说明并给出回字效工作区的入口。
@@ -1107,6 +1167,37 @@ test("重命名弹窗持久保存字效分类并在失败后保留草稿", async
   expect(within(reopened).getByRole("combobox", { name: "字效分类" }).textContent).toContain("字幕字效");
   fireEvent.click(within(reopened).getByRole("button", { name: "取消" }));
   expect(renames).toHaveLength(2);
+});
+
+// 场景：双语分类来自内部 textEn，改名不改变能力，也不向服务端发送可误导用户的普通标题/字幕分类。
+test("双语资产改名仍按内部契约归类，不能手动伪装成普通字效", async () => {
+  const catalog = [{ ...bilingualAsset(), textCategory: TextEffectCategory.TITLE }];
+  sprites({ catalog });
+  const fallback = fetchMock.getMockImplementation()!;
+  const renames: ReturnType<typeof fromBinary<typeof RenameSpriteRequestSchema>>[] = [];
+  fetchMock.mockImplementation((async (url, init) => {
+    if (!new URL(String(url)).pathname.endsWith("/rename")) return fallback(url, init);
+    const request = fromBinary(RenameSpriteRequestSchema, new Uint8Array(init!.body as Uint8Array));
+    renames.push(request);
+    catalog[0] = { ...catalog[0], name: request.name };
+    return binary(RenameSpriteResponseSchema, create(RenameSpriteResponseSchema, { sprite: catalog[0] }));
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={{ templateId: savedTemplate().template_id }} onHome={() => {}} />);
+  const region = await openAssets();
+  fireEvent.click(await within(region).findByRole("button", { name: "重命名 AI 资产：中英字幕" }));
+  const dialog = await screen.findByRole("dialog", { name: "重命名 AI 资产" });
+  expect(within(dialog).queryByRole("combobox", { name: "字效分类" }) === null).toBe(true);
+  expect(within(dialog).getByText(/由资产的中英双语内容自动识别/)).toBeTruthy();
+  fireEvent.change(within(dialog).getByLabelText("资产名称"), { target: { value: "普通标题" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存修改" }));
+  await waitForElementToBeRemoved(() => screen.queryByRole("dialog", { name: "重命名 AI 资产" }));
+  expect(renames).toHaveLength(1);
+  expect(renames[0].textCategory).toBeUndefined();
+  expect(await within(region).findByRole("button", { name: "添加 AI 资产：普通标题" })).toBeTruthy();
+  const tabs = within(region).getByRole("radiogroup", { name: "AI 资产分类" });
+  expect(within(tabs).getByRole("radio", { name: "双语字效" }).textContent).toBe("双语字效 1");
+  fireEvent.click(within(tabs).getByRole("radio", { name: "标题字效" }));
+  expect(within(region).queryByRole("button", { name: "添加 AI 资产：普通标题" }) === null).toBe(true);
 });
 
 // 场景：当前草稿（含尚未保存的添加）摆放的资产不能删除，并说明原因；否则之后保存模板会因资产未发布被拒绝。移除片段后恢复可删除。

@@ -23,7 +23,7 @@ import { SpriteCover } from "./SpriteCover";
 type Catalog = ReturnType<typeof useSpriteCatalog>;
 
 /**
- * 左侧资产区：标题字效、字幕字效、滤镜、转场特效、视频特效五类分别浏览；搜索、重命名/分类和删除共用目录。
+ * 左侧资产区：标题字效、字幕字效、双语字效、滤镜、转场特效、视频特效六类分别浏览；搜索、重命名/分类和删除共用目录。
  * `placed` 是当前草稿（含未保存的修改）摆放的资产：它们不能删除，否则之后保存模板会因资产未发布被拒绝；重命名不受影响，
  * 模板只保存资产 ID，名称都从目录读取，改名后刷新目录即可。
  */
@@ -72,7 +72,7 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
     setSaving(true); setRenameError("");
     try {
       // 与打开弹窗时的分类比较；只改名称时省略分类，保留其他用户在此期间保存的选择。
-      const textCategory = renaming.kind === SpriteKind.TEXT && newTextCategory !== textCategoryOf(renaming) ? newTextCategory : undefined;
+      const textCategory = renaming.kind === SpriteKind.TEXT && !renaming.bilingual && newTextCategory !== textCategoryOf(renaming) ? newTextCategory : undefined;
       const asset = await renameSprite(renaming.id, trimmed, textCategory);
       toast(renaming.kind === SpriteKind.TEXT ? `已保存资产「${asset.name}」` : `已重命名为「${asset.name}」`);
       setRenaming(null); catalog.refresh();
@@ -122,13 +122,14 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
       <Button type="button" variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px]" onClick={catalog.refresh}><RefreshCw className="size-3" aria-hidden="true" />刷新目录</Button>
       <Dialog open={renaming !== null} onOpenChange={(next) => { if (!next && !saving) setRenaming(null); }}>
         <DialogContent>
-          <DialogHeader><DialogTitle>重命名 AI 资产</DialogTitle><DialogDescription>{renaming?.kind === SpriteKind.TEXT ? "修改资产名称和字效分类，所有人可见；分类用于资产筛选，不改变模板中的作用对象。名称不要求唯一。" : "只修改资产库里显示的名称，所有人可见；代码、参数和已使用它的模板不受影响，名称不要求唯一。"}</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>重命名 AI 资产</DialogTitle><DialogDescription>{renaming?.kind === SpriteKind.TEXT && !renaming.bilingual ? "修改资产名称和字效分类，所有人可见；分类用于资产筛选，不改变模板中的作用对象。名称不要求唯一。" : "只修改资产库里显示的名称，所有人可见；代码、参数和已使用它的模板不受影响，名称不要求唯一。"}</DialogDescription></DialogHeader>
           <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void rename(); }}>
             <div className="space-y-2">
               <Label htmlFor={`${renameId}-name`}>资产名称</Label>
               <Input id={`${renameId}-name`} required maxLength={100} value={newName} disabled={saving} onChange={(event) => { setNewName(event.target.value); setRenameError(""); }} />
             </div>
-            {renaming?.kind === SpriteKind.TEXT && <div className="space-y-2">
+            {renaming?.bilingual && <p className="text-sm text-muted-foreground">字效分类：双语字效，由资产的中英双语内容自动识别。</p>}
+            {renaming?.kind === SpriteKind.TEXT && !renaming.bilingual && <div className="space-y-2">
               <Label htmlFor={`${renameId}-category`}>字效分类</Label>
               <Select value={String(newTextCategory)} disabled={saving} onValueChange={(value) => { setNewTextCategory(Number(value) as TextEffectCategory); setRenameError(""); }}>
                 <SelectTrigger id={`${renameId}-category`} className="w-full"><SelectValue /></SelectTrigger>
