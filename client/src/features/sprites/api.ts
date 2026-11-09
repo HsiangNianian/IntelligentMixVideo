@@ -11,6 +11,7 @@ import {
   RenameSpriteResponseSchema,
   type SpriteKind,
   type SpriteSummary,
+  type TextEffectCategory,
 } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "./model";
 import { assetParameter, BILINGUAL_PROP } from "./parameters";
@@ -74,6 +75,7 @@ function toAsset(summary: SpriteSummary): SpriteAsset {
     id: summary.spriteId,
     name: summary.name,
     kind: summary.kind,
+    textCategory: summary.textCategory,
     sourceVersionId: summary.sourceVersionId,
     seconds: summary.canvas && summary.canvas.fps ? summary.canvas.previewFrames / summary.canvas.fps : 0,
     aspect: summary.canvas && summary.canvas.height ? summary.canvas.width / summary.canvas.height : 9 / 16,
@@ -160,9 +162,9 @@ export async function deleteSprite(id: string): Promise<boolean> {
   }
 }
 
-/** 修改资产在目录里显示的名称；服务端去除首尾空白并限制 1～100 个字符，不要求唯一。被模板使用的资产也可以改名，失败不自动重试。 */
-export async function renameSprite(id: string, name: string): Promise<SpriteAsset> {
-  const body = toBinary(RenameSpriteRequestSchema, create(RenameSpriteRequestSchema, { name }));
+/** 修改目录名称与可选字效分类；名称限制 1～100 个字符、不要求唯一。省略分类时保留旧值；失败不自动重试。 */
+export async function renameSprite(id: string, name: string, textCategory?: TextEffectCategory): Promise<SpriteAsset> {
+  const body = toBinary(RenameSpriteRequestSchema, create(RenameSpriteRequestSchema, { name, textCategory }));
   const { sprite } = fromBinary(RenameSpriteResponseSchema, await request(`/api/sprites/${encodeURIComponent(id)}/rename`, "POST", undefined, body));
   if (!sprite) throw new Error("重命名响应缺少内容");
   return toAsset(sprite);

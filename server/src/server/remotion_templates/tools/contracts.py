@@ -492,7 +492,7 @@ class TextBlock(ContractModel):
 
 
 class SpriteDraft(ComponentDefinition):
-    """组合生成的源码、参数契约和实例快照；字效的文字组合另记文字块结构。"""
+    """组合源码、参数契约和实例快照；保留文字块结构或已封存自由组件的清单。"""
 
     description: Description
     composition: Composition
@@ -500,6 +500,8 @@ class SpriteDraft(ComponentDefinition):
     kind: Omittable[SpriteKindName]
     bindings: list[SpriteParameterBinding] = Field(default_factory=list)
     text: Omittable[TextBlock]
+    # 兼容自由组件生成器保存的 effect.json；读取时原样保留，不能丢弃后破坏封存证据。
+    effect: Omittable[JsonObject]
 
 
 class SpriteRecord(SpriteDraft):

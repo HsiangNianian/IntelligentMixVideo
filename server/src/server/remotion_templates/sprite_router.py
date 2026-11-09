@@ -170,13 +170,16 @@ async def sprite_font(sprite_id: str, weight: int, service: Service) -> Response
     responses={200: {"content": PROTOBUF_CONTENT}}, summary="重命名 Sprite 资产",
 )
 async def rename_sprite(sprite_id: str, request: Request) -> Response:
-    """只修改目录里显示的名称；资产库共享，任何人都可改，被模板使用的资产也可以改。
+    """修改目录名称和可选的字效分类；资产库共享，任何人都可改，被模板使用的资产也可以改。
 
     名称去除首尾空白后需为 1～100 个字符，不要求唯一，否则 422；不存在返回 404。代码、参数与预览不变。
     """
     message = pb.RenameSpriteRequest()
     await _body(request, message)
-    summary = await run_in_threadpool(sprites.rename, sprite_id, message.name)
+    summary = await run_in_threadpool(
+        sprites.rename, sprite_id, message.name,
+        message.text_category if message.HasField("text_category") else None,
+    )
     return _response(pb.RenameSpriteResponse(sprite=summary))
 
 

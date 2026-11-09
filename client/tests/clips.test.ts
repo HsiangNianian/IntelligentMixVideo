@@ -175,5 +175,5 @@ test("发布参数转换为控件", () => {
   expect(validParameter(count!.field, 1.5)).toBe(false);
   expect(validParameter(count!.field, 2)).toBe(true);
   expect(transformFields(SpriteKind.FILTER_OVERLAY)).toEqual(["opacity"]);
-  expect(categoryOf(SpriteKind.TRANSITION_OVERLAY)).toBe("effect");
+  expect(categoryOf({ ...asset, kind: SpriteKind.TRANSITION_OVERLAY })).toBe("transition");
 });

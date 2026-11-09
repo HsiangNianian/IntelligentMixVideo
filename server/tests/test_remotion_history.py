@@ -174,6 +174,32 @@ def test_public_history_tracks_inputs_and_hides_repairs(history_store):
     assert len({m["id"] for m in messages}) == len(messages)
 
 
+def test_saved_agent_reply_allows_job_reads_and_acknowledgement(history_app, history_store):
+    """另一字效生成器保存的结构化回复不应阻断任务读取或事件确认，读取与确认后仍保留原回复。"""
+    work, job = history_store.create(GenerateTemplateRequest(description="标题"), DEVICE)
+    history_store.claim()
+    job = history_store.update(job.id, status="succeeded", stage="finished")
+    reply = {"summary": "已生成标题字效。", "choices": ["保留原字体。"], "suggestions": ["可以调整字号。"]}
+    data = job.model_dump(mode="json") | {"reply": reply}
+    with history_store.transaction() as db:
+        db.execute(update(jobs).where(jobs.c.id == str(job.id)).values(data=json.dumps(data)))
+
+    with TestClient(history_app, raise_server_exceptions=False) as client:
+        response = client.get(f"/jobs/{job.id}", headers=DEVICE_HEADERS)
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "succeeded"
+        acknowledged = client.post(
+            f"/works/{work.id}/ack", headers=DEVICE_HEADERS,
+            json={"cursor": cursor(history_store, work.id)},
+        )
+        assert acknowledged.status_code == 204, acknowledged.text
+
+    assert history_store.work_events(work.id, 0) == []
+    assert history_store.job(job.id).reply.model_dump() == reply
+    with history_store.reading() as db:
+        assert json.loads(db.execute(select(jobs.c.data).where(jobs.c.id == str(job.id))).scalar_one()) == data
+
+
 def test_history_and_state_rollback_together(history_store, monkeypatch):
     """An event write failure cannot leave a job, message or work committed without its matching records."""
     original = history.append_event

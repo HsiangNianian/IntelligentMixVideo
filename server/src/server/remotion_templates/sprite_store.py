@@ -130,7 +130,8 @@ def replace(
     Used when the source chat overwrites an existing asset: the Sprite ID stays the same so templates keep
     referencing it, while the source version, field choice, publication time and stored JSON are replaced. The row
     is locked before reading its latest name: omitted names preserve a rename committed during sampling, while an
-    explicit name replaces it with the content. The new content supplies its own preview hash. None means the ID
+    explicit name replaces it with the content. A manual text category is always preserved, including edits made
+    during sampling. The new content supplies its own preview hash. None means the ID
     no longer exists. A duplicate key means another row already owns this source and field choice and propagates.
     """
     with initialize_schema().begin() as connection:
@@ -140,6 +141,8 @@ def replace(
         if existing is None:
             return None
         data = {**data, "name": name if name is not None else existing["name"]}
+        if "text_category" in existing:
+            data["text_category"] = existing["text_category"]
         connection.execute(update(sprites).where(sprites.c.sprite_id == sprite_id).values(
             source_version_id=source_version_id, kind=kind, text_prop=text_prop,
             keywords_prop=keywords_prop, published_at=published_at.astimezone(UTC).replace(tzinfo=None), data=data,
