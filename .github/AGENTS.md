@@ -42,6 +42,13 @@
 - 集成环境使用 Python 3.12、uv、临时 MySQL 8.4、Node 24、Bun、服务端 Remotion 锁定依赖、Chrome、FFmpeg/ffprobe、Noto CJK、bubblewrap 和 prlimit。
 - 真实 MySQL 测试须显式设置 `IMV_TEST_MYSQL=1` 和回环数据库连接，每例随机建库并清理；既有 SQLite 夹具不变。真实渲染通过 `IMV_TEST_RENDERER=1` 启用，只捕获浏览器及字体路径，不读取真实密钥。
 
+### 图文教程
+
+- `validation.yml` 的 `tutorial` 范围调用 `tutorial.yml`，结果纳入最终门禁；`tutorial.yml` 同时提供独立手动入口，不额外监听 push/PR。纯 `docs/tutorial/` 或 `build-tutorial.mjs` 及其测试变更只运行教程相关检查，不触发应用编译。
+- 教程源为 `docs/tutorial/index.html`、`print.css` 与 `capture.ts`；复用客户端锁定的 Vite/Playwright，启动当前界面并按固定步骤截图、添加编号，使用 Chromium 与 Noto CJK 导出 A4 PDF 和内嵌图片的离线 HTML。每次构建使用全新截图，前端源码/资源/夹具/构建配置与共享效果目录变化也触发教程构建。
+- 正文、内容核对日期和提交由维护者每次发版前审阅更新；自动注入的构建提交不能当作内容核对记录。CI 不接入 AI，业务请求只使用演示数据，不读取用户配置或密钥；截图不验证云端渲染。CI 检查操作控件、资源、链接、分页、PDF 页数与可提取的中文，维护者仍需审阅实际版面。生成文件只放已忽略的 `dist/tutorial/`，命令和来源见 `docs/tutorial/README.md`。
+- 文档 artifacts 保留 14 天；此工作流不修改 Release 附件，也不改变正式发版行为。
+
 ### Debug 客户端与随包后端
 
 - `.github/workflows/client-debug.yml`（Debug client）在 `main` / `dev` push 或 `workflow_dispatch` 时运行，不监听 PR；复用 `client-build.yml` 并传入 `build-mode: package`、`debug-backend: true`。手动入口要求工作流存在于默认分支，分支 push 触发不绕过此限制。
