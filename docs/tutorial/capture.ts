@@ -75,6 +75,19 @@ type Callout = CalloutOptions & { targets: Locator[] };
 /** Group related controls into one contour and place its numbered arrow in nearby whitespace. */
 const mark = (target: Locator | Locator[], options: CalloutOptions = {}): Callout => ({ targets: Array.isArray(target) ? target : [target], ...options });
 
+/** Decode SVG as an inert image before attaching it; image loading disables SVG scripts and never parses page HTML. */
+export async function attachTutorialCallouts(page: Page, svg: string) {
+  await page.evaluate(async (drawing) => {
+    const overlay = document.createElement("img");
+    overlay.id = "tutorial-callouts";
+    overlay.alt = "";
+    overlay.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647";
+    overlay.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(drawing)}`;
+    await overlay.decode();
+    document.body.append(overlay);
+  }, svg);
+}
+
 /** Measure the live UI, draw authored SVG callouts, and remove them after each screenshot. */
 async function capture(page: Page, directory: string, name: string, controls: (Locator | Callout)[]) {
   const annotations = controls.map(control => "targets" in control ? control : mark(control));
@@ -101,13 +114,7 @@ async function capture(page: Page, directory: string, name: string, controls: (L
   }
   let svg;
   try { svg = renderCallouts(boxes, viewport); } catch (error) { throw new Error(`${name}: ${error}`); }
-  await page.evaluate((drawing) => {
-    const overlay = document.createElement("div");
-    overlay.id = "tutorial-callouts";
-    overlay.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647";
-    overlay.innerHTML = drawing;
-    document.body.append(overlay);
-  }, svg);
+  await attachTutorialCallouts(page, svg);
   try {
     await page.screenshot({ path: join(directory, name), animations: "disabled" });
   } finally {

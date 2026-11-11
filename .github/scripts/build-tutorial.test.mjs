@@ -1,4 +1,4 @@
-/** Tutorial regression tests: offline assets, print validation, unobstructed callouts, and homepage readiness. Run bun test ./.github/scripts. */
+/** Tutorial regression tests: offline assets, print validation, inert and readable callouts, and homepage readiness. Run bun test ./.github/scripts. */
 import { test, expect } from "bun:test";
 import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,6 +31,35 @@ test("tutorial callouts avoid highlighted controls and each other at viewport ed
 test("tutorial callouts reject regions with no room for readable numbers", () => {
   expect(() => layoutCallouts([{ box: { x: 0, y: 0, width: 360, height: 240 } }], { width: 360, height: 240 })).toThrow("No clear space for callout 1");
 });
+
+// The SVG overlay must render without executing event handlers; invalid image data must fail before capture.
+test.skipIf(process.env.IMV_TEST_TUTORIAL_BROWSER !== "1")("tutorial callouts render as inert images and reject invalid SVG", async () => {
+  const require = createRequire(new URL("../../client/package.json", import.meta.url));
+  const { chromium } = require("playwright-core");
+  const { attachTutorialCallouts } = await import("../../docs/tutorial/capture.ts");
+  const browser = await chromium.launch({ headless: true, ...(process.env.IMV_CHROME_PATH ? { executablePath: process.env.IMV_CHROME_PATH } : {}) });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<p id="content">Original page</p>');
+    await attachTutorialCallouts(page, `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="60"><rect width="80" height="60" fill="red"/><image href="data:image/png;base64,broken" width="1" height="1" onerror="document.body.dataset.calloutExecuted = 'yes'"/></svg>`);
+    // Give a mistakenly inline SVG's broken image its error event before checking that the page is unchanged.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    expect(await page.locator("body").getAttribute("data-callout-executed")).toBeNull();
+    expect(await page.locator("#content").innerText()).toBe("Original page");
+    const pixel = await page.locator("#tutorial-callouts").evaluate(image => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 80;
+      canvas.height = 60;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0);
+      return [...context.getImageData(40, 30, 1, 1).data];
+    });
+    expect(pixel).toEqual([255, 0, 0, 255]);
+    await page.locator("#tutorial-callouts").evaluate(element => element.remove());
+    await expect(attachTutorialCallouts(page, "not an SVG image")).rejects.toThrow();
+    expect(await page.locator("#tutorial-callouts").count()).toBe(0);
+  } finally { await browser.close(); }
+}, 30_000);
 
 // A shareable HTML artifact must retain its images and stylesheet after leaving the checkout.
 test("tutorial HTML embeds local assets and escapes the build label", async () => {
