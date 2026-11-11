@@ -1,4 +1,4 @@
-/** Tutorial packaging regression tests: offline assets, missing images and paths escaping the source directory. Run bun test ./.github/scripts. */
+/** Tutorial regression tests: offline assets, print validation, and homepage readiness before screenshot capture. Run bun test ./.github/scripts. */
 import { test, expect } from "bun:test";
 import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -36,6 +36,34 @@ test.skipIf(process.env.IMV_TEST_TUTORIAL_BROWSER !== "1")("tutorial print valid
     await expect(validateTutorial(page)).rejects.toThrow("Broken image");
     await page.setContent('<section class="page" style="height:20px"><div style="height:100px">超长段落</div></section>');
     await expect(validateTutorial(page)).rejects.toThrow("overflows");
+  } finally { await browser.close(); }
+}, 30_000);
+
+// 首页控件位于开场遮罩后仍会被判定为 visible；必须等待遮罩退出，并验证可交互而不实际点击。
+test.skipIf(process.env.IMV_TEST_TUTORIAL_BROWSER !== "1")("tutorial homepage waits for overlays without clicking controls", async () => {
+  const require = createRequire(new URL("../../client/package.json", import.meta.url));
+  const { chromium } = require("playwright-core");
+  const { waitForTutorialHome } = await import("../../docs/tutorial/capture.ts");
+  const browser = await chromium.launch({ headless: true, ...(process.env.IMV_CHROME_PATH ? { executablePath: process.env.IMV_CHROME_PATH } : {}) });
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(500);
+    await page.setContent('<button onclick="document.body.dataset.clicked = \'yes\'">新建云端模板</button><div id="splash" role="button" aria-label="IntelligentMixVideo 开场动画，点击跳过" style="position:fixed;inset:0;z-index:80;background:white">开场画面</div>');
+    expect(await page.getByRole("button", { name: "新建云端模板", exact: true }).isVisible()).toBe(true);
+    await expect(waitForTutorialHome(page)).rejects.toThrow("Timeout");
+    // Even a non-interactive splash can cover the screenshot, so input hit-testing alone is insufficient.
+    await page.locator("#splash").evaluate(element => { element.style.pointerEvents = "none"; });
+    await expect(waitForTutorialHome(page)).rejects.toThrow("Timeout");
+    await page.locator("#splash").evaluate(element => element.remove());
+    await waitForTutorialHome(page);
+    expect(await page.locator("body").getAttribute("data-clicked")).toBeNull();
+    // An unrelated overlay must also prevent capturing a blocked homepage after the splash has gone.
+    await page.evaluate(() => {
+      const blocker = document.createElement("div");
+      blocker.style.cssText = "position:fixed;inset:0;z-index:80;background:white";
+      document.body.append(blocker);
+    });
+    await expect(waitForTutorialHome(page)).rejects.toThrow("Timeout");
   } finally { await browser.close(); }
 }, 30_000);
 

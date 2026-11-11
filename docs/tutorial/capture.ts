@@ -59,6 +59,14 @@ async function demoFont() {
   } };
 }
 
+/** Wait for the startup overlay to leave and verify that the homepage can receive input without clicking it. */
+export async function waitForTutorialHome(page: Page) {
+  const create = page.getByRole("button", { name: "新建云端模板", exact: true });
+  await create.waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "IntelligentMixVideo 开场动画，点击跳过", exact: true, includeHidden: true }).waitFor({ state: "hidden" });
+  await create.click({ trial: true });
+}
+
 /** Outline visible controls in DOM coordinates; labels are drawn by the browser and removed after capture. */
 async function capture(page: Page, directory: string, name: string, controls: Locator[]) {
   await page.evaluate(() => document.fonts.ready);
@@ -161,7 +169,9 @@ export async function captureTutorial(destination: string) {
     const object = (name: string) => page.getByRole("region", { name: "已添加特效", exact: true }).getByRole("button", { name: `编辑${name}`, exact: true });
     await page.goto(appOrigin);
     await button(`选择模板：${templates[0].name}`).waitFor();
-    await shot("home.png", button("模板编辑"), button("新建云端模板"), page.getByRole("region", { name: "模板列表", exact: true }), button("设置"));
+    await waitForTutorialHome(page);
+    // Match the four numbered descriptions: navigation, both creation cards, templates, and preferences.
+    await shot("home.png", page.getByRole("navigation", { name: "主导航", exact: true }).getByRole("list"), button("新建云端模板").locator(".."), page.getByRole("region", { name: "模板列表", exact: true }), button("设置").locator(".."));
     await button("设置").click();
     await shot("settings.png", page.getByLabel("后端服务地址", { exact: true }), button("保存"));
     await page.keyboard.press("Escape");
