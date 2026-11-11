@@ -1,10 +1,36 @@
-/** Tutorial regression tests: offline assets, print validation, and homepage readiness before screenshot capture. Run bun test ./.github/scripts. */
+/** Tutorial regression tests: offline assets, print validation, unobstructed callouts, and homepage readiness. Run bun test ./.github/scripts. */
 import { test, expect } from "bun:test";
 import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { assembleTutorial, validateTutorial } from "./build-tutorial.mjs";
+import { layoutCallouts, renderCallouts } from "../../docs/tutorial/callouts.mjs";
+
+// Badges beside adjacent controls must remain visible and readable, even when the preferred side is offscreen.
+test("tutorial callouts avoid highlighted controls and each other at viewport edges", () => {
+  const viewport = { width: 360, height: 240 };
+  const items = [10, 100].map(y => ({ box: { x: 240, y, width: 110, height: 50 }, side: "right" }));
+  const placed = layoutCallouts(items, viewport);
+  for (const badge of placed) {
+    expect(badge.x - badge.radius).toBeGreaterThanOrEqual(0);
+    expect(badge.y - badge.radius).toBeGreaterThanOrEqual(0);
+    expect(badge.x + badge.radius).toBeLessThanOrEqual(viewport.width);
+    expect(badge.y + badge.radius).toBeLessThanOrEqual(viewport.height);
+    for (const { box } of items) {
+      const nearestX = Math.max(box.x, Math.min(badge.x, box.x + box.width));
+      const nearestY = Math.max(box.y, Math.min(badge.y, box.y + box.height));
+      expect(Math.hypot(badge.x - nearestX, badge.y - nearestY)).toBeGreaterThan(badge.radius);
+    }
+  }
+  expect(Math.hypot(placed[0].x - placed[1].x, placed[0].y - placed[1].y)).toBeGreaterThan(placed[0].radius + placed[1].radius);
+  expect(renderCallouts(items, viewport)).toBe(renderCallouts(items, viewport));
+});
+
+// A full-screen target has no whitespace for a badge; authors must choose a smaller region instead of hiding the UI.
+test("tutorial callouts reject regions with no room for readable numbers", () => {
+  expect(() => layoutCallouts([{ box: { x: 0, y: 0, width: 360, height: 240 } }], { width: 360, height: 240 })).toThrow("No clear space for callout 1");
+});
 
 // A shareable HTML artifact must retain its images and stylesheet after leaving the checkout.
 test("tutorial HTML embeds local assets and escapes the build label", async () => {
