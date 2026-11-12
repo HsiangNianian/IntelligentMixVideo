@@ -1,12 +1,11 @@
-"""PR76 工具契约：严格校验入出参，为装饰器提供完整 Schema；业务实现位于同目录。"""
+"""Workspace tool contracts and historical Sprite serialization; retired tool input models are not retained."""
 from __future__ import annotations
 
 from typing import Annotated, Any, Generic, Literal, TypeVar
-from uuid import UUID
 
 from pydantic import (
     BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, StrictFloat,
-    StrictInt, StrictStr, StringConstraints, model_validator,
+    StrictInt, StrictStr, StringConstraints,
 )
 from pydantic.json_schema import SkipJsonSchema
 
@@ -26,10 +25,6 @@ JsonObject = dict[str, JsonValue]
 JsonSchema = JsonObject
 PresetId = NonEmptyString
 SpriteId = NonEmptyString
-# 任务内草稿句柄：只在创建它的任务会话中有效。
-DraftId = NonEmptyString
-# 草稿内容摘要：内容相同则摘要相同，与每次随机生成的 draft_id 无关。
-DraftDigest = NonEmptyString
 Timestamp = NonEmptyString  # 输出还须符合下文的 UTC ISO 8601 约定。
 T = TypeVar("T")
 
@@ -136,67 +131,9 @@ class PresetRecord(PresetDraft):
     created_at: Timestamp
 
 # create 承接 Agent 已写好的完整定义；输入模型与 PresetDraft 完全相同。
-PresetCreateInput = PresetDraft
-
-class PresetCreateOutput(ContractModel):
-    """新记录和本次入库的代码校验报告。"""
-
-    preset: PresetRecord
-    validation: CodeValidationReport
 
 
-
-# 工具入参以文档化的 JSON 字符串传递；宿主内部继续用 UUID 对象引用同一素材。
-AssetId = Annotated[UUID, BeforeValidator(lambda value: value if isinstance(value, UUID) else UUID(str(value)))]
-
-
-# 用户上传的参考图由服务端登记为参考素材；图片工具按该引用读取，不使用 URL。
-class ImageReference(ContractModel):
-    """已上传并登记的参考图片。"""
-
-    asset_id: AssetId
-
-
-# 图片工具直接读取任务参考图：用户上传后已由服务端登记为参考素材，无需 URL。
-class ImageInfoInput(ContractModel):
-    """待读取的任务参考图片。"""
-
-    image: ImageReference
-
-
-class ImageInfo(ContractModel):
-    """实际读取到的图片信息。"""
-
-    width: PositiveInteger
-    height: PositiveInteger
-    mime_type: Literal["image/png", "image/jpeg", "image/webp"]
-    size_bytes: PositiveInteger
-    has_alpha: bool
-
-
-class ProcessedImage(ImageInfo):
-    """处理后的图片信息；结果同样保存在服务端素材目录，供后续工具继续读取。"""
-
-    image: ImageReference
-
-
-class ImageResizeInput(ImageInfoInput):
-    """指定强制缩放后的目标像素宽高。"""
-
-    width: PositiveInteger
-    height: PositiveInteger
-
-
-class ImageCropInput(ImageInfoInput):
-    """相对原图左上角的像素裁剪区域。"""
-
-    x: NonNegativeInteger
-    y: NonNegativeInteger
-    width: PositiveInteger
-    height: PositiveInteger
-
-
-# --- preset tool contracts (doc section 6) ------------------------------------
+# Read-only library contracts; historical roles and usage remain searchable.
 
 # create 承接 Agent 已写好的完整定义；输入模型即 PresetDraft。
 
@@ -239,47 +176,6 @@ class CodeEdit(ContractModel):
     new_str: str
 
 
-class PresetChanges(ContractModel):
-    """仅替换显式提供的字段；edits 按顺序在源代码上精确替换，与整份 code 互斥；工具还须检查至少提供一项。"""
-
-    code: Omittable[str]
-    edits: Omittable[Annotated[list[CodeEdit], Field(min_length=1)]]
-    description: Omittable[Description]
-    parameter_schema: Omittable[JsonSchema]
-    default_parameters: Omittable[JsonObject]
-    usage: Omittable[EffectUsage]
-
-
-class PresetModifyInput(ContractModel):
-    """原记录 ID 和 Agent 已经改好的替换内容。"""
-
-    preset_id: PresetId
-    changes: PresetChanges
-
-
-class PresetDraftSummary(ContractModel):
-    """宿主保存的预设副本摘要；完整源码不回传，由 draft_id 引用。"""
-
-    description: Description
-    parameter_names: list[str]
-    source_preset_id: Omittable[PresetId]
-    role: Omittable[PresetRole]
-
-
-class PresetModifyOutput(ContractModel):
-    """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。
-
-    改动行数相对被复制的源代码计算，让小需求被整份重写时在回执里可见；notice 是宿主的固定提示。
-    """
-
-    draft_id: DraftId
-    digest: DraftDigest
-    preset: PresetDraftSummary
-    code_lines_removed: NonNegativeInteger
-    code_lines_added: NonNegativeInteger
-    notice: Omittable[str]
-
-
 class Composition(ContractModel):
     """固定主画布及工具计算的总帧数。"""
 
@@ -306,35 +202,6 @@ class InstanceTiming(ContractModel):
     duration_frames: PositiveInteger
 
 
-class StoredPresetSource(ContractModel):
-    """引用已经保存的预设。"""
-
-    kind: Literal["stored"]
-    preset_id: PresetId
-
-
-class DraftPresetSource(ContractModel):
-    """引用本任务内 preset.modify 返回或宿主登记（编辑基线）的预设副本。"""
-
-    kind: Literal["draft"]
-    draft_id: DraftId
-
-
-PresetSource = Annotated[
-    StoredPresetSource | DraftPresetSource, Field(discriminator="kind")
-]
-
-
-class PresetInstance(ContractModel):
-    """待组合的预设来源、参数覆盖及编排。"""
-
-    instance_id: NonEmptyString
-    source: PresetSource
-    parameters: Omittable[JsonObject]
-    layout: InstanceLayout
-    timing: InstanceTiming
-
-
 class ResolvedPresetInstance(ContractModel):
     """解析来源后保留的完整快照和有效参数；宿主内置特效（builtin）没有 Preset 源码。"""
 
@@ -343,7 +210,7 @@ class ResolvedPresetInstance(ContractModel):
     parameters: JsonObject
     layout: InstanceLayout
     timing: InstanceTiming
-    # 文字块里由宿主自己画的内置特效（fade、glow…）；有它时 preset 只是占位，不参与打包。
+    # 历史文字块的内置特效标记，其完整实现已封存在 Sprite 源码中。
     builtin: Omittable[EffectBuiltin]
 
 
@@ -377,26 +244,6 @@ class TextLayout(ContractModel):
     height: PositiveInteger
 
 
-class TextTier(ContractModel):
-    """文字块的一栏：画这一栏的 text 角色 Preset、它的样式参数，以及这一栏的字体、字重与字号比例（配置的默认值）。"""
-
-    instance_id: NonEmptyString
-    source: PresetSource
-    parameters: Omittable[JsonObject]
-    font_family: NonEmptyString
-    font_weight: Literal[400, 700]
-    # 这一栏按 fontSize 乘以它渲染；只有双栏使用，单栏恒为 1。
-    size_ratio: Omittable[Annotated[FiniteNumber, Field(ge=0.4, le=2)]]
-
-
-class TextKeyword(ContractModel):
-    """关键词字效：画命中词的 keyword 角色 Preset 及其样式参数。"""
-
-    instance_id: NonEmptyString
-    source: PresetSource
-    parameters: Omittable[JsonObject]
-
-
 # 特效的类型：enter 入场、exit 出场（宿主按配置的时长算显现进度），loop 持续（进度恒为 1，需要循环时自己读帧），
 # cue 下栏出现（只有双栏：下栏出现前为 0，出现后按时长升到 1；这一组没有下栏文字时一直为 0）。
 EffectSlot = Literal["enter", "exit", "loop", "cue"]
@@ -408,70 +255,13 @@ EffectTarget = Literal["block", "tiers", "line1", "line2", "line3", "line4", "ch
 EffectTitle = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=8)]
 
 
-class TextEffect(ContractModel):
-    """文字块的一个特效：一个 effect 角色 Preset（source）或宿主内置特效（builtin）其一，加样式参数、中文名称、类型，
-    以及作用位置、时长与开关（配置的默认值）；名称、类型、位置与时长省略时取 Preset 的 usage 或内置特效的默认值。"""
-
-    instance_id: NonEmptyString
-    source: Omittable[PresetSource]
-    # 宿主内置特效的名字（fade、rise、pop、slide*、blur、glow、breathing）：只写名字，宿主自己画，不必写 Preset。
-    builtin: Omittable[EffectBuiltin]
-    parameters: Omittable[JsonObject]
-    title: Omittable[EffectTitle]
-    slot: Omittable[EffectSlot]
-    target: Omittable[EffectTarget]
-    # 入场、出场的时长（秒），省略为 0.5；持续特效没有时长。
-    seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
-    # 入场、下栏出现特效推迟开始的秒数，省略为 0，让特效可以一个接一个；出场与持续特效没有延迟。
-    delay: Omittable[Annotated[FiniteNumber, Field(ge=0, le=3)]]
-    # 逐字位置的特效里各个字错开的程度（0～1）：1 一个接一个，0 所有字一起，介于其间则前后交叠。
-    # 非持续的逐字特效必须在这里或 Preset 的 usage 中明确选择，不按位置暗中推断。
-    stagger: Omittable[Annotated[FiniteNumber, Field(ge=0, le=1)]]
-    # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
-    enabled: Omittable[StrictBool]
-
-    @model_validator(mode="after")
-    def one_source(self):
-        """An effect is drawn by exactly one of an effect Preset (source) or a host built-in (builtin)."""
-        if (self.source is None) == (self.builtin is None):
-            raise ValueError("give exactly one of source (an effect Preset) or builtin (a host built-in effect such as fade)")
-        return self
-
-
-class TextComposition(ContractModel):
-    """字效的文字组合：单行、普通双栏或一至两组双语，各物理行交给 text Preset 画，关键词命中交给 keyword Preset 画，
-    特效交给 effect Preset 包住它们的位置。"""
-
-    layout: TextLayout
-    # 默认文字：单栏一行，双栏为「上栏\n下栏」；双语字效为「中文\n同一句的英文译文」（英文由总线按切片注入 `textEn`）。
-    text: Annotated[StrictStr, StringConstraints(min_length=1, max_length=100)]
-    font_size: Annotated[FiniteNumber, Field(ge=24, le=240)]
-    tiers: list[TextTier] = Field(min_length=1, max_length=4)
-    # 双语每组为中文及其英文译文，宿主分别用 text 与 textEn 保存各组原文、译文（多组用换行连接）。
-    bilingual: Omittable[Literal[True]]
-    # 双栏双语用四行「中文1\n英文1\n中文2\n英文2」；组内中英间距与两组之间的 line_gap 分开，省略为 8 像素。
-    translation_gap: Omittable[Annotated[FiniteNumber, Field(ge=0, le=100)]]
-    # 只有双栏使用：两栏的排布（stack 上下排列，省略时如此；overlap 两栏叠在同一处、彼此居中、下栏在上层）、
-    # 两栏之间的距离（像素，可为负数以让下栏上移叠住上栏，最低 -600；重叠排布时不用，可省略）与各行出现的帧（首项为 0，不递减）。
-    # 四行双语的排布与 line_gap 作用于整组；line_starts 同组中英相同，如 [0, 0, 30, 30]。
-    arrangement: Omittable[Literal["stack", "overlap"]]
-    line_gap: Omittable[Annotated[FiniteNumber, Field(ge=-600, le=300)]]
-    line_starts: Omittable[list[Annotated[Integer, Field(ge=0, le=3600)]]]
-    keyword: Omittable[TextKeyword]
-    # 默认文字里哪些词是关键词（需求或参考图强调的词）：只用于预览，模板没传关键词时，字效工作区预览与回看帧以它们为关键词显示。
-    preview_keywords: Omittable[Annotated[list[Annotated[StrictStr, StringConstraints(min_length=1, max_length=12)]], Field(min_length=1, max_length=5)]]
-    # 按顺序包住各自位置的特效，先列的在里层；宿主按顺序给它们第 1、2…个特效的配置参数。
-    effects: list[TextEffect] = Field(default_factory=list, max_length=6)
-    duration_frames: PositiveInteger
-
-
 class TextBlockEffect(ContractModel):
     """组合后记录的一个特效：实例、中文名称与类型；内置特效另记 builtin。位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
 
     instance_id: NonEmptyString
     title: EffectTitle
     slot: EffectSlot
-    # 宿主内置特效的名字；有它时编辑据此还原 builtin，而不是引用 base_* 草稿。
+    # 历史元数据中的内置特效名，只保留反序列化，不再据此生成源码。
     builtin: Omittable[EffectBuiltin]
 
 
@@ -487,7 +277,7 @@ class TextBlock(ContractModel):
     still: Omittable[Literal[True]]
     # 双语每组的第二行是同一句的英文；编辑保留双语标记与全部原文、译文。
     bilingual: Omittable[Literal[True]]
-    # 默认文字里的示例关键词，见 TextComposition.preview_keywords。
+    # 历史文字块保存的预览关键词；转换时复制到 EffectContract。
     preview_keywords: Omittable[list[NonEmptyString]]
 
 
@@ -510,49 +300,9 @@ class SpriteRecord(SpriteDraft):
     sprite_id: SpriteId
     created_at: Timestamp
 
-class SpriteComposeInput(ContractModel):
-    """组合描述、效果分类、显式编排的预设实例或字效的文字组合，以及提升为顶层的样式参数。"""
-
-    description: Description
-    kind: SpriteKindName
-    instances: list[PresetInstance] = Field(default_factory=list)
-    text: Omittable[TextComposition]
-    parameters: list[SpriteParameterBinding] = Field(default_factory=list, max_length=32)
-
-
-class InstanceSummary(ContractModel):
-    """组合结果中一个实例的来源、参数名和编排；不含预设源码。"""
-
-    instance_id: NonEmptyString
-    preset_id: Omittable[PresetId]
-    draft_id: Omittable[DraftId]
-    parameter_names: list[str]
-    layout: InstanceLayout
-    timing: InstanceTiming
-
-
-class SpriteComposeOutput(ContractModel):
-    """宿主保存的组合草稿句柄与摘要；完整源码不回传，sprite.create 按 draft_id 保存。"""
-
-    draft_id: DraftId
-    digest: DraftDigest
-    description: Description
-    composition: Composition
-    kind: SpriteKindName
-    instances: list[InstanceSummary]
-    parameter_names: list[str]
-    default_parameters: JsonObject
-    code_bytes: NonNegativeInteger
-
-
-class SpriteCreateInput(ContractModel):
-    """compose 返回的草稿句柄。"""
-
-    draft_id: DraftId
-
 
 class ReviewFrame(ContractModel):
-    """回看的一帧：下一轮图片序号、Sprite 帧号与采样时机；自由组件按随后的观察消息从 1 编号，组合路径把回看帧接在参考图之后。"""
+    """回看的一帧：下一轮图片序号、Sprite 帧号与采样时机；按随后的观察消息从 1 编号。"""
 
     image: PositiveInteger
     frame: NonNegativeInteger
@@ -566,16 +316,6 @@ class SpriteReview(ContractModel):
     frames: list[ReviewFrame]
     rounds_left: NonNegativeInteger
     keywords: Omittable[list[str]]
-
-
-class SpriteCreateOutput(ContractModel):
-    """新 sprite 的 ID 与入库代码校验报告；完整记录由宿主保存。还有回看次数时附上它的几帧画面。"""
-
-    sprite_id: SpriteId
-    created_at: Timestamp
-    composition: Composition
-    validation: CodeValidationReport
-    review: Omittable[SpriteReview]
 
 
 # 自由组件字效：Agent 在工作区里写 Effect.tsx（默认导出组件，可从 "imv" 导入内容运行时）与 effect.json（清单），宿主据清单
@@ -621,6 +361,28 @@ class EffectParameter(ContractModel):
     group: Omittable[Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=16)]]
 
 
+class EffectBounds(ContractModel):
+    """An existing component's content region; fractional unions retain the publication's transform pivot."""
+
+    x: FiniteNumber
+    y: FiniteNumber
+    width: Annotated[FiniteNumber, Field(gt=0)]
+    height: Annotated[FiniteNumber, Field(gt=0)]
+
+
+class EffectContract(ContractModel):
+    """An existing component's complete parameter contract, retained when opening its bundled source for editing.
+
+    Unlike a new effect's generated controls, this may include nested instance props and local schema references.
+    Keeping the contract together preserves both manual edits and callers of previously published assets.
+    """
+
+    parameter_schema: JsonSchema
+    default_parameters: JsonObject
+    preview_keywords: list[NonEmptyString] = Field(default_factory=list)
+    content_box: Omittable[EffectBounds]
+
+
 class EffectManifest(ContractModel):
     """effect.json：效果分类、描述、内容区域（画布上的框，宿主的整体变换围绕它）、字效的示例内容与配置，以及样式参数。"""
 
@@ -629,6 +391,8 @@ class EffectManifest(ContractModel):
     layout: TextLayout
     text: Omittable[EffectText]
     params: list[EffectParameter] = Field(default_factory=list, max_length=32)
+    # Converted source already owns the entire canvas and its parameter mapping; no old composer runs again.
+    contract: Omittable[EffectContract]
 
 
 # 只读的运行时源码：Agent 可以读 `imv` 的类型与实现，但不能改它。
@@ -755,7 +519,6 @@ class ImageInspectOutput(ContractModel):
     source_height: PositiveInteger
 
 
-
 class TextPosition(ContractModel):
     """LSP 零基行号与 UTF-16 字符偏移。"""
 
@@ -783,18 +546,11 @@ class CodeDiagnostic(ContractModel):
     excerpt: Omittable[str]
 
 
-class CodeValidationInput(ContractModel):
-    """需要校验的完整组件定义。"""
-
-    component: ComponentDefinition
-
-
 class CodeValidationReport(ContractModel):
     """代码校验结论与真实诊断。"""
 
     passed: bool
     diagnostics: list[CodeDiagnostic]
-
 
 
 class TestScript(ContractModel):
@@ -855,11 +611,7 @@ class RenderValidationReport(ContractModel):
     custom_tests_executed: NonNegativeInteger
 
 
-
 ToolName = Literal[
-    "image.info", "image.resize", "image.crop",
-    "preset.search", "preset.create", "preset.modify",
-    "validate.code", "validate.render", "sprite.compose", "sprite.create",
     "tools.inspect", "tools.plan_execute", "tools.report_step",
     "workspace.read", "workspace.write", "workspace.edit", "preview.render", "validate.check", "effect.save",
     "library.search", "image.inspect",
@@ -891,8 +643,6 @@ class ToolDescriptor(ContractModel):
     side_effects: list[str]
     error_codes: list[str]
     examples: list[ToolExample]
-
-
 
 
 # Resolve documented forward references only after every model is declared.

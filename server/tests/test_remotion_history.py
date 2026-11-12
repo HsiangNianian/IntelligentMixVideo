@@ -879,15 +879,15 @@ def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
     assert (message.text, message.image_asset_ids) == ("改成这样", [later.id])
     asyncio.run(runtime._execute(follow.id))
     images, intent, _ = seen.pop()
-    assert images == [history_store.asset_path(original.id), history_store.asset_path(later.id)]
+    assert images == [history_store.asset_path(original.id), history_store.asset_path(later.id), history_store.asset_path(answer.id)]
     assert [(entry["asset_id"], entry["source"]) for entry in intent["reference_images"]] == [
-        (str(original.id), "work_original"), (str(later.id), "message"),
+        (str(original.id), "work_original"), (str(later.id), "message"), (str(answer.id), "earlier_message"),
     ]
 
 
-def test_a_free_form_work_carries_earlier_turns_into_the_next_task(history_store, monkeypatch):
-    """自由组件路径的多轮：之前消息附的参考图继续发送并标明来源，每个任务结束时 Outer 窗口写入结果记录（失败原因也在内），任务拿得到作品的版本列表；默认路径都没有。"""
-    runtime = Runtime(history_store, None, Settings(_env_file=None, remotion_agent="autonomous"))
+def test_a_work_carries_earlier_turns_into_the_next_task(history_store, monkeypatch):
+    """所有模型任务均保留此前参考图及来源、Outer 结果记录（含失败原因）和历史版本列表。"""
+    runtime = Runtime(history_store, None, Settings(_env_file=None))
     monkeypatch.setattr(runtime, "notify", lambda *args: None)
     original, later = (reference_image(history_store) for _ in range(2))
     work, job = history_store.create(GenerateTemplateRequest(description="标题", images=[{"asset_id": original.id}]), DEVICE)

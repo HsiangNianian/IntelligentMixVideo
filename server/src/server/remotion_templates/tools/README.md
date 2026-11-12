@@ -1,49 +1,28 @@
 # Remotion agent tools
 
-`contracts.py` declares the complete data contract for all eleven tools in
-`docs/remotion-agent-tool-contracts.md`; `catalog.py` registers each one with the
-decorator in `registry.py`, which derives strict provider schemas from the typed
-handlers. Tools whose implementation is deferred are registered with
-`implemented=False`, and `available()` filters them out of every layer's tool
-window so the model only sees tools that can actually run.
+`contracts.py` defines typed data, `catalog.py` registers nine callable workspace tools, and `registry.py` derives
+strict provider schemas from their handlers. The complete public API is described in
+[`docs/remotion-agent-tool-contracts.md`](../../../../../docs/remotion-agent-tool-contracts.md).
 
-`ToolSession` owns immutable task-local records. `catalog_store.py` persists
-Presets to MySQL with a local JSON fallback, and `compose.py` generates the
-deterministic single-file Sprite source. The host builds the preview after the
-saved Sprite passes its checks.
-Local catalog transactions use a cross-process file lock and unique atomic
-replacement files; database connection/query failures preserve local visibility.
-Catalog I/O runs outside the event loop and file-lock acquisition waits at most
-10 seconds. `preset.modify` applies its exact code `edits` in order (each
-`old_str` must occur exactly once, otherwise nothing is copied), validates the merged component's data contract,
-including schema/default consistency and local-only references, before keeping
-the draft in the task session and returning its `draft_id`; it neither compiles the
-code nor writes the draft to the catalog. `sprite.compose` keeps its draft the same
-way and `sprite.create` takes only that `draft_id`.
+`ToolSession` owns `Effect.tsx`, `effect.json`, validation reports and immutable task candidates. `workspace.py`
+creates starters, restores accepted versions, assembles source and derives preview observations. `EffectTools`
+provides reads, exact edits, previews, checks and saves; code runs only through the isolated validator.
+`compose.py` bundles the component and generates standard configuration fields. There is no role composer or
+built-in effect recipe implementation.
 
-`sprite.compose` (contract v2) also takes the Sprite `kind` and `parameters`
-bindings. A binding lifts declared top-level Preset props into one required
-top-level Sprite parameter (`compose.py` checks the targets share one schema and
-one value, removes them from the instances' nested schemas and defaults, and
-`compose.mjs` passes the top-level value to every target). Bound parameters need
-bounded schemas (`categories.parameter_problems`). `sprite.create` refuses a
-Sprite without its kind's required parameters (`categories.REQUIRED`) with
-`CATEGORY_PARAMETERS_MISSING` before the browser mount, so the Executor fixes the
-bindings in its loop.
+Older complete components open with their source, full parameter contract and current defaults in the same
+workspace. Conversion never writes to history. The manifest's optional `contract` preserves nested parameters
+and content bounds, and follows the same save gate as a new effect. Historical serialization models remain in
+`contracts.py` so accepted versions and library records stay readable.
 
-`registry.get_tool` is the single name resolver: it accepts the dotted ID or the
-provider wire name (`wire_name`) and rejects everything else with the tool
-list and closest names from the supplied window. Agent dispatch and `resolve`
-pass only the current layer's permitted tools; inspection passes all registered
-contracts plus host Plan control without granting execution rights. Because
-inspection also holds contract-only tools, its unknown-name error lists callable
-tools and contract-only tools apart, and a contract-only descriptor begins
-`[Not callable in this build ...]`.
-Registration also declares `starts_generation`, so the
-host never keeps its own tool-name sets. `tests/test_remotion_tool_registry.py`
-fails when a registered tool is not resolvable, inspectable and correctly
-exposed, which is the check to run after adding a tool.
+`catalog_store.py` stores immutable accepted code in MySQL. `library.search` performs bounded, ranked reads in a
+worker thread; reuse means copying source into the workspace. `CatalogStore.solidify` records accepted components
+and their uses. There is no local catalog fallback or Agent-facing Preset mutation API.
 
-Inspection includes `contract_version`: 1 by default, 2 for the implemented
-`preset.search` listing/ID-lookup contract. Search returns bounded summaries and
-`has_more`; storage and response-size failures are declared in its descriptor.
+`registry.get_tool` resolves dotted IDs and underscore wire names only within the caller's tool window.
+Outer and Plan may execute their control; Executor may execute the workspace tools and its report control.
+`tools.inspect` can describe either control without granting execution rights. Removed tool names are rejected.
+Registration declares `starts_generation` so the host needs no parallel list of mutating tools.
+
+Run the registry, workspace, historical conversion and layer tests when changing this boundary. Frozen legacy
+fixtures exercise migration without keeping the retired generator executable in production.

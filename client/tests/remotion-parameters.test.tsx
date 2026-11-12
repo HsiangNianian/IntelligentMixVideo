@@ -242,6 +242,27 @@ test("自由组件的样式参数按 Agent 声明的分组成卡片", () => {
   expect(changes).toEqual([["riseOn", false], ["riseDistance", 1], ["keywordEffect", false]]);
 });
 
+test("旧作品转换后保留嵌套控件及复杂参数的 JSON 编辑", () => {
+  const version = composedVersion();
+  version.spec.sprite = { kind: "text", effect: { kind: "text", contract: { preview_keywords: ["灵感"] } } };
+  version.candidate.config_schema.properties = {
+    text: { type: "string", title: "文字", minLength: 1, maxLength: 100 },
+    title: { type: "object", properties: { radius: { type: "number", title: "圆角", minimum: 0, maximum: 100 } } },
+    tint: { type: "object", properties: { detail: { type: "object", properties: {} } } },
+    inherited: { type: "object" },
+    effect: { type: "object", properties: {} },
+  };
+  version.candidate.default_config = { text: "今日灵感", title: { radius: 20 }, tint: { detail: { color: "#FFFFFF" } }, inherited: { opacity: 0.5 }, effect: {} };
+  const changes: [string, JsonValue][] = [];
+  render(<ParametersPanel version={version} values={version.candidate.default_config} disabled={false} pending={false} dirty={false} saving={false}
+    onChange={(key, value) => changes.push([key, value])} onSave={() => {}} onDiscard={() => {}} />);
+  fireEvent.change(screen.getByLabelText("圆角"), { target: { value: "45" } });
+  fireEvent.change(screen.getByLabelText("实例参数 · tint"), { target: { value: '{"detail":{"color":"#FF0000"}}' } });
+  expect(screen.getByLabelText<HTMLTextAreaElement>("实例参数 · inherited").value).toContain("0.5");
+  expect(screen.queryByLabelText("实例参数 · effect")).toBeNull();
+  expect(changes).toEqual([["title", { radius: 45 }], ["tint", { detail: { color: "#FF0000" } }]]);
+});
+
 // 场景：特效放在逐字位置（每个字依次显现，如打字机）时，位置显示中文名称（这里是「关键词逐字」），推迟开始的延迟和位置一样在这个特效的卡片里；
 // 双栏的排布（重叠）是「文字」里的排版参数，显示中文名称。
 test("特效的逐字位置、延迟与双栏的重叠排布显示中文名称", () => {

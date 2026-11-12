@@ -20,8 +20,8 @@ from pydantic import ValidationError
 
 from ..categories import EFFECT_PARAMETER, FIXED_TITLES, HEX_COLOR, PARAMETER_GROUP, parameter_problems
 from ..fonts import DEFAULT_FAMILY
-from .compose import compose_source, text_configuration
-from .contracts import EffectManifest, EffectText, SpriteDraft
+from .compose import _bundle, compose_source, text_configuration
+from .contracts import EffectBounds, EffectManifest, EffectText, SpriteDraft
 from .registry import ToolFault, argument_fault
 from .schema import validate_parameters
 
@@ -341,6 +341,8 @@ def assemble(files: dict[str, str], *, fonts: list[str], requested: set[str], du
     """
     notes: list[str] = []
     manifest = parse_manifest(files[MANIFEST])
+    if manifest.contract is not None:
+        return _assemble_existing(files[CODE], manifest, duration), notes
     layout = _layout(manifest, notes)
     config_schemas: dict[str, Any] = {}
     config_defaults: dict[str, Any] = {}
@@ -378,11 +380,73 @@ def assemble(files: dict[str, str], *, fonts: list[str], requested: set[str], du
     return draft, notes
 
 
+def _assemble_existing(code: str, manifest: EffectManifest, duration: int) -> SpriteDraft:
+    """Bundle an existing complete component through the workspace, preserving its schema and canvas coordinates.
+
+    Its drawing and internal parameter mapping are already source code. Re-composing its old Presets would change
+    timing or layout; instead the Agent edits that source and the explicit contract using the ordinary workspace tools.
+    The same save gate validates the resulting component. This never changes a stored historical version.
+    """
+    contract = manifest.contract
+    if manifest.params or manifest.text is not None:
+        raise ToolFault("INVALID_ARGUMENT", "This component keeps its full contract: edit contract.parameter_schema and contract.default_parameters; omit text and params.", field="/contract")
+    schema, defaults = deepcopy(contract.parameter_schema), deepcopy(contract.default_parameters)
+    try:
+        validate_parameters(schema, defaults)
+    except Exception as exc:
+        raise ToolFault("INVALID_ARGUMENT", f"The preserved defaults do not match their schema: {str(exc)[:500]}", field="/contract/default_parameters") from exc
+    properties = schema.get("properties", {})
+    bindings = [{"name": name, "title": str(definition.get("title") or name)[:40],
+                 "targets": [{"instance_id": INSTANCE_ID, "parameter": name}]}
+                for name, definition in properties.items()
+                if isinstance(definition, dict) and definition.get("type") in {"string", "number", "integer", "boolean", "array"}
+                and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,31}", name)]
+    component = {"description": manifest.description, "code": code, "parameter_schema": schema, "default_parameters": defaults}
+    instance = {"instance_id": INSTANCE_ID, "preset": component, "parameters": defaults,
+                "layout": {**FULL_CANVAS, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": duration}}
+    return SpriteDraft.model_validate({**component, "code": _bundle({"code": code})["code"],
+        "composition": {**CANVAS, "fps": 30, "duration_frames": duration}, "instances": [instance],
+        "kind": manifest.kind, "bindings": bindings, "effect": manifest.model_dump(mode="json", by_alias=True, exclude_none=True)})
+
+
+def restore_version_files(spec, candidate) -> dict[str, str]:
+    """Open any accepted version as an editable component, without writing back to history or running a model.
+
+    Composed text blocks, box layouts and pre-Sprite components already carry complete executable TSX. Copy it and
+    the candidate's current contract, including nested manual parameter changes, rather than reconstructing a look.
+    Converted versions subsequently restore exactly like any other workspace version.
+    """
+    sprite = spec.sprite
+    if sprite is not None and sprite.effect is not None:
+        return restore_files(sprite, candidate.default_config)
+    kind = sprite.kind if sprite is not None else spec.sprite_kind
+    if kind in {None, "composition", "subtitle"}:
+        kind = "text"
+    keywords = list(sprite.text.preview_keywords or []) if sprite is not None and sprite.text is not None else list(spec.keyword_examples)
+    bounds = dict(FULL_CANVAS)
+    if sprite is not None:
+        layouts = [item.layout for item in sprite.instances]
+        left, top = max(0.0, min(item.x for item in layouts)), max(0.0, min(item.y for item in layouts))
+        right = min(float(CANVAS["width"]), max(item.x + item.width for item in layouts))
+        bottom = min(float(CANVAS["height"]), max(item.y + item.height for item in layouts))
+        if right > left and bottom > top:
+            bounds = {"x": left, "y": top, "width": right - left, "height": bottom - top}
+    manifest = {
+        "kind": kind, "description": sprite.description if sprite is not None else "已有作品",
+        "layout": FULL_CANVAS,
+        "contract": {"parameter_schema": deepcopy(candidate.config_schema), "default_parameters": deepcopy(candidate.default_config),
+                     "preview_keywords": keywords, "content_box": bounds},
+    }
+    return {CODE: candidate.tsx_code, MANIFEST: json.dumps(manifest, ensure_ascii=False, indent=2)}
+
+
 def preview_keywords(sprite: SpriteDraft) -> list[str]:
     """The keywords a free-form text effect's previews show: its manifest's sample keywords, else up to two opening characters."""
     if sprite.kind != "text" or sprite.default_parameters.get("keywords"):
         return []
-    kept = list(((sprite.effect or {}).get("text") or {}).get("keywords") or [])
+    effect = sprite.effect or {}
+    declared = ((effect.get("text") or {}).get("keywords") or (effect.get("contract") or {}).get("preview_keywords") or [])
+    kept = [word for word in declared if word in str(sprite.default_parameters.get("text", ""))]
     if kept:
         return kept
     line = next((line for line in str(sprite.default_parameters.get("text", "")).split("\n") if line.strip()), "")
@@ -516,6 +580,11 @@ def restore_files(sprite: SpriteDraft, values: dict[str, Any]) -> dict[str, str]
     """The workspace of an accepted free-form version, with ``values`` (its current defaults, including the user's
     own parameter changes) written back into the manifest so the edit starts from what the user sees."""
     manifest = deepcopy(sprite.effect or {})
+    if manifest.get("contract") is not None:
+        # Saving opens font enums for later library additions. Restore the accepted public schema, not a stale
+        # manifest enum that would reject a font the user selected after this component was saved.
+        manifest["contract"]["parameter_schema"] = deepcopy(sprite.parameter_schema)
+        manifest["contract"]["default_parameters"] = deepcopy(values)
     text = manifest.get("text")
     if isinstance(text, dict):
         lines = str(values.get("text", text.get("sample", ""))).split("\n")
@@ -572,8 +641,10 @@ def _probe_content(values: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     return {"text": probes[0], "textEn": probes[1]}, probes
 
 
-def _extremes(definition: dict[str, Any]) -> list[Any] | None:
+def _extremes(definition: dict[str, Any] | bool) -> list[Any] | None:
     """Two values at the ends of a style parameter's range, or None when it has no comparable ends."""
+    if not isinstance(definition, dict):
+        return None
     kind = definition.get("type")
     if isinstance(definition.get("enum"), list):
         values = definition["enum"]
@@ -597,7 +668,9 @@ def contract_probes(sprite: SpriteDraft) -> dict[str, Any]:
     """
     values = sprite.default_parameters
     properties = sprite.parameter_schema.get("properties", {})
-    style = [item.get("name") for item in (sprite.effect or {}).get("params", [])]
+    effect = sprite.effect or {}
+    style = ([name for name in properties if name not in CONFIGURATION_NAMES and name != "keywordEffect"]
+             if effect.get("contract") else [item.get("name") for item in effect.get("params", [])])
     names = [name for name in style if name in properties] + (["keywordEffect"] if "keywordEffect" in properties else [])
     starts = [0] * len(values["lineStartFrames"]) if isinstance(values.get("lineStartFrames"), list) else None
     keywords = preview_keywords(sprite)
@@ -623,6 +696,9 @@ def contract_probes(sprite: SpriteDraft) -> dict[str, Any]:
 def review_box(sprite: SpriteDraft) -> dict[str, float]:
     """The canvas region previews show: the effect's box with room around it for motion, or the whole canvas for a full-canvas effect."""
     layout = sprite.instances[0].layout
+    bounds = ((sprite.effect or {}).get("contract") or {}).get("content_box")
+    if bounds is not None:
+        layout = EffectBounds.model_validate(bounds)
     margin = max(120.0, layout.height / 2)
     left, top = max(0.0, layout.x - margin), max(0.0, layout.y - margin)
     right = min(float(CANVAS["width"]), layout.x + layout.width + margin)

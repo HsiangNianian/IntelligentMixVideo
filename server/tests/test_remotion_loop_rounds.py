@@ -145,13 +145,24 @@ def test_terminal_job_accepts_no_more_rounds(round_store, status):
 class FakeSession:
     """只暴露 AgentRun 用到的任务级接口，不访问模型或渲染器。"""
 
-    def __init__(self, _harness, _spec, _base, _budget, directory, images, _stage, intent):
+    def __init__(self, _harness, _spec, _base, _budget, directory, images, _stage, intent, **_options):
         self.directory = Path(directory)
         self.images = images
         self.intent = intent or {"original_request": {"description": "demo"}}
         self.latest_sprite_id = "sprite-1"
         self.saved_sprites = {"sprite-1": {"sprite_id": "sprite-1"}}
         self.review_frames = []
+        self.base_frames = []
+        self.files = {"Effect.tsx": "export default function Effect(){return null}", "effect.json": "{}"}
+        self.observations = []
+        self.observations_fresh = False
+        self.pending_sheet = None
+        self.sheet_seen = "sprite-1"
+        self.saved_hash = self.checked_hash = "unchanged"
+
+    def workspace_hash(self):
+        """Keep this recording fixture's saved workspace current."""
+        return "unchanged"
 
     def snapshot(self, **_options):
         """返回确定性的宿主快照。"""
@@ -170,11 +181,12 @@ class FakeSession:
         return self.saved_sprites[identifier]
 
     async def execute(self, name, args, _catalog):
-        """记录一次确定性的业务工具观察；读取预设回执带 preset_id，sprite_create 像真实工具一样保存新 Sprite。"""
-        if name == "sprite.create":
+        """记录业务工具观察，effect.save 像真实工具一样保存新 Sprite。"""
+        if name == "effect.save":
             identifier = f"sprite-{len(self.saved_sprites) + 1}"
             self.saved_sprites[identifier] = {"sprite_id": identifier}
             self.latest_sprite_id = identifier
+            self.sheet_seen = identifier
         return {
             "tool": name, "args": args.model_dump(mode="json"), "preset": {"preset_id": "preset-1"},
             "observation": "RESULT_ONLY_MARKER",
@@ -199,7 +211,7 @@ class FakeHarness:
     def __init__(self, responses):
         self.responses = iter(responses)
         self.roles = []
-        self.fonts = SimpleNamespace(guide=lambda: "")
+        self.fonts = SimpleNamespace(guide=lambda **_options: "")
         self.settings = SimpleNamespace(
             max_steps=4,
             max_tooluse=3,
@@ -207,7 +219,7 @@ class FakeHarness:
             max_no_progress_turns=4,
         )
 
-    async def _turn(self, _system, _context, _tools, _budget, _images, *, phase, data=None):
+    async def _turn(self, _system, _context, _tools, _budget, _images, *, phase, data=None, **_options):
         """按角色返回下一条脚本响应。"""
         self.roles.append(phase)
         response = next(self.responses)
@@ -244,9 +256,9 @@ def test_real_loop_records_every_turn_with_its_tools(monkeypatch, tmp_path):
     harness = FakeHarness(
         [
             call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "暖色调滤镜"}),
-            call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+            call("exec-1", "library_search", {"preset_id": "preset-1"}),
             AssistantMessage(content=json.dumps({"status": "step_done", "summary": "预设已就绪"})),
-            call("exec-2", "sprite_create", {"draft_id": "PRIVATE_DRAFT"}),
+            call("exec-2", "effect_save", {}),
             report("exec-3"),
         ]
     )
@@ -261,13 +273,13 @@ def test_real_loop_records_every_turn_with_its_tools(monkeypatch, tmp_path):
     ]
     # 控制工具与业务工具都按契约里的点号 ID 记录，而不是模型侧的调用名。
     assert [(item["calls"][0]["tool"], item["calls"][0]["status"]) for item in (seen[0], seen[1], seen[4])] == [
-        ("tools.plan_execute", "pass"), ("preset.search", "pass"), ("tools.report_step", "pass"),
+        ("tools.plan_execute", "pass"), ("library.search", "pass"), ("tools.report_step", "pass"),
     ]
     # 每次调用带模型给出的原始参数（有意公开），前端展开即可核对；工具成功结果仍只在私有审计。
     assert "RESULT_ONLY_MARKER" not in json.dumps(seen)
     search = seen[1]["calls"][0]
     assert json.loads(search["arguments"]) == {"preset_id": "preset-1"}
-    assert "PRIVATE_DRAFT" in json.dumps(seen[3]["calls"][0], ensure_ascii=False)
+    assert seen[3]["calls"][0]["tool"] == "effect.save"
     assert json.loads(seen[0]["calls"][0]["arguments"]) == {"action": "delegate", "reason": "暖色调滤镜"}
     # 只回消息、没有调用工具的轮次没有调用，但保留模型回复，不再是空白。
     assert seen[2]["calls"] == []
@@ -282,12 +294,10 @@ def test_failed_call_is_recorded_with_its_error_code(monkeypatch, tmp_path):
             call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "标题"}),
             call(
                 "exec-1",
-                "preset_create",
+                "workspace_write",
                 {
-                    "description": "标题",
-                    "code": "export default function Label(){return null}",
-                    "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False},
-                    "default_parameters": {},
+                    "path": "Effect.tsx",
+                    "content": "export default function Label(){return null}",
                 },
             ),
             report("exec-2", "blocked", "保存失败"),
@@ -304,7 +314,7 @@ def test_failed_call_is_recorded_with_its_error_code(monkeypatch, tmp_path):
     assert failed["layer"] == "executor" and failed["turn"] == 2
     (failure,) = failed["calls"]
     assert {key: failure[key] for key in ("tool", "status", "error_code", "message")} == {
-        "tool": "preset.create",
+        "tool": "workspace.write",
         "status": "fail",
         "error_code": "CODE_VALIDATION_FAILED",
         "message": "代码校验未通过。",
@@ -312,8 +322,8 @@ def test_failed_call_is_recorded_with_its_error_code(monkeypatch, tmp_path):
     # 工具抛出的真实说明与模型给出的参数（含候选源码）一并公开，方便定位失败原因；ToolFault 的结构化 details 不是公开字段。
     assert failure["detail"] == "Preset code validation failed."
     arguments = json.loads(failure["arguments"])
-    assert arguments["description"] == "标题"
-    assert arguments["code"] == "export default function Label(){return null}"
+    assert arguments["path"] == "Effect.tsx"
+    assert arguments["content"] == "export default function Label(){return null}"
     assert "details" not in failure and "DETAILS_ONLY_SOURCE" not in json.dumps(seen)
 
 
@@ -418,8 +428,8 @@ def test_unresolved_names_do_not_break_rounds(monkeypatch, tmp_path, round_store
     """协议允许的四个调用仍可恢复：长名称与 Pydantic 输入仅留在私有上下文。"""
     monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
     work, job = running_job(round_store)
-    calls = [call("valid", "tools_inspect", {"tool_name": "sprite.create"}).tool_calls[0]]
-    calls += [call("invalid", "preset_create", {"code": "PRIVATE_SOURCE"}).tool_calls[0]]
+    calls = [call("valid", "tools_inspect", {"tool_name": "effect.save"}).tool_calls[0]]
+    calls += [call("invalid", "workspace_write", {"content": "PRIVATE_SOURCE"}).tool_calls[0]]
     calls += [call(f"unknown-{i}", "PRIVATE_TOOL_" * 6, {}).tool_calls[0] for i in range(2)]
     harness = FakeHarness([
         AssistantMessage(tool_calls=calls),
@@ -441,7 +451,7 @@ def test_unresolved_names_do_not_break_rounds(monkeypatch, tmp_path, round_store
     assert recorded[0].calls[2].requested_tool.startswith("PRIVATE_TOOL_")
     assert len(recorded[0].calls[2].requested_tool) == 64
     assert "Unknown or out-of-scope tool" in recorded[0].calls[2].detail
-    assert recorded[0].calls[1].tool == "preset.create" and "PRIVATE_SOURCE" in recorded[0].calls[1].arguments
+    assert recorded[0].calls[1].tool == "workspace.write" and "PRIVATE_SOURCE" in recorded[0].calls[1].arguments
     assert "PRIVATE_SOURCE" in run.executor_context.serialize()
 
 

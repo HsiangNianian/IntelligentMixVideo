@@ -64,13 +64,13 @@ def _long_text(values: dict) -> dict:
 class EffectTools:
     """Workspace, preview, check, save and image tools of a free-form effect; mixed into `ToolSession`.
 
-    The session supplies ``files`` (None when the task edits an older composed effect), ``images``, ``directory``,
+    The session supplies editable ``files`` for new and historical works, ``images``, ``directory``,
     ``requested``, ``validator`` and the Sprite bookkeeping (`saved_sprites`, `latest_sprite_id`, `validate_code`,
     `validate_render`).
     """
 
-    files: dict[str, str] | None
-    # This work's free-form versions by number, as (Sprite, its current parameter values), for going back to one.
+    files: dict[str, str]
+    # This work's versions by number, as (spec, candidate), for restoring any earlier version on demand.
     versions: dict[int, tuple]
     # Images the latest image-producing tool returned, attached to the next Executor turns as (path, label).
     observations: list[tuple[Path, str]]
@@ -88,15 +88,11 @@ class EffectTools:
     renders_left: int
 
     def _workspace(self) -> dict[str, str]:
-        """The workspace files, or a refusal naming the tools this task has instead."""
-        if self.files is None:
-            raise ToolFault("INVALID_ARGUMENT", "This task changes an older composed effect: use the Preset and sprite tools it lists instead of the workspace.")
+        """The same two editable files for new effects and all accepted historical versions."""
         return self.files
 
     def workspace_hash(self) -> str | None:
         """A digest of both files, telling whether they changed since a check or save."""
-        if self.files is None:
-            return None
         return hashlib.sha256("\0".join(self.files[name] for name in (CODE, MANIFEST)).encode()).hexdigest()
 
     def read_file(self, request: WorkspaceReadInput) -> WorkspaceFile:
@@ -104,7 +100,8 @@ class EffectTools:
         if request.version is not None:
             if request.version not in self.versions or request.path == RUNTIME_FILE.name:
                 raise ToolFault("INVALID_ARGUMENT", f"Earlier versions hold {CODE} and {MANIFEST}; the versions of this work are {sorted(self.versions)}.", field="/version")
-            content = restore_files(*self.versions[request.version])[request.path]
+            from .workspace import restore_version_files
+            content = restore_version_files(*self.versions[request.version])[request.path]
         elif request.path == RUNTIME_FILE.name:
             content = RUNTIME_FILE.read_text(encoding="utf-8")
         else:
@@ -150,8 +147,9 @@ class EffectTools:
         """The preview length: the user's choice for a new work, the accepted base's for an edit."""
         if self.target_frames:
             return self.target_frames
-        sprite = self.spec.sprite if self.spec is not None else None
-        return sprite.composition.duration_frames if sprite is not None else 150
+        if self.spec is None:
+            return 150
+        return self.spec.sprite.composition.duration_frames if self.spec.sprite is not None else self.spec.composition.duration_in_frames
 
     async def _assemble(self, duration: int | None = None) -> tuple[SpriteDraft, list[str]]:
         """Build the draft the workspace describes (the bundler is a subprocess, so it runs off the event loop)."""
@@ -171,9 +169,11 @@ class EffectTools:
         missing = category_problems(draft.kind, draft.parameter_schema, {item.name for item in draft.bindings}, draft.default_parameters,
                                     fonts=set(self._fonts()), requested=set(self.requested), allow_disabled_keyword_effect=True)
         if missing:
+            hint = ("Edit contract.parameter_schema and contract.default_parameters in effect.json, preserving the existing controls."
+                    if (draft.effect or {}).get("contract") else
+                    'Declare style parameters in effect.json params; text, fonts, sizes, gaps and keywords come from its "text" section.')
             return [EffectProblem(check="parameters", message=(
-                f"{item.name} {item.reason}{f'; schema {item.rule.example}' if item.rule else ''}. Declare the effect's own style parameters in "
-                "effect.json params; the text configuration (text, fonts, sizes, gaps, keywords) comes from its \"text\" section.")) for item in missing], None
+                f"{item.name} {item.reason}{f'; schema {item.rule.example}' if item.rule else ''}. {hint}")) for item in missing], None
         sprite = draft.model_copy(update={"parameter_schema": open_font_schema(draft.parameter_schema)})
         text = sprite.kind == "text"
         report = await self.validate_render(

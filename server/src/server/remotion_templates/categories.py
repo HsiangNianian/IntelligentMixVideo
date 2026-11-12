@@ -283,25 +283,8 @@ FIXED_TITLES = {
 
 # 文字块第 k 个特效（从 1 起）的配置参数：开关 effect{k}、作用位置 effect{k}Target，入场、出场与下栏出现另有时长 effect{k}Seconds
 # （秒），入场与下栏出现还有推迟开始的 effect{k}Delay（秒），默认放在逐字位置的另有各字错开程度 effect{k}Stagger（0～1）。名称由宿主
-# 按特效顺序生成，标题取特效的中文名称（`compose.text_configuration`）；样式参数与实例都不能用这种名字。
+# 按特效顺序生成，历史版本按其顺序保存这些名称；资产与参数编辑继续识别，新的样式参数不占用。
 EFFECT_PARAMETER = re.compile(r"^effect[1-9][0-9]*(?:Target|Seconds|Delay|Stagger)?$")
-# 特效可选的位置：单栏没有各栏与上下栏；逐字位置只在各栏的 text Preset 都画宿主的 children 时可选，关键词逐字另要求关键词 Preset
-# 也画 children（`compose.compose_text_source`）。
-EFFECT_TARGETS = {
-    1: ("block", "chars", "keywordChars", "plainChars", "keyword"),
-    2: ("block", "tiers", "line1", "line2", "chars", "keywordChars", "plainChars", "keyword"),
-    4: ("block", "tiers", "line1", "line2", "line3", "line4", "chars", "keywordChars", "plainChars", "keyword"),
-}
-# 逐字位置：每个字一个单元，依次分享入场、出场进度；关键词逐字位置单列，它要求关键词 Preset 画宿主的 children。
-GLYPH_TARGETS = ("chars", "keywordChars", "plainChars")
-KEYWORD_GLYPH_TARGET = "keywordChars"
-# 入场与下栏出现特效推迟开始的秒数范围，省略为 0。
-EFFECT_DELAY = (0, 3)
-# 入场、出场时长（秒）的范围与省略时的默认值（与 IMS 文字入场、出场一致）。
-EFFECT_SECONDS = (0.1, 3)
-DEFAULT_EFFECT_SECONDS = 0.5
-# 特效类型的中文名称，写在开关参数的标题里。
-EFFECT_SLOTS = {"enter": "入场", "exit": "出场", "loop": "持续", "cue": "下栏出现"}
 
 
 def _tier_rules(tier: int) -> tuple[Rule, ...]:
@@ -593,26 +576,6 @@ def keyword_default_issues(values: dict) -> list[tuple[str, object]]:
     否则会得到一个只能预览、无法保存到资产的版本。
     """
     return [(rule.name, rule.off) for rule in TEXT_KEYWORDS if rule.name in values and not _same(values[rule.name], rule.off)]
-
-
-def agent_message(kind: str | None, problems: list[Problem]) -> str:
-    """给 Agent 的英文说明：缺什么、应有的 Schema、如何在 sprite_compose 里绑定，以及关键词默认值要怎么修复。"""
-    lines = [f"The {kind} Sprite does not expose the category's required top-level parameters:"]
-    for item in problems:
-        example = f"; schema {item.rule.example}" if item.rule else ""
-        lines.append(f"- {item.name} {item.reason}{example}")
-    lines.append(
-        'Bind each one with sprite_compose "parameters": [{"name": ..., "title": <Chinese label>, '
-        '"targets": [{"instance_id": ..., "parameter": <Preset prop>}]}] after giving the Preset prop that schema.'
-    )
-    if any(item.reason.startswith(DEFAULT_REASON) for item in problems):
-        # 修复旧字效：总线每次渲染都会传入关键词与六个样式，外观留在关键词 Preset 自己的样式参数里。
-        lines.append(
-            "Keyword options are content the bus passes on every render, so a Sprite must not default them on. To repair an older "
-            "effect, keep the keyword look in a keyword Preset's own style parameters (keywordEffect...) and give the keyword options "
-            'their off defaults in this Sprite\'s default parameters: keywords [], the four switches false, keywordColor "", keywordSize 0.'
-        )
-    return "\n".join(lines)
 
 
 def operator_message(problems: list[Problem]) -> str:

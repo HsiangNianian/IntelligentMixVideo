@@ -1,4 +1,4 @@
-"""自由组件字效（`IMV_REMOTION_AGENT=autonomous`）：工作区清单与配置推导、起始工程、契约探针、会话工具与三层循环的自由组件路径。
+"""统一组件工作区：工作区清单与配置推导、起始工程、契约探针、会话工具与三层循环的自由组件路径。
 
 执行：在 server/ 下 `uv run --locked pytest tests/test_remotion_free_effects.py -v`。打包需要锁定的 Remotion 依赖（esbuild）；
 真实浏览器用例另需 `IMV_TEST_RENDERER=1` 与浏览器、字体路径。离线用例用桩替换隔离校验器，只检验宿主逻辑与协议；模型轮次
@@ -298,7 +298,7 @@ def stub_checks(current, report=None):
 def free_session(tmp_path, intent=None, spec=None, base=None, report=None):
     """A free-form session whose isolated checks are replaced by `stub_checks`."""
     current = ToolSession(SimpleNamespace(settings=Settings(_env_file=None, data_dir=tmp_path), renderer=None), spec, base, Budget(),
-                          tmp_path / "run", [], lambda *_: None, intent or {"original_request": {"description": "demo"}}, free=True)
+                          tmp_path / "run", [], lambda *_: None, intent or {"original_request": {"description": "demo"}})
     return stub_checks(current, report)
 
 
@@ -376,9 +376,9 @@ def test_an_edit_can_go_back_to_an_earlier_version(tmp_path):
     """「回到第 n 版」：快照列出作品的自由组件版本，workspace.read 读得到那一版的文件（含那一版用户调过的参数）；更早的组合版本和不存在的序号不可读。"""
     draft, _ = build(starter_files("text", set(), "Noto Sans CJK SC"), description="第一版白字")
     version = lambda number, sprite, values: SimpleNamespace(number=number, spec=SimpleNamespace(sprite=sprite), candidate=SimpleNamespace(default_config=values))
-    versions = [version(1, SimpleNamespace(effect=None), {}), version(2, draft, {**draft.default_parameters, "color": "#FF0000"})]
+    versions = [version(2, draft, {**draft.default_parameters, "color": "#FF0000"})]
     current = ToolSession(SimpleNamespace(settings=Settings(_env_file=None, data_dir=tmp_path), renderer=None), None, None, Budget(), tmp_path / "run", [], lambda *_: None,
-                          {"original_request": {"description": "x"}}, free=True, versions=versions)
+                          {"original_request": {"description": "x"}}, versions=versions)
     assert current.snapshot()["versions"] == [{"number": 2, "description": "第一版白字"}]
     manifest_file = asyncio.run(current.execute("workspace.read", {"path": "effect.json", "version": 2}, available()))
     assert {item["name"]: item["default"] for item in json.loads(manifest_file["content"])["params"]}["color"] == "#FF0000"
@@ -523,8 +523,8 @@ class FakeHarness:
         self.responses = iter(responses)
         self.roles, self.systems, self.options, self.windows, self.tools = [], [], [], [], []
         self.published = []
-        self.fonts = SimpleNamespace(guide=lambda free=False: "Font library (free)" if free else "Font library")
-        self.settings = SimpleNamespace(max_steps=8, max_tooluse=6, enforce_no_progress=False, max_no_progress_turns=6, remotion_agent="autonomous")
+        self.fonts = SimpleNamespace(guide=lambda: "Font library")
+        self.settings = SimpleNamespace(max_steps=8, max_tooluse=6, enforce_no_progress=False, max_no_progress_turns=6)
         self.renderer = None
 
     async def _turn(self, system, context, tools, _budget, images, *, phase, **options):
@@ -732,9 +732,9 @@ def test_every_executor_request_extends_the_previous_one_so_the_prefix_cache_hit
     run.session.images = [reference]
     guides = []
 
-    def guide(free=False):
+    def guide():
         """模拟持续变化的字体库，只有打开窗口时读取，不能让每次系统提示随之变化。"""
-        guides.append(free)
+        guides.append(True)
         return f"FONT_LIBRARY_MARKER_{len(guides)}"
 
     harness.fonts.guide = guide
@@ -967,20 +967,9 @@ def test_an_edit_starts_from_the_accepted_versions_frames(monkeypatch, tmp_path)
                    intent={"original_request": {"description": "x"}, "instruction": "改成红色", "accepted_base": {"name": "v1"}})
     with pytest.raises(ScriptEnd):
         asyncio.run(run.plan_execute())
-    assert run.free is True and [step.id for step in run.state.plan.steps] == ["edit"]
+    assert [step.id for step in run.state.plan.steps] == ["edit"]
     assert run.session.observations and all(label.startswith("accepted version") for _path, label in run.session.observations)
     assert run.session.renders_left == 12
-
-
-def test_presets_remain_the_default_and_older_composed_versions_keep_their_path(tmp_path):
-    """默认仍是 Preset 组合；开启自由组件后，更早的组合版本的修改也继续走组合路径。"""
-    harness = FakeHarness([], tmp_path)
-    harness.settings.remotion_agent = "presets"
-    assert AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None).free is False
-    harness.settings.remotion_agent = "autonomous"
-    composed = SimpleNamespace(sprite=SimpleNamespace(effect=None, instances=[], text=None, composition=None), sprite_kind="text")
-    run = AgentRun(harness, composed, Budget(), tmp_path, [], lambda *_: None, base=SimpleNamespace(default_config={}))
-    assert run.free is False and run.session.files is None
 
 
 def test_a_grouped_style_parameter_is_published_with_its_group():
@@ -1068,7 +1057,7 @@ def real_session(tmp_path, requested=frozenset()):
     settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
     request = {"description": "测试", **{name: True for name in requested}}
     return ToolSession(SimpleNamespace(settings=settings, renderer=Renderer(settings)), None, None, Budget(), tmp_path / "run", [], lambda *_: None,
-                       {"original_request": request}, free=True)
+                       {"original_request": request})
 
 
 @needs_browser

@@ -2,7 +2,7 @@
 
 Covers: every registered tool resolves by dotted and wire name, inspection accepts both,
 visibility follows `implemented`, generation-starting tools are declared on the registry,
-unknown names fail with a correctable message, the search/modify tools behave, the
+unknown names fail with a correctable message, the read-only library behaves, the
 Plan contract errors seen in real task logs are actionable, and call arguments tolerate only
 surplus closing brackets while every other JSON or schema error names where it is.
 Run: `uv run --locked pytest tests/test_remotion_tool_registry.py -v`.
@@ -17,10 +17,9 @@ import pytest
 from server.remotion_templates.planning import PlanAction
 from server.remotion_templates.tools.catalog import available, resolve
 from server.remotion_templates.tools.contracts import (
-    PresetModifyInput,
     PresetSearchInput,
-    SpriteComposeInput,
-    SpriteCreateInput,
+    ImageInspectInput,
+    WorkspaceReadInput,
 )
 from server.remotion_templates.tools.registry import (
     ToolFault,
@@ -85,7 +84,7 @@ def test_visibility_follows_implementation_and_dispatch_accepts_wire_names():
 def test_generation_tools_are_declared_on_the_registry():
     """The host's 'generation started' signal comes from registration, not a hardcoded set."""
     assert {item.name for item in registered_tools() if item.starts_generation} == {
-        "preset.create", "sprite.compose", "sprite.create", "workspace.write", "workspace.edit", "effect.save",
+        "workspace.write", "workspace.edit", "effect.save",
     }
 
 
@@ -96,31 +95,7 @@ def test_unknown_tool_names_fail_with_list_and_suggestions(bad):
         get_tool(bad)
     error = caught.value.error
     assert error.code == "TOOL_NOT_FOUND"
-    assert "Available tools:" in error.message and "preset.create" in error.message
-
-
-def test_contract_only_tools_say_they_are_not_callable():
-    """只有契约的工具仍可被 inspect，但描述第一句就声明当前不可调用，实现了的工具不受影响。"""
-    contract_only = [item for item in registered_tools() if not item.implemented]
-    assert contract_only, "the registry must still hold deferred contracts"
-    for item in contract_only:
-        assert item.describe()["description"].startswith("[Not callable in this build"), item.name
-    for item in registered_tools():
-        if item.implemented:
-            assert not item.describe()["description"].startswith("[Not callable"), item.name
-
-
-def test_inspect_unknown_name_lists_callable_tools_apart_from_contract_only_ones():
-    """模型在真实日志里曾被「Available tools」带去调用 validate.code；报错必须把可调用与仅有契约的分开列。"""
-    result = asyncio.run(get_tool("tools.inspect").invoke(None, {"tool_name": "preset"}))
-    assert result["ok"] is False and result["error"]["code"] == "TOOL_NOT_FOUND"
-    available, _, contract_only = result["error"]["message"].partition(". Contract-only, not callable: ")
-    callable_names = set(available.split("Available tools: ")[1].split(", "))
-    reference_names = set(contract_only.split(", "))
-    implemented = {item.name for item in registered_tools() if item.implemented}
-    assert implemented <= callable_names
-    assert reference_names == {item.name for item in registered_tools() if not item.implemented}
-    assert callable_names.isdisjoint(reference_names)
+    assert "Available tools:" in error.message and "effect.save" in error.message
 
 
 def test_inspect_description_does_not_invite_guessing_names():
@@ -132,7 +107,7 @@ def test_inspect_description_does_not_invite_guessing_names():
 def test_empty_tool_window_never_falls_back_to_the_registry():
     """空权限窗口必须拒绝已注册工具，且不能建议窗口外的工具。"""
     with pytest.raises(ToolFault) as caught:
-        get_tool("preset_create", [])
+        get_tool("effect_save", [])
     assert caught.value.error.message.endswith("Available tools: none")
     assert "Closest:" not in caught.value.error.message
 
@@ -140,8 +115,8 @@ def test_empty_tool_window_never_falls_back_to_the_registry():
 def test_inspect_accepts_wire_name():
     """tools.inspect no longer rejects the underscore spelling the model sees on the wire."""
     session = SimpleNamespace()
-    result = asyncio.run(get_tool("tools_inspect").invoke(session, {"tool_name": "preset_create"}))
-    assert result["ok"] and result["data"]["tool_name"] == "preset.create"
+    result = asyncio.run(get_tool("tools_inspect").invoke(session, {"tool_name": "effect_save"}))
+    assert result["ok"] and result["data"]["tool_name"] == "effect.save"
 
 
 def test_search_lists_summaries_with_optional_keyword(tmp_path, monkeypatch):
@@ -169,31 +144,9 @@ def test_search_orders_presets_by_creation_time(tmp_path, monkeypatch):
     assert [item.preset_id for item in result.presets] == [newest.preset_id, local.preset_id]
     assert session.search_presets(PresetSearchInput(limit=1)).presets[0].preset_id == newest.preset_id
     with pytest.raises(ToolFault) as missing:
-        session.modify_preset(PresetModifyInput(preset_id="missing", changes={"description": "copy"}))
+        session.search_presets(PresetSearchInput(preset_id="missing"))
     message = missing.value.error.message
     assert message.index(newest.preset_id) < message.index(local.preset_id)
-
-
-def test_modify_returns_a_copy_without_changing_the_original(tmp_path, monkeypatch):
-    """Modify replaces whole fields in a draft, links the source, and rejects empty/unknown input."""
-    session = make_session(tmp_path, monkeypatch)
-    record = save_preset(session, "原描述")
-    result = session.modify_preset(
-        PresetModifyInput(preset_id=record.preset_id, changes={"description": "新描述"})
-    )
-    # The reply is a handle plus a code-free summary; the full copy stays in the task session.
-    assert "code" not in result.model_dump()["preset"]
-    assert result.preset.source_preset_id == record.preset_id
-    draft = session.preset_drafts[result.draft_id]
-    assert draft.description == "新描述" and draft.code == record.code
-    assert draft.source_preset_id == record.preset_id
-    assert session.catalog.find_preset(record.preset_id).description == "原描述"
-    with pytest.raises(ToolFault) as empty:
-        session.modify_preset(PresetModifyInput(preset_id=record.preset_id, changes={}))
-    assert empty.value.error.code == "INVALID_ARGUMENT"
-    with pytest.raises(ToolFault) as missing:
-        session.modify_preset(PresetModifyInput(preset_id="imv:preset/0", changes={"description": "x"}))
-    assert missing.value.error.code == "PRESET_NOT_FOUND" and record.preset_id in missing.value.error.message
 
 
 def test_unknown_preset_error_lists_known_ids(tmp_path, monkeypatch):
@@ -238,19 +191,8 @@ def test_search_tolerates_invalid_and_naive_catalog_timestamps(tmp_path, monkeyp
     assert invalid.preset_id in missing.value.error.message
 
 
-def test_search_contract_version_is_discoverable_before_calling():
-    """调用方可先检查版本和 Schema，区分旧 matches 契约与已实现的 v3 排序列表（摘要带特效用法与使用次数）。"""
-    result = asyncio.run(get_tool("tools.inspect").invoke(None, {"tool_name": "preset_search"}))
-    descriptor = result["data"]
-    assert descriptor["contract_version"] == 3
-    assert "presets" in json.dumps(descriptor["output_schema"]) and "published_uses" in json.dumps(descriptor["output_schema"])
-    assert "matches" not in json.dumps(descriptor["output_schema"])
-    assert get_tool("preset.create").describe()["contract_version"] == 1
-
-
 @pytest.mark.parametrize("tool_name,method,arguments", [
-    ("preset.search", "search_presets", {}),
-    ("preset.modify", "modify_preset", {"preset_id": "preset", "changes": {"description": "new"}}),
+    ("library.search", "search_presets", {}),
 ])
 def test_preset_storage_errors_are_in_the_published_descriptor(tool_name, method, arguments):
     """读取目录的实际存储错误必须出现在 inspect 返回的错误清单中。"""
@@ -267,7 +209,7 @@ def test_preset_storage_errors_are_in_the_published_descriptor(tool_name, method
 
 def test_search_rejects_an_unbounded_requested_limit():
     """过大的 limit 在工具边界返回可纠正错误，且不读取目录。"""
-    result = asyncio.run(get_tool("preset.search").invoke(None, {"limit": 101}))
+    result = asyncio.run(get_tool("library.search").invoke(None, {"limit": 101}))
     assert result["error"]["code"] == "INVALID_ARGUMENT"
     assert result["error"]["field"] == "/limit"
 
@@ -281,11 +223,11 @@ def test_large_search_replies_fit_a_complete_multi_tool_exchange(tmp_path, monke
         save_preset(session, f"标题 {index} " + '中\\"\n' * 800,
                     properties={'参数\\"\n' * 20: {"type": "string"}})
     message = AssistantMessage(tool_calls=[{
-        "id": f"search-{index}", "function": {"name": "preset_search", "arguments": '{"limit":100}'},
+        "id": f"search-{index}", "function": {"name": "library_search", "arguments": '{"limit":100}'},
     } for index in range(4)])
     exchange = [message.wire()]
     for call in message.tool_calls:
-        result = asyncio.run(get_tool("preset.search").invoke(session, call.function.arguments))
+        result = asyncio.run(get_tool("library.search").invoke(session, call.function.arguments))
         assert result["ok"] is True
         assert result["data"]["has_more"] is True
         assert 0 < len(result["data"]["presets"]) < 25
@@ -307,73 +249,39 @@ def test_single_oversized_preset_returns_a_bounded_error(tmp_path, monkeypatch, 
     monkeypatch.setattr(session.catalog, "read_presets", lambda: [oversized])
     monkeypatch.setattr(session.catalog, "find_preset", lambda preset_id: oversized if preset_id == stored.preset_id else None)
     request = {} if large_field == "summary" else {"preset_id": stored.preset_id}
-    result = asyncio.run(get_tool("preset.search").invoke(session, request))
+    result = asyncio.run(get_tool("library.search").invoke(session, request))
     assert result["ok"] is False
     assert result["error"]["code"] == "RESOURCE_LIMIT_EXCEEDED"
     assert len(json.dumps(result).encode()) < 1000
 
 
-@pytest.mark.parametrize("changes", [
-    {"default_parameters": {"text": 123}},
-    {"default_parameters": {"undeclared": "x"}},
-    {"parameter_schema": {"type": "not-a-type"}},
-    {"parameter_schema": {"type": "object", "$ref": "https://example.invalid/schema"}},
-])
-def test_modify_rejects_invalid_merged_contracts_without_writing(tmp_path, monkeypatch, changes):
-    """修改草稿必须保证 Schema 与默认值一致；拒绝外部引用且原记录不变。"""
-    session = make_session(tmp_path, monkeypatch)
-    stored = save_preset(session, "title", {"text": {"type": "string"}})
-    result = asyncio.run(get_tool("preset.modify").invoke(session, {
-        "preset_id": stored.preset_id, "changes": changes,
-    }))
-    assert result["error"]["code"] == "INVALID_ARGUMENT"
-    assert result["error"]["field"] == "/changes"
-    assert result["error"]["details"]["diagnostics"]
-    assert session.catalog.read_presets() == [stored]
-
-
-def test_modify_can_replace_schema_and_defaults_together(tmp_path, monkeypatch):
-    """一致的整体替换仍可返回草稿，且不隐式写库或执行渲染。"""
-    session = make_session(tmp_path, monkeypatch)
-    stored = save_preset(session, "title", {"text": {"type": "string"}})
-    schema = {"type": "object", "properties": {"size": {"type": "integer"}}, "required": ["size"], "additionalProperties": False}
-    result = session.modify_preset(PresetModifyInput(preset_id=stored.preset_id, changes={
-        "parameter_schema": schema, "default_parameters": {"size": 42},
-    }))
-    assert result.preset.parameter_names == ["size"]
-    draft = session.preset_drafts[result.draft_id]
-    assert draft.parameter_schema == schema
-    assert draft.default_parameters == {"size": 42}
-    assert session.catalog.read_presets() == [stored]
-
-
 @pytest.mark.parametrize("surplus", ["}", " }}", "]\n"])
 def test_surplus_closing_brackets_after_the_arguments_are_dropped(surplus):
     """回放 bb0decec：完整参数后多写的结尾括号被丢弃并告知调用方，不让一个括号作废整次调用。"""
-    request, dropped = parse_arguments(SpriteCreateInput, '{"draft_id": "sprite_draft_1"}' + surplus)
-    assert request.draft_id == "sprite_draft_1"
+    request, dropped = parse_arguments(WorkspaceReadInput, '{"path": "Effect.tsx"}' + surplus)
+    assert request.path == "Effect.tsx"
     assert dropped == surplus.strip()
-    assert parse_arguments(SpriteCreateInput, '{"draft_id": "d"}') == (SpriteCreateInput(draft_id="d"), "")
+    assert parse_arguments(WorkspaceReadInput, '{"path": "Effect.tsx"}') == (WorkspaceReadInput(path="Effect.tsx"), "")
 
 
 @pytest.mark.parametrize("raw, expected", [
-    ('{"draft_id": "d"} trailing words', "Unexpected text after the JSON arguments at character 17"),
-    ('{"draft_id": "d"', "Arguments are not valid JSON"),
-    ('{"draft_id": "d"}{"draft_id": "e"}', "Unexpected text after the JSON arguments"),
+    ('{"path": "Effect.tsx"} trailing words', "Unexpected text after the JSON arguments at character 22"),
+    ('{"path": "Effect.tsx"', "Arguments are not valid JSON"),
+    ('{"path": "Effect.tsx"}{"path": "effect.json"}', "Unexpected text after the JSON arguments"),
 ])
 def test_other_invalid_json_names_the_position_and_nearby_text(raw, expected):
     """除结尾多余括号外的非法 JSON 一律拒绝，错误给出位置与附近文本，而不是笼统的解析异常。"""
     with pytest.raises(ToolFault) as refused:
-        parse_arguments(SpriteCreateInput, raw)
+        parse_arguments(WorkspaceReadInput, raw)
     assert refused.value.error.code == "INVALID_ARGUMENT"
     assert expected in refused.value.error.message and "near" in refused.value.error.message
 
 
 def test_schema_errors_list_up_to_three_located_fields():
     """结构错误带 JSON Pointer：field 为第一处，消息逐条写出前三处位置，其余给出数量。"""
-    instance = {"instance_id": "a", "source": {"kind": "stored", "preset_id": "p"}, "layout": {"x": 0, "y": 0, "width": 0, "height": 0, "z_index": 0}, "timing": {"start_frame": -1, "duration_frames": 0}}
     with pytest.raises(ToolFault) as refused:
-        parse_arguments(SpriteComposeInput, json.dumps({"description": "x", "kind": "text", "instances": [instance]}))
+        parse_arguments(ImageInspectInput, json.dumps({"image": 0, "x": -1, "y": 2, "width": 0}))
     error = refused.value.error
-    assert error.field == "/instances/0/layout/width"
-    assert error.message.count("/instances/0/") == 3 and error.message.endswith("and 1 more")
+    assert error.field == "/image"
+    assert all(field in error.message for field in ("/image", "/x", "/y"))
+    assert error.message.endswith("and 1 more")

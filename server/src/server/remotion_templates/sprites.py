@@ -166,6 +166,12 @@ def _content_box(version: TemplateVersion) -> pb.SpriteBox:
     """The union of the instances' layout boxes clipped to the canvas; the whole canvas when nothing is visible."""
     composition = version.spec.composition
     layouts = [item.layout for item in version.spec.sprite.instances]
+    # A converted component already includes its canvas placement in source. Its original content region is
+    # separate from the single full-canvas workspace instance, so template transforms keep the same pivot.
+    preserved = ((version.spec.sprite.effect or {}).get("contract") or {}).get("content_box")
+    if preserved is not None:
+        from .tools.contracts import EffectBounds
+        layouts = [EffectBounds.model_validate(preserved)]
     left = max(0.0, min(item.x for item in layouts))
     top = max(0.0, min(item.y for item in layouts))
     right = min(float(composition.width), max(item.x + item.width for item in layouts))

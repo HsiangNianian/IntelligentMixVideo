@@ -76,7 +76,7 @@ class CatalogStore:
 
     def solidify(self, sprite: SpriteDraft | None) -> list[str]:
         """The stored Presets an accepted Sprite draws with, storing those it changed: an instance drawn exactly as its
-        source Preset (`source_preset_id`) is that Preset; a modified copy (a fix the task made with `preset.modify`) is
+        source Preset (`source_preset_id`) is that Preset; a modified copy (a workspace edit) is
         kept as a Preset of its own, or found again when an identical one is stored, so a working fix becomes reusable
         and the broken original is not credited for it. A free-form effect (`sprite.effect`) has no source: its single
         instance, the whole Effect.tsx, is kept as a role-less Preset the same way, so `library.search` finds it in later

@@ -495,7 +495,6 @@ class Runtime:
             on_round=lambda record: self.store.round(job_id, record),
         )
         context = self.store.conversation(job.project_id)
-        free = getattr(settings, "remotion_agent", "presets") == "autonomous"
         model_task = False
         try:
             async with asyncio.timeout(settings.job_timeout_seconds):
@@ -508,7 +507,7 @@ class Runtime:
                 images = await asyncio.to_thread(
                     lambda: [self.store.asset_path(UUID(entry["asset_id"])) for entry in references]
                 )
-                if free:
+                if inputs.parameters is None:
                     earlier = await asyncio.to_thread(self._earlier_paths, earlier_images(context, references))
                     references += [entry for entry, _path in earlier]
                     images += [path for _entry, path in earlier]
@@ -525,7 +524,7 @@ class Runtime:
                     "parameters": patch,
                     "clarifications": inputs.clarifications,
                     # Source stays out of the persisted Outer window; the tool session shows the base's
-                    # Presets to the layer that edits code.
+                    # workspace to the layer that edits code.
                     "accepted_base": base.spec.model_dump(mode="json", exclude_unset=True, exclude={"sprite"}) if base else None,
                     "reference_images": references,
                 }
@@ -570,7 +569,7 @@ class Runtime:
                     context=context,
                     intent=intent,
                     # A free-form edit can go back to any earlier version of the work.
-                    **({"versions": await asyncio.to_thread(self.store.versions, job.project_id)} if free and patch is None else {}),
+                    **({"versions": await asyncio.to_thread(self.store.versions, job.project_id)} if patch is None else {}),
                 )
                 if isinstance(result, DialogueOutput):
                     self.store.update(
@@ -641,7 +640,7 @@ class Runtime:
             # Candidates and renders are scratch; the audit log lives outside the job folder until it expires.
             shutil.rmtree(self.store.job_dir(job_id), ignore_errors=True)
             final = self.store.job(job_id)
-            if free and model_task:
+            if model_task:
                 context.append([outcome_record(final)])
             self.store.save_conversation(job.project_id, context)
             budget.record(

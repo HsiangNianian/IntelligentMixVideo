@@ -72,8 +72,8 @@ export interface Version {
     sprite?: {
       kind?: SpriteKindName; bindings?: { name: string; title: string; targets?: { instance_id: string; parameter: string }[] }[];
       text?: { tiers: string[]; keyword?: string; effects?: { instance_id: string; title: string }[]; preview_keywords?: string[]; bilingual?: true };
-      /** 自由组件（Agent 写的 Effect.tsx）的清单：分类与字效的示例关键词；组合版本没有。 */
-      effect?: { kind?: SpriteKindName; text?: { keywords?: string[] } };
+      /** 自由组件（Agent 写的 Effect.tsx）的清单：分类与字效的示例关键词；旧组合转换后通过 contract 保留其参数与示例词。 */
+      effect?: { kind?: SpriteKindName; text?: { keywords?: string[] }; contract?: { preview_keywords?: string[] } };
     };
   };
 }
@@ -238,12 +238,23 @@ export function effectSections(version: Version): ReturnType<typeof textSections
   const text: ParameterField[] = [];
   const keyword: ParameterField[] = [];
   const groups = new Map<string, ParameterField[]>();
+  const instances: InstanceFields[] = [];
   let keywordToggle: ParameterField | null = null;
   for (const [key, control] of Object.entries(properties)) {
-    // The single instance's nested props are empty: every parameter of a free-form effect is top-level.
-    if (key === LINE_STARTS_KEY || control.type === "object") continue;
+    if (key === LINE_STARTS_KEY) continue;
+    // Converted versions retain their existing nested controls; empty host instance props need no card.
+    if (control.type === "object") {
+      const fields = Object.entries(control.properties ?? {}).map(([name, child]) => schemaField(name, child));
+      if (fields.length || Object.keys((version.candidate.default_config[key] as Values) ?? {}).length) {
+        instances.push({ id: key, fields: fields.length && fields.every(Boolean) ? fields as ParameterField[] : null });
+      }
+      continue;
+    }
     const item = schemaField(key, control);
-    if (!item) continue;
+    if (!item) {
+      instances.push({ id: key, fields: null });
+      continue;
+    }
     const group = control["x-imv-group"];
     if (key === "keywordEffect") keywordToggle = item;
     else if (TEMPLATE_KEYWORD_PARAMETERS.includes(key)) keyword.push(item);
@@ -255,7 +266,7 @@ export function effectSections(version: Version): ReturnType<typeof textSections
     return { id: title, title, toggle, fields: fields.filter((field) => field !== toggle), instance: null };
   });
   if (keywordToggle && !groups.has("关键词字效")) effects.push({ id: "关键词字效", title: "关键词字效", toggle: keywordToggle, fields: [], instance: null });
-  return { text, keyword, instances: [], effects };
+  return { text, keyword, instances, effects };
 }
 /** 服务端隔离类型检查返回的零基行列；与 LSP 一致，character 以 UTF-16 计。 */
 export interface TextPosition {
@@ -326,7 +337,7 @@ export interface ChatMessage {
 export function sampleKeywords(version: Version | null, values: Values): string[] {
   if (!Array.isArray(values.keywords) || values.keywords.length || typeof values.text !== "string") return [];
   const text = values.text;
-  const declared = (version?.spec.sprite?.text?.preview_keywords ?? version?.spec.sprite?.effect?.text?.keywords ?? []).filter((word) => text.includes(word));
+  const declared = (version?.spec.sprite?.text?.preview_keywords ?? version?.spec.sprite?.effect?.text?.keywords ?? version?.spec.sprite?.effect?.contract?.preview_keywords ?? []).filter((word) => text.includes(word));
   if (declared.length) return declared;
   const properties = version?.candidate.config_schema.properties ?? {};
   const effect = Object.keys(properties).some((key) => key.startsWith("keywordEffect"));
