@@ -1155,7 +1155,8 @@ function wiringFrames(total) {
  * Contract probes of a free-form effect (`Effect.tsx`, `request.effect_contract`), on the behaviour the bus, templates
  * and composition rely on. For a text effect: text injected instead of the sample must be what it shows; a keyword hit
  * must take the keyword options (colour, bold) with the keyword effect off; every default line must be shown in full on
- * the middle frame, where the bus freezes subtitles shorter than 1.5 s; and lowering `fontSize` must shrink the text,
+ * the middle frame (with historical cue wrappers off for layout), where the bus freezes subtitles shorter than 1.5 s;
+ * and lowering `fontSize` must shrink the text,
  * which the host's fit relies on. For every kind each of its own style parameters (`wiring`, two extreme values) must
  * change at least one sampled frame, so the parameter panel has no dead controls. Returns one check listing every
  * problem with its fix.
@@ -1166,6 +1167,9 @@ async function effectContractCheck(page) {
   // Match sprite_render's short-subtitle hold, including even preview lengths (150 frames holds frame 75).
   const middle = Math.floor(total / 2);
   const problems = [];
+  // Historical cue wrappers may remove an earlier line when a later one appears. Keep the old layout-only
+  // cue-off patch for content measurements; wiring below uses actual enabled effects and staggered starts.
+  const layout = { ...spec.layout, ...(spec.starts ? { lineStartFrames: spec.starts } : {}) };
   const mount = async (patch, frame) => {
     await page.evaluate((values) => window.__imvTool.setParameters(values), patch);
     await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
@@ -1174,7 +1178,7 @@ async function effectContractCheck(page) {
   const compact = (value) => String(value).replace(/\s+/g, "");
   try {
     if (spec.probe) {
-      const failure = await mount({ ...spec.probe, keywords: [], ...(spec.starts ? { lineStartFrames: spec.starts } : {}) }, middle);
+      const failure = await mount({ ...spec.probe, keywords: [], ...layout }, middle);
       if (failure) problems.push(`The effect throws with other text: ${failure}`);
       else {
         const shown = compact(await page.evaluate(() => document.querySelector("[data-imv-host-layer]")?.firstElementChild?.textContent ?? ""));
@@ -1186,7 +1190,7 @@ async function effectContractCheck(page) {
       }
     }
     if (spec.keyword) {
-      const failure = await mount({ ...spec.sample, keywords: [spec.keyword], keywordColor: "#13579B", keywordBold: true, ...("keywordEffect" in (request.parameter_schema?.properties ?? {}) ? { keywordEffect: false } : {}), ...(spec.starts ? { lineStartFrames: spec.starts } : {}) }, middle);
+      const failure = await mount({ ...spec.sample, keywords: [spec.keyword], keywordColor: "#13579B", keywordBold: true, ...("keywordEffect" in (request.parameter_schema?.properties ?? {}) ? { keywordEffect: false } : {}), ...layout }, middle);
       const found = failure ? null : await page.evaluate((word) => {
         const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
         const compact = (value) => String(value).replace(/\s+/g, "");
@@ -1209,20 +1213,22 @@ async function effectContractCheck(page) {
           + "Templates style keyword hits with the six keyword options: keep them on the text inside <KeywordRun> and draw the effect's own keyword look only while content.keywordEffect is on.");
     }
     if (spec.lines?.length) {
-      const failure = await mount({ ...spec.sample, keywords: [], ...(spec.starts ? { lineStartFrames: spec.starts } : {}) }, middle);
+      const failure = await mount({ ...spec.sample, keywords: [], ...layout }, middle);
       if (failure) problems.push(`The effect throws on its middle frame ${middle}: ${failure}`);
       else for (const [index, line] of spec.lines.entries()) {
         if (!line) continue;
         const verdict = await textFitProblems(page, line, UNPLACED);
         if (!verdict || verdict.problems.length) {
           problems.push(`On the middle frame ${middle} of the ${total}-frame preview line ${index + 1} "${line}" is not shown in full${verdict ? `: ${verdict.problems.join("; ")}` : ""}. `
-            + "The bus freezes subtitles shorter than 1.5 s on this frame, so every line must be fully visible there: finish entrances before the middle and start exits after it.");
+            + (Object.keys(spec.layout ?? {}).length
+              ? "The preserved cue switches are off for this layout measurement; keep the original text readable before a later line triggers its cue."
+              : "The bus freezes subtitles shorter than 1.5 s on this frame, so every line must be fully visible there: finish entrances before the middle and start exits after it."));
           break;
         }
       }
       if (!failure && spec.font_size && spec.font_size.min < spec.font_size.max) {
         const area = async (size) => {
-          await mount({ ...spec.sample, keywords: [], fontSize: size, ...(spec.starts ? { lineStartFrames: spec.starts } : {}) }, middle);
+          await mount({ ...spec.sample, keywords: [], fontSize: size, ...layout }, middle);
           const verdict = await textFitProblems(page, spec.lines.find(Boolean), UNPLACED);
           return verdict?.extent ? (verdict.extent.right - verdict.extent.left) * (verdict.extent.bottom - verdict.extent.top) : null;
         };
@@ -1235,6 +1241,8 @@ async function effectContractCheck(page) {
     const unwired = [];
     if (spec.wiring?.length) {
       const client = page._client();
+      // Preserve alpha: white text disappearing must differ from white text, even on Chrome's white page.
+      await client.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
       const shot = async () => {
         const image = await client.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: true, clip: { x: 0, y: 0, width: request.composition.width, height: request.composition.height, scale: 0.25 } });
         return (image.value ?? image).data;
@@ -1277,12 +1285,13 @@ async function effectContractCheck(page) {
       problems.push(`These parameters do not change any sampled frame between their two extremes: ${unwired.join(", ")}. `
         + "Every parameter in effect.json is a control in the parameter panel: read it in Effect.tsx where it draws what its title says, or remove it from effect.json.");
   } finally {
+    if (spec.wiring?.length) await page._client().send("Emulation.setDefaultBackgroundColorOverride", {});
     await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
     await page.evaluate(() => window.__imvTool.setFrame(0));
   }
   return problems.length
     ? { name: "effect_contract", status: "failed", message: problems.join("\n").slice(0, 6000) }
-    : { name: "effect_contract", status: "passed", message: "The effect shows the injected text and keywords, keeps its lines whole on the middle frame, shrinks with fontSize and uses every parameter." };
+    : { name: "effect_contract", status: "passed", message: "The effect shows the injected text and keywords, preserves the required text layout, shrinks with fontSize and uses every parameter." };
 }
 
 /** The smallest `keywordSize` a placement may set (0 follows the text size, which is not scaled). */

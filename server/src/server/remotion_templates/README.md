@@ -21,7 +21,7 @@ all historical versions open through `restore_version_files` in the same task-lo
   component that may import the content runtime `"imv"` (`remotion/imv-runtime.tsx`), and `effect.json`, the manifest
   `EffectManifest`: kind, description, layout box, for text effects `text` (sample content, keywords, line starts,
   bilingual, keyword look and its default switch, font size, one font per line, gaps, arrangement) and `params`, the effect's own style
-  parameters with schema, default, title and `group`. A new work starts from a still starter of its kind that passes
+  parameters with schema, default, title and `group` (stored as `x-imv-group`, a panel label rather than a value constraint). A new work starts from a still starter of its kind that passes
   every check and follows the new-chat switches; an edit restores the accepted version's files with the user's
   current parameter values written back into the manifest. `keyword_look` declares the keyword appearance capability;
   `keyword_enabled` supplies its `keywordEffect` default (true when omitted). Turning it off keeps the capability and
@@ -41,12 +41,13 @@ all historical versions open through `restore_version_files` in the same task-lo
   six keyword options and `data-imv-keyword`; `useTiming` and `splitGlyphs` are optional helpers. It holds no effects.
 - **Gate.** `validate.check` and `effect.save` run the component's own source policy and TypeScript check, the
   category's required parameters and, in the isolated browser, transparency, both render lengths, `text_fit` (with an
-  empty `text_fit_parameters`, so lines may be timed independently but must not jump) and the `effect_contract`
+  empty `text_fit_parameters` for new components, so lines may be timed independently but must not jump; historical
+  components retain their layout check as described below) and the `effect_contract`
   probes of the validation worker: other injected text must be what it shows, a keyword hit takes keywordColor and
   keywordBold with the keyword effect off, every default line is shown in full on frame `duration_frames // 2` (where
   the bus freezes subtitles shorter than 1.5 s, with every line starting at zero), lowering `fontSize` between two legal
   sizes at least 25% apart shrinks the text, and each style parameter (and `keywordEffect`) changes a sampled frame
-  between its two ends (screenshot comparison). If defaults hide a parameter, its endpoints are also compared with each
+  between its two ends (screenshot comparison with alpha preserved, so white text can disappear visibly). If defaults hide a parameter, its endpoints are also compared with each
   other boolean flipped, then all other booleans on or off, always holding those controls fixed between endpoints.
   These bounded probes do not enumerate every combination or change saved defaults. A check failure is a
   `passed: false` result; a save failure is `CODE_VALIDATION_FAILED` listing every problem.
@@ -103,6 +104,14 @@ nested instance props, local schema references and manual parameter revisions. P
 content box are retained; the latter preserves the published transform pivot. The source already draws the whole
 canvas, so assembly bundles it directly without placing it in another layout box or re-running a role composer.
 
+For historical still text, `contract.text_fit_parameters` retains the original layout-only cue-off switches: a cue
+may remove an earlier line when the next appears, so content/layout probes temporarily disable that wrapper while
+wiring probes use staggered line starts with the actual effects enabled. The original cue hold and line-jump checks
+still reject hidden waiting text or displaced lines. This metadata must come from an accepted version; workspace
+edits cannot invent measurement bypasses. Neither probe patches nor line starts change saved defaults or source.
+Stored font controls stay open strings; the generation gate checks their defaults against the current font library
+without freezing the schema again.
+
 The converted manifest uses `contract` instead of `text`/`params`. The same preview, validation, save and publication
 checks apply. A successful edit saves a normal workspace version with this contract; reopening it retains the
 edited source and current defaults. `workspace.read {path, version}` performs the same conversion on demand for a
@@ -110,8 +119,8 @@ historical version without writing to storage. No migration job, confirmation pr
 rewrite is needed. The parameter panel keeps typed nested controls and falls back to JSON for complex schemas.
 
 Frozen fixtures under `server/tests/fixtures/remotion_legacy` capture outputs of the removed composer. Regression
-tests cover single-line, two-line, bilingual and box compositions, edit/save/reopen, immutable history and content
-bounds; opt-in browser checks compare frames before and after conversion.
+tests cover single-line, two-line, bilingual, cue and box compositions, edit/save/reopen, immutable history and content
+bounds; opt-in browser checks compare frames before and after conversion and reject inverted or unwired cues.
 
 ## Tool catalog
 
@@ -495,7 +504,8 @@ another asset the unique key makes it a 409, and repeating an overwrite of the v
 refreshes the preview bundle without rendering boundary samples again. Overwrites also preserve every previously
 editable parameter: removing/unbinding it, changing its type (except integer to number), narrowing its bounds,
 enum, string lengths or array size, or adding a restrictive pattern returns 422 before sampling or writing.
-Bounds/enums may widen, new parameters may be added, and defaults/internal instance schemas may change. Fonts are
+Bounds/enums may widen, new parameters may be added, and defaults/internal instance schemas may change. Panel group
+labels (`x-imv-group`) may be retained, added, renamed or removed without affecting compatibility. Fonts are
 compared as open strings, as in placement validation. Root-level cross-parameter constraints cannot be proven
 compatible with arbitrary existing overrides and changed defaults, so those versions require a new asset.
 Repeated saves, overwrites, preview repairs and deletion share the asset's bundle lock. A repeated save re-reads

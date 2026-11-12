@@ -409,6 +409,22 @@ def _assemble_existing(code: str, manifest: EffectManifest, duration: int) -> Sp
         "kind": manifest.kind, "bindings": bindings, "effect": manifest.model_dump(mode="json", by_alias=True, exclude_none=True)})
 
 
+def text_fit_parameters(sprite: SpriteDraft | None) -> dict[str, bool] | None:
+    """Retain the accepted layout check: composed cue wrappers are off only for measurement, not playback.
+
+    None keeps the earliest components' lockstep check; an empty mapping permits independently timed lines.
+    Converted versions persist this host-owned metadata so saving and reopening does not lose cue semantics.
+    """
+    if sprite is None:
+        return None
+    if sprite.effect is not None:
+        contract = sprite.effect.get("contract")
+        return contract.get("text_fit_parameters") if contract is not None else {}
+    if sprite.text is not None and sprite.text.still:
+        return {f"effect{index}": False for index, effect in enumerate(sprite.text.effects, 1) if effect.slot == "cue"}
+    return None
+
+
 def restore_version_files(spec, candidate) -> dict[str, str]:
     """Open any accepted version as an editable component, without writing back to history or running a model.
 
@@ -437,6 +453,8 @@ def restore_version_files(spec, candidate) -> dict[str, str]:
         "contract": {"parameter_schema": deepcopy(candidate.config_schema), "default_parameters": deepcopy(candidate.default_config),
                      "preview_keywords": keywords, "content_box": bounds},
     }
+    if (layout_check := text_fit_parameters(sprite)) is not None:
+        manifest["contract"]["text_fit_parameters"] = layout_check
     return {CODE: candidate.tsx_code, MANIFEST: json.dumps(manifest, ensure_ascii=False, indent=2)}
 
 
@@ -662,7 +680,8 @@ def contract_probes(sprite: SpriteDraft) -> dict[str, Any]:
     """The `effect_contract` request of the validation worker for a free-form effect (see `effectContractCheck`).
 
     Every style parameter of the manifest (and a text effect's keyword effect switch) supplies two endpoints and
-    defaults with every line shown and the sample keywords on; the worker also probes conditional boolean contexts.
+    defaults with the sample keywords on; the worker also probes conditional boolean contexts. Legacy cues need
+    staggered line starts for wiring, and their original cue-off patch only for text layout/content measurements.
     A text effect gets other text, a keyword with
     its options on, its default lines for the bus hold frame and two sufficiently separated legal font sizes.
     """
@@ -673,8 +692,14 @@ def contract_probes(sprite: SpriteDraft) -> dict[str, Any]:
              if effect.get("contract") else [item.get("name") for item in effect.get("params", [])])
     names = [name for name in style if name in properties] + (["keywordEffect"] if "keywordEffect" in properties else [])
     starts = [0] * len(values["lineStartFrames"]) if isinstance(values.get("lineStartFrames"), list) else None
+    layout = text_fit_parameters(sprite) or {}
+    wiring_starts = starts
+    if layout and starts:
+        paired = 2 if "textEn" in values else 1
+        step = sprite.composition.duration_frames // (len(starts) // paired + 1)
+        wiring_starts = [(index // paired) * step for index in range(len(starts))]
     keywords = preview_keywords(sprite)
-    base = {**values, **({"keywords": keywords} if keywords else {}), **({"lineStartFrames": starts} if starts else {})}
+    base = {**values, **({"keywords": keywords} if keywords else {}), **({"lineStartFrames": wiring_starts} if wiring_starts else {})}
     wiring = [{"name": name, "values": ends} for name in names if (ends := _extremes(properties[name])) is not None]
     spec: dict[str, Any] = {"base": base, "wiring": wiring}
     if sprite.kind == "text":
@@ -686,7 +711,7 @@ def contract_probes(sprite: SpriteDraft) -> dict[str, Any]:
         largest = min(FONT_SIZE[1], max(values.get("fontSize", FONT_SIZE[0]), math.ceil(smallest * 1.25)))
         spec |= {
             "sample": {key: values[key] for key in ("text", "textEn") if key in values},
-            "probe": probe, "probe_lines": probe_lines, "lines": physical_lines(values), "starts": starts,
+            "probe": probe, "probe_lines": probe_lines, "lines": physical_lines(values), "starts": starts, "layout": layout,
             "keyword": keywords[0] if keywords else None,
             "font_size": {"max": largest, "min": smallest} if isinstance(values.get("fontSize"), (int, float)) else None,
         }

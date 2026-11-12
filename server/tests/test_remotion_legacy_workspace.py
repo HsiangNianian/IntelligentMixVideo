@@ -14,6 +14,8 @@ import pytest
 from PIL import Image, ImageChops
 
 from server.remotion_templates.agent import AgentRun
+from server.remotion_templates.categories import FONT_PARAMETERS
+from server.remotion_templates.fonts import open_font_schema
 from server.remotion_templates.models import CompositionConfig, TemplateCandidate, TemplateSpec
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.renderer import Renderer
@@ -97,6 +99,46 @@ def test_converted_effect_edits_saves_and_reopens(tmp_path):
 
 
 @needs_bundler
+def test_converted_cue_keeps_its_layout_check_without_changing_playback(tmp_path):
+    """下栏出现时移除上栏的旧 cue 保留测量开关；保存、重开及探针都不改实际默认值或源码。"""
+    spec, candidate = legacy_version("text-cue")
+    before = deepcopy(candidate.model_dump(mode="json"))
+    current = session(tmp_path, spec, candidate)
+    receipt = asyncio.run(current.execute("effect.save", {}, available()))
+    saved = current.saved_sprite(receipt["sprite_id"])
+    assert saved.effect["contract"]["text_fit_parameters"] == {"effect1": False}
+    assert saved.default_parameters == candidate.default_config
+    assert saved.default_parameters["effect1"] is True
+    assert saved.default_parameters["lineStartFrames"] == [0, 60]
+    options = current.calls[-1]
+    assert options["text_fit_parameters"] == {"effect1": False}
+    probes = options["effect_contract"]
+    assert probes["layout"] == {"effect1": False} and probes["starts"] == [0, 0]
+    assert probes["base"]["effect1"] is True and probes["base"]["lineStartFrames"] == [0, 50]
+    accepted = spec.model_copy(update={"sprite": saved})
+    revised = candidate.model_copy(update={"tsx_code": saved.code, "config_schema": saved.parameter_schema, "default_config": saved.default_parameters})
+    again = session(tmp_path / "again", accepted, revised)
+    assert again.files[CODE] == candidate.tsx_code
+    checked = asyncio.run(again.execute("validate.check", {}, available()))
+    assert checked["passed"], checked
+    assert again.calls[-1]["text_fit_parameters"] == {"effect1": False}
+    assert candidate.model_dump(mode="json") == before
+
+
+@pytest.mark.parametrize("patch", [{"color": False}, {"effect1": False, "other": False}])
+def test_converted_layout_check_cannot_disable_arbitrary_parameters(tmp_path, patch):
+    """可编辑清单不能编造更多关闭开关来绕过内容验收，只认已验收历史版本的测量配置。"""
+    spec, candidate = legacy_version("text-cue")
+    current = session(tmp_path, spec, candidate)
+    manifest = json.loads(current.files[MANIFEST])
+    manifest["contract"]["text_fit_parameters"] = patch
+    current.files[MANIFEST] = json.dumps(manifest)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert not checked["passed"] and "host-owned" in checked["problems"][0]["message"]
+    assert not current.calls and not current.saved_sprites
+
+
+@needs_bundler
 def test_invalid_converted_contract_cannot_save(tmp_path):
     """转换不绕过参数校验，非法默认值不能产生候选或破坏已封存基线。"""
     spec, candidate = legacy_version("box")
@@ -133,6 +175,28 @@ def test_converted_schema_references_and_open_fonts_survive_reopening(tmp_path):
     restored, _ = asyncio.run(current._assemble())
     assert restored.parameter_schema == opened
     assert restored.default_parameters["fontFamily"] == "New Font"
+
+
+@needs_bundler
+@pytest.mark.parametrize("name", ["text-1", "text-2", "text-4"])
+@pytest.mark.parametrize("family", ["New Font", "Missing Font"])
+def test_converted_open_fonts_use_the_live_library_without_changing_schema(tmp_path, monkeypatch, name, family):
+    """已封存版本开放的字体字符串可选后上传的字体；不存在的字体仍拒绝，原 Schema 不被重新冻结。"""
+    spec, candidate = legacy_version(name)
+    schema = open_font_schema(candidate.config_schema)
+    defaults = {**candidate.default_config, **{key: family for key in FONT_PARAMETERS if key in schema["properties"]}}
+    candidate = candidate.model_copy(update={"config_schema": schema, "default_config": defaults})
+    current = session(tmp_path, spec, candidate)
+    monkeypatch.setattr(current, "_fonts", lambda: ["Noto Sans CJK SC", "New Font"])
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] is (family == "New Font"), checked
+    assert json.loads(current.files[MANIFEST])["contract"]["parameter_schema"] == schema
+    if family == "New Font":
+        receipt = asyncio.run(current.execute("effect.save", {}, available()))
+        assert current.saved_sprite(receipt["sprite_id"]).parameter_schema == schema
+    else:
+        assert any("FontFamily" in item["message"] or "fontFamily" in item["message"] for item in checked["problems"])
+        assert not current.calls
 
 
 @needs_bundler
@@ -178,20 +242,49 @@ def test_old_environment_switch_cannot_restore_the_retired_route(monkeypatch, tm
 
 
 @needs_browser
-@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("name", [*NAMES, "text-cue"])
 def test_real_conversion_preserves_rendered_pixels(tmp_path, name):
     """真实浏览器逐帧比较转换前后；验证没有二次位移、丢字、丢译文或嵌套参数变化。"""
     spec, candidate = legacy_version(name)
     files = restore_version_files(spec, candidate)
-    draft, _ = assemble(files, fonts=["Noto Sans SC"], requested=set(), duration=90)
+    duration = spec.composition.duration_in_frames
+    frames = [0, duration // 2, duration - 1]
+    draft, _ = assemble(files, fonts=["Noto Sans SC"], requested=set(), duration=duration)
     validator = ToolValidator(Renderer(Settings(_env_file=None, data_dir=tmp_path, **BROWSER)), tmp_path / "validator")
     captures = []
     for label, code in (("old", candidate.tsx_code), ("new", draft.code)):
-        capture = FrameCapture([0, 45, 89], {"x": 0, "y": 0, "width": 1080, "height": 1920}, 0.25, tmp_path / label)
+        capture = FrameCapture(frames, {"x": 0, "y": 0, "width": 1080, "height": 1920}, 0.25, tmp_path / label)
         component = ComponentDefinition(code=code, parameter_schema=candidate.config_schema, default_parameters=candidate.default_config)
-        result = asyncio.run(validator.validate_render(RenderValidationInput(component=component, duration_frames=90), capture=capture))
+        result = asyncio.run(validator.validate_render(RenderValidationInput(component=component, duration_frames=duration), capture=capture))
         assert result.passed, result
         captures.append(capture.directory)
-    for frame in (0, 45, 89):
+    for frame in frames:
         with Image.open(captures[0] / f"frame-{frame}.png") as old, Image.open(captures[1] / f"frame-{frame}.png") as new:
             assert ImageChops.difference(old.convert("RGB"), new.convert("RGB")).getbbox() is None
+
+
+@needs_browser
+@pytest.mark.parametrize("change", ["unchanged", "inverted", "unwired"])
+def test_real_converted_cue_retains_acceptance_and_rejects_broken_motion(tmp_path, change):
+    """旧 cue 原样通过完整保存门禁；反向隐藏待场文字或断开动画参数仍分别由 text_fit/契约探针拒绝。"""
+    spec, candidate = legacy_version("text-cue")
+    settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
+    current = ToolSession(SimpleNamespace(settings=settings, renderer=Renderer(settings)), spec, candidate, Budget(),
+        tmp_path / "run", [], lambda *_: None, {"instruction": "只修改颜色"})
+    if change == "unchanged":
+        receipt = asyncio.run(current.execute("effect.save", {}, available()))
+        saved = current.saved_sprite(receipt["sprite_id"])
+        assert saved.default_parameters == candidate.default_config
+        assert current.files[CODE] == candidate.tsx_code
+        assert receipt["review"]["frames"]
+    else:
+        original = "opacity: 1 - props.progress"
+        assert current.files[CODE].count(original) == 1
+        current.files[CODE] = current.files[CODE].replace(original, "opacity: props.progress" if change == "inverted" else "opacity: 1")
+        checked = asyncio.run(current.execute("validate.check", {}, available()))
+        assert not checked["passed"] and not current.saved_sprites
+        messages = {problem["check"]: problem["message"] for problem in checked["problems"]}
+        if change == "inverted":
+            assert "cue effect stays at its start" in messages.get("text_fit", "")
+        else:
+            assert "effect1" in messages.get("effect_contract", "")

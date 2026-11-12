@@ -24,7 +24,7 @@ from sqlalchemy import Engine, select, update
 
 from server.app import app
 from server.remotion_templates import parameters, sprite_events, sprite_store, sprites
-from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, category_problems
+from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, PARAMETER_GROUP, category_problems
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.managed_fonts import bundled_font
 from server.remotion_templates.models import GenerateTemplateRequest, JobInput
@@ -361,9 +361,32 @@ def test_overwrite_replaces_the_target_under_its_id_and_name(client: TestClient,
     assert json.loads(data)["config"]["text"] == "新标题"
 
 
+@pytest.mark.parametrize(("previous_group", "current_group"), [("文字", "文字"), (None, "文字"), ("文字", "外观"), ("文字", None)])
+def test_overwrite_accepts_parameter_group_annotations(client, published, previous_group, current_group) -> None:
+    """分组只是面板标签：保留、新增、改名、移除都可覆盖同一资产，并保留参数的类型与范围。"""
+    original = deepcopy(SCHEMA)
+    if previous_group is not None:
+        original["properties"]["color"][PARAMETER_GROUP] = previous_group
+    version = another_version(published, schema=original)
+    first = published_sprite(client, version.id)
+    schema = deepcopy(original)
+    schema["properties"]["color"].pop(PARAMETER_GROUP, None)
+    if current_group is not None:
+        schema["properties"]["color"][PARAMETER_GROUP] = current_group
+    newer = another_version(published, schema=schema, defaults={"color": "#FF0000"})
+    summary = published_sprite(client, newer.id, target_sprite_id=first.sprite_id)
+    assert summary.sprite_id == first.sprite_id and summary.source_version_id == str(newer.id)
+    saved = sprites.get(first.sprite_id)
+    assert json.loads(saved.default_config_json)["color"] == "#FF0000"
+    assert json.loads(saved.config_schema_json)["properties"]["color"] == schema["properties"]["color"]
+
+
 def test_incompatible_overwrite_keeps_an_existing_template_usable(client, published, template_payload) -> None:
     """字号 200 的模板不能因覆盖时上限缩到 160 而失效：覆盖返回 422，原资产和预览不变、模板仍可保存。"""
-    first = published_sprite(client, published.version.id)
+    original = deepcopy(SCHEMA)
+    original["properties"]["fontSize"][PARAMETER_GROUP] = "文字"
+    version = another_version(published, schema=original)
+    first = published_sprite(client, version.id)
     template_payload["tracks"].append(remotion_track(
         sprite_id=first.sprite_id, text_target="title",
         editor={"remotion": {"parameters": [{"key": "fontSize", "numberValue": 200}]}},
@@ -371,7 +394,7 @@ def test_incompatible_overwrite_keeps_an_existing_template_usable(client, publis
     saved = post_template(client, template_payload)
     assert saved.status_code == 201, saved.text
     template_payload["template_id"] = saved_template(saved)["template_id"]
-    schema = deepcopy(SCHEMA)
+    schema = deepcopy(original)
     schema["properties"]["fontSize"]["maximum"] = 160
     newer = another_version(published, schema=schema)
     before, bundle = sprites.get(first.sprite_id), bundle_copy(published.store, first.sprite_id).read_bytes()

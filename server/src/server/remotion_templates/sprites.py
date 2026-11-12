@@ -515,11 +515,11 @@ def _inspect(
 def _accepts_previous_parameter(previous: dict | None, current: dict | None) -> bool:
     """Conservatively compare the independent parameter schemas supported by published controls.
 
-    Labels/defaults may change, bounds and enums may widen, and integers may become numbers. Unknown constraints
+    Labels (including panel groups)/defaults may change, bounds and enums may widen, and integers may become numbers. Unknown constraints
     are not guessed at: their compatibility needs a new asset instead. Array items use the same comparison.
     """
     known = {"type", "title", "description", "default", "minimum", "maximum", "minLength", "maxLength",
-             "minItems", "maxItems", "enum", "pattern", "items"}
+             "minItems", "maxItems", "enum", "pattern", "items", PARAMETER_GROUP}
     if not isinstance(previous, dict) or not isinstance(current, dict) or (set(previous) | set(current)) - known:
         return False
     if previous.get("type") != current.get("type") and (previous.get("type"), current.get("type")) != ("integer", "number"):

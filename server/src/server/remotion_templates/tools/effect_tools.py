@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from PIL import Image
 
-from ..categories import category_problems
+from ..categories import FONT_PARAMETERS, category_problems
 from ..fonts import DEFAULT_FAMILY, FontStore, open_font_schema
 from .contracts import (
     ComponentDefinition, EffectCheckInput, EffectCheckOutput, EffectProblem, EffectSaveInput, EffectSaveOutput, ImageInspectInput,
@@ -26,7 +26,7 @@ from .contracts import (
 )
 from .registry import ToolFault
 from .workspace import (
-    CODE, MANIFEST, assemble, contract_probes, line_count, parse_manifest, physical_lines, preview_keywords, keyframes, motion_facts, restore_files, review_box, trial_frames,
+    CODE, MANIFEST, assemble, contract_probes, line_count, parse_manifest, physical_lines, preview_keywords, keyframes, motion_facts, restore_files, review_box, text_fit_parameters, trial_frames,
 )
 
 # 内容运行时 "imv" 的源码：workspace.read 只读地给出它，Agent 照着类型与实现写 Effect.tsx。
@@ -154,6 +154,14 @@ class EffectTools:
     async def _assemble(self, duration: int | None = None) -> tuple[SpriteDraft, list[str]]:
         """Build the draft the workspace describes (the bundler is a subprocess, so it runs off the event loop)."""
         files = dict(self._workspace())
+        manifest = parse_manifest(files[MANIFEST])
+        if manifest.contract is not None:
+            # Only an accepted version may supply cue-off measurement flags. Reading an earlier version also
+            # permits restoring its original check, but editable workspace data cannot invent bypass switches.
+            accepted = [self.spec, *(spec for spec, _candidate in self.versions.values())]
+            trusted = [None, *(text_fit_parameters(spec.sprite) for spec in accepted if spec is not None)]
+            if manifest.contract.text_fit_parameters not in trusted:
+                raise ToolFault("INVALID_ARGUMENT", "contract.text_fit_parameters is host-owned: preserve the accepted version's layout check.", field="/contract/text_fit_parameters")
         return await asyncio.to_thread(assemble, files, fonts=self._fonts(), requested=set(self.requested), duration=duration or self._duration())
 
     async def _gate(self, draft: SpriteDraft, capture=None) -> tuple[list[EffectProblem], SpriteDraft | None]:
@@ -166,8 +174,17 @@ class EffectTools:
         if not code.passed:
             problems = [_diagnostic_problem(item) for item in code.diagnostics if item.severity == "error"]
             return list({item.message: item for item in problems}.values())[:8] or [EffectProblem(check="code", message="Effect.tsx does not compile.")], None
-        missing = category_problems(draft.kind, draft.parameter_schema, {item.name for item in draft.bindings}, draft.default_parameters,
-                                    fonts=set(self._fonts()), requested=set(self.requested), allow_disabled_keyword_effect=True)
+        schema, fonts = draft.parameter_schema, self._fonts()
+        if (draft.effect or {}).get("contract"):
+            # Stored font controls are open strings so later uploads work. Check their defaults against today's
+            # library without writing a frozen enum back into the accepted schema or skipping other category rules.
+            properties = schema.get("properties", {})
+            schema = {**schema, "properties": {**properties, **{
+                name: {**definition, "enum": fonts} for name in FONT_PARAMETERS
+                if isinstance(definition := properties.get(name), dict) and definition.get("type") == "string" and "enum" not in definition
+            }}}
+        missing = category_problems(draft.kind, schema, {item.name for item in draft.bindings}, draft.default_parameters,
+                                    fonts=set(fonts), requested=set(self.requested), allow_disabled_keyword_effect=True)
         if missing:
             hint = ("Edit contract.parameter_schema and contract.default_parameters in effect.json, preserving the existing controls."
                     if (draft.effect or {}).get("contract") else
@@ -180,8 +197,8 @@ class EffectTools:
             RenderValidationInput(component=ComponentDefinition(code=sprite.code, parameter_schema=sprite.parameter_schema, default_parameters=sprite.default_parameters),
                                   duration_frames=sprite.composition.duration_frames),
             transparency=True, lengths=render_lengths(sprite.composition.fps, text=text), text_fit=text,
-            # Lines of a free-form effect may be timed independently, so the lockstep rule of older components does not apply.
-            text_fit_parameters={} if text else None, effect_contract=contract_probes(sprite), capture=capture,
+            # Retain historical cue/lockstep checks; new effects allow independently timed lines.
+            text_fit_parameters=text_fit_parameters(sprite) if text else None, effect_contract=contract_probes(sprite), capture=capture,
         )
         if report.passed:
             return [], sprite

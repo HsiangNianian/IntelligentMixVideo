@@ -381,6 +381,8 @@ class EffectContract(ContractModel):
     default_parameters: JsonObject
     preview_keywords: list[NonEmptyString] = Field(default_factory=list)
     content_box: Omittable[EffectBounds]
+    # Host-owned legacy cue switches, disabled only while measuring text layout; never saved as actual defaults.
+    text_fit_parameters: Omittable[dict[str, Literal[False]]]
 
 
 class EffectManifest(ContractModel):
