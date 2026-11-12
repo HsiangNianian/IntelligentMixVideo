@@ -16,7 +16,7 @@ from tempfile import TemporaryDirectory
 from uuid import UUID, uuid4
 
 from .deletion import finish as finish_deletion
-from .fonts import FontStore
+from .fonts import DEFAULT_FAMILY, FontStore
 from .settings import ClientSettings, Settings
 from .harness import Harness
 from .overlay_service import FINISHED_RETENTION, OverlayRenders, prune_finished
@@ -328,6 +328,20 @@ class Runtime:
             raise Conflict("Answer the outstanding questions using reply_to_job_id.")
         project = self.store.project(project_id)
         if (
+            latest.status in {"failed", "cancelled", "interrupted"}
+            and request.parameters is None
+            and (request.base_version_id or project.current_version_id) == latest.base_version_id
+        ):
+            inputs = self.store.inputs(latest.id)
+            checkpoint = self._checkpoint_for(latest, inputs)
+            if inputs.parameters is None and checkpoint is not None:
+                inputs.checkpoint = checkpoint
+                inputs.instruction = "\n\n".join(filter(None, (inputs.instruction, request.instruction))) or None
+                known = {image.asset_id for image in inputs.images}
+                inputs.images += [MessageImage(asset_id=image) for image in images if image not in known]
+                base = self.store.version(latest.base_version_id) if latest.base_version_id else None
+                return self._start(project_id, inputs, base, config, message_text=request.instruction, message_images=images)
+        if (
             project.current_version_id is None
             and request.base_version_id is None
             and request.parameters is None
@@ -377,6 +391,7 @@ class Runtime:
         if self.store.latest_job(job.project_id).id != job_id:
             raise Conflict("Only the latest task execution may be retried or answered.")
         inputs = self.store.inputs(job_id)
+        inputs.checkpoint = self._checkpoint_for(job, inputs)
         if answer is not None:
             clarification = {"questions": job.questions, "answer": answer}
             if images:
@@ -392,6 +407,25 @@ class Runtime:
             message_text=answer if answer is not None else "重试本次制作。",
             message_images=images,
         )
+
+    def _checkpoint_for(self, job: GenerationJob, inputs: JobInput):
+        """Read durable progress, or reconstruct a pre-upgrade failure from its successful workspace receipts."""
+        if inputs.parameters is not None:
+            return None
+        if inputs.checkpoint is not None:
+            return inputs.checkpoint
+        path = self.store.audit_path(job.project_id, job.id)
+        if not path.is_file():
+            return None
+        from .checkpoints import from_audit
+        from .tools.workspace import restore_version_files, starter_files
+
+        base = self.store.version(job.base_version_id) if job.base_version_id else None
+        request = self.store.project(job.project_id).request
+        requested = {name for name in ("two_tier", "keyword_effect", "bilingual") if getattr(request, name)}
+        family = (FontStore.active.families() if FontStore.active is not None else [DEFAULT_FAMILY])[0]
+        files = restore_version_files(base.spec, base.candidate) if base else starter_files(request.sprite_kind, requested, family)
+        return from_audit(path, files)
 
     async def code_report(
         self, component: ComponentDefinition, *, export_code: str
@@ -570,6 +604,8 @@ class Runtime:
                     intent=intent,
                     # A free-form edit can go back to any earlier version of the work.
                     **({"versions": await asyncio.to_thread(self.store.versions, job.project_id)} if patch is None else {}),
+                    **({"checkpoint": inputs.checkpoint,
+                        "on_checkpoint": lambda value: self.store.save_checkpoint(job_id, value)} if patch is None else {}),
                 )
                 if isinstance(result, DialogueOutput):
                     self.store.update(
@@ -640,6 +676,8 @@ class Runtime:
             # Candidates and renders are scratch; the audit log lives outside the job folder until it expires.
             shutil.rmtree(self.store.job_dir(job_id), ignore_errors=True)
             final = self.store.job(job_id)
+            if model_task and final.status in {"succeeded", "answered"}:
+                self.store.save_checkpoint(job_id, None)
             if model_task:
                 context.append([outcome_record(final)])
             self.store.save_conversation(job.project_id, context)

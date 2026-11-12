@@ -176,6 +176,21 @@ client's local store. Acknowledged events are deleted; once a work
 has no undelivered events, the progress, rounds and messages of its finished jobs go too, and only the latest job row
 stays because retrying it or answering its questions needs its input.
 
+Generation inputs also retain a private recovery checkpoint in that existing job row: the current `Effect.tsx`
+and `effect.json`, plan position, completed step outputs and bounded recent tool exchanges. Each completed tool
+and turn updates it before another model request. Explicit retry creates a new execution with fresh budgets and
+continues the unfinished Executor step; a follow-up message after failure continues the same draft when its base
+version has not changed, applying the new instruction and reference images. Manual parameter revisions keep their
+existing path. Copying the checkpoint into the new job makes it independent of old-job acknowledgement/pruning.
+Success clears the checkpoint; deleting the work removes it with the job rows. Credentials and temporary image
+paths are not stored in it. Render evidence is recreated by `effect.save` and reviewed before publication, so a
+saved candidate from the previous execution cannot bypass the current acceptance guards.
+
+For failures created before checkpoints existed, retry can reconstruct the draft from successful workspace write
+and edit receipts in that job's private audit. It does not execute recorded tools or restore failed edits. If no
+draft was recorded, the original request starts normally; inconsistent recorded edits refuse recovery instead of
+silently discarding progress. This fallback is available only while the audit is retained.
+
 Sealed version files, reference images and Sprite preview bundles are objects under `imv/remotion/`
 (`object_store.py`): public-read in ZOS once `ZOS_BUCKET` is set, otherwise files under `IMV_DATA_DIR/objects`.
 Every sealed file of a version is public-read under `imv/remotion/versions/<version_id>/`, including the internal

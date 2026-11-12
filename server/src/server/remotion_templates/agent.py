@@ -156,6 +156,8 @@ class AgentRun:
         context=None,
         intent=None,
         versions=None,
+        checkpoint=None,
+        on_checkpoint=None,
     ):
         """Reuse Runtime's outer window and keep Executor exchanges in a separate task-local window."""
         self.harness, self.budget = harness, budget
@@ -194,6 +196,16 @@ class AgentRun:
         self.generation_started = False
         self.delegation = None
         self.plan_result = None
+        self.on_checkpoint = on_checkpoint
+        if checkpoint is not None:
+            from .checkpoints import restore
+            restore(self, checkpoint)
+
+    def _checkpoint(self, exchange=None):
+        """Persist completed file edits and tool receipts before another model request can time out."""
+        if self.on_checkpoint is not None:
+            from .checkpoints import capture
+            self.on_checkpoint(capture(self, exchange))
 
     def snapshot(self):
         """Build the host-owned snapshot sent after the window; the Executor's holds only what changes, its window has the rest."""
@@ -793,6 +805,10 @@ class AgentRun:
                     result = result or tool_receipt("fail", error="INTERRUPTED", data={"detail": "Action did not finish"})
                     exchange.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result, ensure_ascii=False)})
                     self.budget.record("tool_result", role=self.layer.value, turn=self.turn, tool=name, call_id=call.id, arguments=call.function.arguments, result=result, actual_tooluse=self.state.calls)
+                    # A crash between calls in a batch must keep earlier successful edits. Store only paired
+                    # calls here; unexecuted calls are never replayed as completed actions on a retry.
+                    partial = [{**exchange[0], "tool_calls": [item for item in exchange[0]["tool_calls"] if item["id"] in handled]}, *exchange[1:]]
+                    self._checkpoint(partial)
         finally:
             for call in response.tool_calls:
                 if call.id not in handled:
@@ -929,6 +945,7 @@ class AgentRun:
                 # fresh evidence even if later calls in the same round are duplicates.
                 self.stalled_turns = 0 if self._round_progress or result is not None else previous_stalls + 1
                 self._report_round(layer)
+                self._checkpoint()
             if result is not None:
                 return result
 

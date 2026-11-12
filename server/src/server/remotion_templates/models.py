@@ -611,7 +611,7 @@ class MessageImage(Contract):
 
 
 class JobInput(Contract):
-    """Persisted execution input allows explicit retries without replaying hidden state."""
+    """Private execution input and recoverable workspace; never accepted from the public request body."""
 
     mode: Literal["generate", "edit", "parameters"] = "generate"
     instruction: str | None = None
@@ -619,6 +619,7 @@ class JobInput(Contract):
     clarifications: list[str] = Field(default_factory=list)
     # Reference images attached to later chat messages; the work's original image is read from its request.
     images: list[MessageImage] = Field(default_factory=list)
+    checkpoint: dict[str, JsonValue] | None = None
 
 
 class PublicJob(Contract):

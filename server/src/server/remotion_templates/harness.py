@@ -91,7 +91,7 @@ class Harness:
             duration_frames=sprite.composition.duration_frames,
         ))
 
-    async def generate(self, spec, budget: Budget, directory: Path, images, on_stage, *, base=None, parameter_patch=None, context: Conversation | None = None, intent=None, versions=None):
+    async def generate(self, spec, budget: Budget, directory: Path, images, on_stage, *, base=None, parameter_patch=None, context: Conversation | None = None, intent=None, versions=None, checkpoint=None, on_checkpoint=None):
         """Queued manual patches use only runtime checks; natural-language work enters the three-layer loop.
 
         The runtime saves PR76 patches at once when the base's player bundle reads injected defaults; the ones that
@@ -119,4 +119,5 @@ class Harness:
             seal_artifacts(result, revised, report, directory / "attempt-1")
             return result, revised, report, directory / "attempt-1"
         from .agent import AgentRun
-        return await AgentRun(self, spec, budget, directory, images, on_stage, base=base, context=context, intent=intent, versions=versions).plan_execute()
+        return await AgentRun(self, spec, budget, directory, images, on_stage, base=base, context=context, intent=intent,
+                              versions=versions, checkpoint=checkpoint, on_checkpoint=on_checkpoint).plan_execute()
