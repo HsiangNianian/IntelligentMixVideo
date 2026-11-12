@@ -29,7 +29,8 @@ all historical versions open through `restore_version_files` in the same task-lo
   entries than lines expands them before applying each line's saved font, weight and size ratio.
 - **Assembly.** `assemble` derives a text effect's configuration parameters from `text` with `text_configuration`
   (the same names, schemas and titles as a text block, without `effect{k}`), merges the style parameters (bounds, a
-  colour pattern, titles and out-of-range defaults are corrected and noted; a host configuration name is left out)
+  colour pattern, titles and out-of-range defaults are corrected and noted; numeric enums keep any optional bounds,
+  and a host configuration name is left out)
   and bundles the single instance `effect` with `compose_source`, which inlines the runtime. The Sprite stores the
   manifest in `SpriteDraft.effect`; its code still imports only React and Remotion, so publication, templates, the
   bus and video composition are unchanged. A sample that fits no shape (one line; two for 双栏; two or four
@@ -46,10 +47,14 @@ all historical versions open through `restore_version_files` in the same task-lo
   probes of the validation worker: other injected text must be what it shows, a keyword hit takes keywordColor and
   keywordBold with the keyword effect off, every default line is shown in full on frame `duration_frames // 2` (where
   the bus freezes subtitles shorter than 1.5 s, with every line starting at zero), lowering `fontSize` between two legal
-  sizes at least 25% apart shrinks the text, and each style parameter (and `keywordEffect`) changes a sampled frame
-  between its two ends (screenshot comparison with alpha preserved, so white text can disappear visibly). If defaults hide a parameter, its endpoints are also compared with each
+  sizes at least 25% apart shrinks the text. Style parameters (and `keywordEffect`) are sampled between their two ends
+  (screenshot comparison with alpha preserved, so white text can disappear visibly). If defaults hide a parameter, its endpoints are also compared with each
   other boolean flipped, then all other booleans on or off, always holding those controls fixed between endpoints.
-  These bounded probes do not enumerate every combination or change saved defaults. A check failure is a
+  These bounded probes do not enumerate every combination or change saved defaults. No visible difference is only an
+  advisory `notes` entry on check/save: periodic endpoints or limited samples cannot prove a control unused. It does
+  not block saving or frame capture, and the Executor should not remove controls or retry solely to clear the note;
+  the user can inspect the result and ask for adjustments. Actual runtime errors and the required content/layout
+  checks still fail. A check failure is a
   `passed: false` result; a save failure is `CODE_VALIDATION_FAILED` listing every problem.
 - **Observations.** `preview.render` (at most 12 per task, never cached as a publication report), `effect.save`'s
   acceptance sheet and

@@ -2,6 +2,7 @@
 
 数据流：工作区只在任务会话里（`files`：`Effect.tsx` 与 `effect.json`），检查、预览与保存都从当前文件重新 `assemble`。检查
 与保存走同一套门禁：组件的 TypeScript 与源码策略、分类必备参数，再在隔离浏览器里检查透明度、不同时长、排版与契约探针；
+参数采样未见变化只记 notes，不阻止用户查看效果后继续修改。
 保存通过后记下候选 Sprite（宿主最终发布最新的一个）与它的验收联系表。预览、保存与看图得到的图片是「观察图」，附在之后的
 Executor 轮次里，有新的观察图时替换旧的；`agent.py` 据此确认汇报前看过最新候选的联系表。预览直接调用校验器，不把它的
 报告缓存成发布用的验收结果。
@@ -164,8 +165,8 @@ class EffectTools:
                 raise ToolFault("INVALID_ARGUMENT", "contract.text_fit_parameters is host-owned: preserve the accepted version's layout check.", field="/contract/text_fit_parameters")
         return await asyncio.to_thread(assemble, files, fonts=self._fonts(), requested=set(self.requested), duration=duration or self._duration())
 
-    async def _gate(self, draft: SpriteDraft, capture=None) -> tuple[list[EffectProblem], SpriteDraft | None]:
-        """Run every check a saved effect must pass; returns the problems and, when there are none, the Sprite as stored."""
+    async def _gate(self, draft: SpriteDraft, notes: list[str], capture=None) -> tuple[list[EffectProblem], SpriteDraft | None]:
+        """Return blocking problems or the stored Sprite; append advisory parameter-sampling messages to ``notes``."""
         from ..tool_validation import render_lengths
 
         component = draft.instances[0].preset
@@ -200,6 +201,7 @@ class EffectTools:
             # Retain historical cue/lockstep checks; new effects allow independently timed lines.
             text_fit_parameters=text_fit_parameters(sprite) if text else None, effect_contract=contract_probes(sprite), capture=capture,
         )
+        notes.extend(item.message for item in report.checks if item.name == "effect_contract" and item.status == "passed" and item.message)
         if report.passed:
             return [], sprite
         problems = [_diagnostic_problem(item) for item in report.code_validation.diagnostics if item.severity == "error"]
@@ -216,7 +218,7 @@ class EffectTools:
                 raise
             check = "manifest" if exc.error.code == "INVALID_ARGUMENT" else "code"
             return EffectCheckOutput(passed=False, problems=[EffectProblem(check=check, message=f"{exc.error.message}{f' (at {exc.error.field})' if exc.error.field else ''}"[:3000])])
-        problems, _sprite = await self._gate(draft)
+        problems, _sprite = await self._gate(draft, notes)
         if not problems:
             self.checked_hash = self.workspace_hash()
         return EffectCheckOutput(passed=not problems, problems=problems, notes=notes)
@@ -264,7 +266,7 @@ class EffectTools:
         draft, notes = await self._assemble()
         keywords = preview_keywords(draft)
         capture = self._capture(draft, [draft.composition.duration_frames // 2], keywords, trace=trial_frames(draft))
-        problems, sprite = await self._gate(draft, capture)
+        problems, sprite = await self._gate(draft, notes, capture)
         if sprite is None:
             listed = "\n".join(f"- [{item.check}] {item.message}" + (f" (line {item.line}: {item.excerpt})" if item.line and item.excerpt else "") for item in problems)
             raise ToolFault("CODE_VALIDATION_FAILED", f"The effect was not saved; fix these and save again:\n{listed}"[:6000],

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops
 from pydantic import SecretStr
 
 from server.remotion_templates.agent import AgentRun, Layer
@@ -319,13 +319,44 @@ def test_save_runs_the_whole_gate_and_attaches_the_acceptance_sheet(tmp_path, du
 
 
 @needs_bundler
+@pytest.mark.parametrize("kind", ["number", "integer"])
+@pytest.mark.parametrize("bounds", [{}, {"minimum": 1}, {"maximum": 3}, {"minimum": 1, "maximum": 3}])
+def test_numeric_enums_preserve_optional_bounds_when_checked_and_saved(tmp_path, kind, bounds):
+    """合法数字枚举可不带边界或只带单侧边界；检查、保存保留 Schema 和有效默认值，不误报校验环境不可用。"""
+    current = free_session(tmp_path)
+    data = manifest(current.files)
+    schema = {"type": kind, "enum": [1, 2, 3], **bounds}
+    data["params"].append({"name": "glowSize", "schema": schema, "default": 2})
+    current.files[MANIFEST] = json.dumps(data)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] and not checked["notes"], checked
+    receipt = asyncio.run(current.execute("effect.save", {}, available()))
+    saved = current.saved_sprite(receipt["sprite_id"])
+    assert saved.parameter_schema["properties"]["glowSize"] == {**schema, "title": "glowSize"}
+    assert saved.default_parameters["glowSize"] == 2
+
+
+@needs_bundler
+def test_sampling_advisory_reaches_check_and_save_without_blocking(tmp_path):
+    """参数采样的提示进入检查和保存回执，仍保存候选和观察图供用户继续查看调整。"""
+    note = "No visible change was observed for decorationAngle; sampling is advisory."
+    report = passing_report().model_copy(update={"checks": [CheckResult(name="effect_contract", status="passed", message=note)]})
+    current = free_session(tmp_path, report=report)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] and checked["problems"] == [] and checked["notes"] == [note]
+    saved = asyncio.run(current.execute("effect.save", {}, available()))
+    assert saved["notes"] == [note] and saved["review"]["frames"]
+    assert current.latest_sprite_id == saved["sprite_id"]
+
+
+@needs_bundler
 def test_a_failed_check_lists_the_problems_and_save_refuses(tmp_path):
     """检查不通过时 validate_check 列出每个问题（不算工具错误），effect_save 拒绝保存并给出同样的问题。"""
-    failing = passing_report().model_copy(update={"passed": False, "checks": [CheckResult(name="effect_contract", status="failed", message="unwired glowColor")]})
+    failing = passing_report().model_copy(update={"passed": False, "checks": [CheckResult(name="effect_contract", status="failed", message="injected text is missing")]})
     current = free_session(tmp_path, report=failing)
     checked = asyncio.run(current.execute("validate.check", {}, available()))
-    assert checked["passed"] is False and checked["problems"] == [{"check": "effect_contract", "message": "unwired glowColor"}]
-    with pytest.raises(ToolFault, match="unwired glowColor") as caught:
+    assert checked["passed"] is False and checked["problems"] == [{"check": "effect_contract", "message": "injected text is missing"}]
+    with pytest.raises(ToolFault, match="injected text is missing") as caught:
         asyncio.run(current.execute("effect.save", {}, available()))
     assert caught.value.error.code == "CODE_VALIDATION_FAILED" and current.latest_sprite_id is None
 
@@ -1082,23 +1113,17 @@ def test_real_saved_motion_tells_which_side_a_line_slides_in_from(tmp_path, star
 
 
 @needs_browser
-@pytest.mark.parametrize(("code", "extra", "expected"), [
-    (HARD_CODED, None, "still shows the sample"),
-    (FADES_EARLY, None, "On the middle frame"),
-    (FADES_EARLY.replace("frame > duration * 0.4", "frame >= Math.floor(duration / 2)"), None, "On the middle frame 75"),
-    (FIXED_SIZE, None, "does not make the text smaller"),
-    (PLAIN_KEYWORDS, None, "no keyword hit is marked"),
-    (None, {"name": "glowColor", "schema": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"}, "default": "#FFAA00", "title": "发光颜色"}, "glowColor"),
+@pytest.mark.parametrize(("code", "expected"), [
+    (HARD_CODED, "still shows the sample"),
+    (FADES_EARLY, "On the middle frame"),
+    (FADES_EARLY.replace("frame > duration * 0.4", "frame >= Math.floor(duration / 2)"), "On the middle frame 75"),
+    (FIXED_SIZE, "does not make the text smaller"),
+    (PLAIN_KEYWORDS, "no keyword hit is marked"),
 ])
-def test_real_contract_probes_catch_what_templates_would_break_on(tmp_path, code, extra, expected):
-    """真实浏览器拒绝写死内容/字号、定格帧前或恰好在该帧消失、漏关键词标记与未使用参数，给出对应修法。"""
+def test_real_contract_probes_catch_what_templates_would_break_on(tmp_path, code, expected):
+    """真实浏览器仍拒绝写死内容/字号、定格帧前或恰好在该帧消失与漏关键词标记，给出对应修法。"""
     current = real_session(tmp_path)
-    if code is not None:
-        current.files[CODE] = code
-    if extra is not None:
-        data = json.loads(current.files[MANIFEST])
-        data["params"].append(extra)
-        current.files[MANIFEST] = json.dumps(data, ensure_ascii=False)
+    current.files[CODE] = code
     checked = asyncio.run(current.execute("validate.check", {}, available()))
     assert checked["passed"] is False
     assert any(expected in item["message"] for item in checked["problems"]), checked["problems"]
@@ -1123,7 +1148,7 @@ def test_real_font_size_probe_accepts_small_defaults_but_rejects_fixed_sizes(tmp
 @needs_browser
 @pytest.mark.parametrize(("nested", "unused"), [(False, False), (True, False), (False, True)])
 def test_real_wiring_checks_optional_controls_in_context(tmp_path, nested, unused):
-    """默认关闭或嵌套开关下的发光颜色可通过；无关隐藏开关不干扰探针，真正未使用的参数仍失败，默认值不变。"""
+    """默认关闭或嵌套开关下的发光颜色不误报；未观察到变化的参数只给提示，允许保存且默认值不变。"""
     current = real_session(tmp_path)
     enabled = "props.glowEnabled && props.nestedEnabled" if nested else "props.glowEnabled"
     hidden = "" if nested else "opacity: props.hidden ? 0 : 1, "
@@ -1142,11 +1167,63 @@ def test_real_wiring_checks_optional_controls_in_context(tmp_path, nested, unuse
     current.files[MANIFEST] = json.dumps(data, ensure_ascii=False)
     before = dict(current.files)
     checked = asyncio.run(current.execute("validate.check", {}, available()))
-    assert checked["passed"] is (not unused), checked
+    assert checked["passed"], checked
     if unused:
-        assert any("unusedColor" in item["message"] for item in checked["problems"]), checked
-        assert all("glowColor" not in item["message"] for item in checked["problems"]), checked
+        assert any("unusedColor" in note for note in checked["notes"]), checked
+        saved = asyncio.run(current.execute("effect.save", {}, available()))
+        assert saved["notes"] == checked["notes"] and saved["review"]["frames"]
+    assert all("glowColor" not in note for note in checked["notes"]), checked
     assert current.files == before
+
+
+@needs_browser
+def test_real_cyclic_parameter_can_be_saved_despite_identical_endpoints(tmp_path):
+    """装饰角度的 0/360 度相同不能阻止保存；90 度实际改变像素，回执只给采样提示且保留默认值。"""
+    current = real_session(tmp_path)
+    current.files[CODE] = '''import React from "react";
+import { TextRoot, LineText, useTextContent, type EffectProps } from "imv";
+export default function Effect(props: EffectProps) {
+  const content = useTextContent(props);
+  return <>
+    <div style={{ position: "absolute", left: 300, top: 20, width: 180, height: 12,
+      backgroundColor: "#FF0000", transform: `rotate(${props.decorationAngle}deg)` }} />
+    <TextRoot content={content}>{line => <div style={{ color: props.color }}><LineText content={content} line={line} /></div>}</TextRoot>
+  </>;
+}'''
+    data = manifest(current.files)
+    data["params"].append({"name": "decorationAngle", "schema": {"type": "number", "minimum": 0, "maximum": 360},
+                           "default": 90, "title": "装饰角度", "group": "装饰"})
+    current.files[MANIFEST] = json.dumps(data)
+    before = dict(current.files)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] and any("decorationAngle" in note for note in checked["notes"]), checked
+    saved = asyncio.run(current.execute("effect.save", {}, available()))
+    assert saved["notes"] == checked["notes"] and current.files == before
+    assert current.saved_sprite(saved["sprite_id"]).default_parameters["decorationAngle"] == 90
+    angled_path = current.observations[0][0]
+    data["params"][-1]["default"] = 0
+    current.files[MANIFEST] = json.dumps(data)
+    asyncio.run(current.execute("preview.render", {"frames": [75]}, available()))
+    with Image.open(angled_path) as angled, Image.open(current.observations[0][0]) as straight:
+        assert ImageChops.difference(angled.convert("RGB"), straight.convert("RGB")).getbbox() is not None
+
+
+@needs_browser
+def test_real_parameter_probe_runtime_errors_still_block_save(tmp_path):
+    """采样未见变化可通过，但合法参数值确实令组件抛错时仍拒绝检查和保存。"""
+    current = real_session(tmp_path)
+    current.files[CODE] = current.files[CODE].replace(
+        "const content = useTextContent(props);",
+        'const content = useTextContent(props); if (props.glowSize === 3) throw new Error("probe boom");',
+    )
+    data = manifest(current.files)
+    data["params"].append({"name": "glowSize", "schema": {"type": "number", "enum": [1, 2, 3], "minimum": 1}, "default": 2})
+    current.files[MANIFEST] = json.dumps(data)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert not checked["passed"] and any("probe boom" in item["message"] for item in checked["problems"]), checked
+    with pytest.raises(ToolFault, match="probe boom") as caught:
+        asyncio.run(current.execute("effect.save", {}, available()))
+    assert caught.value.error.code == "CODE_VALIDATION_FAILED" and not current.saved_sprites
 
 
 @needs_browser

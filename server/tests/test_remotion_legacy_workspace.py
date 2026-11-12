@@ -265,8 +265,8 @@ def test_real_conversion_preserves_rendered_pixels(tmp_path, name):
 
 @needs_browser
 @pytest.mark.parametrize("change", ["unchanged", "inverted", "unwired"])
-def test_real_converted_cue_retains_acceptance_and_rejects_broken_motion(tmp_path, change):
-    """旧 cue 原样通过完整保存门禁；反向隐藏待场文字或断开动画参数仍分别由 text_fit/契约探针拒绝。"""
+def test_real_converted_cue_keeps_layout_guard_and_reports_unobserved_motion(tmp_path, change):
+    """旧 cue 原样保存；反向隐藏待场文字仍拒绝，采样看不到参数变化只提示并允许用户查看结果。"""
     spec, candidate = legacy_version("text-cue")
     settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
     current = ToolSession(SimpleNamespace(settings=settings, renderer=Renderer(settings)), spec, candidate, Budget(),
@@ -282,9 +282,11 @@ def test_real_converted_cue_retains_acceptance_and_rejects_broken_motion(tmp_pat
         assert current.files[CODE].count(original) == 1
         current.files[CODE] = current.files[CODE].replace(original, "opacity: props.progress" if change == "inverted" else "opacity: 1")
         checked = asyncio.run(current.execute("validate.check", {}, available()))
-        assert not checked["passed"] and not current.saved_sprites
-        messages = {problem["check"]: problem["message"] for problem in checked["problems"]}
         if change == "inverted":
+            assert not checked["passed"] and not current.saved_sprites
+            messages = {problem["check"]: problem["message"] for problem in checked["problems"]}
             assert "cue effect stays at its start" in messages.get("text_fit", "")
         else:
-            assert "effect1" in messages.get("effect_contract", "")
+            assert checked["passed"] and any("effect1" in note for note in checked["notes"]), checked
+            saved = asyncio.run(current.execute("effect.save", {}, available()))
+            assert saved["notes"] == checked["notes"] and saved["review"]["frames"]

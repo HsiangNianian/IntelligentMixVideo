@@ -298,8 +298,10 @@ def _style_parameters(manifest: EffectManifest, reserved: set[str], notes: list[
                 definition["pattern"] = HEX_COLOR
             elif "pattern" not in definition and "enum" not in definition and "maxLength" not in definition:
                 definition["maxLength"] = 200
-        if kind in {"number", "integer"} and isinstance(default, (int, float)) and not isinstance(default, bool) and "minimum" in definition:
-            fixed = min(definition["maximum"], max(definition["minimum"], default))
+        if kind in {"number", "integer"} and isinstance(default, (int, float)) and not isinstance(default, bool):
+            # Numeric enums need no interval: clamp only the bounds their schema actually declares.
+            fixed = max(definition.get("minimum", default), default)
+            fixed = min(definition.get("maximum", fixed), fixed)
             if fixed != default:
                 notes.append(f"Parameter {item.name} default {default} was kept within its range.")
                 default = int(fixed) if kind == "integer" else fixed

@@ -256,7 +256,8 @@ class ToolValidator:
         check passes; a failed report captures none. ``text_fit_parameters`` marks host-composed still text and
         disables its cue wrappers for layout measurements; it never changes runtime or review frames.
         ``effect_contract`` runs the contract probes of a free-form effect (`tools/workspace.contract_probes`) after the
-        other checks and fails the ``effect_contract`` check with every problem it finds.
+        other checks. Required content/layout violations and runtime errors fail ``effect_contract``; an unchanged
+        parameter sample is advisory, carried in the passed check's message and does not prevent frame capture.
         """
         if request.duration_frames > 216000:
             raise ValueError("duration_frames exceeds the validation resource limit")

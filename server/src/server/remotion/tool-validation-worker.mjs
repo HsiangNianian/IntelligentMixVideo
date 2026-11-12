@@ -1157,9 +1157,9 @@ function wiringFrames(total) {
  * must take the keyword options (colour, bold) with the keyword effect off; every default line must be shown in full on
  * the middle frame (with historical cue wrappers off for layout), where the bus freezes subtitles shorter than 1.5 s;
  * and lowering `fontSize` must shrink the text,
- * which the host's fit relies on. For every kind each of its own style parameters (`wiring`, two extreme values) must
- * change at least one sampled frame, so the parameter panel has no dead controls. Returns one check listing every
- * problem with its fix.
+ * which the host's fit relies on. Style parameter sampling (`wiring`, two extreme values) is advisory: identical ends
+ * cannot prove a control unused (for example, 0 and 360 degrees). Runtime errors still fail. Returns a failed check
+ * listing contract problems, or a passed check whose optional message is a sampling note for the user-review workflow.
  */
 async function effectContractCheck(page) {
   const spec = request.effect_contract;
@@ -1167,6 +1167,7 @@ async function effectContractCheck(page) {
   // Match sprite_render's short-subtitle hold, including even preview lengths (150 frames holds frame 75).
   const middle = Math.floor(total / 2);
   const problems = [];
+  const unobserved = [];
   // Historical cue wrappers may remove an earlier line when a later one appears. Keep the old layout-only
   // cue-off patch for content measurements; wiring below uses actual enabled effects and staggered starts.
   const layout = { ...spec.layout, ...(spec.starts ? { lineStartFrames: spec.starts } : {}) };
@@ -1238,7 +1239,6 @@ async function effectContractCheck(page) {
             + "draw every line at the font size TextRoot gives it (line.fontSize), without fixed font sizes, scale factors derived from the text length or fixed-size boxes.");
       }
     }
-    const unwired = [];
     if (spec.wiring?.length) {
       const client = page._client();
       // Preserve alpha: white text disappearing must differ from white text, even on Chrome's white page.
@@ -1277,13 +1277,10 @@ async function effectContractCheck(page) {
           if (result.changed || result.error) break;
         }
         if (result.error) { problems.push(result.error); break; }
-        if (!result.changed) unwired.push(`${item.name} (${item.values.map((value) => JSON.stringify(value)).join(" and ")})`);
+        if (!result.changed) unobserved.push(`${item.name} (${item.values.map((value) => JSON.stringify(value)).join(" and ")})`);
         await mount(spec.base, 0);
       }
     }
-    if (unwired.length)
-      problems.push(`These parameters do not change any sampled frame between their two extremes: ${unwired.join(", ")}. `
-        + "Every parameter in effect.json is a control in the parameter panel: read it in Effect.tsx where it draws what its title says, or remove it from effect.json.");
   } finally {
     if (spec.wiring?.length) await page._client().send("Emulation.setDefaultBackgroundColorOverride", {});
     await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
@@ -1291,7 +1288,10 @@ async function effectContractCheck(page) {
   }
   return problems.length
     ? { name: "effect_contract", status: "failed", message: problems.join("\n").slice(0, 6000) }
-    : { name: "effect_contract", status: "passed", message: "The effect shows the injected text and keywords, preserves the required text layout, shrinks with fontSize and uses every parameter." };
+    : { name: "effect_contract", status: "passed", ...(unobserved.length ? { message: (
+      `Parameter sampling found no visible difference between the endpoints of: ${unobserved.join(", ")}. `
+      + "This is advisory: identical endpoints or limited samples do not prove a control unused. The effect can be saved for user review; do not remove controls or retry solely because of this note."
+    ).slice(0, 6000) } : {}) };
 }
 
 /** The smallest `keywordSize` a placement may set (0 follows the text size, which is not scaled). */
