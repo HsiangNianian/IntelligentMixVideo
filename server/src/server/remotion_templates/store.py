@@ -21,19 +21,23 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import Connection, delete, func, insert, select, update
+from sqlalchemy import Connection, delete, func, insert, inspect, select, update
 from sqlalchemy.exc import IntegrityError
 
 from ..database import get_engine
 from . import history
-from .context import Conversation
+from .context import Conversation, outcome_record
 from .evidence import digest, verify_artifacts
 from .models import (
     Asset,
+    ClientContext,
     GenerateTemplateRequest,
     GenerationJob,
     JobError,
     JobInput,
+    PublicJob,
+    TaskInput,
+    ImagePayload,
     TemplateCandidate,
     TemplateProject,
     TemplateSpec,
@@ -128,6 +132,9 @@ class Store:
         self.instance_id = uuid4()
         self._write = threading.RLock()
         self._touched: OrderedDict[str, datetime] = OrderedDict()
+        # Live windows exist only while their task runs; terminal state and its checkpoint commit together.
+        self.running_contexts: dict[UUID, Conversation] = {}
+        self.legacy_tables: set[str] = set()
         # Open event streams by work, woken when a transaction that appended events of that work commits.
         self._watchers: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Event]]] = {}
         self._watching = threading.Lock()
@@ -135,6 +142,23 @@ class Store:
     def initialize(self) -> None:
         """Create the tables on first use; existing tables are reused unchanged."""
         metadata.create_all(get_engine())
+        self.legacy_tables = set(inspect(get_engine()).get_table_names()) & {
+            "remotion_conversations", "remotion_assets", "remotion_work_assets",
+        }
+
+    def legacy_state(self, db: Connection, work_id: UUID) -> str | None:
+        """Read an old window only when that table already exists."""
+        if conversations.name not in self.legacy_tables:
+            return None
+        return db.execute(select(conversations.c.data).where(conversations.c.work_id == str(work_id))).scalar()
+
+    def legacy_images(self, db: Connection, work_id: UUID) -> list[UUID]:
+        """List every old image association, including older images outside the model window."""
+        if work_assets.name not in self.legacy_tables:
+            return []
+        return [UUID(value) for value in db.execute(select(work_assets.c.asset_id).where(
+            work_assets.c.work_id == str(work_id),
+        )).scalars()]
 
     def acquire_lease(self) -> None:
         """Become the one backend instance that owns this database's queue, or raise `InstanceInUse`.
@@ -275,19 +299,35 @@ class Store:
         with self.reading() as db:
             return [UUID(value) for value in db.execute(select(works.c.id).where(works.c.deleting.is_(True))).scalars()]
 
-    def conversation(self, project_id: UUID) -> Conversation:
-        """Load only this work's bounded window; a new work has no inherited history."""
+    def client_context(self, project_id: UUID) -> ClientContext:
+        """Export an undelivered checkpoint or a legacy window; acknowledged new windows live only on the client."""
         self.project(project_id)
         with self.reading() as db:
-            data = db.execute(select(conversations.c.data).where(conversations.c.work_id == str(project_id))).scalar()
-        return Conversation(json.loads(data) if data else None)
+            latest = self._latest(db, project_id)
+            if latest is None or latest.status in ACTIVE or db.execute(select(jobs.c.active_work_id).where(jobs.c.id == str(latest.id))).scalar():
+                raise Conflict("请等待当前任务结束后再读取模型上下文。")
+            state = db.execute(select(work_events.c.data).where(
+                work_events.c.work_id == str(project_id), work_events.c.type == "job.updated",
+            ).order_by(work_events.c.id.desc()).limit(1)).scalar()
+            if state:
+                checkpoint = json.loads(state).get("context")
+                if checkpoint and checkpoint["job_id"] == str(latest.id):
+                    return ClientContext.model_validate(checkpoint)
+            legacy = self.legacy_state(db, project_id)
+            if legacy is not None:
+                inputs = JobInput.model_validate_json(db.execute(select(jobs.c.input_data).where(jobs.c.id == str(latest.id))).scalar_one())
+                return self.delivery_context(db, latest, legacy, inputs, self.require_work_request(db, project_id))
+        raise Conflict("模型上下文已由客户端保存或过期，请使用原设备的本地会话；本地数据丢失时需新建会话。")
 
-    def save_conversation(self, project_id: UUID, context: Conversation) -> None:
-        """Replace the window rather than appending an unbounded conversation log."""
-        data = context.serialize()
-        with self.transaction() as db:
-            if db.execute(update(conversations).where(conversations.c.work_id == str(project_id)).values(data=data)).rowcount == 0:
-                db.execute(insert(conversations).values(work_id=str(project_id), data=data))
+    def require_context(self, project_id: UUID, context: ClientContext | None) -> ClientContext:
+        """Bind replay to the work and latest task; migration/download never silently creates an empty history."""
+        context = context if context is not None else self.client_context(project_id)
+        if str(context.work_id) != str(project_id) or context.job_id != self.latest_job(project_id).id:
+            raise Conflict("模型上下文不属于当前会话或已过期，请刷新任务后重试。")
+        latest = self.latest_job(project_id)
+        if context.input is not None and context.base_version_id != latest.base_version_id:
+            raise Conflict("恢复点不属于当前任务基线。")
+        return context
 
     @staticmethod
     def _latest(db: Connection, project_id: UUID) -> GenerationJob | None:
@@ -334,21 +374,13 @@ class Store:
 
     def asset(self, identifier: UUID, device: UUID | None = None) -> Asset:
         """Only registered normalized images can be used as references."""
+        if assets.name not in self.legacy_tables:
+            raise NotFound("参考图片不在本次请求中，请从原设备的本地会话恢复。")
         with self.reading() as db:
             row = db.execute(select(assets.c.device_id, assets.c.data).where(assets.c.id == str(identifier))).first()
         if row is None or device is not None and row.device_id != str(device):
             raise NotFound("asset not found")
         return Asset.model_validate_json(row.data)
-
-    def save_asset(self, asset: Asset, path: Path, device: UUID) -> None:
-        """Store the validated bytes, then register the image for this device."""
-        self.objects.put(asset_key(asset.id), path, "image/png")
-        try:
-            with self.transaction() as db:
-                db.execute(insert(assets).values(id=str(asset.id), device_id=str(device), data=asset.model_dump_json()))
-        except BaseException:
-            self.objects.delete_prefix(asset_key(asset.id))
-            raise
 
     def prune_assets(self, older_than: timedelta = ORPHAN_ASSET_TTL) -> list[UUID]:
         """Delete uploads that no work references once they are older than ``older_than``; return their IDs.
@@ -357,6 +389,8 @@ class Store:
         first, so no message can reference an image whose bytes are being removed, and the object store is called
         outside the write lock; an object that fails to delete is only logged, since nothing can reach it any more.
         """
+        if not {assets.name, work_assets.name} <= self.legacy_tables:
+            return []
         cutoff = now() - older_than
         with self.transaction() as db:
             rows = db.execute(select(assets.c.id, assets.c.data).where(
@@ -375,6 +409,8 @@ class Store:
 
     def require_references(self, db: Connection, images: list[UUID], device: UUID) -> None:
         """Accept images this device uploaded unless a deleting work still uses one, since cleanup may remove it."""
+        if images and not {assets.name, work_assets.name} <= self.legacy_tables:
+            raise NotFound("参考图片不在本次请求中，请从原设备的本地会话恢复。")
         for image in images:
             owner = db.execute(select(assets.c.device_id).where(assets.c.id == str(image))).scalar()
             if owner != str(device):
@@ -384,14 +420,6 @@ class Store:
                 .where(work_assets.c.asset_id == str(image), works.c.deleting.is_(True)).limit(1)
             ).first():
                 raise Conflict("reference image belongs to a work being deleted")
-
-    @staticmethod
-    def _reference(db: Connection, work_id: UUID, images: list[UUID]) -> None:
-        """Record that a work uses these images; an image already recorded for it is kept once."""
-        for image in images:
-            key = (work_assets.c.work_id == str(work_id), work_assets.c.asset_id == str(image))
-            if db.execute(select(work_assets.c.asset_id).where(*key)).first() is None:
-                db.execute(insert(work_assets).values(work_id=str(work_id), asset_id=str(image)))
 
     def asset_path(self, identifier: UUID) -> Path:
         """Return a cached local copy of a registered image whose SHA-256 matches its record."""
@@ -514,22 +542,26 @@ class Store:
             raise NotFound("job not found")
         return GenerationJob.model_validate_json(data)
 
-    def create(self, request: GenerateTemplateRequest, device: UUID) -> tuple[TemplateProject, GenerationJob]:
+    def create(self, request: GenerateTemplateRequest, device: UUID, payloads: list[ImagePayload] | None = None) -> tuple[TemplateProject, GenerationJob]:
         """Atomically create a work of this device and its first queued generation."""
         stamp = now()
         project = TemplateProject(id=uuid4(), request=request, created_at=stamp, updated_at=stamp)
         job = self._new_job(project.id, None)
         images = [image.asset_id for image in request.images]
-        with self.transaction() as db:
-            self.require_references(db, images, device)
-            self._register(db, device)
-            db.execute(insert(works).values(
-                id=str(project.id), device_id=str(device), deleting=False, data=project.model_dump_json(),
-            ))
-            self._reference(db, project.id, images)
-            self._insert_job(
-                db, job, JobInput(), request.description or "请参考这张图片制作字效。", images=images,
-            )
+        inputs = JobInput(request=request)
+        self.prepare_images(job, project, inputs, payloads or [], device)
+        try:
+            with self.transaction() as db:
+                self._register(db, device)
+                db.execute(insert(works).values(
+                    id=str(project.id), device_id=str(device), deleting=False, data=project.model_dump_json(),
+                ))
+                self._insert_job(
+                    db, job, inputs, request.description or "请参考这张图片制作字效。", images=images,
+                )
+        except BaseException:
+            shutil.rmtree(self.job_dir(job.id), ignore_errors=True)
+            raise
         return project, job
 
     def _new_job(self, project_id: UUID, base: UUID | None, running: bool = False) -> GenerationJob:
@@ -553,11 +585,20 @@ class Store:
 
         ``images`` are the references attached to this message, shown with it in the chat.
         """
+        if inputs.context is not None:
+            latest = self._latest(db, job.project_id)
+            if (latest is None or latest.status in ACTIVE or inputs.context.work_id != job.project_id
+                    or inputs.context.job_id != latest.id):
+                raise Conflict("模型上下文不属于当前会话或已过期，请刷新任务后重试。")
         db.execute(insert(jobs).values(
             id=str(job.id), work_id=str(job.project_id), status=job.status,
             active_work_id=str(job.project_id) if job.status in ACTIVE else None,
             data=job.model_dump_json(), input_data=inputs.model_dump_json(),
         ))
+        if inputs.context is not None and conversations.name in self.legacy_tables:
+            db.execute(delete(conversations).where(conversations.c.work_id == str(job.project_id)))
+        if inputs.context is not None and work_assets.name in self.legacy_tables:
+            db.execute(delete(work_assets).where(work_assets.c.work_id == str(job.project_id)))
         history.record_input(db, job, inputs, message_text, images=images)
         history.record_job(db, job)
 
@@ -570,6 +611,7 @@ class Store:
         message_text: str | None = None,
         message_images: list[UUID] | None = None,
         running: bool = False,
+        payloads: list[ImagePayload] | None = None,
     ) -> GenerationJob:
         """Reject concurrent edits, foreign version IDs and unusable reference images before enqueueing any work.
 
@@ -582,16 +624,23 @@ class Store:
         if base is not None and self.version(base).project_id != project_id:
             raise Conflict("base version belongs to another work")
         job = self._new_job(project_id, base, running)
+        project = self.project(project_id)
+        inputs.request = inputs.request or (inputs.context.request if inputs.context else None) or project.request
+        if inputs.request is None:
+            raise Conflict("本地会话缺少原始请求，请从原设备恢复。")
+        inputs.finalized = False
+        self.prepare_images(job, project, inputs, payloads or [], self.owner(project_id))
         try:
             with self.transaction() as db:
                 # The work may have been deleted since the check above: report it as missing, not as a server error.
                 self.require_work(db, project_id)
-                device = UUID(db.execute(select(works.c.device_id).where(works.c.id == str(project_id))).scalar_one())
-                self.require_references(db, [image.asset_id for image in inputs.images], device)
-                self._reference(db, project_id, [image.asset_id for image in inputs.images])
                 self._insert_job(db, job, inputs, message_text, images=message_images)
         except IntegrityError as exc:
+            shutil.rmtree(self.job_dir(job.id), ignore_errors=True)
             raise Conflict("this work already has a queued or running job") from exc
+        except BaseException:
+            shutil.rmtree(self.job_dir(job.id), ignore_errors=True)
+            raise
         return job
 
     def inputs(self, job_id: UUID) -> JobInput:
@@ -605,23 +654,98 @@ class Store:
     def save_checkpoint(self, job_id: UUID, checkpoint: dict | None) -> None:
         """Keep the latest completed tool boundary in the existing private job row, independent of scratch files.
 
-        Terminal rows are retained for retry; only their execution inputs change here, never their outcome or
-        public events. Copying these inputs into a retry makes recovery independent of pruning the older job.
+        A terminating execution may still save its final tool receipt before delivery is sealed. After ACK/TTL
+        the client owns recovery; late writers cannot repopulate the finalized row.
         """
         with self.transaction() as db:
             data = db.execute(select(jobs.c.input_data).where(jobs.c.id == str(job_id)).with_for_update()).scalar_one()
             inputs = JobInput.model_validate_json(data)
+            if inputs.finalized:
+                return
+            TaskInput.model_validate(inputs.model_dump(include=set(TaskInput.model_fields)) | {"checkpoint": checkpoint})
             inputs.checkpoint = checkpoint
+            if (context := self.running_contexts.get(job_id)) is not None:
+                job = self._job_for_update(db, job_id)
+                inputs.context = ClientContext(work_id=job.project_id, job_id=job.id, state=context.serialize())
             db.execute(update(jobs).where(jobs.c.id == str(job_id)).values(input_data=inputs.model_dump_json()))
 
     def _save_job(self, db: Connection, job: GenerationJob) -> None:
-        """Update indexed status and serialized state, and publish the public state change."""
+        """Persist cancellation/publication immediately, but defer delivery until the execution finalizer."""
         job.updated_at = now()
+        deferred = job.id in self.running_contexts
         db.execute(update(jobs).where(jobs.c.id == str(job.id)).values(
             status=job.status, data=job.model_dump_json(),
-            active_work_id=str(job.project_id) if job.status in ACTIVE else None,
+            active_work_id=str(job.project_id) if job.status in ACTIVE or deferred else None,
         ))
-        history.record_job(db, job)
+        if job.status in ACTIVE:
+            history.record_job(db, job)
+        elif not deferred:
+            self._finalize_job(db, job)
+
+    def finalize_job(self, job_id: UUID) -> None:
+        """Deliver the last checkpoint and Outer outcome exactly once, after all runtime writers have stopped."""
+        with self.transaction() as db:
+            self._finalize_job(db, self._job_for_update(db, job_id))
+
+    def _finalize_job(self, db: Connection, job: GenerationJob) -> None:
+        """Atomically seal the device delivery and release the per-work queue slot."""
+        inputs = JobInput.model_validate_json(db.execute(
+            select(jobs.c.input_data).where(jobs.c.id == str(job.id)),
+        ).scalar_one())
+        if inputs.finalized or job.status in ACTIVE:
+            return
+        context = self.running_contexts.get(job.id)
+        if context is None and inputs.context and inputs.context.job_id == job.id and inputs.parameters is None:
+            # Restart after a completed tool/terminal DB write: append the outcome the lost finalizer never sent.
+            context = Conversation.from_client(inputs.context.state)
+            context.append([outcome_record(job)])
+        state = context.serialize() if context is not None else inputs.context.state if inputs.context else self.legacy_state(db, job.project_id) or "[]"
+        request = inputs.request or (inputs.context.request if inputs.context else None) or self.require_work_request(db, job.project_id)
+        if job.status in {"succeeded", "answered"}:
+            inputs.checkpoint = None
+        checkpoint = self.delivery_context(db, job, state, inputs, request)
+        inputs.finalized = True
+        inputs.context = None
+        db.execute(update(jobs).where(jobs.c.id == str(job.id)).values(input_data=inputs.model_dump_json(), active_work_id=None))
+        history.record_job(db, job, context=checkpoint)
+
+    @staticmethod
+    def require_work_request(db: Connection, project_id: UUID):
+        """Read legacy/in-flight original input even during a durable deletion."""
+        data = db.execute(select(works.c.data).where(works.c.id == str(project_id))).scalar_one()
+        return TemplateProject.model_validate_json(data).request
+
+    def delivery_context(self, db: Connection, job, state, inputs, request) -> ClientContext:
+        """Build the local replay envelope without credentials, image bytes or render acceptance."""
+        from .references import earlier_images, reference_images
+        replay = TaskInput.model_validate(inputs.model_dump(include=set(TaskInput.model_fields)))
+        references = reference_images(TemplateProject.model_construct(request=request), inputs) if request else []
+        references += earlier_images(Conversation.from_client(state), references)
+        return ClientContext(work_id=job.project_id, job_id=job.id, state=state, request=request, input=replay,
+                             base_version_id=job.base_version_id, questions=job.questions, image_ids=[entry["asset_id"] for entry in references],
+                             legacy_image_ids=self.legacy_images(db, job.project_id))
+
+    def prepare_images(self, job, project, inputs, payloads, device) -> None:
+        """Materialize only required images under the new task ID; failed enqueue leaves no files."""
+        from .references import earlier_images, reference_images, stage_images
+        from .settings import Settings
+        if inputs.parameters is not None:
+            return
+        references = reference_images(project, inputs)
+        if inputs.context:
+            references += earlier_images(Conversation.from_client(inputs.context.state), references)
+        def legacy(identifier):
+            """Migrate old device-owned images; new clients always provide local bytes."""
+            with self.reading() as db:
+                self.require_references(db, [identifier], device)
+            self.asset(identifier, device)
+            return self.asset_path(identifier).read_bytes()
+        try:
+            stage_images(self.job_dir(job.id) / "references", [UUID(entry["asset_id"]) for entry in references],
+                         payloads, legacy, Settings(_env_file=None))
+        except BaseException:
+            shutil.rmtree(self.job_dir(job.id), ignore_errors=True)
+            raise
 
     def update(self, job_id: UUID, **changes) -> GenerationJob:
         """Advance an active job; terminal jobs cannot be resurrected by late results."""
@@ -648,12 +772,19 @@ class Store:
 
     def interrupt_unfinished(self) -> None:
         """Interrupt unfinished requests; explicit retry resumes the last completed tool boundary."""
+        recovered = []
         with self.transaction() as db:
-            for data in db.execute(select(jobs.c.data).where(jobs.c.status.in_(ACTIVE))).scalars().all():
+            for data in db.execute(select(jobs.c.data).where(jobs.c.active_work_id.is_not(None))).scalars().all():
                 job = GenerationJob.model_validate_json(data)
+                recovered.append(job.id)
+                if job.status not in ACTIVE:
+                    self._finalize_job(db, job)
+                    continue
                 job.status, job.stage = "interrupted", "finished"
                 job.error = JobError(code="interrupted", message="Server stopped; retry continues from saved progress in a new execution.")
                 self._save_job(db, job)
+        for identifier in recovered:
+            shutil.rmtree(self.job_dir(identifier), ignore_errors=True)
 
     def publish(
         self,
@@ -723,6 +854,9 @@ class Store:
                 db.execute(insert(versions).values(
                     id=str(version.id), work_id=str(project.id), number=number, data=version.model_dump_json(),
                 ))
+                if source == "agent" and spec.schema_version == "2":
+                    from .source_library import archive
+                    archive(db, version)
                 project.current_version_id, project.updated_at = version.id, now()
                 db.execute(update(works).where(works.c.id == str(project.id)).values(data=project.model_dump_json()))
                 job.status, job.stage, job.result_version_id = "succeeded", "finished", version.id
@@ -776,12 +910,11 @@ class Store:
             db.execute(delete(work_events).where(work_events.c.work_id == str(work_id), work_events.c.id <= cursor))
             self._prune(db, work_id)
 
-    @staticmethod
-    def _prune(db: Connection, work_id: UUID) -> None:
+    def _prune(self, db: Connection, work_id: UUID) -> None:
         """Delete delivered execution records of a work once none of its events wait for delivery.
 
-        The latest job row stays, because retrying it or answering its questions needs its input; its progress,
-        rounds and messages go once it has finished. Earlier jobs go entirely.
+        The latest job retains only routing/status metadata; the acknowledged client owns its input, questions
+        and recovery checkpoint. Earlier jobs, progress, rounds and messages go entirely.
         """
         identifier = str(work_id)
         if db.execute(select(work_events.c.id).where(work_events.c.work_id == identifier).limit(1)).first():
@@ -796,6 +929,24 @@ class Store:
         db.execute(delete(job_rounds).where(job_rounds.c.job_id.in_(finished)))
         db.execute(delete(chat_messages).where(chat_messages.c.job_id.in_(finished)))
         db.execute(delete(jobs).where(jobs.c.id.in_(finished), jobs.c.id != str(latest.id)))
+        if latest.status not in ACTIVE and str(latest.id) in finished:
+            data = db.execute(select(jobs.c.input_data).where(jobs.c.id == str(latest.id))).scalar_one()
+            if JobInput.model_validate_json(data).finalized:
+                for table in (conversations, work_assets):
+                    if table.name in self.legacy_tables:
+                        db.execute(delete(table).where(table.c.work_id == identifier))
+                db.execute(update(jobs).where(jobs.c.id == str(latest.id)).values(input_data=JobInput(finalized=True).model_dump_json()))
+                project = TemplateProject.model_validate_json(db.execute(select(works.c.data).where(works.c.id == identifier)).scalar_one())
+                # The client owns replies and outstanding questions too; retain only routing/status metadata.
+                latest.questions = []
+                latest.reply = None
+                if latest.answer is not None:
+                    latest.answer = "已回答。"
+                if latest.error is not None:
+                    latest.error.message = PublicJob.from_job(latest).message or "任务已结束。"
+                db.execute(update(jobs).where(jobs.c.id == str(latest.id)).values(data=latest.model_dump_json()))
+                project.request = None
+                db.execute(update(works).where(works.c.id == identifier).values(data=project.model_dump_json()))
 
     def expire_events(self, before: datetime) -> None:
         """Drop events nobody acknowledged before the cutoff and prune the works they belonged to."""

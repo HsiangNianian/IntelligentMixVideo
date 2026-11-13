@@ -198,5 +198,20 @@
       "server": "http://api.test:8000",
       "work": "work-1"
     }
+  },
+  {
+    "operation": "put_image",
+    "payload": {
+      "server": "http://api.test:8000",
+      "id": "image-contract",
+      "data": "AH//"
+    }
+  },
+  {
+    "operation": "image",
+    "payload": {
+      "server": "http://api.test:8000",
+      "id": "image-contract"
+    }
   }
 ]

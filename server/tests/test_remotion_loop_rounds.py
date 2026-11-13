@@ -256,7 +256,7 @@ def test_real_loop_records_every_turn_with_its_tools(monkeypatch, tmp_path):
     harness = FakeHarness(
         [
             call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "暖色调滤镜"}),
-            call("exec-1", "library_search", {"preset_id": "preset-1"}),
+            call("exec-1", "library_search", {"query": "暖色"}),
             AssistantMessage(content=json.dumps({"status": "step_done", "summary": "预设已就绪"})),
             call("exec-2", "effect_save", {}),
             report("exec-3"),
@@ -278,7 +278,7 @@ def test_real_loop_records_every_turn_with_its_tools(monkeypatch, tmp_path):
     # 每次调用带模型给出的原始参数（有意公开），前端展开即可核对；工具成功结果仍只在私有审计。
     assert "RESULT_ONLY_MARKER" not in json.dumps(seen)
     search = seen[1]["calls"][0]
-    assert json.loads(search["arguments"]) == {"preset_id": "preset-1"}
+    assert json.loads(search["arguments"]) == {"query": "暖色"}
     assert seen[3]["calls"][0]["tool"] == "effect.save"
     assert json.loads(seen[0]["calls"][0]["arguments"]) == {"action": "delegate", "reason": "暖色调滤镜"}
     # 只回消息、没有调用工具的轮次没有调用，但保留模型回复，不再是空白。

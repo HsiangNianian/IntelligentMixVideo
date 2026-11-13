@@ -7,7 +7,7 @@
 import { fetchMock } from "./setup";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
 import * as api from "@/features/remotion_templates/api";
-import { apply, record } from "@/features/remotion_templates/localSessions";
+import { apply, record, server as localServer, storage } from "@/features/remotion_templates/localSessions";
 import type {
   ChatMessage,
   Job,
@@ -50,6 +50,8 @@ export function remotionServer(
       created_at: "2026-09-14T08:01:08Z",
       ...payload,
     } as WorkEvent;
+    if (event.type === "job.updated" && !["queued", "running"].includes(event.data.status))
+      event.data = { ...event.data, context: event.data.context ?? { work_id: work, job_id: event.data.id, state: "[]" } };
     records.push(event);
     emitted.push(event);
     if (event.type === "job.updated")
@@ -131,6 +133,9 @@ export function remotionServer(
     options: RequestInit | undefined,
     response: Response,
   ) {
+    if (path === "/assets" && response.ok) {
+      return Response.json({ ...await response.json(), data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==" });
+    }
     if (options?.method !== "POST" || !response.ok || !response.headers.get("Content-Type")?.includes("application/json") || path === "/assets" || path.endsWith("/ack"))
       return response;
     const body = await response.clone().json();
@@ -221,6 +226,10 @@ export function remotionServer(
           const job = [...jobs.values()].find((item) => item.id === path.split("/")[2]);
           return job ? Response.json(job) : new Response(null, { status: 404 });
         }
+        if (/^\/works\/[^/]+\/context$/.test(path)) {
+          const checkpoint = jobs.get(path.split("/")[2]!)?.context;
+          return checkpoint ? Response.json(checkpoint) : new Response(null, { status: 409 });
+        }
         if (/^\/works\/[^/]+\/versions$/.test(path)) {
           const work = path.split("/")[2]!;
           return Response.json(
@@ -299,6 +308,7 @@ export function remotionServer(
 
 /** 模拟本机此前创建并已写入本地的会话：调用创建接口，再把该作品已有事件写入本地存储。 */
 export async function seed(description: string, assets: string[] = []) {
+  for (const id of assets) await storage().putImage(localServer(), id, new Uint8Array([1, 2, 3]));
   const created = await api.create(description, assets);
   await record(created.work, created.job);
   await apply(created.work.id, active!.records.filter((event) => event.work_id === created.work.id));

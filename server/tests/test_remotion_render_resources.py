@@ -88,7 +88,8 @@ async def test_cpu_budget_accounts_for_pages_per_chunk(capacity):
 @pytest.mark.parametrize("quota", [False, True])
 async def test_default_pages_fit_small_hosts_and_cgroup_quotas(tmp_path, monkeypatch, cores, expected, quota):
     """默认四页在小主机与祖先 CPU 配额下自动降低；仍保留 25%，释放时按实际页数归还。"""
-    monkeypatch.setattr(resources.os, "sched_getaffinity", lambda pid: set(range(128 if quota else cores)))
+    # macOS 没有此 Linux API；显式注入后仍按同一组配额与亲和性断言验证。
+    monkeypatch.setattr(resources.os, "sched_getaffinity", lambda pid: set(range(128 if quota else cores)), raising=False)
     (tmp_path / "cpu.max").write_text(f"{cores * 100000} 100000")
     monkeypatch.setattr(resources, "cgroup_directories", lambda: [tmp_path] if quota else [])
     monkeypatch.setattr(resources, "memory_headroom", lambda reserve: 32 * GIB)
@@ -170,7 +171,7 @@ def test_parent_cgroup_limits_and_affinity_are_respected(tmp_path, monkeypatch):
     (parent / "memory.current").write_text(str(3 * GIB))
     (child / "memory.max").write_text("max")
     monkeypatch.setattr(resources, "cgroup_directories", lambda: [child, parent])
-    monkeypatch.setattr(resources.os, "sched_getaffinity", lambda pid: {2, 3, 4, 5, 6, 7, 8, 9})
+    monkeypatch.setattr(resources.os, "sched_getaffinity", lambda pid: {2, 3, 4, 5, 6, 7, 8, 9}, raising=False)
     original = Path.read_text
 
     host_available_gib = 24

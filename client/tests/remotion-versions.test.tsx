@@ -704,6 +704,7 @@ test.each(["succeeded", "failed"] as const)(
     expect(JSON.parse(String(post[1]?.body))).toEqual({
       base_version_id: "version-2",
       parameters: { size: 80 },
+      context: { work_id: "work-1", job_id: "job-2", state: "[]" },
     });
   },
 );

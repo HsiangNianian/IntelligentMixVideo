@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from pydantic import Field
 from sqlalchemy import Connection, insert, select
 
-from .models import Contract, GenerationJob, JobInput, PublicJob
+from .models import ClientContext, Contract, GenerationJob, JobInput, PublicJob
 from .progress import LoopRound, ProgressStep, finish_steps, read_rounds, read_steps
 from .tables import chat_messages, jobs, work_events
 
@@ -124,10 +124,12 @@ def public_job(db: Connection, job: GenerationJob, *, include_rounds: bool = Tru
     )
 
 
-def record_job(db: Connection, job: GenerationJob) -> None:
-    """Suppress internal-only updates and atomically attach terminal messages and success pointers."""
+def record_job(db: Connection, job: GenerationJob, *, context: ClientContext | None = None) -> None:
+    """Atomically deliver terminal context before the client can continue, alongside public status and messages."""
     finish_steps(db, job)
     state = public_job(db, job, include_rounds=False).model_dump(mode="json", exclude={"rounds"})
+    if context is not None:
+        state["context"] = context.model_dump(mode="json")
     previous = db.execute(
         select(work_events.c.data).where(work_events.c.work_id == str(job.project_id), work_events.c.type == "job.updated")
         .order_by(work_events.c.id.desc()).limit(1)

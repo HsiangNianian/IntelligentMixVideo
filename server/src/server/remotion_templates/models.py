@@ -113,6 +113,95 @@ class GenerateTemplateRequest(Contract):
         return self
 
 
+class MessageImage(Contract):
+    """A reference image the user attached to a chat message, with what that message was."""
+
+    asset_id: UUID
+    # "message": attached to the instruction that started the task; "clarification_answer": part of an answer.
+    source: Literal["message", "clarification_answer"] = "message"
+    # Zero-based index into JobInput.clarifications for an answer image.
+    clarification: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def answer_is_bound(self) -> Self:
+        """Only an answer image names the clarification it answers, and it must name one."""
+        if (self.source == "clarification_answer") != (self.clarification is not None):
+            raise ValueError("clarification answer images must name their clarification")
+        return self
+
+
+class TaskInput(Contract):
+    """Client-owned retry inputs; workspace snapshots never carry trusted render acceptance."""
+
+    mode: Literal["generate", "edit", "parameters"] = "generate"
+    instruction: str | None = Field(default=None, max_length=100_000)
+    parameters: dict[str, JsonValue] | None = None
+    clarifications: list[str] = Field(default_factory=list, max_length=100)
+    images: list[MessageImage] = Field(default_factory=list, max_length=100)
+    checkpoint: dict[str, JsonValue] | None = None
+
+    @model_validator(mode="after")
+    def bounded_recovery(self) -> Self:
+        """Bound replay before enqueue and validate editable files, plans and receipts independently of Outer."""
+        if len(self.model_dump_json(include=set(TaskInput.model_fields)).encode()) > 4_000_000:
+            raise ValueError("task recovery exceeds 4 MB")
+        if self.checkpoint is not None:
+            from .checkpoints import validate_client_checkpoint
+            validate_client_checkpoint(self.checkpoint)
+        return self
+
+
+class ImagePayload(Contract):
+    """A stable local image ID and bytes, transported only to the task's private temporary directory."""
+
+    id: UUID
+    data: str = Field(max_length=44_000_000)
+
+
+class CreateWorkRequest(GenerateTemplateRequest):
+    """Creation envelope; image bytes are excluded from the work and queue JSON."""
+
+    assets: list[ImagePayload] = Field(default_factory=list, max_length=12)
+
+
+class ClientContext(Contract):
+    """A device-owned model window, replayed verbatim for one work and its latest finished job."""
+
+    work_id: UUID
+    job_id: UUID
+    state: str = Field(max_length=240_000)
+    request: GenerateTemplateRequest | None = None
+    input: TaskInput | None = None
+    # Bound to the latest job as well as the work; version changes never silently reuse an unfinished draft.
+    base_version_id: UUID | None = None
+    questions: list[str] = Field(default_factory=list, max_length=100)
+    image_ids: list[UUID] = Field(default_factory=list)
+    # All old cloud images must be committed locally before the next request releases their associations.
+    legacy_image_ids: list[UUID] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def valid_window(self) -> Self:
+        """Reject injected roles, file references and broken tool exchanges before accepting a job."""
+        from .context import Conversation
+
+        Conversation.from_client(self.state)
+        return self
+
+
+class RetryRequest(ClientContext):
+    """Retry envelope; keep binary transport separate from the stored context."""
+
+    assets: list[ImagePayload] = Field(default_factory=list, max_length=12)
+
+
+class JobInput(TaskInput):
+    """Durable in-flight state; terminal delivery is pruned after acknowledgement or retention expiry."""
+
+    context: ClientContext | None = None
+    request: GenerateTemplateRequest | None = None
+    finalized: bool = False
+
+
 class EditTemplateRequest(Contract):
     """Edit a successful version with natural language (text and/or reference images) or a parameter patch."""
 
@@ -120,6 +209,8 @@ class EditTemplateRequest(Contract):
     images: MessageImages = Field(default_factory=list)
     parameters: dict[str, JsonValue] | None = None
     base_version_id: UUID | None = None
+    context: ClientContext | None = None
+    assets: list[ImagePayload] = Field(default_factory=list, max_length=12)
 
     @model_validator(mode="after")
     def exactly_one_edit(self) -> Self:
@@ -509,7 +600,7 @@ class TemplateProject(Contract):
     """One template task pointing to a verified generation or runnable user parameter revision."""
 
     id: UUID
-    request: GenerateTemplateRequest
+    request: GenerateTemplateRequest | None = None
     current_version_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
@@ -593,33 +684,6 @@ class GenerationJob(Contract):
         return self
 
 
-class MessageImage(Contract):
-    """A reference image the user attached to a chat message, with what that message was."""
-
-    asset_id: UUID
-    # "message": attached to the instruction that started the task; "clarification_answer": part of an answer.
-    source: Literal["message", "clarification_answer"] = "message"
-    # Zero-based index into JobInput.clarifications for an answer image.
-    clarification: int | None = Field(default=None, ge=0)
-
-    @model_validator(mode="after")
-    def answer_is_bound(self) -> Self:
-        """Only an answer image names the clarification it answers, and it must name one."""
-        if (self.source == "clarification_answer") != (self.clarification is not None):
-            raise ValueError("clarification answer images must name their clarification")
-        return self
-
-
-class JobInput(Contract):
-    """Private execution input and recoverable workspace; never accepted from the public request body."""
-
-    mode: Literal["generate", "edit", "parameters"] = "generate"
-    instruction: str | None = None
-    parameters: dict[str, JsonValue] | None = None
-    clarifications: list[str] = Field(default_factory=list)
-    # Reference images attached to later chat messages; the work's original image is read from its request.
-    images: list[MessageImage] = Field(default_factory=list)
-    checkpoint: dict[str, JsonValue] | None = None
 
 
 class PublicJob(Contract):

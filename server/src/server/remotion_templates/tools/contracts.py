@@ -124,51 +124,6 @@ class PresetDraft(ComponentDefinition):
     usage: Omittable[EffectUsage]
 
 
-class PresetRecord(PresetDraft):
-    """通过入库代码校验后保存的预设。"""
-
-    preset_id: PresetId
-    created_at: Timestamp
-
-# create 承接 Agent 已写好的完整定义；输入模型与 PresetDraft 完全相同。
-
-
-# Read-only library contracts; historical roles and usage remain searchable.
-
-# create 承接 Agent 已写好的完整定义；输入模型即 PresetDraft。
-
-class PresetSearchInput(ContractModel):
-    """可选关键词（分词后按命中的词数排序，一个词都没命中的不列出）、角色、特效类型与结果数量上限；同分时生成过成功版本、存进资产库的
-    排在前面，再按时间由新到旧；留空则按这个顺序列出全部；给出 preset_id 则读取该完整记录。"""
-
-    query: str = ""
-    role: Omittable[PresetRole]
-    slot: Omittable[EffectSlot]
-    limit: Annotated[PositiveInteger, Field(le=100)] = 20
-    preset_id: Omittable[PresetId]
-
-
-class PresetSummary(ContractModel):
-    """供 Agent 自行挑选的预设摘要；完整记录用 preset_id 再取。"""
-
-    preset_id: PresetId
-    description: Description
-    parameter_names: list[str]
-    role: Omittable[PresetRole]
-    usage: Omittable[EffectUsage]
-    # 用到它的成功版本数，以及其中被存进资产库的版本数。
-    accepted_uses: NonNegativeInteger = 0
-    published_uses: NonNegativeInteger = 0
-
-
-class PresetSearchOutput(ContractModel):
-    """摘要列表，允许为空。"""
-
-    presets: list[PresetSummary]
-    preset: Omittable[PresetRecord]
-    has_more: bool = False
-
-
 class CodeEdit(ContractModel):
     """副本代码里的一处精确替换：old_str 从源代码原样复制，且在当时的代码中恰好出现一次。"""
 
@@ -419,6 +374,36 @@ class WorkspaceFile(ContractModel):
     next_offset: Omittable[PositiveInteger]
 
 
+class SourceSearchInput(ContractModel):
+    """Search complete accepted components in the shared source library, including unpublished ones."""
+
+    query: Annotated[StrictStr, Field(max_length=200)] = ""
+    limit: Annotated[StrictInt, Field(ge=1, le=50)] = 10
+
+
+class SourceSummary(ContractModel):
+    """Small source-library result; contains no private request, image IDs or work identity."""
+
+    source_id: str
+    description: str
+    kind: SpriteKindName
+
+
+class SourceSearchOutput(ContractModel):
+    """Bounded matches; use library.read for the immutable source and manifest."""
+
+    sources: list[SourceSummary]
+    has_more: bool
+
+
+class SourceReadInput(ContractModel):
+    """Read a bounded file page from a shared source, then copy it into the task workspace."""
+
+    source_id: Annotated[StrictStr, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
+    path: WorkspacePath
+    offset: NonNegativeInteger = 0
+
+
 class WorkspaceWriteInput(ContractModel):
     """整份写入一个文件。"""
 
@@ -616,7 +601,7 @@ class RenderValidationReport(ContractModel):
 ToolName = Literal[
     "tools.inspect", "tools.plan_execute", "tools.report_step",
     "workspace.read", "workspace.write", "workspace.edit", "preview.render", "validate.check", "effect.save",
-    "library.search", "image.inspect",
+    "image.inspect", "library.search", "library.read",
 ]
 
 

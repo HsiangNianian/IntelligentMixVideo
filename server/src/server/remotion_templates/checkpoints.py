@@ -11,7 +11,7 @@ from pathlib import Path
 from .context import Conversation, StepWindow
 from .planning import Plan, default_plan
 from .tools.contracts import SpriteRecord, WorkspaceEditInput, WorkspaceWriteInput
-from .tools.registry import parse_arguments
+from .tools.registry import ToolFault, parse_arguments
 from .tools.session import _apply_edits
 from .tools.workspace import CODE, MANIFEST, parse_manifest
 
@@ -22,6 +22,58 @@ RESUME_NOTE = (
     "If the files were already checked, proceed to effect_save, which runs the checks again, review its new "
     "motion and middle frame, then report completion. Fix only remaining problems."
 )
+
+
+def validate_client_checkpoint(checkpoint: dict) -> None:
+    """Validate untrusted local recovery without restoring paths, credentials or previous acceptance."""
+    allowed = {"version", "files", "plan", "index", "revision", "completed", "saved_sprites",
+               "latest_sprite_id", "step_sprites", "history", "feedback", "delegation"}
+    if set(checkpoint) - allowed or type(checkpoint.get("version")) is not int or checkpoint["version"] != 1:
+        raise ValueError("unsupported recovery checkpoint")
+    files = checkpoint.get("files")
+    if (not isinstance(files, dict) or set(files) != {CODE, MANIFEST}
+            or any(not isinstance(value, str) or not 1 <= len(value) <= 200_000 for value in files.values())):
+        raise ValueError("invalid recovery files")
+    try:
+        parse_manifest(files[MANIFEST])
+    except ToolFault as exc:
+        raise ValueError(exc.error.message) from exc
+    plan = Plan.model_validate(checkpoint["plan"]) if checkpoint.get("plan") else default_plan(False)
+    index = checkpoint.get("index", 0)
+    if type(index) is not int or not 0 <= index < len(plan.steps):
+        raise ValueError("invalid recovery step")
+    if type(checkpoint.get("revision", 0)) is not int or checkpoint.get("revision", 0) < 0:
+        raise ValueError("invalid recovery revision")
+    sprites = checkpoint.get("saved_sprites", {})
+    if not isinstance(sprites, dict) or len(sprites) > 32:
+        raise ValueError("invalid recovered sprites")
+    for key, value in sprites.items():
+        if SpriteRecord.model_validate(value).sprite_id != key:
+            raise ValueError("recovered sprite identity mismatch")
+    if checkpoint.get("latest_sprite_id") is not None and checkpoint["latest_sprite_id"] not in sprites:
+        raise ValueError("missing recovered sprite")
+    for name in ("completed", "step_sprites"):
+        value = checkpoint.get(name, {})
+        if not isinstance(value, dict) or len(value) > len(plan.steps):
+            raise ValueError("invalid recovery outputs")
+    for key, values in checkpoint.get("step_sprites", {}).items():
+        if not key.isdigit() or not isinstance(values, list) or any(not isinstance(value, str) or value not in sprites for value in values):
+            raise ValueError("invalid recovery sprite references")
+    for value in checkpoint.get("completed", {}).values():
+        if not isinstance(value, dict) or (value.get("sprite_id") is not None and (not isinstance(value["sprite_id"], str) or value["sprite_id"] not in sprites)):
+            raise ValueError("invalid completed recovery step")
+    groups = checkpoint.get("history", [])
+    if not isinstance(groups, list) or len(groups) > 8:
+        raise ValueError("invalid recovery history")
+    # Do not silently drop malformed/oversized messages, injected system roles or file paths.
+    Conversation.from_client(json.dumps(groups, ensure_ascii=False))
+    if recent_exchanges(groups) != groups:
+        raise ValueError("invalid recovery tool history")
+    feedback = checkpoint.get("feedback", [])
+    if not isinstance(feedback, list) or len(feedback) > 100 or any(not isinstance(item, str) for item in feedback):
+        raise ValueError("invalid recovery feedback")
+    if checkpoint.get("delegation") is not None and not isinstance(checkpoint["delegation"], dict):
+        raise ValueError("invalid recovery delegation")
 
 
 def recent_exchanges(groups):

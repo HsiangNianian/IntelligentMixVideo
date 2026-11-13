@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from ..categories import EFFECT_PARAMETER, FIXED_TITLES, HEX_COLOR, PARAMETER_GROUP, parameter_problems
 from ..fonts import DEFAULT_FAMILY
 from .compose import _bundle, compose_source, text_configuration
-from .contracts import EffectBounds, EffectManifest, EffectText, SpriteDraft
+from .contracts import EffectBounds, EffectManifest, EffectText, SpriteDraft, WorkspaceFile
 from .registry import ToolFault, argument_fault
 from .schema import validate_parameters
 
@@ -731,3 +731,15 @@ def review_box(sprite: SpriteDraft) -> dict[str, float]:
     right = min(float(CANVAS["width"]), layout.x + layout.width + margin)
     bottom = min(float(CANVAS["height"]), layout.y + layout.height + margin)
     return {"x": left, "y": top, "width": right - left, "height": bottom - top}
+
+
+def file_page(path: str, content: str, offset: int) -> WorkspaceFile:
+    """Read the same bounded UTF-8 page for library, current workspace and historical version files."""
+    if offset > len(content):
+        raise ToolFault("INVALID_ARGUMENT", f"offset exceeds the file's {len(content)} characters.", field="/offset")
+    page = content[offset:offset + 16_000]
+    while len(json.dumps(page, ensure_ascii=False).encode()) > 16_000:
+        page = page[:len(page) // 2]
+    end = offset + len(page)
+    return WorkspaceFile(path=path, content=page, lines=line_count(content), offset=offset,
+                         **({"next_offset": end} if end < len(content) else {}))

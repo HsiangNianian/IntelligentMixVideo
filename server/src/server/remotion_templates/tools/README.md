@@ -1,6 +1,6 @@
 # Remotion agent tools
 
-`contracts.py` defines typed data, `catalog.py` registers nine callable workspace tools, and `registry.py` derives
+`contracts.py` defines typed data, `catalog.py` registers ten callable workspace tools, and `registry.py` derives
 strict provider schemas from their handlers. The complete public API is described in
 [`docs/remotion-agent-tool-contracts.md`](../../../../../docs/remotion-agent-tool-contracts.md).
 
@@ -13,11 +13,14 @@ built-in effect recipe implementation.
 Older complete components open with their source, full parameter contract and current defaults in the same
 workspace. Conversion never writes to history. The manifest's optional `contract` preserves nested parameters
 and content bounds, and follows the same save gate as a new effect. Historical serialization models remain in
-`contracts.py` so accepted versions and library records stay readable.
+`contracts.py` so accepted historical versions stay readable.
 
-`catalog_store.py` stores immutable accepted code in MySQL. `library.search` performs bounded, ranked reads in a
-worker thread; reuse means copying source into the workspace. `CatalogStore.solidify` records accepted components
-and their uses. There is no local catalog fallback or Agent-facing Preset mutation API.
+`../source_library.py` stores immutable accepted components in the shared `remotion_effect_sources` table.
+`library.search` reads bounded summaries and `library.read` pages through complete files in worker threads.
+Successful Agent publication archives both workspace files atomically, deduplicated by content hash; manual
+parameter revisions and failed drafts are excluded. Reuse copies files into the workspace and revalidates them.
+The library survives work deletion and is separate from published `remotion_sprites`. Old Preset tables and
+usage ranking have no production callers; there is no local catalog fallback or Agent-facing mutation API.
 
 `registry.get_tool` resolves dotted IDs and underscore wire names only within the caller's tool window.
 Outer and Plan may execute their control; Executor may execute the workspace tools and its report control.

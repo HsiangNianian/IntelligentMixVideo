@@ -32,7 +32,8 @@ Executor 在整个任务内使用固定工具列表。Outer 与 Plan 只执行 `
 | `preview.render` | 可选 `frames`、`variant`、`keywords` | 挂载长度、`motion`、帧清单、示例关键词、`notes` |
 | `validate.check` | `{}` | `passed`、`problems`、`notes` |
 | `effect.save` | `{}` | `sprite_id`、创建时间、composition、`motion`、`review`、`notes` |
-| `library.search` | 可选 `query`、`preset_id`、`role`、`slot`、`limit` | `presets` 摘要列表、可选完整 `preset`、`has_more` |
+| `library.search` | 可选 `query`、`limit` | `sources` 摘要列表、`has_more` |
+| `library.read` | `source_id`、`path`，可选 `offset` | 文件内容片段、全文件行数、起点，可选 `next_offset` |
 | `image.inspect` | `image`，可选 `x`、`y`、`width`、`height` | 观察消息内图片编号、输出与原图像素尺寸 |
 | `tools.inspect` | `tool_name` | 名称、契约版本、说明、输入/输出 Schema、约束、副作用、错误码与示例 |
 
@@ -114,11 +115,14 @@ Executor 在整个任务内使用固定工具列表。Outer 与 Plan 只执行 `
 
 ### 代码库与参考图
 
-`library.search` 是原不可变 Preset 库的只读入口。`query` 默认空，`limit` 默认 20、范围 1～100；可按旧的 `role`
-与 `slot` 缩小结果，或按 `preset_id` 取完整源码。中文词语匹配后按发布/采纳使用次数及新旧排序。回执上限 40,000
-序列化 UTF-8 字节，省略摘要时标记 `has_more`，完整记录过大时返回 `RESOURCE_LIMIT_EXCEEDED`，不截断源码。
-不存在返回 `PRESET_NOT_FOUND`，存储故障返回 `PRESET_STORE_FAILED`。新采纳组件整份入库；复用时复制需要的源码
-到工作区，不把历史角色记录当组合指令。
+`library.search` 查询所有用户共享的已验收组件源码库 `remotion_effect_sources`，不查询已发布资产表。
+成功生成自动入库，失败草稿、聊天和参考图不入库。`query` 默认空、最多 200 字符；`limit` 默认 10、范围 1～50。
+中文分词后按描述匹配，结果按入库时间倒序返回；每项只有 `source_id`、`description`、`kind`，合计最多 32,000
+序列化 UTF-8 字节，省略结果时标记 `has_more`。空查询返回最近源码。
+
+`library.read` 按 64 位十六进制 `source_id` 读取 `Effect.tsx` 或 `effect.json`，分页规则同 `workspace.read`。
+不存在返回 `SOURCE_NOT_FOUND`，存储故障返回 `SOURCE_STORE_FAILED`。复用时读取完整的两份文件，复制到工作区修改，
+仍需重新校验与保存；共享原件不可修改。旧 Preset 表和使用次数表不再读写，也不把历史角色配方当作生成指令。
 
 `image.inspect.image` 是从 1 开始的参考图序号。区域用 0～1 比例，起点默认 0、宽高默认 1；宽高必须大于 0。
 裁剪图作为下一条观察消息的图片 1，解码失败返回 `IMAGE_DECODE_FAILED`。
@@ -136,6 +140,7 @@ Executor 在整个任务内使用固定工具列表。Outer 与 Plan 只执行 `
   {"tool": "validate.check", "arguments": {}},
   {"tool": "effect.save", "arguments": {}},
   {"tool": "library.search", "arguments": {"query": "描边 发光", "limit": 10}},
+  {"tool": "library.read", "arguments": {"source_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "path": "Effect.tsx"}},
   {"tool": "image.inspect", "arguments": {"image": 1, "x": 0.1, "y": 0.5, "width": 0.8, "height": 0.3}},
   {"tool": "tools.inspect", "arguments": {"tool_name": "effect.save"}}
 ]

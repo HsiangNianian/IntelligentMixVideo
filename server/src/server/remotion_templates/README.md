@@ -99,9 +99,9 @@ all historical versions open through `restore_version_files` in the same task-lo
   earlier turns. The snapshot lists the work's `versions` (including older composed versions), and `workspace.read {path, version}` returns an
   earlier version's files with its parameter values, so an edit can go back to it. Style parameter schemas may carry `x-imv-group`, which publication copies into
   `SpriteParameter.group` so the template editor shows grouped cards that templates adjust per placement.
-- **Library.** An accepted free-form version's single instance (the whole Effect.tsx with its schema) is stored as
-  a role-less Preset by `CatalogStore.solidify`, once per identical drawing, so `library.search` finds it by its
-  manifest description in later works.
+- **Library.** Accepted generation atomically archives the complete `Effect.tsx`/`effect.json` pair in
+  `remotion_effect_sources`, deduplicated by content hash. Every user can search descriptions with `library.search`
+  and read files with `library.read`, even before asset publication. Reuse copies source into a fresh workspace.
 
 ### Opening historical versions
 
@@ -142,7 +142,8 @@ Provider wire names use underscores (for example `workspace_edit`).
 | `preview.render` | Captures frames and measured motion, optionally with text or duration variants |
 | `validate.check` | Runs the save gate and returns all problems without saving |
 | `effect.save` | Runs the gate, saves a task candidate and provides its motion and middle frame |
-| `library.search` | Searches immutable previously accepted code or reads a record by ID |
+| `library.search` | Searches summaries of shared accepted complete components |
+| `library.read` | Reads a bounded page of an immutable source file by ID |
 | `image.inspect` | Crops and enlarges a reference image |
 | `tools.inspect` | Reads a named tool's typed contract, including the host controls |
 
@@ -153,7 +154,7 @@ may still contain those names and remain readable.
 
 ## Storage
 
-The backend keeps no SQLite file. Works, jobs, accepted versions, the model's sliding window, public events and
+The backend keeps no SQLite file. Works, jobs, accepted versions, undelivered events and
 overlay render tasks are tables in the shared MySQL database (`tables.py`, created on first use next to
 `remotion_sprites`). The backend runs as a single instance: one in-process lock serializes write transactions,
 startup interrupts jobs a previous process left running and finishes interrupted deletions. A lease row
@@ -169,36 +170,58 @@ Every work belongs to the client device that created it. JSON routes of a work r
 header (a UUID the client keeps in its local session database) and treat another device's work as missing. A device
 is recorded when it creates its first work and its activity time is refreshed at most hourly; other header values add
 no rows;
-browser-embedded reads (preview page, fonts, reference image, artifact download) are addressed by unguessable IDs.
+browser-embedded reads (preview page, fonts, artifact download) are addressed by unguessable IDs.
 Chat history lives on the client: the server buffers public messages and events only until the client stores them
 locally and acknowledges the last event ID with `POST /works/{id}/ack`. The open work streams its events over SSE
 (`GET /works/{id}/stream`; an idle stream sleeps until a commit appends an event of its work, with a 5 second read as a safety net, so it costs the database almost nothing); works the client is not showing catch up through `GET /works/{id}/events?after=<id>`,
 one page per call in the same shape, until an empty page. There is no server-side work list: the sidebar reads the
 client's local store. Acknowledged events are deleted; once a work
-has no undelivered events, the progress, rounds and messages of its finished jobs go too, and only the latest job row
-stays because retrying it or answering its questions needs its input.
+has no undelivered events, its finished progress, rounds and messages go too. Only the latest job's routing/status
+metadata stays. Its input, questions, reply, and the work's original request are cleared after ACK or event expiry.
 
-Generation inputs also retain a private recovery checkpoint in that existing job row: the current `Effect.tsx`
-and `effect.json`, plan position, completed step outputs and bounded recent tool exchanges. Each completed tool
-and turn updates it before another model request. Explicit retry creates a new execution with fresh budgets and
-continues the unfinished Executor step; a follow-up message after failure continues the same draft when its base
-version has not changed, applying the new instruction and reference images. Manual parameter revisions keep their
-existing path. Copying the checkpoint into the new job makes it independent of old-job acknowledgement/pruning.
-Success clears the checkpoint; deleting the work removes it with the job rows. Credentials and temporary image
-paths are not stored in it. Render evidence is recreated by `effect.save` and reviewed before publication, so a
-saved candidate from the previous execution cannot bypass the current acceptance guards.
+The client owns the original request, Outer context, outstanding questions, and recovery checkpoint. Desktop
+SQLite schema 2 adds `images` (PNG BLOBs) and `image_links`; version 1 migrates without losing works/messages.
+The browser uses IndexedDB version 2 with equivalent binary records. A terminal `job.updated.context` carries the
+opaque Outer `state`, original `request`, task `input`, base version, questions and reference IDs. Image bytes are
+stored locally before the context, status and cursor transaction commits; only then may the client ACK. Ordinary
+job responses and the chat UI never expose the replay envelope. Messages and retries load it automatically from
+the local database. The backend checks work/latest-job binding and validates text-only complete tool groups.
+Missing context is an explicit conflict, never a silent empty conversation.
 
-For failures created before checkpoints existed, retry can reconstruct the draft from successful workspace write
-and edit receipts in that job's private audit. It does not execute recorded tools or restore failed edits. If no
-draft was recorded, the original request starts normally; inconsistent recorded edits refuse recovery instead of
-silently discarding progress. This fallback is available only while the audit is retained.
+Active jobs keep a checkpoint in `input_data`: current files, plan position, completed outputs and bounded recent
+exchanges. Completed tools update it before the next model request. Terminal status blocks late publication
+immediately, but its event and queue-slot release wait for the runtime finalizer and its last checkpoint write.
+A crash recovers the last committed checkpoint and emits one terminal delivery. ACK/TTL removes that private
+input; retry or a same-base follow-up restores the client's copy into a new job. Successful generation/answers
+clear the unfinished checkpoint. Render evidence is always recreated and validated. Credentials and temporary
+image paths never enter the portable checkpoint. Old failures may recover successful workspace edits from their
+own private audit while it remains available, without executing recorded tools.
 
-Sealed version files, reference images and Sprite preview bundles are objects under `imv/remotion/`
+`POST /assets` now only validates/normalizes an uploaded image and returns `{id, data}` (Base64 PNG) to save locally.
+It writes no asset row, disk asset library or ZOS object. Creation/messages/retries send needed local bytes in
+`assets`; the backend decodes them only into that job's private `references` directory and removes it on completion,
+cancellation or startup recovery. Missing required images reject enqueue rather than silently dropping context.
+The original references plus recent task/Outer references are selected deterministically, at most eight images.
+Local images remain linked to their works; deleting one work removes only images no other work references.
+Unlinked local images older than 24 hours are reclaimed on the next image save.
+
+For upgrades, `/works/{id}/context` exports an undelivered envelope or the old conversation. The client also downloads
+all old work images through device-scoped `GET /assets/{id}` and saves them before ACK or its next submission.
+Legacy `remotion_conversations`, `remotion_assets` and `remotion_work_assets` are read only; new databases do not
+create them. Once the client returns its context or acknowledges the migrated delivery, old private associations
+are removed; the existing orphan-image sweep handles the old cloud records. Deploy client and server together.
+If both the local copy and the server's undelivered/legacy copy are gone, the work cannot resume.
+
+Outer strings, tool arguments/IDs and message order round-trip unchanged. Local PNG bytes and reference order are
+stable; task-local prompts and tools retain the existing prefix-cache strategy. This does not send the full chat:
+Outer still uses eight bounded groups, and checkpoint recovery rebuilds the Executor handoff and evidence.
+Provider cache reuse across retries is therefore not guaranteed; storage location itself does not create an AI cache.
+
+Sealed version files and Sprite preview bundles are objects under `imv/remotion/`
 (`object_store.py`): public-read in ZOS once `ZOS_BUCKET` is set, otherwise files under `IMV_DATA_DIR/objects`.
 Every sealed file of a version is public-read under `imv/remotion/versions/<version_id>/`, including the internal
 `candidate.json`, `spec.json` and `tool-validation.json` that the artifact route never serves; anyone who knows a
-version ID can read them, and `GET /api/sprites` lists each published Sprite's source version ID. Chat reference
-images are public-read under unguessable IDs as well.
+version ID can read them, and `GET /api/sprites` lists each published Sprite's source version ID. Old reference images already uploaded by previous releases retain their existing object ACLs; new chat images never enter ZOS.
 The backend reads them through a verified cache in `IMV_DATA_DIR/cache` (SHA-256 against the MySQL record), one file
 at a time (deciding whether a parameter patch is instant reads only `interactive.js`). Object uploads, downloads and
 deletes run in worker threads and never under the write lock: a version is uploaded under its new ID before its record
@@ -228,19 +251,42 @@ When running a separate checkout against the same local database without ZOS, co
 as well: database rows alone do not contain the sealed exports, previews, or reference images. Keep existing
 objects in the target checkout, since a preview may have been rebuilt there.
 
-## Preset storage
+## Shared source library
 
-The immutable MySQL library (`remotion_presets`, `tools/catalog_store.py`) remains available through `library.search`.
-Catalog reads and writes run in worker threads. There is no local storage fallback. Search segments Chinese with
-jieba, ranks matching descriptions and historical usage titles, then published uses, accepted uses and recency.
-An empty query lists all records; optional role and slot filters can narrow historical entries. An ID lookup returns
-complete source. Responses are bounded to 40,000 serialized UTF-8 bytes and 1–100 summaries; `has_more` signals
-omissions, while an oversized full record fails instead of truncating code. Storage failures use `PRESET_STORE_FAILED`.
+`remotion_effect_sources` contains immutable accepted complete components, shared by all users. Successful Agent
+version publication and source insertion share one database transaction; failed/cancelled candidates and manual
+parameter revisions do not enter the library. A SHA-256 of both files deduplicates identical content. The row stores
+only the source pair, generated description, kind and creation time, without chat, image or work associations.
+Deleting a private work leaves this library intact. `remotion_sprites` remains exclusively the published asset
+catalog; creating a source record does not publish an asset.
 
-An accepted workspace's complete component is solidified once per identical drawing as a role-less Preset.
-`remotion_preset_uses` records its accepted version, and publishing marks that use as published. This ranking signal
-is best effort; an unavailable catalog does not invalidate a generated version. Reuse copies useful source into
-the workspace. Old role metadata is retained for reading records, never interpreted as a generation recipe.
+`library.search` segments Chinese descriptions with jieba and returns recent matching summaries, default 10 and
+at most 50, within 32 KB encoded JSON. `has_more` indicates omissions. `library.read` reads the exact two files in
+bounded pages, using Unicode offsets and `next_offset` like `workspace.read`. Both run in worker threads; there is
+no local fallback. Storage errors use `SOURCE_STORE_FAILED`. Reuse copies source into the workspace and still
+requires the full current acceptance process. Preset table searches and usage ranking are retired; inline legacy
+Preset types remain solely to read and adapt sealed historical versions.
+
+### Existing database rollout
+
+With the backend stopped and a normal database backup available, backfill accepted Agent versions (including
+old generation formats adapted to complete components) from the repository root:
+
+```sh
+uv run --project server python -m server.remotion_templates.storage_migration --backfill
+```
+
+This is idempotent and leaves original versions and published assets intact. It refuses an active queue lease or
+active jobs. After clients have migrated or normal retention has removed old private rows, the separate action:
+
+```sh
+uv run --project server python -m server.remotion_templates.storage_migration --retire
+```
+
+first backfills again, then drops only `remotion_presets`, `remotion_preset_uses`, `remotion_conversations`,
+`remotion_assets` and `remotion_work_assets`. It refuses to drop any of them while old conversations/images/links
+remain. It never deletes ZOS objects; existing objects still follow `ZOS_DELETE_OBJECTS` (false by default).
+Neither action is run automatically during startup. Remaining inactive-device works follow the 90-day retention.
 
 ## Looking at the result
 

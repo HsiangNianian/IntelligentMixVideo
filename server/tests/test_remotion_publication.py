@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from server.remotion_templates.harness import Harness
-from server.remotion_templates.models import EditTemplateRequest, GenerateTemplateRequest, JobInput
+from server.remotion_templates.models import ClientContext, EditTemplateRequest, GenerateTemplateRequest, JobInput
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.publication import PREVIEW_PROTOCOL, PresentationBuilder, bundle_protocol, current_bundle, revisable
 from server.remotion_templates.routes import router
@@ -113,11 +113,11 @@ def sealed(store: Store, version_id, name: str) -> Path:
     return store.root / "objects" / "imv" / "remotion" / "versions" / str(version_id) / name
 
 
-def save_parameters(service: Runtime, work, initial, parameters: dict):
+def save_parameters(service: Runtime, work, initial, parameters: dict, *, context: ClientContext | None = None):
     """Submit a parameter patch through the runtime and wait for the instant revision to finish."""
     async def scenario():
         """The revision runs as a task outside the FIFO queue; wait for it like the event stream would."""
-        job = service.edit(work.id, EditTemplateRequest(parameters=parameters, base_version_id=initial.id))
+        job = service.edit(work.id, EditTemplateRequest(parameters=parameters, base_version_id=initial.id, context=context))
         await asyncio.gather(*service.saves.values())
         return job
 
@@ -145,7 +145,9 @@ def test_parameter_revision_is_saved_at_once_without_the_sandbox(harness, sprite
     monkeypatch.setattr(harness.renderer, "run_worker", no_worker)
     monkeypatch.setattr(harness.renderer, "sandbox_problem", lambda: "bwrap is not installed", raising=False)
     service = Runtime(store, harness, harness.settings)
-    job = save_parameters(service, work, initial, {"title": {"text": "新标题"}})
+    checkpoint = ClientContext(work_id=work.id, job_id=store.latest_job(work.id).id,
+                               state='[[{"role": "user", "content": "保留白色标题"}]]')
+    job = save_parameters(service, work, initial, {"title": {"text": "新标题"}}, context=checkpoint)
     final = store.job(job.id)
     assert final.status == "succeeded", final.error
     assert service.worker is None
@@ -159,7 +161,8 @@ def test_parameter_revision_is_saved_at_once_without_the_sandbox(harness, sprite
     assert exports[0]["code"] == initial.candidate.tsx_code and exports[0]["composition"]["duration_in_frames"] == 30
     inherited = json.loads(sealed(store, revised.id, "tool-validation.json").read_text())
     assert inherited["inherited_from"] == str(initial.id) and inherited["component"]["default_parameters"] == {"title": {"text": "新标题"}}
-    assert not store.conversation(work.id).messages()
+    assert store.client_context(work.id).state == checkpoint.state
+    assert store.inputs(job.id).context is None
     application = FastAPI()
     application.include_router(router, prefix="/api/templates")
     application.state.runtime = service
@@ -174,7 +177,7 @@ def test_parameter_revision_is_saved_at_once_without_the_sandbox(harness, sprite
         assert "background:transparent" in overlay.text and "conic-gradient" in response.text
         assert overlay.headers["content-security-policy"] == response.headers["content-security-policy"]
         # Without a sandbox the instant revision is still accepted over HTTP.
-        accepted_job = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"title": {"text": "第三版"}}, "base_version_id": str(revised.id)})
+        accepted_job = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"context": store.client_context(work.id).model_dump(mode="json"), "parameters": {"title": {"text": "第三版"}}, "base_version_id": str(revised.id)})
         assert accepted_job.status_code == 202
         # A changed object is refused even when the read cache must be filled again from storage.
         sealed(store, revised.id, "interactive.js").write_text("tampered")
@@ -210,7 +213,7 @@ def test_a_bundle_without_injected_defaults_is_rebuilt_in_the_sandbox(harness, s
     application.state.runtime = service
     monkeypatch.setattr(harness.renderer, "sandbox_problem", lambda: "bwrap is not installed", raising=False)
     with TestClient(application) as client:
-        refused = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"title": {"text": "新标题"}}, "base_version_id": str(initial.id)})
+        refused = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"context": store.client_context(work.id).model_dump(mode="json"), "parameters": {"title": {"text": "新标题"}}, "base_version_id": str(initial.id)})
         assert refused.status_code == 503
     job = store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "新标题"}}), initial.id)
     store.claim()
@@ -258,7 +261,7 @@ def test_invalid_parameters_and_a_busy_work_are_refused(harness, sprite):
     application.state.runtime = service
     with TestClient(application, raise_server_exceptions=False) as client:
         # Regression: the schema error escaped as an HTTP 500 instead of a 422 the client can show.
-        response = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"title": {"text": 1}}, "base_version_id": str(initial.id)})
+        response = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"context": store.client_context(work.id).model_dump(mode="json"), "parameters": {"title": {"text": 1}}, "base_version_id": str(initial.id)})
     assert response.status_code == 422 and "invalid parameter value" in response.json()["detail"]
     store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "x"}}), initial.id, running=True)
     with pytest.raises(Conflict):

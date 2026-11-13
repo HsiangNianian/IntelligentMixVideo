@@ -60,7 +60,7 @@ def finish(store: "Store", work_id: UUID) -> None:
             return
         job_ids = db.execute(select(jobs.c.id).where(jobs.c.work_id == identifier)).scalars().all()
         version_ids = db.execute(select(versions.c.id).where(versions.c.work_id == identifier)).scalars().all()
-        images = db.execute(select(work_assets.c.asset_id).where(work_assets.c.work_id == identifier)).scalars().all()
+        images = [str(value) for value in store.legacy_images(db, work_id)]
         exclusive = [
             asset_id for asset_id in sorted(images)
             if not db.execute(select(work_assets.c.work_id).where(
@@ -81,12 +81,14 @@ def finish(store: "Store", work_id: UUID) -> None:
             return
         if exclusive:
             db.execute(delete(assets).where(assets.c.id.in_(exclusive)))
-        db.execute(delete(work_assets).where(work_assets.c.work_id == identifier))
+        if work_assets.name in store.legacy_tables:
+            db.execute(delete(work_assets).where(work_assets.c.work_id == identifier))
         db.execute(delete(job_progress).where(job_progress.c.job_id.in_(job_ids)))
         db.execute(delete(job_rounds).where(job_rounds.c.job_id.in_(job_ids)))
         db.execute(delete(chat_messages).where(chat_messages.c.work_id == identifier))
         db.execute(delete(work_events).where(work_events.c.work_id == identifier))
-        db.execute(delete(conversations).where(conversations.c.work_id == identifier))
+        if conversations.name in store.legacy_tables:
+            db.execute(delete(conversations).where(conversations.c.work_id == identifier))
         db.execute(delete(versions).where(versions.c.work_id == identifier))
         db.execute(delete(jobs).where(jobs.c.work_id == identifier))
         db.execute(delete(works).where(works.c.id == identifier))

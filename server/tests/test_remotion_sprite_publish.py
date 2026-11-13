@@ -286,15 +286,6 @@ def test_publish_copies_content_and_lists_summary_without_source(client: TestCli
     assert bundle_copy(published.store, summary.sprite_id).is_file()
 
 
-def test_publishing_marks_the_versions_presets_published(client: TestClient, published) -> None:
-    """存进资产库时，版本生成成功时登记的 Preset 记为已发布，Preset 检索据此把验证过的配方排在前面；重复保存同一版本不重复计数。"""
-    from server.remotion_templates.tools.catalog_store import CatalogStore
-
-    version = another_version(published)
-    CatalogStore().record_uses(str(version.id), ["stored-tier"])
-    published_sprite(client, version.id)
-    published_sprite(client, version.id)
-    assert CatalogStore().use_counts() == {"stored-tier": (1, 1)}
 
 
 def test_publications_are_rows_of_the_shared_database_with_an_object_bundle(client: TestClient, published, template_db: Engine) -> None:

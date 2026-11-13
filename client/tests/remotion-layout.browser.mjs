@@ -1,6 +1,6 @@
 /**
  * 浏览器布局回归：模拟 API（创建、SSE 事件与送达确认）和 iframe 协议，验证真实 CSS、指针/键盘分栏、持久化与窄屏交互；
- * 会话历史只在浏览器 IndexedDB 的本地库里，由 SSE 事件写入，刷新后仍在。执行 bun run test:remotion-browser。
+ * 会话历史与模型窗口在浏览器 IndexedDB 中，验证先落盘再 ACK、刷新后原样回传窗口与图片字节。执行 bun run test:remotion-browser。
  */
 import { chromium } from "playwright-core";
 import { remotionVersion } from "./remotion-fixtures.ts";
@@ -36,11 +36,17 @@ try {
   });
   const page = await context.newPage();
   // 主页读取也使用离线夹具，不连接用户真实后端。
+  await page.route("**/api/**", (route) => route.fulfill({ status: 404 }));
+  await page.route("**/api/sprites", (route) => route.fulfill({ contentType: "application/x-protobuf", body: Buffer.alloc(0) }));
+  await page.route("**/api/sprites/stream", (route) => route.fulfill({ contentType: "text/event-stream", body: "event: ping\ndata: {}\n\n" }));
   await page.route("**/template", (route) => route.fulfill({ status: 503 }));
   const errors = [];
   let deleted = false;
   let creates = 0;
   let diagnosticRequests = 0;
+  let imageFetches = 0;
+  const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==";
+  const imageBytes = Buffer.from(imageBase64, "base64");
   page.on("pageerror", (e) => errors.push(e.message));
   const loopRounds = [
     { layer: "outer", turn: 1, calls: [], error_code: "MODEL_CONTRACT_FAILED" },
@@ -57,17 +63,42 @@ try {
     created_at: "2026-09-17T06:00:00Z",
     updated_at: "2026-09-17T06:01:00Z",
   }));
+  const checkpoints = jobs.map((job, i) => ({
+    image_ids: ["image-1"], request: { description: "原始请求", images: [{ asset_id: "image-1" }] },
+    input: { mode: "edit", instruction: "调整", checkpoint: null },
+    work_id: job.project_id, job_id: job.id, state: `[[{"role": "user", "content": "保留  原文 ${i + 1}"}]]`,
+  }));
+  /** 直接读真实 IndexedDB 的会话行，确认 ACK 时窗口已提交，而不是只存在组件内存里。 */
+  const storedContext = () => page.evaluate(() => new Promise((resolve, reject) => {
+    const opening = indexedDB.open("imv-remotion-sessions");
+    opening.onerror = () => reject(opening.error);
+    opening.onsuccess = () => {
+      const db = opening.result;
+      const transaction = db.transaction("works", "readonly");
+      const request = transaction.objectStore("works").getAll();
+      transaction.oncomplete = () => {
+        db.close();
+        resolve(request.result.find((row) => row.id === "work-1")?.data.context);
+      };
+      transaction.onabort = () => { db.close(); reject(transaction.error); };
+    };
+  }));
+  /** 读取持久图片验证 ACK 和刷新后的实际字节，不依赖组件内存。 */
+  const storedImage = () => page.evaluate(async () => {
+    const local = await import("/src/features/remotion_templates/localSessions.ts");
+    return Array.from(await local.storage().image(local.server(), "image-1") ?? []);
+  });
   /** 一条用户或助手消息事件的载荷。 */
   const message = (n, job, role, text) => ({ id: `m${n}`, sequence: n, job_id: job.id, role, text, created_at: job.updated_at });
   // 会话历史只在客户端本地：浏览器版本地库在 IndexedDB 里，由创建作品后 SSE 送达的事件写入（两轮成功任务、四条消息与循环记录）。
   const history = [
-    ["message.created", message(1, jobs[0], "user", "做一个简洁的居中标题，淡入出现。")],
-    ["job.updated", jobs[0]],
+    ["message.created", { ...message(1, jobs[0], "user", "做一个简洁的居中标题，淡入出现。"), image_asset_ids: ["image-1"] }],
+    ["job.updated", { ...jobs[0], context: checkpoints[0] }],
     ...loopRounds.map((round) => ["job.round", { job_id: "job-1", round }]),
     ["version.ready", { version_id: "version-1", job_id: "job-1" }],
     ["message.created", message(2, jobs[0], "assistant", "标题已完成。可以预览效果，或者继续调整。")],
     ["message.created", message(3, jobs[1], "user", "改成「让灵感发光」，暖金色，加一条下划线。")],
-    ["job.updated", jobs[1]],
+    ["job.updated", { ...jobs[1], context: checkpoints[1] }],
     ...loopRounds.map((round) => ["job.round", { job_id: "job-2", round }]),
     ["version.ready", { version_id: "version-2", job_id: "job-2" }],
     ["message.created", message(4, jobs[1], "assistant", "已更新暖金色标题和下划线，保留淡入动画。")],
@@ -90,9 +121,23 @@ try {
         job: { ...jobs[0], status: "running", result_version_id: null },
       });
     }
-    if (req.method() === "POST" && path === "/works/work-1/ack")
+    if (req.method() === "POST" && path === "/works/work-1/ack") {
+      if (req.postDataJSON().cursor >= history.length) {
+        assert.deepEqual(await storedContext(), checkpoints[1]);
+        assert.deepEqual(await storedImage(), [...imageBytes]);
+      }
       return route.fulfill({ status: 204 });
+    }
+    if (req.method() === "POST" && path === "/works/work-1/messages") {
+      assert.deepEqual(req.postDataJSON(), { instruction: "缓存验证", context: checkpoints[1], assets: [{ id: "image-1", data: imageBase64 }] });
+      return json(jobs[1]);
+    }
     assert.equal(req.method(), "GET", `${req.method()} ${path}`);
+    if (path === "/assets/image-1") {
+      imageFetches++;
+      assert(req.headers()["x-imv-device"]);
+      return route.fulfill({ contentType: "image/png", body: imageBytes });
+    }
     if (path === "/capabilities") return json({ models_configured: true });
     // 新建后本地任务仍为 running，会话恢复会先核对一次任务；返回进行中，后续状态由 SSE 事件推进。
     if (path === "/jobs/job-1") return json({ ...jobs[0], status: "running", result_version_id: null });
@@ -226,6 +271,19 @@ try {
   await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
   assert.equal(await page.getByText(/会话已删除或正在清理/).count(), 0);
   assert.equal(creates, 1);
+  assert.equal(imageFetches, 1);
+  assert.deepEqual(await storedImage(), [...imageBytes]);
+  await page.waitForFunction(() => {
+    const image = document.querySelector('img[alt="历史参考图片"]');
+    return image?.src.startsWith("blob:") && image.complete && image.naturalWidth === 1;
+  });
+  assert.deepEqual(await storedContext(), checkpoints[1]);
+  // 刷新后通过真实 API helper 取回本地窗口并发送；替身不启动模型任务，不影响布局测试的成功版本。
+  await page.evaluate(async () => {
+    const api = await import("/src/features/remotion_templates/api.ts");
+    await api.message("work-1", { instruction: "缓存验证" });
+  });
+  assert.equal(imageFetches, 1);
   assert.equal(
     await page.evaluate(() => localStorage.getItem("imv.remotion.studio-layout")),
     pref,
@@ -403,7 +461,7 @@ try {
   );
   assert.equal(errors.length, 0, errors.join("\n"));
   console.log(
-    "PASS: 预览尺寸、拖拽/键盘调宽、栏宽恢复、刷新后从本地库恢复会话、历史预览、未保存保护、新增聊天、桌面删除确认与窄屏删除清理、新会话时长工具栏不溢出及 390px 窄屏布局。截图：" +
+    "PASS: 模型窗口和 PNG 字节落盘后确认、刷新后从本地原样重放且不重读云端图片，预览尺寸、拖拽/键盘调宽、栏宽恢复、刷新后从本地库恢复会话、历史预览、未保存保护、新增聊天、桌面删除确认与窄屏删除清理、新会话时长工具栏不溢出及 390px 窄屏布局。截图：" +
       screenshots,
   );
 } finally {
