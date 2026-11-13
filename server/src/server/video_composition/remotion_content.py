@@ -8,6 +8,7 @@ import json
 import math
 from ..remotion_templates.categories import BILINGUAL_PROP, LINE_STARTS_PROP, TEXT_MAX_LENGTH, content_line_count, content_line_starts, line_count
 from ..remotion_templates.fonts import open_font_schema
+from ..remotion_templates.retiming import dynamic_duration as adaptive_duration
 from ..remotion_templates.tools.schema import validate_parameters
 
 
@@ -46,10 +47,8 @@ def roles(schema: dict) -> dict[str, list[str]]:
 
 def dynamic_duration(schema: dict) -> bool:
     """只有明确声明的资产直接读取业务时长；上游固定资产走宿主时钟适配。"""
-    mapping = roles(schema)
-    return schema.get("x-imv-dynamic-duration") is not False and (
-        schema.get("x-imv-dynamic-duration") is True or bool(mapping["duration"])
-    )
+    roles(schema)
+    return adaptive_duration(schema)
 
 
 def set_path(config: dict, path: str, value) -> None:

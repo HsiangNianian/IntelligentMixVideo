@@ -206,7 +206,8 @@ class OverlayRenders:
             raise HTTPException(422, "callback_url 必须是不含空白、用户信息或片段的 HTTP(S) 地址") from None
         self._require_environment()
         try:
-            overlay = plan_sprite_render(message, await asyncio.to_thread(self._publication, message.sprite_id))
+            publication = await asyncio.to_thread(self._publication, message.sprite_id)
+            overlay = await asyncio.to_thread(plan_sprite_render, message, publication)
         except OverlayError as exc:
             raise HTTPException(422, exc.message) from None
         if missing := join_problem(overlay, self.settings):
@@ -312,7 +313,7 @@ class OverlayRenders:
         if "sprite_render" in request:
             message = ParseDict(request["sprite_render"], pb.SpriteRenderInput())
             publications = {message.sprite_id: await asyncio.to_thread(self._publication, message.sprite_id)}
-            overlay = plan_sprite_render(message, publications[message.sprite_id])
+            overlay = await asyncio.to_thread(plan_sprite_render, message, publications[message.sprite_id])
             render, key = render_sprite, f"imv/sprite_render/{task_id}.webm"
         else:
             placements = [OverlayPlacement.model_validate(item) for item in request["placements"]]
