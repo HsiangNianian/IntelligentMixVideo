@@ -34,7 +34,7 @@ from .overlay_render import Overlay, OverlayError, chunk_ranges, overlay_ranges,
 from .settings import Settings
 from .placement import resolve
 from .renderer import Renderer
-from .retiming import RetimingError, duration_paths, dynamic_duration, retime_source
+from .retiming import RetimingError, duration_paths, dynamic_duration, inject_duration, retime_source
 from .tool_validation import MAX_RENDER_SECONDS, MIN_RENDER_SECONDS
 from .tools.schema import validate_parameters
 
@@ -138,13 +138,31 @@ def _groups(cues, contents: list[tuple], lines: int, max_length: int | None) -> 
     ]
 
 
-def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite) -> Overlay:
+def adapt_sprite_render(overlay: Overlay, sprite: pb.PublishedSprite) -> None:
+    """Bundle one fixed-clock source for all instances, shared by fit and rendering.
+
+    Queued tasks call this only after acquiring their render slot and capacity; no asset code executes here.
+    """
+    if sprite.kind != pb.SPRITE_KIND_TEXT:
+        return
+    try:
+        if dynamic_duration(json.loads(sprite.config_schema_json or "{}")):
+            return
+        code = retime_source(sprite)
+    except RetimingError as exc:
+        raise OverlayError("sprite_unavailable", "字效时长适配不可用，请检查字效资产与渲染环境") from exc
+    for instance in overlay.instances:
+        instance["code"] = code
+
+
+def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, *, adapt_source: bool = True) -> Overlay:
     """Check the canvas, time, content and style, and place one instance per content on the whole effect.
 
     Text animations follow each cue's actual frame count, with no fixed seconds cutoff. Fixed-clock sources are
     bundled once per request and map line starts inside their wrapper; text fit keeps the actual last-line
     reveal frame. Duration-aware sources and non-text effects keep their own clock. Every refusal is an
-    `OverlayError` with a stable code; acceptance turns it into a 422. Bundling parses source without executing it.
+    `OverlayError` with a stable code. Queued tasks pass `adapt_source=False` to validate and snapshot the plan
+    cheaply, then bundle it with `adapt_sprite_render` after render admission. Bundling never executes source.
     """
     canvas = sprite.canvas
     fps = canvas.fps
@@ -164,7 +182,6 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
     try:
         fixed_clock = sprite.kind == pb.SPRITE_KIND_TEXT and not dynamic_duration(schema)
         durations = duration_paths(schema) if sprite.kind == pb.SPRITE_KIND_TEXT else []
-        code = retime_source(sprite) if fixed_clock else sprite.tsx_code
     except RetimingError as exc:
         raise OverlayError("sprite_unavailable", "字效时长适配不可用，请检查字效资产与渲染环境") from exc
     for start, length, text, keywords, starts in contents:
@@ -177,21 +194,20 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
         if durations:
             # Duration roles are render content, not operator overrides. Match video composition's injected clock.
             try:
-                for path in durations:
-                    target = config
-                    for part in path[:-1]:
-                        target = target[part]
-                    target[path[-1]] = canvas.preview_frames if fixed_clock else length
+                inject_duration(config, durations, canvas.preview_frames if fixed_clock else length)
                 validate_parameters(open_font_schema(schema), config)
             except Exception as exc:
                 raise OverlayError("content_invalid", "字效参数契约不支持当前字幕时长") from exc
-        instance = {"sprite_id": message.sprite_id, "code": code, "config": config, "host": host, "start_frame": start, "duration_frames": length}
+        instance = {"sprite_id": message.sprite_id, "code": sprite.tsx_code, "config": config, "host": host, "start_frame": start, "duration_frames": length}
         if lines > 1:
             # Content the host injects (not an operator parameter), padded with the last line's start for absent lines.
             config[LINE_STARTS_PROP] = content_line_starts(schema, starts)
             instance["reveal_frame"] = starts[-1]
         instances.append(instance)
-    return Overlay(canvas.width, canvas.height, fps, total, instances)
+    overlay = Overlay(canvas.width, canvas.height, fps, total, instances)
+    if adapt_source:
+        adapt_sprite_render(overlay, sprite)
+    return overlay
 
 
 async def render_sprite(renderer: Renderer, overlay: Overlay, directory: Path, *, chunk_concurrency: int | None = None,

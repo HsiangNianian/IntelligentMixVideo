@@ -249,6 +249,44 @@ def test_invalid_dynamic_declaration_is_still_rejected():
         dynamic_duration({"x-imv-dynamic-duration": "yes"})
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_dotted_duration_roles_keep_the_composition_clock(nested):
+    """字面键中的点不构成业务路径，时钟判定和实际参数注入保持同一规则。"""
+    sprite = asset()
+    schema = deepcopy(SCHEMA)
+    schema.pop("x-imv-dynamic-duration")
+    schema["properties"]["layer"]["properties"]["frames"].pop("x-imv-role")
+    field = {"type": "integer", "x-imv-role": "duration"}
+    schema["properties"]["timing.frames"] = {"type": "object", "properties": {"length": field}} if nested else field
+    value = {"length": 90} if nested else 90
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**DEFAULTS, "timing.frames": value})
+    assert roles(schema)["duration"] == []
+    assert not dynamic_duration(schema)
+    assert resolve_config(sprite, "新文案", "", 6)["timing.frames"] == value
+
+
+@pytest.mark.parametrize("present,required", [(False, False), (True, False), (False, True)])
+def test_composition_duration_roles_preserve_optional_objects(present, required):
+    """未启用的可选对象保持缺省，存在时注入；缺失必填对象仍拒绝，默认值不变。"""
+    sprite = asset()
+    schema = deepcopy(SCHEMA)
+    schema["properties"]["timing"] = {"type": "object", "properties": {
+        "frames": {"type": "integer", "x-imv-role": "duration", "minimum": 1}}}
+    if required:
+        schema["required"] = ["timing"]
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**DEFAULTS, **({"timing": {}} if present else {})})
+    original = sprite.SerializeToString()
+    if required and not present:
+        with pytest.raises(ContentError):
+            resolve_config(sprite, "新文案", "", 6)
+    else:
+        result = resolve_config(sprite, "新文案", "", 6)
+        assert result.get("timing") == ({"frames": 6} if present else None)
+    assert sprite.SerializeToString() == original
+
+
 def test_plan_uses_absolute_asr_gaps_and_full_audio(composition_case):
     """相同资产的多句字幕独立注入；片头、片中和片尾静音仍属于整段输出。"""
     data = case(composition_case)
@@ -1027,9 +1065,10 @@ export default function Text(p) {
     video = asyncio.run(render_overlay(Renderer(settings), remotion.plan(data, 120), tmp_path / "render"))
     pixels = subprocess.run(["ffmpeg", "-v", "error", "-c:v", "libvpx-vp9", "-i", str(video),
         "-f", "rawvideo", "-pix_fmt", "rgba", "-"], capture_output=True, check=True).stdout
-    # 短动画仍遍历首尾，长动画超过源 10 帧之后仍可见，一/二帧都保留可读画面。
-    for frame, color, alpha in [(0,None,0),(3,None,0),(5,"green",0.8),(6,"green",1),(7,"green",0.9),
-        (8,None,0),(15,None,0),(50,"red",0.525),(65,"red",1),(88,"red",0.076),(89,None,0),
+    # 短动画遍历整数发布帧：输出第 5/7 帧采样源第 4/7 帧，内层为第 2/5 帧，均完全可见。
+    # 长区间第 50/88 帧采样源第 3/9 帧，内层为第 1/7 帧，alpha 为 0.5/0；一/二帧保持可见。
+    for frame, color, alpha in [(0,None,0),(3,None,0),(5,"green",1),(6,"green",1),(7,"green",1),
+        (8,None,0),(15,None,0),(50,"red",0.5),(65,"red",1),(88,None,0),(89,None,0),
         (90,None,0),(96,"green",1),(97,None,0),(100,"red",1),(101,"red",1),(102,None,0)]:
         offset = (frame*180*320 + 100*180+100)*4
         pixel = pixels[offset:offset+4]

@@ -1530,6 +1530,45 @@ def test_subtitle_clock_bundles_once_and_reports_failure(monkeypatch) -> None:
     assert isinstance(caught.value.__cause__, RetimingError)
 
 
+@pytest.mark.parametrize("timing", [None, {}, {"animation": {}}])
+def test_duration_injection_preserves_absent_optional_groups(timing) -> None:
+    """合法的可选对象未启用时保持缺省；已存在的对象接收时长，封存默认值不变。"""
+    from server.remotion_templates.tools.schema import validate_parameters
+
+    sprite = pb.PublishedSprite()
+    sprite.CopyFrom(T)
+    schema = json.loads(sprite.config_schema_json)
+    schema["properties"]["timing"] = {"type": "object", "properties": {
+        "animation": {"type": "object", "properties": {
+            "frames": {"type": "integer", "minimum": 1, "x-imv-role": "duration"}}}}}
+    defaults = json.loads(sprite.default_config_json)
+    if timing is not None:
+        defaults["timing"] = timing
+    validate_parameters(schema, defaults)
+    sprite.config_schema_json, sprite.default_config_json = json.dumps(schema), json.dumps(defaults)
+    original = sprite.SerializeToString()
+    [item] = plan_sprite_render(render_input(text="", keywords=[], cues=[cue("短句", 5, 11)]), sprite).instances
+    expected = {"animation": {"frames": 6}} if timing == {"animation": {}} else timing
+    assert item["config"].get("timing") == expected
+    assert sprite.SerializeToString() == original
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_dotted_duration_names_do_not_select_a_native_clock(nested) -> None:
+    """含点的字面键与视频合成一样不作为业务路径，原参数值保留且使用发布时钟。"""
+    sprite = pb.PublishedSprite()
+    sprite.CopyFrom(T)
+    schema = json.loads(sprite.config_schema_json)
+    field = {"type": "integer", "x-imv-role": "duration"}
+    schema["properties"]["timing.frames"] = {"type": "object", "properties": {"length": field}} if nested else field
+    value = {"length": 90} if nested else 90
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**json.loads(sprite.default_config_json), "timing.frames": value})
+    [item] = plan_sprite_render(render_input(text="", keywords=[], cues=[cue("短句", 5, 11)]), sprite).instances
+    assert item["code"] != sprite.tsx_code
+    assert item["config"]["timing.frames"] == value
+
+
 # 场景：固定 15 秒连续帧区间，尾块保留余数；短片不硬凑六块。
 @pytest.mark.parametrize("fps", [24, 30, 60])
 @pytest.mark.parametrize("seconds,extra,count", [(0, 1, 1), (15, -1, 1), (15, 0, 1), (15, 1, 2), (30, 0, 2), (30, 1, 3), (70, 1, 5)])
@@ -1849,6 +1888,79 @@ def test_sprite_render_recovers_and_reports_failures(service, callbacks) -> None
     renderer.failure = RuntimeError("worker log /private/path")
     failed = overlays.get_sprite(run_sprite_task(overlays, render_input()))
     assert (failed.status, failed.error_code, failed.error_message) == ("failed", "render_failed", "叠加视频渲染失败")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("catalog_change", ["replace", "delete"])
+async def test_sprite_render_recovers_the_accepted_publication(service, monkeypatch, catalog_change) -> None:
+    """受理后资产被覆盖或删除，重建服务仍执行持久化的原计划，不重新查询或规划。"""
+    overlays, renderer, _ = service
+    message = render_input(text="", keywords=[], cues=[cue("原切片", 7, 25)])
+    expected = plan_sprite_render(message, T)
+
+    def defer(coroutine):
+        """模拟受理之后、worker 启动之前进程停止。"""
+        coroutine.close()
+
+    monkeypatch.setattr(overlays, "_spawn", defer)
+    task_id = await overlays.accept_sprite(message)
+    if catalog_change == "delete":
+        monkeypatch.delitem(PUBLICATIONS, "t")
+    else:
+        replacement = pb.PublishedSprite()
+        replacement.CopyFrom(T)
+        replacement.tsx_code = 'export default () => null;'
+        replacement.canvas.fps = 24
+        monkeypatch.setitem(PUBLICATIONS, "t", replacement)
+
+    def unexpected(*args, **kwargs):
+        """快照恢复不得读取当前目录或再次执行内容规划。"""
+        pytest.fail("accepted Sprite render was reloaded or replanned")
+
+    monkeypatch.setattr(overlay_service.sprites, "get", unexpected)
+    monkeypatch.setattr(overlay_service, "plan_sprite_render", unexpected)
+    recovered = OverlayRenders(overlays.store, renderer, overlays.settings)
+    recovered.resume()
+    await finish(recovered)
+    assert recovered.get_sprite(task_id).status == "succeeded"
+    assert renderer.requests[0]["instances"] == expected.instances
+    assert renderer.requests[0]["composition"]["fps"] == 30
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("bundle_failure", [False, True])
+async def test_sprite_clock_bundles_once_after_render_admission(service, monkeypatch, bundle_failure) -> None:
+    """受理不启动 Node；取得名额和预算后只打包一次，失败以安全任务错误结束并释放资源。"""
+    from server.remotion_templates.retiming import RetimingError
+
+    overlays, renderer, _ = service
+    overlays.slot = asyncio.Semaphore(0)
+    calls = []
+
+    def bundle(sprite):
+        """记录昂贵打包，必须位于被占用的渲染槽位内。"""
+        assert overlays.slot.locked() and overlays.capacity.memory_units > 0
+        calls.append(sprite.sprite_id)
+        if bundle_failure:
+            raise RetimingError("private compiler output")
+        return "timed source"
+
+    monkeypatch.setattr(sprite_render, "retime_source", bundle)
+    task_id = await overlays.accept_sprite(render_input())
+    await asyncio.sleep(0)
+    assert calls == []
+    overlays.slot.release()
+    await finish(overlays)
+    assert calls == ["t"]
+    assert not overlays.slot.locked() and overlays.capacity.memory_units == 0
+    task = overlays.get_sprite(task_id)
+    if bundle_failure:
+        assert (task.status, task.error_code, task.error_message) == (
+            "failed", "sprite_unavailable", "字效时长适配不可用，请检查字效资产与渲染环境")
+        assert renderer.requests == []
+    else:
+        assert task.status == "succeeded"
+        assert renderer.requests[0]["instances"][0]["code"] == "timed source"
 
 
 @pytest.fixture
@@ -2391,6 +2503,8 @@ def test_sprite_render_fits_each_distinct_cue_in_one_browser_run(tmp_path) -> No
     [request] = renderer.requests
     [sprite] = request["sprites"]
     # Fit mounts the same timing wrapper at each actual interval used in the final render.
+    assert sprite["code"] == overlay.instances[0]["code"]
+    assert sprite["code"] != T.tsx_code
     assert [(item["text"], item["frames"], item["length"]) for item in sprite["fit"]] == [
         ("短句", [0, 4, 9, 14, 19], 20), ("测" * 30, [0, 24, 49, 74, 99], 100), ("够短", [0, 29, 59, 89, 119], 120)]
     assert request["composition"]["duration_frames"] == 120

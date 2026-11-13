@@ -36,7 +36,7 @@ RUNTIME_FILE = Path(__file__).parents[2] / "remotion" / "imv-runtime.tsx"
 PREVIEW_RENDERS = 12
 # 观察图的长边像素上限：够看清字形与描边，又不让图片撑满模型上下文。
 OBSERVATION_SIDE = 720
-# 预览变体的挂载长度：short 是字效最短的播放长度（1.5 秒），long_duration 是总线最长的长度（120 秒）。
+# 预览变体的挂载长度：short 按 1.5 秒预览，long_duration 按总线最长的长度（120 秒）预览。
 VARIANT_FRAMES = {"short": 45, "long_duration": 3600}
 # long 变体填满的字数，与字效文字参数的 maxLength 一致。
 LONG_TEXT = 100
