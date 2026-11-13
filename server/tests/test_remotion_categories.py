@@ -6,14 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, agent_message, category_problems, line_count, parameter_problems
+from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, category_problems, line_count, parameter_problems
 from server.remotion_templates.fonts import FontStore
 from server.remotion_templates.models import TemplateCandidate
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.tools.catalog import available
 from server.remotion_templates.tools.compose import compose_source
-from server.remotion_templates.tools.contracts import Composition, SpriteCreateInput, SpriteDraft
+from server.remotion_templates.tools.contracts import Composition, EffectSaveInput, SpriteDraft
 from server.remotion_templates.tools.registry import ToolFault
 from server.remotion_templates.tools.session import ToolSession
 
@@ -108,18 +108,6 @@ def test_keyword_parameters_must_default_to_off():
     assert [item.name for item in category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), {**OFF, "keywordBold": 0, "keywordSize": 0.0, "keywordColor": None})] == ["keywordBold", "keywordColor"]
     missing = {key: value for key, value in OFF.items() if key != "keywords"}
     assert [item.name for item in category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), missing)] == ["keywords"]
-
-
-def test_the_agent_is_told_how_to_repair_keyword_defaults():
-    """默认值不合规时给 Agent 的说明要能指导修复旧字效：关键词外观留在键词 Preset 的样式参数里，七个选项恢复关闭默认值；
-    其他分类问题不带这段修复说明。"""
-    on = {**OFF, "keywordSize": 80}
-    problems = category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), on)
-    message = agent_message("text", problems)
-    assert "keyword Preset" in message and "keywordEffect..." in message and "keywordSize 0" in message
-    missing = {name: TEXT_PROPERTIES[name] for name in BASE_TEXT}
-    other = agent_message("text", category_problems("text", schema(missing), set(missing), OFF))
-    assert "keyword Preset" not in other and "must default to" not in other
 
 
 LINE_STARTS = {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600}, "minItems": 2, "maxItems": 2}
@@ -271,6 +259,16 @@ def test_a_keyword_effect_exposes_a_switch_that_defaults_on():
     assert check(switched, {**defaults, "keywordEffect": True}) == []
     assert "must default to true" in check(switched, {**defaults, "keywordEffect": False})[0][1]
     assert check({**looks, "keywordEffect": {"type": "string", "maxLength": 4}}, {**defaults, "keywordEffect": "on"}) == [("keywordEffect", "has the wrong schema")]
+
+
+@pytest.mark.parametrize(("value", "valid"), [(False, True), (True, True), (0, False), (None, False), ("false", False)])
+def test_a_free_keyword_effect_preserves_its_boolean_default(value, valid):
+    """自由组件可保存关闭的关键词字效，但不放过缺失或非布尔默认值；组合路径的默认开启约定独立保留。"""
+    properties = {**TEXT_PROPERTIES, "fontFamily": TIER_FONT, "keywordEffect": {"type": "boolean"}}
+    defaults = {**OFF, "fontFamily": "Zed Display", "keywordEffect": value}
+    problems = category_problems("text", schema(properties), set(properties), defaults, TIER_LIBRARY,
+                                 requested={"keyword_effect"}, allow_disabled_keyword_effect=True)
+    assert [(item.name, item.reason) for item in problems] == ([] if valid else [("keywordEffect", "must have a boolean default")])
 
 
 def test_publishing_a_multi_line_text_needs_no_shared_colour_or_weight():
@@ -428,36 +426,34 @@ def sprite(kind: str | None, bound: list[str]) -> SpriteDraft:
     return SpriteDraft(**data, **({"kind": kind} if kind else {}))
 
 
-def test_create_refuses_a_sprite_missing_its_category_parameters(tmp_path):
-    """sprite.create 在挂载浏览器之前检查分类：缺少的参数和应有 Schema 写进回执，不保存。"""
-    async def run():
-        """Create three drafts: one without fontWeight, one without a kind, one whose keywordBold defaults to on."""
-        current = session(tmp_path)
-        current.sprite_drafts["d"] = sprite("text", [name for name in TEXT_PROPERTIES if name != "fontWeight"])
-        with pytest.raises(ToolFault) as refused:
-            await current.execute("sprite.create", SpriteCreateInput(draft_id="d"), available())
-        assert refused.value.error.code == "CATEGORY_PARAMETERS_MISSING"
-        assert refused.value.error.details["missing"] == [{"name": "fontWeight", "reason": "missing", "schema": {"type": "integer", "enum": [400, 700]}}]
-        assert "sprite_compose" in refused.value.error.message
-        current.sprite_drafts["old"] = sprite(None, [])
-        with pytest.raises(ToolFault) as untyped:
-            await current.execute("sprite.create", SpriteCreateInput(draft_id="old"), available())
-        assert untyped.value.error.details["missing"] == [{"name": "kind", "reason": "kind must be one of text, filter_overlay, video_overlay, transition_overlay"}]
-        current.sprite_drafts["on"] = sprite("text", list(TEXT_PROPERTIES)).model_copy(update={"default_parameters": {**OFF, "keywordBold": True}})
-        with pytest.raises(ToolFault) as enabled:
-            await current.execute("sprite.create", SpriteCreateInput(draft_id="on"), available())
-        assert enabled.value.error.code == "CATEGORY_PARAMETERS_MISSING"
-        assert enabled.value.error.details["missing"] == [{"name": "keywordBold", "reason": "must default to false (off)", "schema": {"type": "boolean"}}]
-        # 复现模型把 maxLength 降到 6 绕过长文字排版；保存前拒绝并回传正确契约。
-        for limit in (6, 101):
-            current.sprite_drafts["limit"] = sprite("text", list(TEXT_PROPERTIES)).model_copy(deep=True)
-            current.sprite_drafts["limit"].parameter_schema["properties"]["text"]["maxLength"] = limit
-            with pytest.raises(ToolFault) as invalid:
-                await current.execute("sprite.create", SpriteCreateInput(draft_id="limit"), available())
-            assert invalid.value.error.code == "CATEGORY_PARAMETERS_MISSING"
-            assert invalid.value.error.details["missing"] == [{"name": "text", "reason": "has the wrong schema", "schema": TEXT_PROPERTIES["text"]}]
-        assert current.saved_sprites == {}
+def use_draft(current, draft):
+    """Isolate assembly; keep the real shared save/category gate under test."""
+    async def assemble(*_args):
+        return draft, []
+    current._assemble = assemble
 
+
+def test_save_refuses_a_sprite_missing_its_category_parameters(tmp_path):
+    """effect.save rejects invalid category controls before mounting a browser or saving a candidate."""
+    async def run():
+        current = session(tmp_path)
+        cases = [
+            (sprite("text", [name for name in TEXT_PROPERTIES if name != "fontWeight"]), "fontWeight missing"),
+            (sprite(None, []), "kind must be one of"),
+            (sprite("text", list(TEXT_PROPERTIES)).model_copy(update={"default_parameters": {**OFF, "keywordBold": True}}), "keywordBold must default to false"),
+        ]
+        for limit in (6, 101):
+            invalid = sprite("text", list(TEXT_PROPERTIES)).model_copy(deep=True)
+            invalid.parameter_schema["properties"]["text"]["maxLength"] = limit
+            cases.append((invalid, "text has the wrong schema"))
+        for draft, message in cases:
+            use_draft(current, draft)
+            with pytest.raises(ToolFault) as refused:
+                await current.execute("effect.save", EffectSaveInput(), available())
+            assert refused.value.error.code == "CODE_VALIDATION_FAILED"
+            assert message in refused.value.error.message
+            assert all(item["check"] == "parameters" for item in refused.value.error.details["problems"])
+        assert current.saved_sprites == {}
     asyncio.run(run())
 
 
@@ -480,10 +476,10 @@ def test_create_stores_the_font_family_as_an_open_string(tmp_path, monkeypatch):
     async def run():
         """Create two drafts: one naming a font outside the library, one valid whose mounted schema is captured."""
         current = session(tmp_path)
-        current.sprite_drafts["ghost"] = draft(["Zed Display", "Ghost Font"])
+        use_draft(current, draft(["Zed Display", "Ghost Font"]))
         with pytest.raises(ToolFault) as refused:
-            await current.execute("sprite.create", SpriteCreateInput(draft_id="ghost"), available())
-        assert refused.value.error.code == "CATEGORY_PARAMETERS_MISSING" and "Ghost Font" in refused.value.error.details["missing"][0]["reason"]
+            await current.execute("effect.save", EffectSaveInput(), available())
+        assert refused.value.error.code == "CODE_VALIDATION_FAILED" and "Ghost Font" in refused.value.error.message
         mounted = {}
 
         async def capture(request, **_options):
@@ -492,16 +488,16 @@ def test_create_stores_the_font_family_as_an_open_string(tmp_path, monkeypatch):
             raise RuntimeError("stop after the mount")
 
         current.validate_render = capture
-        current.sprite_drafts["ok"] = draft(library)
+        use_draft(current, draft(library))
         with pytest.raises(ToolFault, match="stop after the mount"):
-            await current.execute("sprite.create", SpriteCreateInput(draft_id="ok"), available())
+            await current.execute("effect.save", EffectSaveInput(), available())
         assert mounted["schema"]["properties"]["fontFamily"] == {"type": "string", "maxLength": 100}
 
     asyncio.run(run())
 
 
 def test_a_new_work_with_the_two_tier_switch_refuses_a_single_line_text(tmp_path, monkeypatch):
-    """新会话打开「双栏」后，sprite.create 在挂载浏览器之前就拒绝单行字效并说明用户要的是双栏；编辑已有作品（有基线）时不强制。"""
+    """新会话打开「双栏」后，effect.save 在挂载浏览器之前就拒绝单行字效并说明用户要的是双栏；编辑已有作品（有基线）时不强制。"""
     monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(TIER_LIBRARY)))
     properties = {**TEXT_PROPERTIES, "fontFamily": TIER_FONT}
     single = SpriteDraft(
@@ -515,22 +511,23 @@ def test_a_new_work_with_the_two_tier_switch_refuses_a_single_line_text(tmp_path
     async def run():
         """Create the single-line draft in a new work whose user switched on 双栏."""
         current = session(tmp_path, intent=intent)
-        current.sprite_drafts["single"] = single
+        use_draft(current, single)
         with pytest.raises(ToolFault) as refused:
-            await current.execute("sprite.create", SpriteCreateInput(draft_id="single"), available())
-        assert refused.value.error.code == "CATEGORY_PARAMETERS_MISSING"
-        assert [item["name"] for item in refused.value.error.details["missing"]] == ["lineStartFrames"]
-        assert "switched on 双栏" in refused.value.error.details["missing"][0]["reason"]
+            await current.execute("effect.save", EffectSaveInput(), available())
+        assert refused.value.error.code == "CODE_VALIDATION_FAILED"
+        assert "lineStartFrames" in refused.value.error.message
+        assert "switched on 双栏" in refused.value.error.message
 
     asyncio.run(run())
     assert session(tmp_path, spec=SimpleNamespace(sprite_kind="text"), intent=intent).requested == set()
 
 
-def test_edit_snapshot_repeats_the_base_kind_and_parameter_bindings(tmp_path):
-    """编辑任务的快照带上基线的 kind 与绑定，模型重新组合时可以照原样提供。"""
+def test_edit_workspace_retains_the_base_kind_and_parameter_contract(tmp_path):
+    """编辑快照保留分类，完整旧参数契约随工作区交给模型，不恢复旧组合工具。"""
     base_sprite = sprite("text", list(TEXT_PROPERTIES))
-    spec = SimpleNamespace(sprite=base_sprite, composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="composition")
-    base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
-    summary = session(tmp_path, spec, base).snapshot()["base"]
-    assert summary["kind"] == "text"
-    assert [item["name"] for item in summary["parameters"]] == list(TEXT_PROPERTIES)
+    spec = SimpleNamespace(sprite=base_sprite, composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="composition", keyword_examples=[])
+    base = TemplateCandidate(tsx_code="bundle", config_schema=base_sprite.parameter_schema, default_config=base_sprite.default_parameters)
+    current = session(tmp_path, spec, base)
+    assert current.snapshot()["base"]["kind"] == "text"
+    import json
+    assert json.loads(current.files["effect.json"])["contract"]["parameter_schema"] == base_sprite.parameter_schema

@@ -1,943 +1,210 @@
-"""Offline tests for the Outer → host plan → Executor protocol with scripted model turns.
+"""Unified routing, recovery and progress regressions using real workspace tools and scripted model turns.
 
-Covers the Outer control-only window, the host's standard two-step plan, tools_report_step with
-host-recorded outputs, automatic batch continuation, Plan recovery, the no-progress guard and the
-Executor window that keeps the provider's prefix cache hitting.
-Run: `uv run --locked pytest tests/test_remotion_agent_layers.py -v`.
+Run: uv run --locked --project server pytest server/tests/test_remotion_agent_layers.py.
+Rendering is stubbed; completion evidence and cache-window tests also live in test_remotion_free_effects.py.
 """
-
 import asyncio
 import json
-from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from server.remotion_templates.agent import WINDOW_BYTES, AgentRun, Layer
+from server.remotion_templates.agent import Layer
 from server.remotion_templates.context import AssistantMessage
-from server.remotion_templates.planning import Plan, PlanAction, default_plan
-from server.remotion_templates.provider import Budget, ExecutionFailure
-from server.remotion_templates.settings import Settings
-from server.remotion_templates.tools.catalog import PLAN_TOOL, REPORT_TOOL
+from server.remotion_templates.planning import PlanAction, default_plan
+from server.remotion_templates.provider import ExecutionFailure
+from server.remotion_templates.tools.registry import ToolFault
+from server.remotion_templates.tools.workspace import CODE
+from .test_remotion_free_effects import ScriptEnd, call, free_run, needs_bundler, report
 
 
-class FakeSession:
-    """Small task-owned session exposing only the APIs AgentRun uses.
-
-    Preset tools answer with a preset_id, preset_modify with a draft_id, and sprite_create saves a
-    new Sprite like the real tool, so the host can record each step's outputs from the receipts.
-    """
-
-    def __init__(self, _harness, _spec, _base, _budget, directory, images, _stage, intent):
-        self.directory = Path(directory)
-        self.images = images
-        self.intent = intent or {"original_request": {"description": "demo"}}
-        self.feedback = []
-        self.preset_drafts = {}
-        self.latest_sprite_id = "sprite-1"
-        self.saved_sprites = {"sprite-1": {"sprite_id": "sprite-1"}}
-        self.review_frames = []
-        if (intent or {}).get("accepted_base"):
-            self.preset_drafts["base_title"] = {"description": "base"}
-
-    def snapshot(self, **_options):
-        """Return deterministic host facts for all three prompts."""
-        return {"user_intent": self.intent, "sprites": sorted(self.saved_sprites)}
-
-    def turn_state(self):
-        """Return the facts that follow the Executor's window."""
-        return {"sprites": sorted(self.saved_sprites)}
-
-    def task_facts(self):
-        """Return the facts the Executor's window starts with."""
-        return {}
-
-    def saved_sprite(self, identifier):
-        """Resolve only the task's exact saved Sprite."""
-        return self.saved_sprites[identifier]
-
-    async def execute(self, name, args, _catalog):
-        """Return one deterministic business tool observation."""
-        data = {"tool": name, "args": args.model_dump(mode="json")}
-        if name == "sprite.create":
-            identifier = f"sprite-{len(self.saved_sprites) + 1}"
-            self.saved_sprites[identifier] = {"sprite_id": identifier}
-            self.latest_sprite_id = identifier
-            data["sprite_id"] = identifier
-        elif name == "preset.modify":
-            data["draft_id"] = "preset_draft_1"
-        elif name in {"preset.create", "preset.search"} and getattr(args, "preset_id", "new") is not None:
-            data["preset"] = {"preset_id": getattr(args, "preset_id", None) or "preset-new"}
-        return data
+def delegate():
+    """Start the host's single workspace step."""
+    return call("outer", "tools_plan_execute", {"action": "delegate", "reason": "做出字效"})
 
 
-class ScriptEnd(Exception):
-    """The scripted model turns ran out; a test that stops mid-task expects this."""
-
-
-class FakeHarness:
-    """Script model turns while recording the role sequence and finalization."""
-
-    def __init__(self, responses):
-        self.responses = iter(responses)
-        self.roles = []
-        self.fonts = SimpleNamespace(guide=lambda: "")
-        self.systems = {}
-        self.data = {}
-        self.settings = SimpleNamespace(
-            max_steps=4,
-            max_tooluse=3,
-            enforce_no_progress=False,
-            max_no_progress_turns=Settings.model_fields["max_no_progress_turns"].default,
-        )
-
-    async def _turn(self, system, _context, _tools, _budget, _images, *, phase, data=None):
-        """Return the next scripted response for one exact model role."""
-        self.roles.append(phase)
-        self.systems.setdefault(phase, system)
-        self.data.setdefault(phase, data)
-        try:
-            return next(self.responses)
-        except StopIteration:
-            raise ScriptEnd from None
-
-    async def finalize_sprite(self, _session, identifier, _budget, _directory):
-        """Return a marker proving the host published exactly this Sprite."""
-        return {"published": identifier}
-
-
-def call(identifier, name, arguments):
-    """Build a provider-compatible function call message."""
-    return AssistantMessage(
-        tool_calls=[
-            {
-                "id": identifier,
-                "type": "function",
-                "function": {"name": name, "arguments": json.dumps(arguments)},
-            }
-        ]
-    )
-
-
-def delegate(identifier="outer-1"):
-    """The Outer's delegation of a generation task."""
-    return call(identifier, "tools_plan_execute", {"action": "delegate", "reason": "build it"})
-
-
-def report(identifier, status="step_done", summary="done"):
-    """The Executor's tools_report_step call."""
-    return call(identifier, "tools_report_step", {"status": status, "summary": summary})
-
-
-def compose(identifier):
-    """A sprite_compose call over one stored Preset."""
-    return call(identifier, "sprite_compose", {
-        "description": "滤镜",
-        "kind": "filter_overlay",
-        "instances": [{
-            "instance_id": "filter",
-            "source": {"kind": "stored", "preset_id": "preset-1"},
-            "layout": {"x": 0, "y": 0, "width": 1080, "height": 1920, "z_index": 0},
-            "timing": {"start_frame": 0, "duration_frames": 150},
-        }],
-    })
-
-
-def watch_feedback(run, harness):
-    """Record the steering the host showed before each model turn; the returned list grows as the run proceeds."""
-    seen = []
-    scripted = harness._turn
-
-    async def turn(system, context, tools, budget, images, *, phase, data=None):
-        """Record the feedback in force, then return the next scripted reply."""
-        seen.append(list(run.session.feedback))
-        return await scripted(system, context, tools, budget, images, phase=phase, data=data)
-
-    harness._turn = turn
-    return seen
-
-
-def new_run(monkeypatch, tmp_path, responses, intent=None, **settings):
-    """An AgentRun over the fake session and scripted harness; limits are read once, so pass them here."""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    harness = FakeHarness(responses)
-    vars(harness.settings).update(settings)
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent=intent or {"original_request": {"description": "demo"}})
-    return run, harness
-
-
-def test_a_delegation_runs_the_host_plan_without_the_plan_model(monkeypatch, tmp_path):
-    """回放暖色调滤镜请求：委派后宿主直接建立标准计划，执行层准备预设、组合并保存，宿主自动推进并发布，Plan 模型一次都不调用。"""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
-        report("exec-2", summary="预设已就绪"),
-        compose("exec-3"),
-        call("exec-4", "sprite_create", {"draft_id": "sprite_draft_1"}),
-        report("exec-5", summary="已保存"),
-    ])
-    assert [tool.name for tool in run._tools_for_layer()] == [PLAN_TOOL.name]
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
-    assert harness.roles == ["outer"] + ["executor"] * 5
-    assert [step.id for step in run.state.plan.steps] == ["preset", "sprite"]
-    assert run.state.completed["preset"]["presets"] == [{"kind": "stored", "preset_id": "preset-1"}]
-    assert run.state.result["sprite_id"] == "sprite-2"
-    assert run.stalled_turns == 0
-
-
-def test_outer_can_ask_the_plan_react_to_design_the_steps(monkeypatch, tmp_path):
-    """Outer 用 plan 动作把任务交给 Plan ReAct 设计步骤（不是宿主标准两步）；Plan update_plan 后 Executor 逐步执行并发布。"""
-    plan = {"goal": "自定计划", "steps": [
-        {"id": "think", "goal": "先看参考", "tool_modules": ["tools"], "done_when": "observed"},
-        {"id": "build", "goal": "组合并保存", "tool_modules": ["preset", "sprite"], "done_when": "saved"},
-    ]}
-    run, harness = new_run(monkeypatch, tmp_path, [
-        call("outer-1", "tools_plan_execute", {"action": "plan", "reason": "不是标准两步"}),
-        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan}),
-        call("exec-1", "tools_inspect", {"tool_name": "sprite.create"}),
-        report("exec-2"),
-        call("exec-3", "sprite_create", {"draft_id": "sprite_draft_1"}),
-        report("exec-4"),
-    ])
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
-    assert harness.roles == ["outer", "plan", "executor", "executor", "executor", "executor"]
-    assert [step.id for step in run.state.plan.steps] == ["think", "build"]
-
-
-def test_the_executor_window_offers_the_step_tools_and_report_step_only(monkeypatch, tmp_path):
-    """执行层只看到当前步骤模块的工具和 tools_report_step；计划控制不在其中，延后实现的工具也不出现。"""
-    run, _ = new_run(monkeypatch, tmp_path, [])
-    run.state.control(PlanAction(action="update_plan", plan=default_plan(edit=False)))
-    run.layer = Layer.EXECUTOR
-    names = {tool.name for tool in run._tools_for_layer()}
-    assert names == {"preset.create", "preset.search", "preset.modify", "tools.inspect", REPORT_TOOL.name}
-
-
-def test_every_layer_is_told_the_protocol_it_must_follow(monkeypatch, tmp_path):
-    """三层系统提示都写明 inspect 不能搜索工具；Plan 知道组合与保存同在一步，执行层知道用 report_step 与句柄。"""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        report("exec-1", "blocked", "缺少信息"),
-        call("plan-1", "tools_plan_execute", {"action": "complete"}),
-    ])
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
-    assert set(harness.systems) == {"outer", "plan", "executor"}
-    for role, system in harness.systems.items():
-        assert "cannot search or list tools" in system, role
-    assert "compose AND save" in harness.systems["plan"]
-    assert "tools_report_step" in harness.systems["executor"]
-    assert "never re-send source" in harness.systems["executor"]
-    # The Executor gets one working Preset shape to imitate instead of guessing the contract.
-    assert "export default function WarmTint" in harness.systems["executor"]
-    # The Executor sees its current step; the counters it sees are remaining calls, not used/limit pairs.
-    assert '"current_step"' in harness.data["executor"] and '"tool_calls_left_in_batch"' in harness.data["executor"]
-    assert "actual_tooluse" not in harness.data["executor"]
-
-
-def test_step_done_without_saving_the_sprite_is_refused_with_the_next_tool(monkeypatch, tmp_path):
-    """回放 bb0decec：组合后没保存就报完成，宿主拒绝并指明调用 sprite_create {draft_id}；保存后才发布。"""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-1", "preset_create", {"description": "暖色", "code": "export default function C(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}),
-        report("exec-2"),
-        compose("exec-3"),
-        report("exec-4", summary="草稿已组合"),
-        call("exec-5", "sprite_create", {"draft_id": "sprite_draft_1"}),
-        report("exec-6"),
-    ])
-    feedback = watch_feedback(run, harness)
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
-    refused = feedback[5]
-    assert refused and "not done" in refused[0] and "sprite_create" in refused[0] and "draft_id" in refused[0]
-    assert "plan" not in harness.roles
-    # Accepting the step ends that steering, so it cannot mislead what follows.
-    assert run.session.feedback == []
-
-
-def test_a_preset_step_needs_a_ready_preset(monkeypatch, tmp_path):
-    """准备预设的步骤没有读取、创建或复制任何预设时不能报完成，拒绝信息给出可用的工具。"""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        report("exec-1"),
-        call("exec-2", "preset_modify", {"preset_id": "preset-1", "changes": {"description": "更淡"}}),
-        report("exec-3"),
-    ])
-    feedback = watch_feedback(run, harness)
-    with pytest.raises(ScriptEnd):
-        asyncio.run(run.plan_execute())
-    assert "no Preset is ready" in feedback[2][0] and "preset_search" in feedback[2][0]
-    assert run.state.completed["preset"]["presets"] == [{"kind": "draft", "draft_id": "preset_draft_1"}]
-    assert run.state.step.id == "sprite"
-    assert run.state.snapshot()["step_inputs"] == {"steps.preset.outputs.presets": [{"kind": "draft", "draft_id": "preset_draft_1"}]}
-
-
-def test_an_edit_can_reuse_the_base_drafts(monkeypatch, tmp_path):
-    """编辑任务只调整参数或编排时，基线草稿就是准备好的预设，预设步骤可直接完成并把它们交给组合步骤。"""
-    run, harness = new_run(monkeypatch, tmp_path, [delegate(), report("exec-1")], intent={
-        "original_request": {"description": "demo"}, "accepted_base": {"name": "old"},
-    })
-    with pytest.raises(ScriptEnd):
-        asyncio.run(run.plan_execute())
-    assert "accepted_base" in run.state.plan.steps[0].input_refs
-    assert run.state.completed["preset"]["presets"] == [{"kind": "draft", "draft_id": "base_title"}]
-
-
-def test_an_edit_of_a_legacy_base_is_told_to_write_a_preset(monkeypatch, tmp_path):
-    """旧版基线没有登记 base_* 草稿：委派后的标准计划不提复用草稿，而是按 legacy_code 写预设，预设步骤也不会凭空算作就绪。"""
-    run, harness = new_run(monkeypatch, tmp_path, [delegate(), report("exec-1")], intent={
-        "original_request": {"description": "demo"}, "accepted_base": {"name": "old"},
-    })
-    run.session.preset_drafts = {}
-    with pytest.raises(ScriptEnd):
-        asyncio.run(run.plan_execute())
-    goal = run.state.plan.steps[0].goal
-    assert "base.legacy_code" in goal and "base_*" not in goal
+@needs_bundler
+def test_delegation_builds_and_saves_without_waking_plan(monkeypatch, tmp_path):
+    """默认新建只走工作区步骤，保存并回看后由宿主发布。"""
+    run, harness, budget = free_run(monkeypatch, tmp_path, [delegate(), call("save", "effect_save", {}), report("done", summary="已完成")])
+    result = asyncio.run(run.plan_execute())
+    assert harness.published == [result["published"]]
     assert harness.roles == ["outer", "executor", "executor"]
-    assert run.state.index == 0 and "no Preset is ready" in run.session.feedback[0]
+    assert [step.id for step in run.state.plan.steps] == ["build"]
+    assert budget.reply["summary"] == "已完成"
 
 
-def test_a_surplus_closing_brace_does_not_waste_the_call_and_is_audited(monkeypatch, tmp_path):
-    """回放 bb0decec：28k token 的 sprite_create 只因结尾多一个括号失败；现在照常执行，并在私有审计中记录被丢弃的文本。"""
-    trailing = AssistantMessage(tool_calls=[{
-        "id": "exec-2", "type": "function",
-        "function": {"name": "sprite_create", "arguments": '{"draft_id": "sprite_draft_1"}}'},
-    }])
-    run, _ = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
-        report("exec-x"),
-        trailing,
-        report("exec-3"),
-    ])
-    run.budget.audit_path = tmp_path / "audit.jsonl"
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
-    events = [json.loads(line) for line in run.budget.audit_path.read_text().splitlines()]
-    assert [item["dropped"] for item in events if item["event"] == "tool_arguments_repaired"] == ["}"]
-
-
-def test_the_step_reports_the_sprite_it_saved_last(monkeypatch, tmp_path):
-    """同一步骤保存了两次：宿主记录最后保存的 Sprite 作为步骤产出并发布它，模型无需也无法指定 ID。"""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
-        report("exec-2"),
-        call("exec-3", "sprite_create", {"draft_id": "a"}),
-        call("exec-4", "sprite_create", {"draft_id": "b"}),
-        report("exec-5"),
-    ], max_tooluse=10)
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-3"}
-    assert run.step_sprites == {1: ["sprite-2", "sprite-3"]}
-
-
-def test_a_progressing_step_continues_past_the_batch_limit_without_the_plan(monkeypatch, tmp_path):
-    """回放 2db032a4 的误判：批次用尽不是任务失败；本批有新观察时宿主自动续批，不唤醒 Plan。"""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-1", "preset_search", {"query": "暖"}),
-        call("exec-2", "preset_search", {"query": "filter"}),
-        call("exec-3", "preset_search", {"preset_id": "preset-1"}),
-        report("exec-4"),
-        compose("exec-5"),
-        call("exec-6", "sprite_create", {"draft_id": "sprite_draft_1"}),
-        report("exec-7"),
-    ], max_tooluse=2)
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
-    assert "plan" not in harness.roles
-    assert run.state.batches == 4
-
-
-def test_a_batch_without_new_evidence_wakes_the_plan(monkeypatch, tmp_path):
-    """整批都是重复调用时不自动续批，由 Plan 决定继续或停止。"""
-    same = {"tool_name": "sprite.create"}
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-1", "tools_inspect", same),
-        call("exec-2", "tools_inspect", same),
-        call("exec-3", "tools_inspect", same),
-        call("exec-4", "tools_inspect", same),
-        call("exec-5", "tools_inspect", same),
-        call("exec-6", "tools_inspect", same),
-        call("plan-1", "tools_plan_execute", {"action": "stop", "reason": "无进展"}),
-        call("outer-2", "tools_plan_execute", {"action": "stop", "reason": "无进展"}),
-    ])
-    with pytest.raises(ExecutionFailure) as stopped:
-        asyncio.run(run.plan_execute())
-    assert stopped.value.code == "agent_stopped"
-    # The first batch saw a new descriptor and was continued; the second only repeated it.
-    assert harness.roles == ["outer"] + ["executor"] * 6 + ["plan", "outer"]
-    assert run.state.result["status"] == "tool_limit_reached"
-
-
-def test_repeating_a_draft_under_a_fresh_handle_is_no_new_evidence(monkeypatch, tmp_path):
-    """审计复现：每次 sprite_compose 都返回新的随机 draft_id，同样的组合曾被当成新证据，宿主一直自动续批直到硬额度；现在按内容摘要识别重复，整批重复就唤醒 Plan。"""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
-        report("exec-2"),
-        *[compose(f"exec-{index}") for index in range(3, 7)],
-        call("plan-1", "tools_plan_execute", {"action": "stop", "reason": "重复组合"}),
-        call("outer-2", "tools_plan_execute", {"action": "stop", "reason": "重复组合"}),
-    ], max_tooluse=2, max_steps=8)
-    execute = run.session.execute
-    handles = iter(range(100))
-
-    async def fresh_handles(name, args, catalog):
-        """Answer like the real compose: a new handle every call, the digest of the same content."""
-        if name == "sprite.compose":
-            return {"draft_id": f"sprite_draft_{next(handles)}", "digest": "3f2a9c1e5b7d4f60", "instances": []}
-        return await execute(name, args, catalog)
-
-    run.session.execute = fresh_handles
-    with pytest.raises(ExecutionFailure) as stopped:
-        asyncio.run(run.plan_execute())
-    assert stopped.value.code == "agent_stopped"
-    # The first compose batch saw one new draft and was continued; the next only repeated it.
-    assert harness.roles == ["outer"] + ["executor"] * 6 + ["plan", "outer"]
-
-
-def recorded_handoffs(run):
-    """The (source, destination, status) handoffs the no-progress guard has recorded so far."""
-    found = []
-    for key in run.observations:
-        if key.startswith("handoff:"):
-            item = json.loads(key.removeprefix("handoff:"))
-            found.append((item["source"], item["destination"], item["status"]))
-    return found
-
-
-def test_a_refused_advance_records_the_return_to_the_plan_not_an_advance(monkeypatch, tmp_path):
-    """审计复现：推进前就记下了 Executor→Executor 的 advance 交接；没有批次可开、推进失败退回 Plan 时，那次交接并不存在。"""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
-        report("exec-2"),
-    ], max_steps=1)
-    with pytest.raises(ScriptEnd):
-        asyncio.run(run.plan_execute())
-    assert harness.roles[-1] == "plan" and run.state.index == 0
-    handoffs = recorded_handoffs(run)
-    assert ("executor", "executor", "advance") not in handoffs
-    assert ("executor", "plan", "advance_refused") in handoffs
-
-
-def test_a_refused_publication_records_the_return_to_the_plan_not_a_publication(monkeypatch, tmp_path):
-    """审计复现：最后一步完成时先记下了交给 Outer 发布的交接；任务没有 Sprite、发布被拒退回 Plan 时，那次交接并不存在。"""
-    inspect = {"goal": "inspect", "steps": [{"id": "inspect", "goal": "inspect", "tool_modules": ["tools"], "done_when": "observed"}]}
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        report("exec-1", "blocked", "只需检查"),
-        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": inspect}),
-        report("exec-2"),
-    ])
-    run.session.latest_sprite_id, run.session.saved_sprites = None, {}
-    with pytest.raises(ScriptEnd):
-        asyncio.run(run.plan_execute())
-    assert harness.roles[-1] == "plan"
-    # The host publishes without an ID, so the refusal must still say why and what to do next.
-    assert "saved no Sprite yet" in run.session.feedback[0] and "sprite_create" in run.session.feedback[0]
-    handoffs = recorded_handoffs(run)
-    assert ("executor", "outer", "publish") not in handoffs
-    assert ("executor", "plan", "publish_refused") in handoffs
-
-
-def test_the_plan_is_told_which_resent_steps_the_host_kept(monkeypatch, tmp_path):
-    """Plan 以同一 ID 重发已完成的 preset 步骤想重做它：回执列出被宿主保留的步骤 ID，并说明改用新 ID。"""
-    redo = {"goal": "重做", "steps": [
-        {"id": "preset", "goal": "重写预设", "tool_modules": ["preset"], "done_when": "saved"},
-        {"id": "sprite", "goal": "组合并保存", "input_refs": ["steps.preset.outputs.presets"], "tool_modules": ["preset", "sprite"], "done_when": "saved"},
-    ]}
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
-        report("exec-2"),
-        report("exec-3", "blocked", "预设有问题"),
-        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": redo}),
-    ])
-    with pytest.raises(ScriptEnd):
-        asyncio.run(run.plan_execute())
-    receipt = json.loads(run.plan_context.messages()[-1]["content"])
-    assert receipt["ok"] and receipt["data"]["ignored_step_ids"] == ["preset"]
-    assert "new step id" in receipt["data"]["note"]
-    assert run.state.step.id == "sprite"
-
-
-def test_a_blocked_step_wakes_the_plan_which_can_continue_it(monkeypatch, tmp_path):
-    """步骤受阻时才唤醒 Plan；Plan continue 后执行层在同一步骤上补齐产出并完成。"""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        report("exec-1", "blocked", "找不到预设"),
-        call("plan-1", "tools_plan_execute", {"action": "continue", "reason": "换个关键词"}),
-        call("exec-2", "preset_search", {"preset_id": "preset-1"}),
-        report("exec-3"),
-        compose("exec-4"),
-        call("exec-5", "sprite_create", {"draft_id": "sprite_draft_1"}),
-        report("exec-6"),
-    ])
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
-    assert harness.roles == ["outer", "executor", "plan"] + ["executor"] * 5
-
-
-def test_a_plan_can_ask_and_the_host_routes_it_to_outer(monkeypatch, tmp_path):
-    """Plan 遇到只有用户能解决的歧义时 ask：宿主把问题交给 Outer，由 Outer 提问，任务以 needs_input 结束。"""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        report("exec-1", "blocked", "需要用户决定风格"),
-        call("plan-1", "tools_plan_execute", {"action": "ask", "questions": ["要卡通还是写实？"], "reason": "风格未定"}),
-        call("outer-2", "tools_plan_execute", {"action": "ask", "questions": ["要卡通还是写实？"]}),
-    ])
-    result = asyncio.run(run.plan_execute())
-    assert result.questions == ["要卡通还是写实？"]
-    assert harness.roles == ["outer", "executor", "plan", "outer"]
-    assert run.plan_result["status"] == "needs_input"
-
-
-SAVED_THEN_BLOCKED = [
-    delegate(),
-    call("exec-1", "preset_search", {"preset_id": "preset-1"}),
-    report("exec-2"),
-    call("exec-3", "sprite_create", {"draft_id": "sprite_draft_1"}),
-    report("exec-4", "blocked", "不确定是否满足要求"),
-]
-
-
-@pytest.mark.parametrize("completion", [
-    call("plan-1", "tools_plan_execute", {"action": "complete"}),
-    AssistantMessage(content=json.dumps({"status": "plan_done", "summary": "已保存", "sprite_id": "sprite-2"})),
-])
-def test_a_plan_completion_is_published_by_the_host(monkeypatch, tmp_path, completion):
-    """审计复现：Plan complete 后原来交回 Outer，而 Outer 的规则里没有发布动作，只能重新委派或停止；现在宿主直接发布。"""
-    run, harness = new_run(monkeypatch, tmp_path, [*SAVED_THEN_BLOCKED, completion])
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
-    assert harness.roles[-1] == "plan" and harness.roles.count("outer") == 1
-    assert run.plan_result["status"] == "plan_done"
-
-
-def test_a_plan_completion_must_name_the_latest_task_sprite(monkeypatch, tmp_path):
-    """Plan 完成时点名的必须是本任务最新的 Sprite；更早的那个被拒绝，控制留在 Plan。"""
-    run, _ = new_run(monkeypatch, tmp_path, [
-        *SAVED_THEN_BLOCKED,
-        AssistantMessage(content=json.dumps({"status": "plan_done", "summary": "旧的", "sprite_id": "sprite-1"})),
-        call("plan-2", "tools_plan_execute", {"action": "complete", "sprite_id": "sprite-1"}),
-    ])
-    feedback = watch_feedback(run, run.harness)
-    with pytest.raises(ScriptEnd):
-        asyncio.run(run.plan_execute())
-    assert run.layer is Layer.PLAN
-    assert "latest task Sprite sprite-2" in feedback[-1][0]
-    assert "latest task Sprite sprite-2" in run.session.feedback[0]
-
-
-@pytest.mark.parametrize("ending", ["executor", "plan"])
-def test_a_spent_task_budget_publishes_the_sprite_the_task_saved(monkeypatch, tmp_path, ending):
-    """审计复现：任务额度用尽时 Outer 只被告知停止，已保存并通过校验的 Sprite 就此丢失；现在宿主直接发布它。
-
-    executor：保存后 tools_report_step 本身已无额度，也开不了新批次；plan：步骤受阻后 Plan 想继续，却开不了新批次。
-    """
-    responses = [
-        delegate(),
-        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
-        report("exec-2"),
-        call("exec-3", "sprite_create", {"draft_id": "sprite_draft_1"}),
+@needs_bundler
+def test_plan_can_design_multiple_steps(monkeypatch, tmp_path):
+    """自定计划先检查源码，再保存；已完成步骤通过宿主产出传递。"""
+    steps = [
+        {"id": "draw", "goal": "画出效果", "tool_modules": ["workspace"], "done_when": "检查通过"},
+        {"id": "save", "goal": "保存效果", "tool_modules": ["effect"], "input_refs": ["steps.draw.outputs.effect"], "done_when": "保存并回看"},
     ]
-    if ending == "executor":
-        responses.append(report("exec-4"))
-        limits = {"max_steps": 2, "max_tooluse": 2}
-    else:
-        responses += [report("exec-4", "blocked", "想再调一下"), call("plan-1", "tools_plan_execute", {"action": "continue"})]
-        limits = {"max_steps": 2, "max_tooluse": 3}
-    run, harness = new_run(monkeypatch, tmp_path, responses, **limits)
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
-    assert "outer" not in harness.roles[1:]
-
-
-def test_outer_answers_and_asks_through_the_control_tool(monkeypatch, tmp_path):
-    """Outer 用 answer 回答问题；用 ask（工具动作或文本 JSON）真正把问题交给用户，任务以 needs_input 结束，模型无需在文本里手写控制。"""
-    run, _ = new_run(monkeypatch, tmp_path, [call("outer-1", "tools_plan_execute", {"action": "answer", "answer": "可以制作暖色调滤镜。"})])
-    run.session.latest_sprite_id = None  # a new task has saved nothing yet
-    assert asyncio.run(run.plan_execute()).answer == "可以制作暖色调滤镜。"
-    for asked in (call("outer-1", "tools_plan_execute", {"action": "ask", "questions": ["要多暖？"]}), AssistantMessage(content='{"questions":["要多暖？"]}')):
-        run, _ = new_run(monkeypatch, tmp_path, [asked])
-        result = asyncio.run(run.plan_execute())
-        assert result.answer is None and result.questions == ["要多暖？"]
-
-
-def test_curly_quoted_protocol_json_is_still_understood(monkeypatch, tmp_path):
-    """回放 2db032a4：Outer 用中文弯引号写协议 JSON，宿主归一后照常解析。"""
-    run, _ = new_run(monkeypatch, tmp_path, [AssistantMessage(content="{“answer”:“可以制作暖色调滤镜。”}")])
-    run.session.latest_sprite_id = None
-    assert asyncio.run(run.plan_execute()).answer == "可以制作暖色调滤镜。"
-
-
-def test_executor_cannot_call_plan_control(monkeypatch, tmp_path):
-    """执行层调用计划控制会被拒绝且不推进计划。"""
-    run, _ = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-1", "tools_plan_execute", {"action": "advance"}),
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer", "tools_plan_execute", {"action": "plan"}),
+        call("plan", "tools_plan_execute", {"action": "update_plan", "plan": {"goal": "完成", "steps": steps}}),
+        call("check", "validate_check", {}), report("drawn", summary="绘制已检查"),
+        call("save", "effect_save", {}), report("saved"),
     ])
-    with pytest.raises(ScriptEnd):
-        asyncio.run(run.plan_execute())
-    assert run.layer is Layer.EXECUTOR and run.state.index == 0
-    assert "TOOL_NOT_FOUND" in json.dumps(run.executor_context.messages()[-1])
-
-
-def test_the_executor_gets_the_request_and_needs_input_routes_to_outer(monkeypatch, tmp_path):
-    """审计复现（作品 72a195d7）：Executor 窗口开头的交接消息带着需求与基线、Outer 快照把 user_intent 放在最前；Executor 报 needs_input 时控制交给 Outer，
-    Outer 据 plan_result 提问、任务以 needs_input 结束；已经委派的任务不能再以普通回答结束。"""
-    asked = call("exec-1", "tools_report_step", {"status": "needs_input", "summary": "缺少文案", "questions": ["文字是什么？"]})
-    outer_asks = call("outer-2", "tools_plan_execute", {"action": "ask", "questions": ["文字是什么？"]})
-    run, harness = new_run(monkeypatch, tmp_path, [delegate(), asked, outer_asks], intent={"original_request": {"description": "今日灵感 打字机"}, "accepted_base": {"big": True}})
     result = asyncio.run(run.plan_execute())
-    assert result.questions == ["文字是什么？"]
-    # Executor needs_input hands control straight to Outer, which asks.
+    assert harness.published == [result["published"]]
+    assert run.state.completed["draw"]["summary"] == "绘制已检查"
+    assert harness.roles.count("plan") == 1
+
+
+@needs_bundler
+def test_missing_save_is_correctable(monkeypatch, tmp_path):
+    """空口完成不能跳过保存；纠正后同一任务继续成功。"""
+    run, harness, _ = free_run(monkeypatch, tmp_path, [delegate(), report("too-soon"), call("save", "effect_save", {}), report("done")])
+    result = asyncio.run(run.plan_execute())
+    assert "no effect_save succeeded" in json.dumps(harness.windows, ensure_ascii=False)
+    assert harness.published == [result["published"]]
+
+
+@needs_bundler
+def test_blocked_step_can_resume(monkeypatch, tmp_path):
+    """受阻步骤交给 Plan，continue 后保留工作区并完成。"""
+    run, harness, _ = free_run(monkeypatch, tmp_path, [delegate(), report("blocked", status="blocked"),
+        call("resume", "tools_plan_execute", {"action": "continue"}), call("save", "effect_save", {}), report("done")])
+    asyncio.run(run.plan_execute())
+    assert harness.roles == ["outer", "executor", "plan", "executor", "executor"]
+    assert len(harness.published) == 1
+
+
+@pytest.mark.parametrize("payload", [{"action": "answer", "answer": "可以"}, {"action": "ask", "questions": ["需要哪一种效果？"]}])
+def test_outer_dialogue_before_building(monkeypatch, tmp_path, payload):
+    """问答与真正的澄清不生成版本。"""
+    run, harness, _ = free_run(monkeypatch, tmp_path, [call("reply", "tools_plan_execute", payload)])
+    result = asyncio.run(run.plan_execute())
+    field = "answer" if payload["action"] == "answer" else "questions"
+    assert getattr(result, field) == payload[field]
+    assert not harness.published
+
+
+def test_executor_question_routes_to_outer(monkeypatch, tmp_path):
+    """尚未保存时，执行层无法消除的歧义由 Outer 提问。"""
+    run, harness, _ = free_run(monkeypatch, tmp_path, [delegate(), report("ask", status="needs_input", questions=["哪张参考图？"]),
+        call("relay", "tools_plan_execute", {"action": "ask", "questions": ["哪张参考图？"]})])
+    assert asyncio.run(run.plan_execute()).questions == ["哪张参考图？"]
     assert harness.roles == ["outer", "executor", "outer"]
-    handoff = next(item["content"] for item in run.executor_context.messages() if str(item.get("content", "")).startswith("Host handoff"))
-    assert "今日灵感 打字机" in handoff and "\"big\"" in handoff
-    data, _ = run.snapshot()
-    assert next(iter(data)) == "user_intent"
-    run.layer = Layer.OUTER
-    with pytest.raises(ValueError, match="an ordinary answer cannot replace it"):
-        run._outer_control(SimpleNamespace(action="answer", answer="需求原文：今日灵感"))
 
 
-def test_repeated_invalid_executor_replies_stop_the_run(monkeypatch, tmp_path):
-    """Prose that never reports the step is a stall: the guard ends the run after the threshold."""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        *[AssistantMessage(content="The step is complete, nothing more to do.") for _ in range(10)],
-    ])
+@pytest.mark.parametrize("old_tool", ["preset_create", "preset_modify", "sprite_compose", "sprite_create"])
+def test_retired_tools_never_execute(monkeypatch, tmp_path, old_tool):
+    """旧工具不能通过名称直接执行，也不标记生成已开始。"""
+    run, harness, _ = free_run(monkeypatch, tmp_path, [delegate(), call("old", old_tool, {})])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert "Unknown or out-of-scope tool" in run.session.feedback[0]
+    assert not run.generation_started and not harness.published
+    assert old_tool not in {tool["function"]["name"] for tool in harness.tools[-1]}
+
+
+@pytest.mark.parametrize("read", [False, True])
+def test_no_progress_is_bounded(monkeypatch, tmp_path, read):
+    """无效回复与重复读取均受无进展保护；新的调用 ID 不算新观察。"""
+    replies = [call(str(i), "workspace_read", {"path": CODE}) if read else AssistantMessage(content="finished") for i in range(6)]
+    run, harness, _ = free_run(monkeypatch, tmp_path, [delegate(), *replies])
     harness.settings.enforce_no_progress = True
-    with pytest.raises(ExecutionFailure) as stopped:
+    harness.settings.max_no_progress_turns = 3
+    with pytest.raises(ExecutionFailure):
         asyncio.run(run.plan_execute())
-    assert stopped.value.code == "no_progress"
-    assert harness.roles.count("executor") == harness.settings.max_no_progress_turns
+    assert not harness.published
 
 
-@pytest.mark.parametrize("loop", ["continue", "update_plan", "delegate"])
-def test_repeated_valid_handoffs_stop_without_new_evidence(monkeypatch, tmp_path, loop):
-    """重复合法交接仍须停止；改写说明、增加批次或计划版本不能伪装成进展。"""
-    steps = {"goal": "g", "steps": [{"id": "inspect", "goal": "inspect", "tool_modules": ["tools"], "done_when": "observed"}]}
-    responses = [delegate()]
-    for index in range(12):
-        blocked = report(f"blocked-{index}", "blocked", f"still blocked {index}")
-        if loop == "delegate":
-            responses.extend([
-                blocked,
-                call(f"stop-{index}", "tools_plan_execute", {"action": "stop", "reason": f"r{index}"}),
-                delegate(f"again-{index}"),
-                call(f"resume-{index}", "tools_plan_execute", {"action": "continue"}),
-            ])
-            continue
-        arguments = {"action": loop, "reason": f"try again {index}"}
-        if loop == "update_plan":
-            arguments["plan"] = steps | {"goal": f"revised wording {index}"}
-        responses.extend([blocked, call(f"retry-{index}", "tools_plan_execute", arguments)])
-    run, harness = new_run(monkeypatch, tmp_path, responses, enforce_no_progress=True, max_steps=32)
-    with pytest.raises(ExecutionFailure) as stopped:
+def test_executor_cannot_control_plan(monkeypatch, tmp_path):
+    """执行层不能越层控制计划。"""
+    run, harness, _ = free_run(monkeypatch, tmp_path, [delegate(), call("wrong", "tools_plan_execute", {"action": "complete"})])
+    with pytest.raises(ScriptEnd):
         asyncio.run(run.plan_execute())
-    assert stopped.value.code == "no_progress"
-    assert run.stalled_turns == 6
-    assert len(harness.roles) <= 12
-    assert run.state.calls < run.state.total_limit
+    assert run.layer is Layer.EXECUTOR and not harness.published
+    assert "Available tools:" in run.session.feedback[0]
 
 
-def test_advancing_plan_steps_can_finish_past_the_threshold(monkeypatch, tmp_path):
-    """Plan 改写后的多步骤计划由宿主逐步推进；跨步骤的正常交接超过阈值仍可完成。"""
-    plan = {"goal": "inspect", "steps": [{
-        "id": f"inspect_{index}", "goal": "inspect", "tool_modules": ["tools"], "done_when": "observed",
-    } for index in range(4)]}
-    responses = [
-        delegate(),
-        report("blocked", "blocked", "需要改计划"),
-        call("plan", "tools_plan_execute", {"action": "update_plan", "plan": plan}),
-    ]
-    for index in range(4):
-        responses.extend([
-            call(f"inspect-{index}", "tools_inspect", {"tool_name": ["sprite.create", "preset.create", "preset.search", "sprite.compose"][index]}),
-            report(f"done-{index}"),
-        ])
-    run, harness = new_run(monkeypatch, tmp_path, responses, enforce_no_progress=True, max_steps=8, max_tooluse=10)
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
-    assert run.state.index == 3
-    assert len(harness.roles) > harness.settings.max_no_progress_turns
-    assert run.stalled_turns == 0
+@needs_bundler
+def test_repaired_arguments_are_audited_and_execute(monkeypatch, tmp_path):
+    """保留多余闭括号的真实循环回归：修复后执行保存，并记录丢弃的字符。"""
+    trailing = call("save", "effect_save", {})
+    trailing.tool_calls[0].function.arguments = "{}}"
+    run, harness, budget = free_run(monkeypatch, tmp_path, [delegate(), trailing, report("done")])
+    budget.audit_path = tmp_path / "audit.jsonl"
+    asyncio.run(run.plan_execute())
+    events = [json.loads(line) for line in budget.audit_path.read_text().splitlines()]
+    assert [item["dropped"] for item in events if item["event"] == "tool_arguments_repaired"] == ["}"]
+    assert len(harness.published) == 1
 
 
-@pytest.mark.parametrize("layer,bad_name", [
-    (Layer.OUTER, "preset_create"),
-    (Layer.EXECUTOR, "preset"),
-    (Layer.EXECUTOR, "tools_plan_execute"),
-    (Layer.PLAN, "preset_create"),
-])
-def test_dispatch_reports_only_tools_the_current_layer_can_call(monkeypatch, tmp_path, layer, bad_name):
-    """真实分发回执包含纠错名称，同时保留 Executor 模块范围和 Outer/Plan 只用控制工具的边界。"""
-    run, _ = new_run(monkeypatch, tmp_path, [])
-    run.layer = layer
-    if layer is Layer.EXECUTOR:
-        plan = Plan(goal="preset", steps=[{
-            "id": "preset", "goal": "preset", "tool_modules": ["preset"], "done_when": "saved",
-        }])
-        run.state.control(PlanAction(action="update_plan", plan=plan))
-    context = run._context_for_layer()
-    asyncio.run(run._handle_layer_tools(call("wrong", bad_name, {})))
-    error = json.loads(context.messages()[-1]["content"])["error"]
-    assert error["code"] == "TOOL_NOT_FOUND"
-    offered = {item.name for item in run._tools_for_layer()}
-    listed = set(error["message"].split("Available tools: ")[1].split(", "))
-    assert listed == offered
-    if bad_name == "preset":
-        assert "Closest:" in error["message"]
-    if layer is Layer.EXECUTOR:
-        assert "tools.plan_execute" not in listed and "sprite.compose" not in listed
-    assert run.state.calls == 1
-    assert run.round_calls[0]["status"] == "fail"
+def test_curly_quoted_protocol_json_remains_understood(monkeypatch, tmp_path):
+    """中文弯引号协议回复仍能解析为问答，不发布候选。"""
+    run, harness, _ = free_run(monkeypatch, tmp_path, [AssistantMessage(content="{“answer”:“可以制作暖色调滤镜。”}")])
+    assert asyncio.run(run.plan_execute()).answer == "可以制作暖色调滤镜。"
+    assert not harness.published
 
 
 @pytest.mark.parametrize("earlier_success", [False, True])
-def test_failed_generation_tool_preserves_previous_generation_state(monkeypatch, tmp_path, earlier_success):
-    """首次生成失败仍可解释问题；已经成功开始生成时，后续失败不能解除完成约束。"""
-    from server.remotion_templates.tools.registry import ToolFault
-
-    run, _ = new_run(monkeypatch, tmp_path, [])
-    run.session.latest_sprite_id = None
+def test_failed_generation_preserves_previous_generation_state(monkeypatch, tmp_path, earlier_success):
+    """首次写入失败仍可解释问题，已有成功写入时失败不能解除交付要求。"""
+    run, _, _ = free_run(monkeypatch, tmp_path, [])
     run.state.control(PlanAction(action="update_plan", plan=default_plan(edit=False)))
     run.layer = Layer.EXECUTOR
-    arguments = {"description": "title", "code": "export default function C(){return null}",
-                 "parameter_schema": {"type": "object", "properties": {}}, "default_parameters": {}}
+    args = {"path": CODE, "content": "export default function Effect(){return null}"}
     if earlier_success:
-        asyncio.run(run._handle_layer_tools(call("success", "preset_create", arguments)))
+        asyncio.run(run._handle_layer_tools(call("ok", "workspace_write", args)))
 
     async def fail(*_args):
-        """模拟真实代码校验失败，尚未保存任何新的预设。"""
-        raise ToolFault("CODE_VALIDATION_FAILED", "Invalid code")
+        """Simulate a failure before any workspace mutation."""
+        raise ToolFault("INVALID_ARGUMENT", "Invalid file")
 
     monkeypatch.setattr(run.session, "execute", fail)
-    asyncio.run(run._handle_layer_tools(call("failure", "preset_create", arguments)))
+    asyncio.run(run._handle_layer_tools(call("failed", "workspace_write", args)))
     assert run.generation_started is earlier_success
     run.layer = Layer.OUTER
-    result = asyncio.run(run._handle_layer_tools(call("answer", "tools_plan_execute", {"action": "answer", "answer": "代码校验失败，请调整需求。"})))
+    result = asyncio.run(run._handle_layer_tools(call("answer", "tools_plan_execute", {"action": "answer", "answer": "写入失败"})))
     if earlier_success:
-        assert result is None
-        assert "an ordinary answer cannot replace it" in run.session.feedback[0]
+        assert result is None and "an ordinary answer cannot replace it" in run.session.feedback[0]
     else:
-        assert result.answer == "代码校验失败，请调整需求。"
+        assert result.answer == "写入失败"
 
 
-def test_unknown_sprite_in_a_plan_result_is_correctable_without_mutating_plan(monkeypatch, tmp_path):
-    """Plan 结果捏造 Sprite ID 时保留当前层和计划，给出纠错后可接受有效回复。"""
-    from server.remotion_templates.tools.registry import ToolFault
-
-    run, _ = new_run(monkeypatch, tmp_path, [])
-    run.layer = Layer.PLAN
-    run.state.control(PlanAction(action="update_plan", plan=default_plan(edit=False)))
-    original = run.session.saved_sprite
-
-    def saved_sprite(identifier):
-        """采用真实 Session 的未知 ID 错误类型，避免测试夹具的 KeyError 掩盖行为。"""
-        if identifier == "unknown":
-            raise ToolFault("SPRITE_NOT_FOUND", "Unknown task Sprite: unknown")
-        return original(identifier)
-
-    monkeypatch.setattr(run.session, "saved_sprite", saved_sprite)
-    before = run.state.snapshot()
-    asyncio.run(run._handle_layer_message(AssistantMessage(content=json.dumps({
-        "status": "plan_done", "summary": "done", "sprite_id": "unknown",
-    }))))
-    assert run.layer is Layer.PLAN and run.state.snapshot() == before
-    assert run.plan_result is None
-    assert run.stalled_turns == 1
-    assert "Unknown task Sprite" in run.session.feedback[0]
-    published = asyncio.run(run._handle_layer_message(AssistantMessage(content=json.dumps({
-        "status": "plan_done", "summary": "done", "sprite_id": "sprite-1",
-    }))))
-    assert published == {"published": "sprite-1"}
-
-
-def test_a_repeated_policy_violation_is_the_same_observation_wherever_it_sits(monkeypatch, tmp_path):
-    """审计复现：策略诊断的文字里带「(line N, column M)」，同一条违规换了行号就成了新观察，重复犯同一个错不再计入无进展。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
-
-    def refusal(capability, line):
-        """The tool error sprite.create returns for one policy violation at the given line."""
-        message = f"Unsupported capability: {capability} (line {line}, column 7)"
-        diagnostic = {"source": "contract", "severity": "error", "message": message,
-                      "range": {"start": {"line": line - 1, "character": 6}, "end": {"line": line - 1, "character": 11}}}
-        return {"code": "CODE_VALIDATION_FAILED", "message": "Sprite code validation failed.",
-                "details": {"validation": {"passed": False, "diagnostics": [diagnostic]}}}
-
-    key = run._receipt_key("error:sprite_create", refusal("fetch", 5))
-    assert run._receipt_key("error:sprite_create", refusal("fetch", 9)) == key
-    assert run._receipt_key("error:sprite_create", refusal("eval", 5)) != key
-
-
-
-
-def test_completion_refusal_says_when_the_task_saved_no_sprite(monkeypatch, tmp_path):
-    """Outer 反复提交基线版本的 Sprite ID 40 次：任务一个 Sprite 都没存时，拒绝原因要明说并给出下一步，而不是「必须引用最新 Sprite」。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
-    run.session.latest_sprite_id = None
-    with pytest.raises(ValueError, match="saved no Sprite yet") as refusal:
-        asyncio.run(run._finalize_outer("c2e32b55bdaa4e9a8e46e7a073fb2b3b"))
-    assert "sprite_create" in str(refusal.value)
-    run.session.latest_sprite_id = "sprite-2"
-    with pytest.raises(ValueError, match="latest task Sprite"):
-        asyncio.run(run._finalize_outer("sprite-1"))
-
-
-
-
-def test_no_progress_threshold_counts_rounds_instead_of_tool_calls(monkeypatch, tmp_path):
-    """同轮四个重复调用只算一次空转；首轮的新观察不能被尾部重复调用抹掉。"""
-    from server.remotion_templates.provider import ExecutionFailure
-
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    responses = [AssistantMessage(tool_calls=[
-        call(f"inspect-{turn}-{index}", "tools_inspect", {"tool_name": "sprite.create"}).tool_calls[0]
-        for index in range(4)
-    ]) for turn in range(10)]
-    harness = FakeHarness(responses)
+@pytest.mark.parametrize("action", ["continue", "update_plan"])
+def test_repeated_valid_handoffs_do_not_fake_progress(monkeypatch, tmp_path, action):
+    """合法交接、说明变化及计划版本递增不能掩盖连续无进展。"""
+    responses = [delegate()]
+    for index in range(12):
+        arguments = {"action": action, "reason": str(index)}
+        if action == "update_plan":
+            arguments["plan"] = {"goal": f"revised wording {index}", "steps": [{"id": "inspect", "goal": "inspect", "tool_modules": ["tools"], "done_when": "observed"}]}
+        responses += [report(f"blocked-{index}", "blocked", str(index)), call(f"retry-{index}", "tools_plan_execute", arguments)]
+    run, harness, _ = free_run(monkeypatch, tmp_path, responses)
     harness.settings.enforce_no_progress = True
-    harness.settings.max_steps = 20
-    harness.settings.max_tooluse = 4
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None)
+    run.state.max_tooluse = 40
     with pytest.raises(ExecutionFailure) as stopped:
         asyncio.run(run.plan_execute())
-    assert stopped.value.code == "no_progress"
-    assert run.stalled_turns == 6
-    assert len(harness.roles) == 7  # 一轮新观察后，确实经历六轮空转。
-    assert run.state.calls == 28
+    assert stopped.value.code == "no_progress" and run.stalled_turns == 6
+    assert run.state.calls < run.state.total_limit
 
 
-def test_the_executor_sees_its_saved_sprites_frames_until_the_step_ends(monkeypatch, tmp_path):
-    """保存后的回看帧跟在窗口之后、只在 Executor 层、该步骤结束前附带，快照给出图片序号（排在窗口里的参考图之后）、帧号与应显示的内容；
-    参考图只在窗口开头给一次，Outer 看不到回看帧，步骤结束（不论结果）即不再附带。"""
-    from server.remotion_templates.planning import StepResult
-
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    reference = tmp_path / "reference.png"
-    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [reference], lambda *_: None)
-    run._outer_control(SimpleNamespace(action="delegate", model_dump=lambda **_: {"action": "delegate", "reason": "make it"}))
-    run.layer = Layer.EXECUTOR
-    run._start_window("step_dispatched")
-    assert run.executor_context.messages()[1]["content"][1] == {"type": "image_path", "path": str(reference)}
-    frame = tmp_path / "frame-7.png"
-    run.session.review_frames = [(frame, 7, "half way into the entrance")]
-    data, images = run.snapshot()
-    assert images == [frame]
-    assert data["candidate_frames"] == [{"image": 2, "frame": 7, "label": "half way into the entrance"}]
-    run.layer = Layer.OUTER
-    data, images = run.snapshot()
-    assert images == [reference] and "candidate_frames" not in data
-    run.layer = Layer.EXECUTOR
-    run._accept_report(StepResult(status="blocked", summary="cannot"))
-    assert run.session.review_frames == []
-    assert run.snapshot()[1] == []
+def test_policy_locations_do_not_create_new_evidence(monkeypatch, tmp_path):
+    """同一条能力违规换了行列仍是相同观察，真正不同的违规才算新证据。"""
+    run, _, _ = free_run(monkeypatch, tmp_path, [])
+    def refusal(capability, line):
+        """A located policy error from the shared validation gate."""
+        return {"code": "CODE_VALIDATION_FAILED", "message": f"Unsupported capability: {capability} (line {line}, column 7)"}
+    key = run._receipt_key("error:effect_save", refusal("fetch", 5))
+    assert run._receipt_key("error:effect_save", refusal("fetch", 9)) == key
+    assert run._receipt_key("error:effect_save", refusal("eval", 5)) != key
 
 
-def record_requests(harness):
-    """Record what each model turn sends: layer, system prompt, window messages and the snapshot after them."""
-    seen = []
-    scripted = harness._turn
-
-    async def turn(system, context, tools, budget, images, *, phase, data=None):
-        """Keep this request's prefix parts, then return the next scripted reply."""
-        seen.append({"phase": phase, "system": system, "messages": context.messages(), "data": data})
-        return await scripted(system, context, tools, budget, images, phase=phase, data=data)
-
-    harness._turn = turn
-    return seen
-
-
-def test_executor_font_library_is_window_data_not_a_mutable_system_prompt(monkeypatch, tmp_path):
-    """字体库只作为窗口开头的宿主数据发送且在窗口打开时读取一次，后续字体同步不会改变系统提示并击穿整段前缀缓存。"""
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-search", "preset_search", {"preset_id": "preset-1"}),
-        report("exec-report", summary="预设已就绪"),
-    ])
-    guides = []
-
-    def guide():
-        """Return a marker while recording how often the live font library is read for this window."""
-        guides.append(True)
-        return "FONT_LIBRARY_MARKER"
-
-    harness.fonts.guide = guide
-    seen = record_requests(harness)
-    with pytest.raises(ScriptEnd):
+def test_no_progress_counts_rounds_instead_of_calls(monkeypatch, tmp_path):
+    """同轮四个相同调用只算一轮空转，首轮新观察不被该轮后续重复调用抹掉。"""
+    responses = [delegate(), *[AssistantMessage(tool_calls=[
+        call(f"inspect-{turn}-{index}", "tools_inspect", {"tool_name": "effect.save"}).tool_calls[0]
+        for index in range(4)
+    ]) for turn in range(10)]]
+    run, harness, _ = free_run(monkeypatch, tmp_path, responses)
+    harness.settings.enforce_no_progress = True
+    run.state.max_tooluse = 40
+    with pytest.raises(ExecutionFailure) as stopped:
         asyncio.run(run.plan_execute())
-
-    executor = [item for item in seen if item["phase"] == "executor"]
-    assert executor and len(guides) == 1
-    assert all("FONT_LIBRARY_MARKER" not in item["system"] for item in executor)
-    assert all(any("FONT_LIBRARY_MARKER" in message.get("content", "") for message in item["messages"]) for item in executor)
-
-
-def test_each_executor_request_extends_the_previous_one(monkeypatch, tmp_path):
-    """前缀缓存要求每次请求的系统提示与窗口是上一次的严格延伸：超过八组也不淘汰，系统提示不变，每轮变化的快照只在窗口之后，
-    需求只在窗口开头给一次；任务跨步骤也不换窗口。"""
-    searches = [call(f"exec-{index}", "preset_search", {"preset_id": f"preset-{index}"}) for index in range(12)]
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        *searches,
-        report("exec-report", summary="预设已就绪"),
-        compose("exec-compose"),
-        call("exec-save", "sprite_create", {"draft_id": "sprite_draft_1"}),
-        report("exec-done", summary="已保存"),
-    ], max_tooluse=30, intent={"original_request": {"description": "今日灵感 打字机"}})
-    seen = record_requests(harness)
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
-    executor = [item for item in seen if item["phase"] == "executor"]
-    assert len(executor) == 16
-    assert len({item["system"] for item in executor}) == 1
-    for previous, current in zip(executor, executor[1:]):
-        assert current["messages"][:len(previous["messages"])] == previous["messages"]
-    assert "今日灵感 打字机" in executor[0]["messages"][0]["content"]
-    assert all("今日灵感 打字机" not in item["data"] for item in executor)
-    assert executor[0]["data"] != executor[1]["data"]
-
-
-def test_a_full_executor_window_is_replaced_whole_keeping_the_facts(monkeypatch, tmp_path):
-    """窗口超过预算才整体压缩一次：新窗口仍以需求与基线开头，留下最新一次交换（回放里 15 次压缩有 5 次丢了它，模型看不到刚做完的结果）
-    和它之前的一次小交换、不留更早的大交换，列出本步骤已备好的 Preset（它们的 ID 只在被丢掉的回执里），之后继续只追加。"""
-    big = {"description": "大", "code": "x" * (WINDOW_BYTES // 4 + 1000), "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-big-1", "preset_create", big),
-        call("exec-small", "preset_search", {"preset_id": "preset-1"}),
-        call("exec-big-2", "preset_create", big),
-        call("exec-next", "preset_search", {"preset_id": "preset-2"}),
-        call("exec-last", "preset_search", {"preset_id": "preset-3"}),
-    ], max_tooluse=30, intent={"original_request": {"description": "今日灵感 打字机"}})
-    run.session.task_facts = lambda: {"base": {"presets": "基线源码"}}
-    seen = record_requests(harness)
-    with pytest.raises(ScriptEnd):
-        asyncio.run(run.plan_execute())
-    executor = [item for item in seen if item["phase"] == "executor"]
-    grown, compacted, after = executor[2], executor[3], executor[4]
-    assert "window_compacted" not in grown["messages"][0]["content"]
-    assert len(json.dumps(compacted["messages"])) < WINDOW_BYTES
-    head = compacted["messages"][0]["content"]
-    assert "window_compacted" in head and "今日灵感 打字机" in head and "基线源码" in head
-    calls = [tool["id"] for message in compacted["messages"] for tool in message.get("tool_calls", [])]
-    assert calls == ["exec-small", "exec-big-2"]
-    assert json.loads(head.split("\n", 1)[1])["detail"]["presets_ready_in_this_step"] == [{"kind": "stored", "preset_id": "preset-new"}, {"kind": "stored", "preset_id": "preset-1"}]
-    assert after["messages"][:len(compacted["messages"])] == compacted["messages"]
-
-
-def test_a_newest_exchange_that_fills_the_window_budget_is_not_kept(monkeypatch, tmp_path):
-    """一次交换单独就超过窗口预算时不留，否则压缩后下一轮又要压缩，大基线下还可能超过请求上限。"""
-    huge = {"description": "大", "code": '"' * (WINDOW_BYTES // 5), "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}
-    run, harness = new_run(monkeypatch, tmp_path, [
-        delegate(),
-        call("exec-small", "preset_search", {"preset_id": "preset-1"}),
-        call("exec-huge", "preset_create", huge),
-        call("exec-next", "preset_search", {"preset_id": "preset-2"}),
-    ], max_tooluse=30)
-    seen = record_requests(harness)
-    with pytest.raises(ScriptEnd):
-        asyncio.run(run.plan_execute())
-    compacted = [item for item in seen if item["phase"] == "executor"][2]
-    assert "window_compacted" in compacted["messages"][0]["content"]
-    assert [tool["id"] for message in compacted["messages"] for tool in message.get("tool_calls", [])] == ["exec-small"]
+    assert stopped.value.code == "no_progress" and run.stalled_turns == 6
+    assert harness.roles.count("executor") == 7

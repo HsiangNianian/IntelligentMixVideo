@@ -7,6 +7,7 @@
 //! 传入的服务地址 `server` 归属，不同服务的同 ID 记录互不影响；设备 ID 全局唯一。每个操作的参数是固定结构，
 //! 多出或缺少字段都会明确报错。
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
@@ -18,7 +19,7 @@ use std::{
 use tauri::Manager;
 
 /// 当前表结构版本；以后改表时按 `PRAGMA user_version` 从旧版本逐级迁移。
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// 版本 1 的表结构：会话记录以（服务地址, ID）为键；`data` 列保存前端定义的 JSON 文档。
 const SCHEMA: &str = "
@@ -39,6 +40,28 @@ const SCHEMA: &str = "
     );
     CREATE INDEX jobs_by_work ON jobs(server, work_id);
 ";
+
+/// 版本 2：参考图片是 SQLite BLOB，多对多关联允许安全删除一条会话。
+const IMAGE_SCHEMA: &str = "
+    CREATE TABLE images (
+        server TEXT NOT NULL, id TEXT NOT NULL, data BLOB NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()), PRIMARY KEY (server, id)
+    );
+    CREATE TABLE image_links (
+        server TEXT NOT NULL, work_id TEXT NOT NULL, image_id TEXT NOT NULL,
+        PRIMARY KEY (server, work_id, image_id)
+    );
+    CREATE INDEX image_links_by_image ON image_links(server, image_id);
+";
+
+/// `put_image` 的 Base64 只用于 IPC，入库前还原成二进制。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageWrite {
+    server: String,
+    id: String,
+    data: String,
+}
 
 /// 进程内共享的会话库连接；首次调用时打开，打开失败则下次调用重试。
 #[derive(Default)]
@@ -91,6 +114,8 @@ struct Save {
     work: Value,
     messages: Vec<Value>,
     jobs: Vec<Value>,
+    #[serde(default)]
+    image_ids: Vec<String>,
 }
 
 /// `remove`：删除一条会话的全部记录。
@@ -130,12 +155,20 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
         return Ok(());
     }
     let transaction = connection.transaction().map_err(failed)?;
-    // 版本 0 是新库，或未发布的测试构建留下的旧表：重建会话表，保留设备 ID。
-    transaction
-        .execute_batch(&format!(
+    // 仅未发布的无版本结构重建；版本 1 原会话和设备 ID 必须逐字保留。
+    if version == 0 {
+        transaction
+            .execute_batch(&format!(
             "DROP TABLE IF EXISTS works; DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS jobs;
-             DROP TABLE IF EXISTS versions; {SCHEMA} PRAGMA user_version={SCHEMA_VERSION};"
+             DROP TABLE IF EXISTS versions; {SCHEMA}"
         ))
+            .map_err(failed)?;
+    }
+    if version < 2 {
+        transaction.execute_batch(IMAGE_SCHEMA).map_err(failed)?;
+    }
+    transaction
+        .execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION};"))
         .map_err(failed)?;
     transaction.commit().map_err(failed)
 }
@@ -165,6 +198,49 @@ fn documents(rows: Vec<String>) -> Result<Value, String> {
 fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Result<Value, String> {
     let failed = |_| "读写本地会话库失败".to_string();
     match operation {
+        "image" => {
+            let query: WorkQuery = parse(payload)?;
+            let bytes: Option<Vec<u8>> = connection
+                .query_row(
+                    "SELECT data FROM images WHERE server=?1 AND id=?2",
+                    params![query.server, query.id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(failed)?;
+            Ok(bytes.map_or(Value::Null, |bytes| json!(STANDARD.encode(bytes))))
+        }
+        "put_image" => {
+            let image: ImageWrite = parse(payload)?;
+            let bytes = STANDARD
+                .decode(image.data)
+                .map_err(|_| "参考图片编码无效")?;
+            if bytes.is_empty() || bytes.len() > 30 * 1024 * 1024 {
+                return Err("参考图片大小无效".into());
+            }
+            let transaction = connection.transaction().map_err(failed)?;
+            let previous: Option<Vec<u8>> = transaction
+                .query_row(
+                    "SELECT data FROM images WHERE server=?1 AND id=?2",
+                    params![image.server, image.id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(failed)?;
+            if previous.is_some_and(|previous| previous != bytes) {
+                return Err("同一参考图片 ID 的内容不能改变".into());
+            }
+            transaction.execute(
+                "INSERT INTO images(server,id,data) VALUES (?1,?2,?3) ON CONFLICT(server,id) DO UPDATE SET created_at=unixepoch()",
+                params![image.server, image.id, bytes],
+            ).map_err(failed)?;
+            transaction.execute(
+                "DELETE FROM images WHERE created_at < unixepoch()-86400 AND NOT EXISTS
+                 (SELECT 1 FROM image_links WHERE image_links.server=images.server AND image_links.image_id=images.id)", [],
+            ).map_err(failed)?;
+            transaction.commit().map_err(failed)?;
+            Ok(Value::Null)
+        }
         "pending" => {
             parse::<Empty>(payload)?;
             // 全部服务的会话都参与门禁，不能只看当前打开的页签或服务；列出所属服务与标题，供用户找到并处理。
@@ -279,6 +355,38 @@ fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Resu
                     ],
                 )
                 .map_err(failed)?;
+            let mut image_ids = change.image_ids.clone();
+            for field in ["image_ids", "legacy_image_ids"] {
+                if let Some(ids) = change
+                    .work
+                    .get("context")
+                    .and_then(|context| context.get(field))
+                    .and_then(Value::as_array)
+                {
+                    image_ids.extend(ids.iter().filter_map(Value::as_str).map(str::to_owned));
+                }
+            }
+            for message in &change.messages {
+                if let Some(ids) = message.get("image_asset_ids").and_then(Value::as_array) {
+                    image_ids.extend(ids.iter().filter_map(Value::as_str).map(str::to_owned));
+                }
+            }
+            for id in image_ids {
+                let exists: bool = transaction
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM images WHERE server=?1 AND id=?2)",
+                        params![change.server, id],
+                        |row| row.get(0),
+                    )
+                    .map_err(failed)?;
+                if !exists {
+                    return Err("本地参考图片尚未保存，不能确认送达".into());
+                }
+                transaction.execute(
+                    "INSERT INTO image_links(server,work_id,image_id) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
+                    params![change.server, work, id],
+                ).map_err(failed)?;
+            }
             for message in &change.messages {
                 let sequence = message
                     .get("sequence")
@@ -313,6 +421,32 @@ fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Resu
         "remove" => {
             let query: Remove = parse(payload)?;
             let transaction = connection.transaction().map_err(failed)?;
+            let image_ids = {
+                let mut statement = transaction
+                    .prepare("SELECT image_id FROM image_links WHERE server=?1 AND work_id=?2")
+                    .map_err(failed)?;
+                statement
+                    .query_map(params![query.server, query.work], |row| {
+                        row.get::<_, String>(0)
+                    })
+                    .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+                    .map_err(failed)?
+            };
+            transaction
+                .execute(
+                    "DELETE FROM image_links WHERE server=?1 AND work_id=?2",
+                    params![query.server, query.work],
+                )
+                .map_err(failed)?;
+            for id in image_ids {
+                transaction
+                    .execute(
+                        "DELETE FROM images WHERE server=?1 AND id=?2 AND NOT EXISTS
+                     (SELECT 1 FROM image_links WHERE server=?1 AND image_id=?2)",
+                        params![query.server, id],
+                    )
+                    .map_err(failed)?;
+            }
             for table in ["messages", "jobs"] {
                 transaction
                     .execute(
@@ -397,6 +531,95 @@ mod tests {
 
     /// 测试默认使用的服务地址。
     const SERVER: &str = "http://api.test:8000";
+
+    /// 版本 1 升级保留原始上下文文本；图片存 BLOB，删除一个会话不影响另一个会话的共享引用。
+    #[test]
+    fn image_migration_roundtrip_and_shared_cleanup() {
+        let scratch = Scratch::new();
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        let old = Connection::open(scratch.path()).unwrap();
+        old.execute_batch(&format!("{SCHEMA} PRAGMA user_version=1;"))
+            .unwrap();
+        let original = change("a", "2026-01-01")["work"].to_string();
+        old.execute(
+            "INSERT INTO works VALUES (?1,'a','2026-01-01',?2)",
+            params![SERVER, original],
+        )
+        .unwrap();
+        drop(old);
+        let mut connection = scratch.open();
+        let preserved: String = connection
+            .query_row("SELECT data FROM works", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(preserved, original);
+        operate(
+            &mut connection,
+            "put_image",
+            json!({"server":SERVER,"id":"image","data":"AH//"}),
+        )
+        .unwrap();
+        let kind: String = connection
+            .query_row("SELECT typeof(data) FROM images", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kind, "blob");
+        for work in ["a", "b"] {
+            let mut data = change(work, "2026-01-01");
+            data["image_ids"] = json!(["image"]);
+            operate(&mut connection, "save", data).unwrap();
+        }
+        assert!(operate(
+            &mut connection,
+            "put_image",
+            json!({"server":SERVER,"id":"image","data":"AQ=="})
+        )
+        .is_err());
+        operate(
+            &mut connection,
+            "remove",
+            json!({"server":SERVER,"work":"a"}),
+        )
+        .unwrap();
+        assert_eq!(
+            operate(
+                &mut connection,
+                "image",
+                json!({"server":SERVER,"id":"image"})
+            )
+            .unwrap(),
+            "AH//"
+        );
+        assert_eq!(
+            operate(
+                &mut connection,
+                "image",
+                json!({"server":"other","id":"image"})
+            )
+            .unwrap(),
+            Value::Null
+        );
+        operate(
+            &mut connection,
+            "remove",
+            json!({"server":SERVER,"work":"b"}),
+        )
+        .unwrap();
+        assert_eq!(
+            operate(
+                &mut connection,
+                "image",
+                json!({"server":SERVER,"id":"image"})
+            )
+            .unwrap(),
+            Value::Null
+        );
+        let mut missing = change("c", "2026-01-01");
+        missing["image_ids"] = json!(["image"]);
+        assert!(operate(&mut connection, "save", missing).is_err());
+        assert_eq!(
+            operate(&mut connection, "work", json!({"server":SERVER,"id":"c"})).unwrap(),
+            Value::Null
+        );
+    }
 
     /// 一次保存：作品、两条消息与一个任务。
     fn change(work: &str, updated_at: &str) -> Value {
@@ -707,7 +930,15 @@ mod tests {
             operations.push(operation);
         }
         for operation in [
-            "device", "works", "work", "messages", "jobs", "save", "remove",
+            "device",
+            "works",
+            "work",
+            "messages",
+            "jobs",
+            "save",
+            "remove",
+            "image",
+            "put_image",
         ] {
             assert!(
                 operations.iter().any(|item| item == operation),

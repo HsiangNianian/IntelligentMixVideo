@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import * as remotion from "@/features/remotion_templates/api";
+import { record, saveContext } from "@/features/remotion_templates/localSessions";
+import { remotionJob } from "./remotion-fixtures";
 import { createComposition, getComposition } from "@/features/video_composition/api";
 import { requestSegmentation } from "@/features/segmentation/api";
 import { PluginSettings } from "@/features/settings/PluginSettings";
@@ -305,13 +307,16 @@ test.each(["false", "true"])("Agent 和 IMS 在模式 %s 下使用最新设置",
   });
   await saveSettings("remotion_agent", { actor_api_key: "agent-private" });
   await saveSettings("ims", { ims_access_key_secret: "ims-private" });
+  await record({ id: "work", current_version_id: null, created_at: "2026-09-14T08:00:00Z", request: {} },
+    { ...remotionJob("failed"), id: "job", project_id: "work" });
+  await saveContext("work", { work_id: "work", job_id: "job", state: "[]" });
   fetchMock.mockReset();
   for (let i = 0; i < 6; i++) fetchMock.mockResolvedValueOnce(Response.json({ models_configured: true }));
   await remotion.capabilities();
   await remotion.create("你好");
   await saveSettings("remotion_agent", { actor_api_key: "changed-private" });
   await remotion.message("work", { instruction: "修改" });
-  await remotion.retry("job");
+  await remotion.retry("job", "work");
   await createComposition({ text: "合成" });
   await saveSettings("ims", { ims_access_key_secret: "new-ims-private" });
   await getComposition("task");

@@ -1,0 +1,1267 @@
+"""统一组件工作区：工作区清单与配置推导、起始工程、契约探针、会话工具与三层循环的自由组件路径。
+
+执行：在 server/ 下 `uv run --locked pytest tests/test_remotion_free_effects.py -v`。打包需要锁定的 Remotion 依赖（esbuild）；
+真实浏览器用例另需 `IMV_TEST_RENDERER=1` 与浏览器、字体路径。离线用例用桩替换隔离校验器，只检验宿主逻辑与协议；模型轮次
+是脚本化的回复，不访问模型服务。
+"""
+
+import asyncio
+import json
+import os
+import shutil
+from uuid import UUID
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+import pytest
+from PIL import Image, ImageChops
+from pydantic import SecretStr
+
+from server.remotion_templates.agent import AgentRun, Layer
+from server.remotion_templates.context import AssistantMessage, Conversation, StepWindow, image_message
+from server.remotion_templates.fonts import FontStore
+from server.remotion_templates.history import reply_text
+from server.remotion_templates.models import JobReply
+from server.remotion_templates.models import GenerationJob
+from server.remotion_templates.provider import Budget, ExecutionFailure, Provider, _image_content, expand_image_paths
+from server.remotion_templates.planning import PlanAction
+from server.remotion_templates.runtime import MAX_REFERENCE_IMAGES, earlier_images, outcome_record
+from server.remotion_templates.renderer import Renderer
+from server.remotion_templates.settings import Settings
+from server.remotion_templates.tools.catalog import available
+from server.remotion_templates.tools.contracts import (
+    CheckResult, CodeValidationReport, Composition, RenderValidationReport, WorkspaceEditInput,
+)
+from server.remotion_templates.tools.registry import ToolFault
+from server.remotion_templates.tools.schema import validate_parameters
+from server.remotion_templates.tools.session import ToolSession
+from server.remotion_templates.tools.workspace import (
+    CODE, MANIFEST, assemble, contract_probes, parse_manifest, keyframes, motion_facts, restore_files, starter_files, trial_frames,
+)
+
+RENDERER_DEPS = Path(__file__).parents[1] / "src" / "server" / "remotion" / "node_modules" / "esbuild"
+needs_bundler = pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
+needs_browser = pytest.mark.skipif(
+    os.environ.get("IMV_TEST_RENDERER") != "1" or shutil.which("node") is None or not RENDERER_DEPS.exists(),
+    reason="set IMV_TEST_RENDERER=1 with Node and the locked Remotion dependencies for the Linux browser integration",
+)
+BROWSER = {
+    name: Path(value)
+    for name, value in (("browser_executable", os.environ.get("IMV_BROWSER_EXECUTABLE")), ("font_regular", os.environ.get("IMV_FONT_REGULAR")),
+                        ("font_bold", os.environ.get("IMV_FONT_BOLD")))
+    if value
+}
+LIBRARY = ["Noto Sans CJK SC", "Zed Display"]
+SHAPES = {
+    "one line": set(),
+    "two tiers": {"two_tier"},
+    "bilingual pair": {"bilingual"},
+    "two bilingual groups with a keyword effect": {"two_tier", "bilingual", "keyword_effect"},
+}
+
+
+@pytest.fixture(autouse=True)
+def font_library(monkeypatch):
+    """The font library holds two families; nothing reads the real catalog."""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+
+
+def manifest(files: dict, **changes) -> dict:
+    """The workspace manifest with top-level and text fields replaced."""
+    data = json.loads(files[MANIFEST])
+    text = changes.pop("text", None)
+    data |= changes
+    if text is not None:
+        data["text"] = {**data.get("text", {}), **text}
+    return data
+
+
+def build(files: dict, requested=frozenset(), duration=150, **changes):
+    """Assemble the workspace with a changed manifest; returns the draft and the host's notes."""
+    if changes:
+        files = {**files, MANIFEST: json.dumps(manifest(files, **changes), ensure_ascii=False)}
+    return assemble(files, fonts=LIBRARY, requested=set(requested), duration=duration)
+
+
+@needs_bundler
+@pytest.mark.parametrize("shape", list(SHAPES))
+def test_every_starter_assembles_with_the_fixed_configuration_names(shape):
+    """新作品的起始工程按开关预置文字形状；组装后宿主给出与文字块完全相同的固定配置名，Agent 只拥有自己的样式参数，且从基线还原再组装得到同样的默认值。"""
+    requested = SHAPES[shape]
+    files = starter_files("text", requested, "Noto Sans CJK SC")
+    draft, notes = build(files, requested)
+    properties = draft.parameter_schema["properties"]
+    assert notes == []
+    assert {"text", "fontSize", "keywords", "keywordBold", "keywordColor", "keywordSize"} <= set(properties)
+    lines = len(draft.default_parameters.get("lineStartFrames") or [0])
+    assert lines == {"one line": 1, "two tiers": 2, "bilingual pair": 2, "two bilingual groups with a keyword effect": 4}[shape]
+    if lines == 1:
+        assert {"fontFamily", "fontWeight", "color"} <= set(properties)
+    else:
+        assert {f"line{index}{suffix}" for index in range(1, lines + 1) for suffix in ("Color", "FontFamily", "FontWeight", "SizeRatio")} <= set(properties)
+        assert "color" not in properties and "fontFamily" not in properties
+    assert ("textEn" in properties) is ("bilingual" in requested)
+    assert ("keywordEffect" in properties) is ("keyword_effect" in requested)
+    # Every parameter is a top-level parameter of the single instance, titled in Chinese.
+    assert [item.targets[0].instance_id for item in draft.bindings] == ["effect"] * len(draft.bindings)
+    assert all(properties[item.name]["title"] for item in draft.bindings)
+    assert draft.effect["kind"] == "text" and draft.text is None
+    again, _ = build(restore_files(draft, draft.default_parameters), requested)
+    assert again.default_parameters == draft.default_parameters
+
+
+@needs_bundler
+@pytest.mark.parametrize("kind", ["filter_overlay", "video_overlay", "transition_overlay"])
+def test_other_kinds_start_from_their_own_required_parameters(kind):
+    """滤镜、视频特效与转场的起始工程铺满画布，并已带上各自分类的必备样式参数。"""
+    draft, notes = build(starter_files(kind, set(), "Noto Sans CJK SC"))
+    assert notes == [] and draft.kind == kind
+    required = {"filter_overlay": {"intensity", "tintColor"}}.get(kind, {"color", "speed"})
+    assert required <= set(draft.parameter_schema["properties"])
+    assert draft.instances[0].layout.width == 1080 and draft.instances[0].layout.height == 1920
+
+
+@needs_bundler
+def test_the_manifest_is_corrected_where_the_host_can_and_noted():
+    """宿主能安全修正的清单问题直接修正并写进说明：字体不在字体库、字重 500、行起点递减、样式数字没有上下界、颜色缺 pattern、示例关键词不在示例文字里、占用配置名。"""
+    files = starter_files("text", {"two_tier"}, "Noto Sans CJK SC")
+    data = manifest(files, text={"fonts": [{"family": "Comic Sans", "weight": 500}], "line_starts": [10, 5], "keywords": ["不存在"]})
+    data["params"] += [{"name": "glowStrength", "schema": {"type": "number"}, "default": 12, "title": "发光强度", "group": "发光"},
+                       {"name": "glowColor", "schema": {"type": "string"}, "default": "#FFAA00"},
+                       {"name": "fontSize", "schema": {"type": "number", "minimum": 1, "maximum": 2}, "default": 1}]
+    draft, notes = assemble({**files, MANIFEST: json.dumps(data, ensure_ascii=False)}, fonts=LIBRARY, requested=set(), duration=150)
+    values, properties = draft.default_parameters, draft.parameter_schema["properties"]
+    assert values["line1FontFamily"] == values["line2FontFamily"] == "Noto Sans CJK SC"
+    assert values["line1FontWeight"] == values["line2FontWeight"] == 400
+    assert values["lineStartFrames"] == [0, 5]
+    assert (properties["glowStrength"]["minimum"], properties["glowStrength"]["maximum"]) == (0, 24)
+    assert properties["glowStrength"]["x-imv-group"] == "发光"
+    assert properties["glowColor"]["pattern"].startswith("^#") and properties["glowColor"]["title"] == "glowColor"
+    # fontSize stays the host's configuration parameter.
+    assert properties["fontSize"]["minimum"] == 24
+    assert draft.effect["text"]["keywords"] == []
+    for expected in ("one per line", "'Comic Sans' is not in the font library", "weight 500 became 400", "line_starts became [0, 5]",
+                     "glowStrength got the range", "Sample keywords", "fontSize was left out"):
+        assert any(expected in note for note in notes), (expected, notes)
+
+
+@needs_bundler
+@pytest.mark.parametrize(("requested", "change", "field"), [
+    (set(), {"text": {"sample": "一\n二\n三"}}, "/text/sample"),
+    ({"two_tier"}, {"text": {"sample": "只有一行", "fonts": [{"family": "Noto Sans CJK SC"}]}}, "/text/sample"),
+    ({"bilingual"}, {"text": {"bilingual": False, "sample": "一行"}}, "/text/bilingual"),
+    (set(), {"text": {"bilingual": True, "sample": "中文\n还是中文"}}, "/text/sample"),
+])
+def test_a_sample_that_fits_no_shape_or_misses_a_switch_is_refused(requested, change, field):
+    """示例文字的行数对不上任何形状、缺用户打开的双栏或双语，或双语的第二行不是英文时才拒绝，并指出字段。"""
+    files = starter_files("text", requested, "Noto Sans CJK SC")
+    with pytest.raises(ToolFault) as caught:
+        build(files, requested, **change)
+    assert caught.value.error.field == field
+
+
+def test_manifest_errors_name_the_json_position_or_the_field():
+    """清单不是 JSON 时给出行列；结构不符时给出 JSON Pointer。"""
+    with pytest.raises(ToolFault, match="line 1, column 2"):
+        parse_manifest("{oops")
+    with pytest.raises(ToolFault) as caught:
+        parse_manifest(json.dumps({"kind": "text", "description": "x", "layout": {"x": 0, "y": 0, "width": 10, "height": 10}, "text": {"sample": "a"}}))
+    assert caught.value.error.field == "/text/fonts"
+
+
+@needs_bundler
+def test_contract_probes_cover_content_keywords_lines_size_and_every_style_parameter():
+    """契约探针：用同形状的另一套文字检查注入内容，用首个示例关键词检查六项关键词样式，所有行同时出现时检查中间帧，并把每个样式参数与关键词字效开关取两端。"""
+    draft, _ = build(starter_files("text", {"two_tier", "bilingual", "keyword_effect"}, "Noto Sans CJK SC"), {"two_tier", "bilingual", "keyword_effect"})
+    spec = contract_probes(draft)
+    assert spec["probe_lines"] == ["注入的第1行文字", "Injected line 2", "注入的第3行文字", "Injected line 4"]
+    assert spec["probe"] == {"text": "注入的第1行文字\n注入的第3行文字", "textEn": "Injected line 2\nInjected line 4"}
+    assert spec["lines"] == ["示例文字一", "Sample text one", "示例文字二", "Sample text two"]
+    assert spec["starts"] == [0, 0, 0, 0] and spec["keyword"] == "示例"
+    assert spec["font_size"] == {"max": 96.0, "min": 48}
+    assert [item["name"] for item in spec["wiring"]] == ["line1Color", "line2Color", "line3Color", "line4Color", "keywordEffectColor", "keywordEffect"]
+    assert spec["base"]["keywords"] == ["示例"]
+
+
+def subject(x, y=500.0, opacity=1.0, revealed=1.0, width=400.0, name="line 2", text="马上出发"):
+    """One measured line, as the validation worker reports it."""
+    return {"name": name, "text": text, "x": x, "y": y, "width": width, "opacity": opacity, "revealed": revealed}
+
+
+def test_motion_facts_say_the_direction_a_line_really_enters_from():
+    """运动事实直接说出方向：相对中间帧的静止位置，起点在右就是 right，在下方就是 below；不靠看图或读代码推断。"""
+    trace = {"3": [subject(1240.0, opacity=0.5)], "9": [subject(800.0)], "27": [subject(540.0)], "74": [subject(540.0)], "146": [subject(540.0, opacity=0.2)]}
+    (fact,) = motion_facts(trace, 30, 74)
+    assert "first painted at frame 3 (0.10 s)" in fact and "700 px to the right of its resting position" in fact and "reaching rest by frame 27" in fact
+    assert "opacity 0.50 rising to 1.00" in fact and "fades to opacity 0.20 by frame 146" in fact
+    (below,) = motion_facts({"0": [subject(540.0, y=620.0)], "74": [subject(540.0)]}, 30, 74)
+    assert "120 px below" in below
+    (left,) = motion_facts({"0": [subject(-160.0)], "74": [subject(540.0)]}, 30, 74)
+    assert "700 px to the left" in left
+
+
+def test_motion_facts_cover_typing_a_still_line_and_text_never_painted():
+    """逐字显现说出已绘制的比例；静止的行说明就在静止位置；从未绘制的文字直接指出。每个主体（行、关键词）各一句。"""
+    typing, keyword = motion_facts({"0": [subject(540.0, revealed=0.25), subject(300.0, name="keyword 1", text="马上")], "74": [subject(540.0), subject(300.0, name="keyword 1", text="马上")]}, 30, 74)
+    assert "25% of its characters painted" in typing and keyword.startswith("keyword 1") and "at its resting position" in keyword
+    (hidden,) = motion_facts({"74": [{**subject(0.0), "x": None, "y": None, "revealed": 0, "opacity": 0}]}, 30, 74)
+    assert hidden == "line 2: never painted."
+
+
+def shot(folder, frame, x=None, y=500, brightness=255):
+    """A trial shot on neutral gray: a white block at (x, y), or nothing."""
+    image = Image.new("RGB", (720, 640), (128, 128, 128))
+    if x is not None:
+        image.paste((brightness, brightness, brightness), (x, y, x + 120, y + 40))
+    path = folder / f"frame-{frame}.png"
+    image.save(path)
+    return path
+
+
+FAST_ENTRANCE = SimpleNamespace(composition=SimpleNamespace(fps=30, duration_frames=150), default_parameters={})
+
+
+def test_keyframes_crowd_where_the_picture_changes(tmp_path):
+    """一段 0.6 秒的快速入场后长时间停留：关键帧集中在入场期间，能看出运动方向；中间帧一定保留，相邻至少隔 3 帧，空白帧不要，总数有上限。"""
+    images = {}
+    for frame in range(0, 150, 3):
+        images[frame] = shot(tmp_path, frame, None) if frame == 0 else shot(tmp_path, frame, max(0, 300 - frame * 20) + 200)
+    picked = keyframes(images, FAST_ENTRANCE)
+    frames = [frame for frame, _label in picked]
+    assert 0 not in frames and 74 not in frames and 75 in frames and frames[0] == 3
+    assert len(frames) <= 8 and all(after - before >= 3 for before, after in zip(frames, frames[1:]))
+    assert sum(frame <= 15 for frame in frames) >= 4
+    assert dict(picked)[75].startswith("middle") and "s" in dict(picked)[3]
+
+
+def test_a_pulsing_glow_does_not_take_an_entrances_frames(tmp_path):
+    """停留时持续的微弱变化（呼吸发光）远小于真正的入场，不抢入场的关键帧。"""
+    images = {}
+    for frame in range(0, 150, 3):
+        if frame <= 18:
+            images[frame] = shot(tmp_path, frame, 500 - frame * 15)
+        else:
+            images[frame] = shot(tmp_path, frame, 230, brightness=240 if frame % 2 else 255)
+    frames = [frame for frame, _label in keyframes(images, FAST_ENTRANCE)]
+    assert sum(frame <= 18 for frame in frames) >= 5
+
+
+def test_a_still_effect_only_gets_its_fixed_frames(tmp_path):
+    """静止的效果只留首尾可见帧与中间帧，不凑满名额；什么都没画时只留中间帧。"""
+    images = {frame: shot(tmp_path, frame, 200) for frame in range(0, 150, 3)}
+    assert [frame for frame, _label in keyframes(images, FAST_ENTRANCE)] == [0, 75, 147]
+    blank = {frame: shot(tmp_path, frame) for frame in range(0, 150, 3)}
+    assert [frame for frame, _label in keyframes(blank, FAST_ENTRANCE)] == [75]
+
+
+@needs_bundler
+def test_trial_shots_are_dense_around_motion_and_cover_the_middle():
+    """试拍在开头、结尾和后出现的行之后密集，其余时间稀疏，且一定包含总线定格短字幕的中间帧。"""
+    draft, _ = build(starter_files("text", {"two_tier"}, "Noto Sans CJK SC"), {"two_tier"}, duration=900, text={"line_starts": [0, 300]})
+    frames = trial_frames(draft)
+    assert {0, 3, 42, 899, 450, 303, 342} <= set(frames) and len(frames) < 70
+    assert frames == sorted(set(frames)) and max(frames) == 899
+
+
+# ---- session tools -------------------------------------------------------------------------------------------------
+
+
+def passing_report(duration=150):
+    """A render report in which every check passed."""
+    return RenderValidationReport(passed=True, composition=Composition(width=1080, height=1920, fps=30, duration_frames=duration),
+                                  code_validation=CodeValidationReport(passed=True, diagnostics=[]),
+                                  checks=[CheckResult(name="default_render", status="passed")], tests=[], custom_tests_executed=0)
+
+
+def stub_checks(current, report=None):
+    """Replace a session's isolated checks: captures write frames, renders answer ``report`` and record their options."""
+    current.calls = []
+
+    async def valid(_component):
+        """Code validation passes for every source."""
+        return CodeValidationReport(passed=True, diagnostics=[])
+
+    async def mounted(request, capture=None, **options):
+        """Record the options, write the captured frames and answer the configured report."""
+        current.calls.append(options)
+        if capture is not None:
+            capture.directory.mkdir(parents=True, exist_ok=True)
+            for frame in capture.frames:
+                Image.new("RGBA", (8, 8), (255, 255, 255, 255)).save(capture.directory / f"frame-{frame}.png")
+        return report or passing_report(request.duration_frames)
+
+    current.validate_code = valid
+    current.validate_render = mounted
+    current.validator = SimpleNamespace(validate_render=mounted)
+    return current
+
+
+def free_session(tmp_path, intent=None, spec=None, base=None, report=None):
+    """A free-form session whose isolated checks are replaced by `stub_checks`."""
+    current = ToolSession(SimpleNamespace(settings=Settings(_env_file=None, data_dir=tmp_path), renderer=None), spec, base, Budget(),
+                          tmp_path / "run", [], lambda *_: None, intent or {"original_request": {"description": "demo"}})
+    return stub_checks(current, report)
+
+
+@needs_bundler
+@pytest.mark.parametrize("duration", [149, 150])
+def test_save_runs_the_whole_gate_and_attaches_the_acceptance_sheet(tmp_path, duration):
+    """保存走完整门禁，奇偶预览长度的观察图都取总线实际定格帧；通过后记下候选与等待下一轮看过的联系表。"""
+    current = free_session(tmp_path, intent={"original_request": {"description": "demo", "composition": {"duration_in_frames": duration}}})
+    saved = asyncio.run(current.execute("effect.save", {}, available()))
+    options = current.calls[-1]
+    assert options["transparency"] is True and options["text_fit"] is True and options["lengths"] == [45, 3600]
+    assert options["text_fit_parameters"] == {} and options["effect_contract"]["keyword"] == "示例"
+    assert current.latest_sprite_id == saved["sprite_id"] and current.pending_sheet == saved["sprite_id"]
+    # By default only the middle frame is looked at; motion comes from measurements, which the stub does not write.
+    assert [frame["frame"] for frame in saved["review"]["frames"]] == [duration // 2] and saved["motion"] == []
+    assert len(current.observations) == len(saved["review"]["frames"])
+    assert current.saved_hash == current.workspace_hash() == current.checked_hash
+
+
+@needs_bundler
+@pytest.mark.parametrize("kind", ["number", "integer"])
+@pytest.mark.parametrize("bounds", [{}, {"minimum": 1}, {"maximum": 3}, {"minimum": 1, "maximum": 3}])
+def test_numeric_enums_preserve_optional_bounds_when_checked_and_saved(tmp_path, kind, bounds):
+    """合法数字枚举可不带边界或只带单侧边界；检查、保存保留 Schema 和有效默认值，不误报校验环境不可用。"""
+    current = free_session(tmp_path)
+    data = manifest(current.files)
+    schema = {"type": kind, "enum": [1, 2, 3], **bounds}
+    data["params"].append({"name": "glowSize", "schema": schema, "default": 2})
+    current.files[MANIFEST] = json.dumps(data)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] and not checked["notes"], checked
+    receipt = asyncio.run(current.execute("effect.save", {}, available()))
+    saved = current.saved_sprite(receipt["sprite_id"])
+    assert saved.parameter_schema["properties"]["glowSize"] == {**schema, "title": "glowSize"}
+    assert saved.default_parameters["glowSize"] == 2
+
+
+@needs_bundler
+def test_sampling_advisory_reaches_check_and_save_without_blocking(tmp_path):
+    """参数采样的提示进入检查和保存回执，仍保存候选和观察图供用户继续查看调整。"""
+    note = "No visible change was observed for decorationAngle; sampling is advisory."
+    report = passing_report().model_copy(update={"checks": [CheckResult(name="effect_contract", status="passed", message=note)]})
+    current = free_session(tmp_path, report=report)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] and checked["problems"] == [] and checked["notes"] == [note]
+    saved = asyncio.run(current.execute("effect.save", {}, available()))
+    assert saved["notes"] == [note] and saved["review"]["frames"]
+    assert current.latest_sprite_id == saved["sprite_id"]
+
+
+@needs_bundler
+def test_a_failed_check_lists_the_problems_and_save_refuses(tmp_path):
+    """检查不通过时 validate_check 列出每个问题（不算工具错误），effect_save 拒绝保存并给出同样的问题。"""
+    failing = passing_report().model_copy(update={"passed": False, "checks": [CheckResult(name="effect_contract", status="failed", message="injected text is missing")]})
+    current = free_session(tmp_path, report=failing)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] is False and checked["problems"] == [{"check": "effect_contract", "message": "injected text is missing"}]
+    with pytest.raises(ToolFault, match="injected text is missing") as caught:
+        asyncio.run(current.execute("effect.save", {}, available()))
+    assert caught.value.error.code == "CODE_VALIDATION_FAILED" and current.latest_sprite_id is None
+
+
+@needs_bundler
+def test_workspace_edits_are_exact_and_a_broken_manifest_is_not_written(tmp_path):
+    """工作区精确替换报告删改行数；写入解析不了的清单时文件保持原样；检查把清单问题当作问题返回。"""
+    current = free_session(tmp_path)
+    before = current.files[MANIFEST]
+    edited = asyncio.run(current.execute("workspace.edit", WorkspaceEditInput(path="Effect.tsx", edits=[{"old_str": "props.color", "new_str": "props.color ?? \"#FFFFFF\""}]), available()))
+    assert (edited["lines_removed"], edited["lines_added"]) == (1, 1)
+    with pytest.raises(ToolFault):
+        asyncio.run(current.execute("workspace.write", {"path": "effect.json", "content": "{"}, available()))
+    assert current.files[MANIFEST] == before
+    current.files[MANIFEST] = json.dumps(manifest(current.files, text={"sample": "一\n二\n三"}), ensure_ascii=False)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["problems"][0]["check"] == "manifest"
+
+
+def test_workspace_reads_report_eof_and_refuse_out_of_range_offsets(tmp_path):
+    """末尾读取返回空页且不再给续读位置；越界是可恢复工具错误，不改变工作区。"""
+    current = free_session(tmp_path)
+    content = current.files[CODE]
+    result = asyncio.run(current.execute("workspace.read", {"path": CODE, "offset": len(content)}, available()))
+    assert result["content"] == "" and "next_offset" not in result
+    with pytest.raises(ToolFault, match="offset exceeds") as caught:
+        asyncio.run(current.execute("workspace.read", {"path": CODE, "offset": len(content) + 1}, available()))
+    assert caught.value.error.field == "/offset" and current.files[CODE] == content
+
+
+
+
+@needs_bundler
+def test_an_edit_can_go_back_to_an_earlier_version(tmp_path):
+    """「回到第 n 版」：快照列出作品的自由组件版本，workspace.read 读得到那一版的文件（含那一版用户调过的参数）；更早的组合版本和不存在的序号不可读。"""
+    draft, _ = build(starter_files("text", set(), "Noto Sans CJK SC"), description="第一版白字")
+    version = lambda number, sprite, values: SimpleNamespace(number=number, spec=SimpleNamespace(sprite=sprite), candidate=SimpleNamespace(default_config=values))
+    versions = [version(2, draft, {**draft.default_parameters, "color": "#FF0000"})]
+    current = ToolSession(SimpleNamespace(settings=Settings(_env_file=None, data_dir=tmp_path), renderer=None), None, None, Budget(), tmp_path / "run", [], lambda *_: None,
+                          {"original_request": {"description": "x"}}, versions=versions)
+    assert current.snapshot()["versions"] == [{"number": 2, "description": "第一版白字"}]
+    manifest_file = asyncio.run(current.execute("workspace.read", {"path": "effect.json", "version": 2}, available()))
+    assert {item["name"]: item["default"] for item in json.loads(manifest_file["content"])["params"]}["color"] == "#FF0000"
+    code_file = asyncio.run(current.execute("workspace.read", {"path": "Effect.tsx", "version": 2}, available()))
+    assert code_file["content"] == draft.instances[0].preset.code
+    with pytest.raises(ToolFault, match=r"\[2\]"):
+        asyncio.run(current.execute("workspace.read", {"path": "Effect.tsx", "version": 1}, available()))
+
+
+def test_the_runtime_source_can_be_read_but_not_written(tmp_path):
+    """Agent 可以读内容运行时 imv 的源码了解类型与实现（像读库的源码），但不能写它。"""
+    current = free_session(tmp_path)
+    shown = asyncio.run(current.execute("workspace.read", {"path": "imv-runtime.tsx"}, available()))
+    assert "export function useTextContent" in shown["content"]
+    with pytest.raises(ToolFault):
+        asyncio.run(current.execute("workspace.write", {"path": "imv-runtime.tsx", "content": "x"}, available()))
+
+
+@needs_bundler
+def test_previews_render_variants_without_caching_and_are_limited(tmp_path):
+    """预览可选长文字与不同长度，只截帧不缓存成验收报告；次数用完后拒绝并提示改用检查与保存。"""
+    current = free_session(tmp_path)
+    shown = asyncio.run(current.execute("preview.render", {"variant": "short", "frames": [10, 99]}, available()))
+    assert shown["duration_frames"] == 45 and [item["frame"] for item in shown["frames"]] == [10, 44]
+    assert current.validation_reports == {}
+    current.renders_left = 0
+    with pytest.raises(ToolFault, match="previews"):
+        asyncio.run(current.execute("preview.render", {}, available()))
+
+
+@needs_bundler
+@pytest.mark.parametrize("shape", list(SHAPES))
+def test_long_preview_preserves_line_shape_within_the_text_limit(tmp_path, shape):
+    """长文字预览将换行计入 100 字，单行、双栏与双语都保留原行数，实际截帧参数符合 Schema。"""
+    current = free_session(tmp_path, intent={"original_request": {"description": "x", **{key: True for key in SHAPES[shape]}}})
+    original_render = current.validator.validate_render
+    mounted = []
+
+    async def checked_render(request, capture=None, **options):
+        """Validate the same merged values mounted for frame capture before returning fixture images."""
+        values = {**request.component.default_parameters, **capture.parameters}
+        validate_parameters(request.component.parameter_schema, values)
+        mounted.append((values, request.component.default_parameters))
+        return await original_render(request, capture=capture, **options)
+
+    current.validator.validate_render = checked_render
+    files = dict(current.files)
+    shown = asyncio.run(current.execute("preview.render", {"variant": "long", "frames": [75]}, available()))
+    values, defaults = mounted[0]
+    fields = [key for key in ("text", "textEn") if key in defaults]
+    assert sum(len(values[key]) for key in fields) == 100
+    for key in fields:
+        assert len(values[key].split("\n")) == len(defaults[key].split("\n"))
+        assert all(line for line in values[key].split("\n"))
+    assert shown["frames"] and current.files == files
+    assert current.validation_reports == {}
+
+
+@needs_bundler
+def test_each_observation_message_numbers_its_own_images_from_one(monkeypatch, tmp_path):
+    """连续保存和预览时，每份回执与随后那条观察消息都使用消息内的 1..n 编号，不沿用参考图或上一条观察消息的序号。"""
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(reference)
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "x"}),
+        call("save-1", "effect.save", {}),
+        call("read-1", "workspace.read", {"path": "effect.json"}),
+        call("preview-1", "preview.render", {"frames": [10, 20]}),
+        call("read-2", "workspace.read", {"path": "effect.json"}),
+    ])
+    run.session.images = [reference]
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+
+    window = harness.windows[-1]
+    receipts, observations = [], []
+    for message in window:
+        if message.get("role") == "tool":
+            result = json.loads(message["content"])
+            frames = result.get("data", {}).get("frames") or result.get("data", {}).get("review", {}).get("frames", [])
+            if result.get("ok") and frames:
+                receipts.append([frame["image"] for frame in frames])
+        elif message.get("role") == "user" and isinstance(message.get("content"), list):
+            text = message["content"][0].get("text", "")
+            if text.startswith("Your latest observations"):
+                observations.append(message)
+    assert receipts == [[1], [1, 2]]
+    assert len(observations) == 2
+    for message, count in zip(observations, (1, 2)):
+        text = message["content"][0]["text"]
+        assert "image 1:" in text
+        if count == 2:
+            assert "image 2:" in text
+        assert len([item for item in message["content"] if item.get("type") == "image_path"]) == count
+
+
+def test_image_inspect_enlarges_a_region_of_a_reference(tmp_path):
+    """放大参考图的局部：裁出比例区域并放大，作为下一轮的观察图；区域越界时拒绝。"""
+    reference = tmp_path / "ref.png"
+    Image.new("RGB", (400, 800), (10, 20, 30)).save(reference)
+    current = free_session(tmp_path)
+    current.images = [reference]
+    shown = asyncio.run(current.execute("image.inspect", {"image": 1, "x": 0.5, "y": 0.5, "width": 0.25, "height": 0.1}, available()))
+    assert (shown["image"], shown["source_width"], shown["source_height"]) == (1, 400, 800)
+    assert max(shown["width"], shown["height"]) == 400
+    with pytest.raises(ToolFault):
+        asyncio.run(current.execute("image.inspect", {"image": 2}, available()))
+
+
+@needs_bundler
+def test_an_edit_restores_the_accepted_files_with_the_users_parameter_changes(tmp_path):
+    """修改自由组件版本：工作区从基线的源码与清单还原，用户之后手动调过的参数写回清单的默认值。"""
+    draft, _ = build(starter_files("text", {"two_tier"}, "Noto Sans CJK SC"), {"two_tier"})
+    values = {**draft.default_parameters, "line2Color": "#FF0000", "fontSize": 120, "text": "新的引导\n新的主标题"}
+    current = free_session(tmp_path, spec=SimpleNamespace(sprite=draft, sprite_kind="text"), base=SimpleNamespace(default_config=values))
+    data = json.loads(current.files[MANIFEST])
+    assert data["text"]["sample"] == "新的引导\n新的主标题" and data["text"]["font_size"] == 120
+    assert {item["name"]: item["default"] for item in data["params"]}["line2Color"] == "#FF0000"
+    assert current.files[CODE] == draft.instances[0].preset.code
+
+
+@needs_bundler
+def test_an_edit_preserves_a_disabled_keyword_effect_and_its_controls(tmp_path):
+    """用户关闭关键词字效后继续编辑，默认值仍关闭，但关键词外观能力与开关仍可用，源码保持原样。"""
+    requested = {"keyword_effect"}
+    draft, _ = build(starter_files("text", requested, LIBRARY[0]), requested)
+    values = {**draft.default_parameters, "keywordEffect": False}
+    current = free_session(tmp_path, spec=SimpleNamespace(sprite=draft, sprite_kind="text"), base=SimpleNamespace(default_config=values))
+    again, _ = build(current.files, requested)
+    assert again.default_parameters == values
+    assert again.parameter_schema == draft.parameter_schema
+    assert again.effect["text"]["keyword_look"] is True and again.effect["text"]["keyword_enabled"] is False
+    assert current.files[CODE] == draft.instances[0].preset.code
+    saved = asyncio.run(current.execute("effect.save", {}, available()))
+    assert current.saved_sprites[saved["sprite_id"]].default_parameters == values
+
+
+@needs_bundler
+@pytest.mark.parametrize("shape", ["two tiers", "two bilingual groups with a keyword effect"])
+def test_an_edit_preserves_each_font_expanded_from_a_short_manifest(tmp_path, shape):
+    """旧清单只有一个字体条目时，继续编辑仍完整保留宿主扩展的每行字体、字重与比例，行与行不共享可变条目。"""
+    requested = SHAPES[shape]
+    draft, _ = build(starter_files("text", requested, LIBRARY[0]), requested, text={"fonts": [{"family": LIBRARY[0]}]})
+    assert len(draft.effect["text"]["fonts"]) == 1
+    values = dict(draft.default_parameters)
+    count = len(values["lineStartFrames"])
+    for index in range(1, count + 1):
+        values.update({f"line{index}FontFamily": LIBRARY[index % 2], f"line{index}FontWeight": 700 if index % 2 else 400,
+                       f"line{index}SizeRatio": 0.5 + index * 0.25})
+    current = free_session(tmp_path, spec=SimpleNamespace(sprite=draft, sprite_kind="text"), base=SimpleNamespace(default_config=values))
+    again, _ = build(current.files, requested)
+    assert again.default_parameters == values
+    assert len(again.effect["text"]["fonts"]) == count
+    assert len(draft.effect["text"]["fonts"]) == 1
+    assert current.files[CODE] == draft.instances[0].preset.code
+
+
+# ---- three-layer loop ----------------------------------------------------------------------------------------------
+
+
+class ScriptEnd(Exception):
+    """The scripted model turns ran out."""
+
+
+class FakeHarness:
+    """Scripted model turns over the real session; records each layer's system prompt, options and window."""
+
+    def __init__(self, responses, tmp_path):
+        """Record scripted model requests and host publications without external calls."""
+        self.responses = iter(responses)
+        self.roles, self.systems, self.options, self.windows, self.tools = [], [], [], [], []
+        self.published = []
+        self.fonts = SimpleNamespace(guide=lambda: "Font library")
+        self.settings = SimpleNamespace(max_steps=8, max_tooluse=6, enforce_no_progress=False, max_no_progress_turns=6)
+        self.renderer = None
+
+    async def _turn(self, system, context, tools, _budget, images, *, phase, **options):
+        """Return the next scripted reply for one model role."""
+        self.roles.append(phase)
+        self.systems.append(system)
+        self.tools.append(tools)
+        self.options.append({**options, "images": list(images)})
+        self.windows.append(context.messages())
+        try:
+            return next(self.responses)
+        except StopIteration:
+            raise ScriptEnd from None
+
+    async def finalize_sprite(self, _session, identifier, _budget, _directory):
+        """Publish exactly the saved candidate."""
+        self.published.append(identifier)
+        return {"published": identifier}
+
+
+def call(identifier, name, arguments):
+    """A provider function call."""
+    return AssistantMessage(tool_calls=[{"id": identifier, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}])
+
+
+def report(identifier, status="step_done", summary="done", **extra):
+    """The Executor's tools_report_step call."""
+    return call(identifier, "tools_report_step", {"status": status, "summary": summary, **extra})
+
+
+def free_run(monkeypatch, tmp_path, responses, intent=None):
+    """An AgentRun on the free-form path with the session's isolated checks replaced."""
+    harness = FakeHarness(responses, tmp_path)
+    original = ToolSession.__init__
+
+    def init(self, *args, **kwargs):
+        """Build the real session, then replace its isolated checks as `free_session` does."""
+        original(self, *args, **kwargs)
+        stub_checks(self)
+
+    monkeypatch.setattr(ToolSession, "__init__", init)
+    budget = Budget()
+    run = AgentRun(harness, None, budget, tmp_path, [], lambda *_: None, intent=intent or {"original_request": {"description": "金色标题"}})
+    return run, harness, budget
+
+
+@needs_bundler
+@pytest.mark.parametrize("completion", ["plan_tool", "plan_text", "outer_tool", "outer_text"])
+def test_completion_refuses_a_saved_candidate_after_the_files_change(monkeypatch, tmp_path, completion):
+    """各完成入口都拒绝保存后又改过的旧候选，保留工作区并给出重新保存的指引。"""
+    finish = (call("complete", "tools_plan_execute", {"action": "complete"}) if completion.endswith("tool") else
+              AssistantMessage(content=json.dumps({"status": "plan_done", "summary": "done"} if completion == "plan_text" else {"action": "complete"})))
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer", "tools_plan_execute", {"action": "delegate"}),
+        call("save", "effect_save", {}),
+        call("edit", "workspace_edit", {"path": MANIFEST, "edits": [{"old_str": "#FFFFFF", "new_str": "#FF0000"}]}),
+        report("blocked", status="blocked", summary="the edit needs saving"),
+        *([call("return", "tools_plan_execute", {"action": "stop"})] if completion.startswith("outer") else []),
+        finish,
+    ])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert harness.published == []
+    assert "files changed after the latest effect_save" in run.session.feedback[0]
+    assert "#FF0000" in run.session.files[MANIFEST]
+
+
+@needs_bundler
+def test_a_refused_completion_can_resume_save_and_publish_the_current_files(monkeypatch, tmp_path):
+    """完成被拒后可继续执行、重新保存并回看，最终只交付修改后的红字候选。"""
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer", "tools_plan_execute", {"action": "delegate"}),
+        call("save", "effect_save", {}),
+        call("edit", "workspace_edit", {"path": MANIFEST, "edits": [{"old_str": "#FFFFFF", "new_str": "#FF0000"}]}),
+        report("blocked", status="blocked", summary="needs saving"),
+        call("complete", "tools_plan_execute", {"action": "complete"}),
+        call("resume", "tools_plan_execute", {"action": "continue"}),
+        call("save-current", "effect_save", {}),
+        report("done"),
+    ])
+    result = asyncio.run(run.plan_execute())
+    assert harness.published == [result["published"]]
+    assert run.session.saved_sprites[result["published"]].default_parameters["color"] == "#FF0000"
+    assert run.session.saved_hash == run.session.workspace_hash()
+
+
+@needs_bundler
+@pytest.mark.parametrize("changed", [True, False])
+def test_budget_completion_only_publishes_an_unchanged_reviewed_save(monkeypatch, tmp_path, changed):
+    """额度耗尽仍可交付已回看的当前保存；工作区已改动时明确结束失败，不能悄悄交付旧版。"""
+    change = (call("edit", "workspace_edit", {"path": MANIFEST, "edits": [{"old_str": "#FFFFFF", "new_str": "#FF0000"}]})
+              if changed else call("read", "workspace_read", {"path": MANIFEST}))
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer", "tools_plan_execute", {"action": "delegate"}),
+        call("save", "effect_save", {}), change,
+        call("over-budget", "workspace_read", {"path": MANIFEST}),
+    ])
+    run.state.max_steps, run.state.max_tooluse = 1, 3
+    if changed:
+        with pytest.raises(ExecutionFailure, match="files changed") as caught:
+            asyncio.run(run.plan_execute())
+        assert caught.value.code == "tool_budget_exhausted"
+        assert harness.published == []
+    else:
+        result = asyncio.run(run.plan_execute())
+        assert harness.published == [result["published"]]
+
+
+@needs_bundler
+def test_publication_requires_the_latest_saves_middle_frame(monkeypatch, tmp_path):
+    """绕过步骤汇报也不能交付未回看的保存；中间帧进入执行层窗口后才可发布。"""
+    run, harness, _ = free_run(monkeypatch, tmp_path, [])
+    saved = asyncio.run(run.session.execute("effect.save", {}, available()))
+    with pytest.raises(ValueError, match="middle frame of the latest save"):
+        asyncio.run(run._finalize_outer(saved["sprite_id"]))
+    assert harness.published == []
+    run._prepare_executor_turn()
+    assert asyncio.run(run._finalize_outer(saved["sprite_id"])) == {"published": saved["sprite_id"]}
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_budget_trimming_keeps_the_free_handoff_and_references(monkeypatch, tmp_path, compact):
+    """首次交接与整体压缩后，真实 Provider 请求即使裁掉旧交换，也必须保留需求、步骤、文件与参考图。"""
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (8, 8)).save(reference)
+    run, _, _ = free_run(monkeypatch, tmp_path, [])
+    run.session.images = [reference]
+    transition, _, _ = run._outer_control(PlanAction(action="delegate"))
+    asyncio.run(run._switch(transition))
+    if compact:
+        run.executor_context.append([{"role": "user", "content": "x" * 130_000}])
+        run._prepare_executor_turn()
+    run.executor_context.append([{"role": "user", "content": "old observation " + "x" * 40_000}])
+    run.executor_context.append([{"role": "user", "content": "latest observation"}])
+    sent = []
+
+    def respond(request):
+        """记录真实请求体，用内存传输返回模型响应，不访问网络。"""
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"usage": {"total_tokens": 1}, "choices": [
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}},
+        ]})
+
+    provider = Provider(Settings(_env_file=None, actor_model="offline", actor_api_key=SecretStr("fixture"),
+                                 enforce_model_budget=True, max_tokens=15_000, max_output_tokens=512),
+                        transport=httpx.MockTransport(respond))
+    snapshot, _ = run.snapshot()
+    asyncio.run(provider.turn("rules", run.executor_context, [], Budget(), data=json.dumps(snapshot)))
+    contents = [item["content"] for item in sent[0]["messages"]]
+    assert "latest observation" in contents
+    assert not any(isinstance(item, str) and "old observation" in item for item in contents)
+    assert any(isinstance(item, str) and "user_intent" in item and "Effect.tsx" in item for item in contents)
+    assert any(isinstance(item, list) and any(part["type"] == "image_url" for part in item) for item in contents)
+
+
+@needs_bundler
+def test_large_unicode_source_survives_handoffs_and_can_be_read_in_full(monkeypatch, tmp_path):
+    """合法大源码在步骤交接与压缩时保留在工作区，并能逐页无损读取，JSON 转义和 UTF-8 都不会撑爆窗口。"""
+    run, _, _ = free_run(monkeypatch, tmp_path, [])
+    source = run.session.files[CODE] + "\n/*" + '字😀"\\\n' * 30_000 + "*/\n"
+    run.session.files[CODE] = source
+    draft, _ = build(run.session.files)
+    assert len(draft.code) < 100_000 and len(source) < 200_000
+    transition, _, _ = run._outer_control(PlanAction(action="delegate"))
+    asyncio.run(run._switch(transition))
+    run.executor_context.append([{"role": "user", "content": "x" * 130_000}])
+    run._prepare_executor_turn()
+    assert run.session.files[CODE] == source
+    assert len(run.executor_context.serialize().encode()) < 120_000
+    handoff = json.loads(run.executor_context.messages()[0]["content"].split("\n", 1)[1])["detail"]
+    assert CODE in handoff["files_omitted"] and "workspace_read" in handoff["files_omitted"][CODE]
+    chunks, offset = [], 0
+    for index in range(128):
+        response = call(f"read-{index}", "workspace_read", {"path": CODE, "offset": offset})
+        data = asyncio.run(run.session.execute("workspace.read", {"path": CODE, "offset": offset}, available()))
+        window = StepWindow()
+        window.append([response.wire(), {"role": "tool", "tool_call_id": f"read-{index}",
+                                        "content": json.dumps({"ok": True, "data": data}, ensure_ascii=False)}])
+        assert len(window.serialize().encode()) < 40_000
+        chunks.append(data["content"])
+        if "next_offset" not in data:
+            break
+        assert data["next_offset"] > offset
+        offset = data["next_offset"]
+    else:
+        pytest.fail("workspace.read did not reach the end of the file")
+    assert "".join(chunks) == source
+
+
+@needs_bundler
+def test_every_executor_request_extends_the_previous_one_so_the_prefix_cache_hits(monkeypatch, tmp_path):
+    """自由组件路径：委派后宿主建立一步计划，执行层改代码、检查、保存并看过联系表再汇报，宿主发布最新候选。缓存命中靠前缀不变：每次请求的系统提示与工具列表
+    完全相同，窗口是上一次窗口的严格延伸（超过八组也不淘汰），请求与文件只在窗口开头给一次，尾部只有每轮变化的状态，图片不在尾部重发；最后的汇报成为给用户的回复。"""
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(reference)
+    edit = lambda identifier: call(identifier, "workspace_edit", {"path": "Effect.tsx", "edits": [{"old_str": "props.color ?? ", "new_str": "props.color ?? "}]})
+    run, harness, budget = free_run(monkeypatch, tmp_path, [
+        call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "金色粗体标题，逐字上浮"}),
+        *[call(f"read-{index}", "workspace_read", {"path": "effect.json"}) for index in range(9)],
+        edit("exec-1"),
+        call("exec-2", "validate_check", {}),
+        call("exec-3", "effect_save", {}),
+        report("exec-4", summary="金色粗体标题，逐字上浮入场", choices=["把「逐字」理解为每个字依次上浮"], suggestions=["改成从左滑入", " "]),
+    ])
+    run.session.images = [reference]
+    guides = []
+
+    def guide():
+        """模拟持续变化的字体库，只有打开窗口时读取，不能让每次系统提示随之变化。"""
+        guides.append(True)
+        return f"FONT_LIBRARY_MARKER_{len(guides)}"
+
+    harness.fonts.guide = guide
+    assert asyncio.run(run.plan_execute()) == {"published": run.session.latest_sprite_id}
+    assert [step.id for step in run.state.plan.steps] == ["build"]
+    executor = [index for index, role in enumerate(harness.roles) if role == "executor"]
+    assert harness.options[0]["detail"] == "low"
+    assert len({harness.systems[index] for index in executor}) == 1 and "Current host-owned" not in harness.systems[executor[0]]
+    assert len({json.dumps(harness.tools[index]) for index in executor}) == 1
+    for before, after in zip(executor, executor[1:]):
+        assert harness.windows[after][:len(harness.windows[before])] == harness.windows[before]
+    assert len(harness.windows[executor[-1]]) > 16
+    # The request and the files come once, first; the tail is only what changes and no image is re-sent after the window.
+    first = harness.windows[executor[0]]
+    handoff = json.loads(first[0]["content"].split("\n", 1)[1])["detail"]
+    assert guides == [True] and handoff["font_library"] == "FONT_LIBRARY_MARKER_1"
+    assert all("FONT_LIBRARY_MARKER" not in harness.systems[index] for index in executor)
+    assert set(handoff["files"]) == {CODE, MANIFEST} and handoff["outer_brief"] == "金色粗体标题，逐字上浮" and handoff["current_step"]["id"] == "build"
+    assert handoff["user_intent"]["original_request"]["description"] == "金色标题"
+    tail = harness.options[executor[-1]]["data"]
+    assert len(tail) < 500 and "original_request" not in tail and "useTextContent" not in tail
+    assert all(harness.options[index]["images"] == [] for index in executor)
+    images = lambda window: [item for message in window if isinstance(message["content"], list) for item in message["content"] if item["type"] == "image_path"]
+    assert [item["path"] for item in images(first)] == [str(reference)]
+    # The turn after the save has the acceptance sheet in the window, once.
+    sheet = 1
+    assert len(images(harness.windows[executor[-1]])) == 1 + sheet and run.session.sheet_seen == run.session.latest_sprite_id
+    assert budget.reply == {"summary": "金色粗体标题，逐字上浮入场", "choices": ["把「逐字」理解为每个字依次上浮"], "suggestions": ["改成从左滑入"]}
+
+
+@needs_bundler
+def test_an_outgrown_window_is_replaced_once_with_the_current_files(monkeypatch, tmp_path):
+    """窗口超过预算时才整体压缩一次：换成带当前文件的交接与最新的小交换，之后继续只追加，不会每轮再压缩（那样缓存每轮失效）。"""
+    monkeypatch.setattr("server.remotion_templates.agent.WINDOW_BYTES", 30_000)
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "x"}),
+        call("exec-1", "workspace_write", {"path": "Effect.tsx", "content": "// 新代码\n" + "x" * 40_000}),
+        call("exec-2", "workspace_read", {"path": "effect.json"}),
+        call("exec-3", "workspace_read", {"path": "effect.json"}),
+        call("exec-4", "workspace_read", {"path": "effect.json"}),
+    ])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    executor = [index for index, role in enumerate(harness.roles) if role == "executor"]
+    compacted = harness.windows[executor[1]]
+    assert compacted[:len(harness.windows[executor[0]])] != harness.windows[executor[0]]
+    assert json.loads(compacted[0]["content"].split("\n", 1)[1])["detail"]["files"][CODE].startswith("// 新代码")
+    # The whole-file write is not kept; the files are in the handoff.
+    assert "x" * 1000 not in json.dumps(compacted[1:], ensure_ascii=False)
+    # Even with a handoff over the budget the next turns extend the window instead of compacting again.
+    for before, after in zip(executor[1:], executor[2:]):
+        assert harness.windows[after][:len(harness.windows[before])] == harness.windows[before]
+
+
+@needs_bundler
+def test_a_step_without_saving_needs_a_passing_check_of_the_files_as_they_stand(monkeypatch, tmp_path):
+    """Plan 设计的只带工作区的步骤要求当前文件通过检查：没检查就汇报被拒绝，并指出下一步调用 validate_check。"""
+    steps = [{"id": "draft", "goal": "先写静态外观", "tool_modules": ["workspace"], "done_when": "检查通过"},
+             {"id": "finish", "goal": "保存", "tool_modules": ["effect"], "done_when": "已保存"}]
+    run, _harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer-1", "tools_plan_execute", {"action": "plan", "reason": "多段时间线"}),
+        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": {"goal": "简述", "steps": steps}}),
+        report("exec-1"),
+    ])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert "validate_check has not passed" in run.session.feedback[0]
+
+
+@needs_bundler
+@pytest.mark.parametrize("edit", [True, False])
+def test_the_plan_designs_an_edit_from_the_accepted_versions_frames(monkeypatch, tmp_path, edit):
+    """修改任务交给 Plan 时，Plan 也看到基线现在的验收联系表（标注为基线，排在参考图之后）；同一次渲染再给执行层，不重复渲染也不占预览次数。新作品没有基线帧。"""
+    draft, _ = build(starter_files("text", set(), "Noto Sans CJK SC"))
+    harness = FakeHarness([
+        call("outer-1", "tools_plan_execute", {"action": "plan", "reason": "改动涉及多处"}),
+        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": {"goal": "简述", "steps": [{"id": "fix", "goal": "改", "tool_modules": ["workspace", "effect"], "done_when": "已保存"}]}}),
+    ], tmp_path)
+    original = ToolSession.__init__
+    monkeypatch.setattr(ToolSession, "__init__", lambda self, *args, **kwargs: (original(self, *args, **kwargs), stub_checks(self))[0])
+    options = {"base": SimpleNamespace(default_config=draft.default_parameters)} if edit else {}
+    run = AgentRun(harness, SimpleNamespace(sprite=draft, sprite_kind="text") if edit else None, Budget(), tmp_path, [], lambda *_: None,
+                   intent={"original_request": {"description": "x"}, "instruction": "改", **({"accepted_base": {"name": "v1"}} if edit else {})}, **options)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    plan = harness.roles.index("plan")
+    shown = harness.options[plan]["images"]
+    if not edit:
+        assert shown == [] and "accepted_version_images" not in harness.options[plan]["data"]
+        return
+    assert shown == [path for path, _label in run.session.base_frames] and len(shown) == 1
+    assert shown[0].stem == "frame-75"
+    assert "accepted_version_images" in harness.options[plan]["data"]
+    assert len(run.session.calls) == 1 and run.session.renders_left == 12
+    # The Executor's first turn gets the same frames in its window.
+    assert [item["path"] for item in harness.windows[harness.roles.index("executor")][-1]["content"] if item["type"] == "image_path"] == [str(path) for path in shown]
+
+
+def test_a_failed_base_render_leaves_the_plan_working(tmp_path):
+    """基线帧渲染失败不影响修改任务：Plan 只是看不到它们，原因记入私有审计。"""
+    draft, _ = build(starter_files("text", set(), "Noto Sans CJK SC")) if RENDERER_DEPS.exists() else (None, None)
+    if draft is None:
+        pytest.skip("needs the bundler")
+    current = free_session(tmp_path, spec=SimpleNamespace(sprite=draft, sprite_kind="text"), base=SimpleNamespace(default_config=draft.default_parameters))
+
+    async def broken(*_args, **_options):
+        """The renderer is unavailable."""
+        raise RuntimeError("no browser")
+
+    current.validator = SimpleNamespace(validate_render=broken)
+    asyncio.run(current.base_preview())
+    assert current.base_frames == [] and current.observations == []
+
+
+def test_window_images_are_encoded_only_when_the_request_is_sent(tmp_path):
+    """窗口里按路径记图片，发送请求时才编码：序列化的窗口保持很小，发出去的是模型能读的 image_url。"""
+    path = tmp_path / "frame.png"
+    Image.new("RGB", (64, 64), (9, 9, 9)).save(path)
+    window = StepWindow()
+    window.append([image_message("观察", [path])])
+    assert len(window.serialize()) < 300
+    messages = window.messages()
+    expand_image_paths(messages, "high")
+    assert [item["type"] for item in messages[0]["content"]] == ["text", "image_url"]
+    assert messages[0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@needs_bundler
+def test_saving_then_changing_the_files_needs_another_save(monkeypatch, tmp_path):
+    """保存后又改了文件，汇报被拒绝，要求重新保存并看新的联系表。"""
+    run, _harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "x"}),
+        call("exec-3", "effect_save", {}),
+        call("exec-4", "workspace_edit", {"path": "Effect.tsx", "edits": [{"old_str": "props.color", "new_str": "props.color ?? \"#FFFFFF\""}]}),
+        report("exec-5"),
+    ])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert "files changed after the latest effect_save" in run.session.feedback[0]
+
+
+@needs_bundler
+def test_a_sheet_replaced_by_a_preview_before_it_was_shown_is_not_seen(monkeypatch, tmp_path):
+    """保存后同一轮又做了预览：联系表还没给模型看就被预览图替换，不能算看过，汇报被拒绝并说明联系表在哪一轮。"""
+    run, _harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "x"}),
+        AssistantMessage(tool_calls=[
+            {"id": "exec-3", "type": "function", "function": {"name": "effect_save", "arguments": "{}"}},
+            {"id": "exec-4", "type": "function", "function": {"name": "preview_render", "arguments": "{}"}},
+        ]),
+        report("exec-5"),
+    ])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert run.session.sheet_seen is None and "middle frame of the latest save" in run.session.feedback[0]
+
+
+@needs_bundler
+def test_once_a_candidate_is_saved_a_question_cannot_replace_it(monkeypatch, tmp_path):
+    """先做再问：任务保存过候选后，执行层的 needs_input 被拒绝，要求带着 suggestions 完成。"""
+    run, _harness, _ = free_run(monkeypatch, tmp_path, [
+        call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "x"}),
+        call("exec-3", "effect_save", {}),
+        report("exec-4", status="needs_input", questions=["要金色还是银色？"]),
+    ])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert "put the open questions into suggestions" in run.session.feedback[0]
+    assert run.layer is Layer.EXECUTOR
+
+
+@needs_bundler
+@pytest.mark.parametrize("layer", ["outer", "plan"])
+@pytest.mark.parametrize("protocol", ["tool", "text"])
+def test_saved_candidate_refuses_questions_in_both_protocols(monkeypatch, tmp_path, layer, protocol):
+    """保存后 Outer/Plan 的工具和文本提问都留在当前层纠错，随后仍可交付已回看的候选。"""
+    questions = ["需要再加描边吗？"]
+    question = (call("ask", "tools_plan_execute", {"action": "ask", "questions": questions}) if protocol == "tool" else
+                AssistantMessage(content=json.dumps({"questions": questions, **({"status": "needs_input", "summary": "需要选择外观"} if layer == "plan" else {})})))
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("delegate", "tools_plan_execute", {"action": "delegate"}),
+        call("save", "effect_save", {}),
+        report("blocked", status="blocked", summary="需要选择外观"),
+        *([call("return", "tools_plan_execute", {"action": "stop"})] if layer == "outer" else []),
+        question,
+        call("complete", "tools_plan_execute", {"action": "complete"}),
+    ])
+    result = asyncio.run(run.plan_execute())
+    assert harness.roles[-1] == layer
+    assert "already saved a candidate" in harness.options[-1]["data"]
+    assert harness.published == [result["published"]]
+    assert run.session.sheet_seen == result["published"]
+
+
+def test_outer_text_question_before_saving_still_reaches_the_user(monkeypatch, tmp_path):
+    """尚未保存候选时，文本协议仍允许必要澄清，不生成版本。"""
+    questions = ["需要使用哪张参考图？"]
+    run, harness, _ = free_run(monkeypatch, tmp_path, [AssistantMessage(content=json.dumps({"questions": questions}))])
+    assert asyncio.run(run.plan_execute()).questions == questions
+    assert not harness.published
+
+
+def intent_message(instruction, images=()):
+    """An Outer window entry as the runtime appends it for one task."""
+    return {"role": "user", "content": json.dumps({"original_request": {"description": "金色标题"}, "instruction": instruction,
+                                                    "reference_images": [{"asset_id": image, "source": "message"} for image in images]}, ensure_ascii=False)}
+
+
+def test_images_of_earlier_messages_are_sent_again_newest_first():
+    """多轮：之前几条消息附的参考图在后续任务里继续发送（新的在前），标明来自之前的指令；总数受上限约束，原图与本条消息的图不重复。"""
+    context = Conversation()
+    for index in range(MAX_REFERENCE_IMAGES + 2):
+        context.append([intent_message(f"第{index}次", [str(UUID(int=index + 1)), str(UUID(int=99))])])
+    found = earlier_images(context, [{"asset_id": str(UUID(int=99)), "source": "work_original"}])
+    assert [item["asset_id"] for item in found][:2] == [str(UUID(int=MAX_REFERENCE_IMAGES + 2)), str(UUID(int=MAX_REFERENCE_IMAGES + 1))]
+    assert len(found) == MAX_REFERENCE_IMAGES - 1 and {item["source"] for item in found} == {"earlier_message"}
+
+
+
+
+@needs_bundler
+def test_how_earlier_tasks_ended_reaches_the_next_tasks_handoff(monkeypatch, tmp_path):
+    """多轮：任务结束时宿主往 Outer 窗口写一条结果记录；下一次任务的执行层交接里带着之前每轮的要求与结果（不含当前这一轮）。"""
+    job = GenerationJob.model_validate({"id": "00000000-0000-4000-8000-000000000001", "project_id": "00000000-0000-4000-8000-000000000002",
+                                        "status": "succeeded", "stage": "finished", "created_at": "2026-10-30T00:00:00Z", "updated_at": "2026-10-30T00:00:00Z",
+                                        "reply": {"summary": "金色标题已完成", "suggestions": ["加发光"]}})
+    run, harness, _ = free_run(monkeypatch, tmp_path, [call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "加发光"})])
+    for message in (intent_message("做一个金色标题"), outcome_record(job), intent_message("加上发光")):
+        run.outer.append([message])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    handoff = json.loads(run.executor_context.messages()[0]["content"].split("\n", 1)[1])["detail"]
+    assert handoff["earlier_turns"] == [{"instruction": "做一个金色标题", "outcome": {"status": "succeeded", "summary": "金色标题已完成", "choices": [], "suggestions": ["加发光"]}}]
+
+
+@needs_bundler
+def test_an_edit_starts_from_the_accepted_versions_frames(monkeypatch, tmp_path):
+    """修改自由组件版本：执行层第一轮就看到基线现在的验收联系表（不占预览次数），交接里带着还原的文件。"""
+    draft, _ = build(starter_files("text", set(), "Noto Sans CJK SC"))
+    harness = FakeHarness([call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "改成红色"})], tmp_path)
+    original = ToolSession.__init__
+    monkeypatch.setattr(ToolSession, "__init__", lambda self, *args, **kwargs: (original(self, *args, **kwargs), stub_checks(self))[0])
+    spec = SimpleNamespace(sprite=draft, sprite_kind="text")
+    run = AgentRun(harness, spec, Budget(), tmp_path, [], lambda *_: None, base=SimpleNamespace(default_config=draft.default_parameters),
+                   intent={"original_request": {"description": "x"}, "instruction": "改成红色", "accepted_base": {"name": "v1"}})
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert [step.id for step in run.state.plan.steps] == ["edit"]
+    assert run.session.observations and all(label.startswith("accepted version") for _path, label in run.session.observations)
+    assert run.session.renders_left == 12
+
+
+def test_a_grouped_style_parameter_is_published_with_its_group():
+    """发布时自由组件样式参数的面板分组写进 SpriteParameter.group，模板编辑据此成卡片；没有分组的参数为空串。"""
+    from server.remotion_templates.categories import HEX_COLOR
+    from server.remotion_templates.sprites import _parameter
+
+    grouped = _parameter("glowColor", {"type": "string", "pattern": HEX_COLOR, "title": "发光颜色", "x-imv-group": "关键词发光"}, "#FFAA00")
+    assert grouped.group == "关键词发光" and grouped.label == "发光颜色"
+    assert _parameter("fontSize", {"type": "number", "minimum": 24, "maximum": 240}, 96).group == ""
+
+
+def test_low_detail_images_are_shrunk_for_the_routing_layer(tmp_path):
+    """Outer 只拿低细节缩略图：长边缩到 512 像素以内，并标为 low。"""
+    path = tmp_path / "large.png"
+    Image.new("RGB", (2000, 1000), (1, 2, 3)).save(path)
+    (item,) = _image_content([path], label="Reference", detail="low")
+    assert item["image_url"]["detail"] == "low"
+    import base64, io
+    with Image.open(io.BytesIO(base64.b64decode(item["image_url"]["url"].split(",", 1)[1]))) as image:
+        assert max(image.size) == 512
+
+
+def test_the_reply_shows_what_was_built_and_how_it_was_read():
+    """成功回复先写做了什么，再列出对歧义的理解，最后提示可继续修改；建议单独作为选项。"""
+    text = reply_text(JobReply(summary="金色标题", choices=["把双栏理解为上下两行"], suggestions=["改成银色"]))
+    assert text.startswith("金色标题") and "- 把双栏理解为上下两行" in text and "改成银色" not in text
+
+
+# ---- real browser --------------------------------------------------------------------------------------------------
+
+HARD_CODED = """import React from "react";
+import { TextRoot, useTextContent, type EffectProps } from "imv";
+
+export default function Effect(props: EffectProps) {
+  const content = useTextContent(props);
+  return <TextRoot content={content}>{() => <div style={{ color: props.color }}>示例文字</div>}</TextRoot>;
+}
+"""
+
+FADES_EARLY = """import React from "react";
+import { TextRoot, LineText, useTextContent, useTiming, type EffectProps } from "imv";
+
+export default function Effect(props: EffectProps) {
+  const content = useTextContent(props);
+  const { frame, duration } = useTiming();
+  return <TextRoot content={content}>{(line) => <div style={{ color: props.color, opacity: frame > duration * 0.4 ? 0 : 1 }}><LineText content={content} line={line} /></div>}</TextRoot>;
+}
+"""
+
+FIXED_SIZE = """import React from "react";
+import { TextRoot, LineText, useTextContent, type EffectProps } from "imv";
+
+export default function Effect(props: EffectProps) {
+  const content = useTextContent(props);
+  return <TextRoot content={content}>{(line) => <div style={{ color: props.color, fontSize: 40 }}><LineText content={content} line={line} /></div>}</TextRoot>;
+}
+"""
+
+PLAIN_KEYWORDS = """import React from "react";
+import { TextRoot, useTextContent, type EffectProps } from "imv";
+
+export default function Effect(props: EffectProps) {
+  const content = useTextContent(props);
+  return <TextRoot content={content}>{(line) => <div style={{ color: props.color }}>{line.text}</div>}</TextRoot>;
+}
+"""
+
+
+SLIDING = """import React from "react";
+import { interpolate } from "remotion";
+import { TextRoot, LineText, useTextContent, useTiming, type EffectProps } from "imv";
+
+export default function Effect(props: EffectProps) {
+  const content = useTextContent(props);
+  const { frame } = useTiming();
+  const shift = interpolate(frame, [0, 15], [START, 0], { extrapolateRight: "clamp" });
+  return <TextRoot content={content}>{(line) => <div style={{ color: props.color, transform: `translateX(${shift}px)` }}><LineText content={content} line={line} /></div>}</TextRoot>;
+}
+"""
+
+
+def real_session(tmp_path, requested=frozenset()):
+    """A free-form session over the real sandboxed validator."""
+    settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
+    request = {"description": "测试", **{name: True for name in requested}}
+    return ToolSession(SimpleNamespace(settings=settings, renderer=Renderer(settings)), None, None, Budget(), tmp_path / "run", [], lambda *_: None,
+                       {"original_request": request})
+
+
+@needs_browser
+@pytest.mark.parametrize("shape", ["one line", "two bilingual groups with a keyword effect"])
+def test_real_starters_pass_every_check(tmp_path, shape):
+    """真实隔离浏览器：起始工程（单行；四行双语带关键词字效）通过保存的全部检查，包括契约探针，并截到验收联系表。"""
+    current = real_session(tmp_path, SHAPES[shape])
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] is True, checked
+    saved = asyncio.run(current.execute("effect.save", {}, available()))
+    assert len(current.observations) == len(saved["review"]["frames"]) == 1 and saved["motion"]
+
+
+@needs_browser
+@pytest.mark.parametrize(("start", "expected"), [(700, "to the right"), (-700, "to the left")])
+def test_real_saved_motion_tells_which_side_a_line_slides_in_from(tmp_path, start, expected):
+    """真实隔离浏览器：两次实测里模型都把「从左滑入」写反且没发现。现在保存的回执直接量出方向：translateX 正数报告在右，负数报告在左。"""
+    current = real_session(tmp_path)
+    current.files[CODE] = SLIDING.replace("START", str(start))
+    saved = asyncio.run(current.execute("effect.save", {}, available()))
+    assert any(f"700 px {expected}" in fact for fact in saved["motion"]), saved["motion"]
+
+
+@needs_browser
+@pytest.mark.parametrize(("code", "expected"), [
+    (HARD_CODED, "still shows the sample"),
+    (FADES_EARLY, "On the middle frame"),
+    (FADES_EARLY.replace("frame > duration * 0.4", "frame >= Math.floor(duration / 2)"), "On the middle frame 75"),
+    (FIXED_SIZE, "does not make the text smaller"),
+    (PLAIN_KEYWORDS, "no keyword hit is marked"),
+])
+def test_real_contract_probes_catch_what_templates_would_break_on(tmp_path, code, expected):
+    """真实浏览器仍拒绝写死内容/字号、定格帧前或恰好在该帧消失与漏关键词标记，给出对应修法。"""
+    current = real_session(tmp_path)
+    current.files[CODE] = code
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] is False
+    assert any(expected in item["message"] for item in checked["problems"]), checked["problems"]
+
+
+@needs_browser
+@pytest.mark.parametrize(("size", "fixed"), [(24, False), (25, False), (25, True)])
+def test_real_font_size_probe_accepts_small_defaults_but_rejects_fixed_sizes(tmp_path, size, fixed):
+    """默认字号在下限或只高一像素时，正常随参数缩放可通过，写死字号仍失败；探针不改存储的默认字号。"""
+    current = real_session(tmp_path)
+    current.files[MANIFEST] = json.dumps(manifest(current.files, text={"font_size": size}), ensure_ascii=False)
+    if fixed:
+        current.files[CODE] = FIXED_SIZE
+    before = dict(current.files)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] is (not fixed), checked
+    if fixed:
+        assert any("does not make the text smaller" in item["message"] for item in checked["problems"]), checked
+    assert current.files == before
+
+
+@needs_browser
+@pytest.mark.parametrize(("nested", "unused"), [(False, False), (True, False), (False, True)])
+def test_real_wiring_checks_optional_controls_in_context(tmp_path, nested, unused):
+    """默认关闭或嵌套开关下的发光颜色不误报；未观察到变化的参数只给提示，允许保存且默认值不变。"""
+    current = real_session(tmp_path)
+    enabled = "props.glowEnabled && props.nestedEnabled" if nested else "props.glowEnabled"
+    hidden = "" if nested else "opacity: props.hidden ? 0 : 1, "
+    current.files[CODE] = current.files[CODE].replace(
+        "<div style={{ color:",
+        '<div style={{ ' + hidden + 'textShadow: (' + enabled + ') ? "0 0 12px " + props.glowColor : "none", color:',
+    )
+    data = manifest(current.files)
+    data["params"].extend([
+        {"name": "nestedEnabled" if nested else "hidden", "schema": {"type": "boolean"}, "default": False},
+        {"name": "glowEnabled", "schema": {"type": "boolean"}, "default": False},
+        {"name": "glowColor", "schema": {"type": "string"}, "default": "#FF0000"},
+    ])
+    if unused:
+        data["params"].append({"name": "unusedColor", "schema": {"type": "string"}, "default": "#00FF00"})
+    current.files[MANIFEST] = json.dumps(data, ensure_ascii=False)
+    before = dict(current.files)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"], checked
+    if unused:
+        assert any("unusedColor" in note for note in checked["notes"]), checked
+        saved = asyncio.run(current.execute("effect.save", {}, available()))
+        assert saved["notes"] == checked["notes"] and saved["review"]["frames"]
+    assert all("glowColor" not in note for note in checked["notes"]), checked
+    assert current.files == before
+
+
+@needs_browser
+def test_real_cyclic_parameter_can_be_saved_despite_identical_endpoints(tmp_path):
+    """装饰角度的 0/360 度相同不能阻止保存；90 度实际改变像素，回执只给采样提示且保留默认值。"""
+    current = real_session(tmp_path)
+    current.files[CODE] = '''import React from "react";
+import { TextRoot, LineText, useTextContent, type EffectProps } from "imv";
+export default function Effect(props: EffectProps) {
+  const content = useTextContent(props);
+  return <>
+    <div style={{ position: "absolute", left: 300, top: 20, width: 180, height: 12,
+      backgroundColor: "#FF0000", transform: `rotate(${props.decorationAngle}deg)` }} />
+    <TextRoot content={content}>{line => <div style={{ color: props.color }}><LineText content={content} line={line} /></div>}</TextRoot>
+  </>;
+}'''
+    data = manifest(current.files)
+    data["params"].append({"name": "decorationAngle", "schema": {"type": "number", "minimum": 0, "maximum": 360},
+                           "default": 90, "title": "装饰角度", "group": "装饰"})
+    current.files[MANIFEST] = json.dumps(data)
+    before = dict(current.files)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert checked["passed"] and any("decorationAngle" in note for note in checked["notes"]), checked
+    saved = asyncio.run(current.execute("effect.save", {}, available()))
+    assert saved["notes"] == checked["notes"] and current.files == before
+    assert current.saved_sprite(saved["sprite_id"]).default_parameters["decorationAngle"] == 90
+    angled_path = current.observations[0][0]
+    data["params"][-1]["default"] = 0
+    current.files[MANIFEST] = json.dumps(data)
+    asyncio.run(current.execute("preview.render", {"frames": [75]}, available()))
+    with Image.open(angled_path) as angled, Image.open(current.observations[0][0]) as straight:
+        assert ImageChops.difference(angled.convert("RGB"), straight.convert("RGB")).getbbox() is not None
+
+
+@needs_browser
+def test_real_parameter_probe_runtime_errors_still_block_save(tmp_path):
+    """采样未见变化可通过，但合法参数值确实令组件抛错时仍拒绝检查和保存。"""
+    current = real_session(tmp_path)
+    current.files[CODE] = current.files[CODE].replace(
+        "const content = useTextContent(props);",
+        'const content = useTextContent(props); if (props.glowSize === 3) throw new Error("probe boom");',
+    )
+    data = manifest(current.files)
+    data["params"].append({"name": "glowSize", "schema": {"type": "number", "enum": [1, 2, 3], "minimum": 1}, "default": 2})
+    current.files[MANIFEST] = json.dumps(data)
+    checked = asyncio.run(current.execute("validate.check", {}, available()))
+    assert not checked["passed"] and any("probe boom" in item["message"] for item in checked["problems"]), checked
+    with pytest.raises(ToolFault, match="probe boom") as caught:
+        asyncio.run(current.execute("effect.save", {}, available()))
+    assert caught.value.error.code == "CODE_VALIDATION_FAILED" and not current.saved_sprites
+
+
+@needs_browser
+def test_real_disabled_keyword_look_keeps_working_style_controls(tmp_path):
+    """关键词字效默认关闭时，其外观参数仍在开启上下文中检查；保存后开关保持关闭。"""
+    current = real_session(tmp_path, {"keyword_effect"})
+    current.files[MANIFEST] = json.dumps(manifest(current.files, text={"keyword_enabled": False}), ensure_ascii=False)
+    saved = asyncio.run(current.execute("effect.save", {}, available()))
+    assert current.saved_sprites[saved["sprite_id"]].default_parameters["keywordEffect"] is False

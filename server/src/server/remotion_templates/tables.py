@@ -1,8 +1,9 @@
 """MySQL tables of the Remotion workspace backend; the backend keeps no SQLite file of its own.
 
-Works, jobs, accepted versions, the model's sliding window, public events and overlay render tasks live in the
+Works, jobs, accepted versions, undelivered events and overlay render tasks live in the
 shared database next to `remotion_sprites`. Every work belongs to one client device. Public chat is only
-buffered here until the client acknowledges it into its local SQLite (`store.acknowledge`). Documents are JSON
+buffered here until the client acknowledges it into its local SQLite (`store.acknowledge`), as is a finished
+task's model window. The conversation table is read only for legacy migration. Documents are JSON
 text in long columns; `seq`/`id` autoincrement columns give the insertion order that SQLite's rowid used to.
 The single `remotion_instance` row is a lease that keeps a second backend off the same queue. Tables are created on first use and never altered, like the template and Sprite tables. The SQLite variants only
 serve the test fixture that stands in for MySQL.
@@ -30,6 +31,19 @@ STAMP = DateTime().with_variant(DATETIME(fsp=6), "mysql")
 IDENTIFIER = String(36)
 
 metadata = MetaData()
+# Read-only migration declarations. New installations never create these retired tables.
+legacy_metadata = MetaData()
+
+# Shared reusable source is independent of private works and explicitly published Sprite assets.
+effect_sources = Table(
+    "remotion_effect_sources", metadata,
+    Column("id", String(64), primary_key=True),
+    Column("description", Text, nullable=False),
+    Column("kind", String(32), nullable=False),
+    Column("files", LONG, nullable=False),
+    Column("created_at", STAMP, nullable=False, index=True),
+    mysql_charset="utf8mb4",
+)
 
 # One row (key "backend") naming the backend instance that owns the queue; see `Store.acquire_lease`.
 instance = Table(
@@ -57,13 +71,13 @@ works = Table(
 # Every reference image a work uses: its original request images and those attached to later messages. Rows
 # outlive the delivered jobs, so deletion and orphan cleanup can tell whether another work still needs an image.
 work_assets = Table(
-    "remotion_work_assets", metadata,
+    "remotion_work_assets", legacy_metadata,
     Column("work_id", IDENTIFIER, primary_key=True),
     Column("asset_id", IDENTIFIER, primary_key=True, index=True),
     mysql_charset="utf8mb4",
 )
 assets = Table(
-    "remotion_assets", metadata,
+    "remotion_assets", legacy_metadata,
     Column("id", IDENTIFIER, primary_key=True),
     Column("device_id", IDENTIFIER, nullable=False, index=True),
     Column("data", LONG, nullable=False),
@@ -90,8 +104,9 @@ versions = Table(
     UniqueConstraint("work_id", "number", name="uq_remotion_versions_number"),
     mysql_charset="utf8mb4",
 )
+# Legacy windows are exported to their owning client and removed on its next request; new runs never write here.
 conversations = Table(
-    "remotion_conversations", metadata,
+    "remotion_conversations", legacy_metadata,
     Column("work_id", IDENTIFIER, primary_key=True),
     Column("data", LONG, nullable=False),
     mysql_charset="utf8mb4",

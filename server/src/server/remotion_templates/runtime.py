@@ -16,51 +16,24 @@ from tempfile import TemporaryDirectory
 from uuid import UUID, uuid4
 
 from .deletion import finish as finish_deletion
-from .fonts import FontStore
+from .context import Conversation, outcome_record
+from .fonts import DEFAULT_FAMILY, FontStore
 from .settings import ClientSettings, Settings
 from .harness import Harness
 from .overlay_service import FINISHED_RETENTION, OverlayRenders, prune_finished
-from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, MessageImage, TaskMessage
+from .models import ClientContext, DialogueOutput, EditTemplateRequest, GenerationJob, JobError, JobInput, MessageImage, TaskMessage
 from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure, Provider
 from .publication import revisable
-from .store import LEASE_RENEW, Conflict, Store, now
+from .store import LEASE_RENEW, Conflict, NotFound, Store, now
 from .tool_validation import ToolValidator, ValidationUnavailable
-from .tools.catalog_store import CatalogStore
 from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 
 logger = logging.getLogger("uvicorn.error")
 
 
-def record_uses(version) -> None:
-    """Record the stored Presets an Agent-made version draws with, the ranking signal of Preset searches, storing the
-    copies it changed as Presets of their own (`CatalogStore.solidify`); a database failure only loses that signal, so
-    it is logged instead of failing the finished job."""
-    try:
-        store = CatalogStore()
-        store.record_uses(str(version.id), store.solidify(version.spec.sprite))
-    except Exception:
-        logger.warning("Preset uses of version %s were not recorded", version.id, exc_info=True)
-
-
-# Host-written meaning of each reference image source, so an image without text still says what it is for.
-REFERENCE_MEANINGS = {
-    "work_original": "Attached to the request that created this work; it describes the original goal.",
-    "message": "Attached by the user to the current instruction as a reference for this change.",
-    "clarification_answer": "Attached by the user as their answer (or part of it) to clarifications[clarification].",
-}
-
-
-def reference_images(project, inputs: JobInput) -> list[dict]:
-    """Describe every reference image in the order the model receives them, each with its source."""
-    entries = [
-        {"asset_id": str(image.asset_id), "source": "work_original"} for image in project.request.images
-    ]
-    entries += [
-        image.model_dump(mode="json", exclude_none=True) for image in inputs.images
-    ]
-    return [{**entry, "meaning": REFERENCE_MEANINGS[entry["source"]]} for entry in entries]
+from .references import MAX_REFERENCE_IMAGES, earlier_images, reference_images
 
 
 class Runtime:
@@ -218,8 +191,9 @@ class Runtime:
             instruction=request.instruction,
             parameters=request.parameters,
             images=[MessageImage(asset_id=image) for image in images],
+            context=self.store.require_context(project_id, request.context),
         )
-        return self._start(project_id, inputs, base, config, message_images=images)
+        return self._start(project_id, inputs, base, config, message_images=images, payloads=request.assets)
 
     def _start(
         self,
@@ -229,6 +203,7 @@ class Runtime:
         config: ClientSettings | None,
         message_text: str | None = None,
         message_images: list[UUID] | None = None,
+        payloads=None,
     ):
         """Queue a job for the worker, or save a PR76 parameter revision at once outside the FIFO queue.
 
@@ -245,7 +220,7 @@ class Runtime:
             return job
         job = self.store.enqueue(
             project_id, inputs, base.id if base else None,
-            message_text=message_text, message_images=message_images,
+            message_text=message_text, message_images=message_images, payloads=payloads,
         )
         self.notify(job.id, config)
         return job
@@ -284,10 +259,24 @@ class Runtime:
         if request.reply_to_job_id:
             if latest.id != request.reply_to_job_id or latest.status != "needs_input":
                 raise Conflict("Question reply is stale or belongs to another task.")
-            return self.retry(latest.id, request.instruction or "", config, images=images)
+            return self.retry(latest.id, request.instruction or "", config, images=images, context=request.context, payloads=request.assets)
         if latest.status == "needs_input":
             raise Conflict("Answer the outstanding questions using reply_to_job_id.")
         project = self.store.project(project_id)
+        if (
+            latest.status in {"failed", "cancelled", "interrupted"}
+            and request.parameters is None
+            and (request.base_version_id or project.current_version_id) == latest.base_version_id
+        ):
+            inputs = self._local_inputs(latest, request.context)
+            checkpoint = self._checkpoint_for(latest, inputs)
+            if inputs.parameters is None and checkpoint is not None:
+                inputs.checkpoint = checkpoint
+                inputs.instruction = "\n\n".join(filter(None, (inputs.instruction, request.instruction))) or None
+                known = {image.asset_id for image in inputs.images}
+                inputs.images += [MessageImage(asset_id=image) for image in images if image not in known]
+                base = self.store.version(latest.base_version_id) if latest.base_version_id else None
+                return self._start(project_id, inputs, base, config, message_text=request.instruction, message_images=images, payloads=request.assets)
         if (
             project.current_version_id is None
             and request.base_version_id is None
@@ -300,9 +289,10 @@ class Runtime:
                     mode="generate",
                     instruction=request.instruction,
                     images=[MessageImage(asset_id=image) for image in images],
+                    context=self.store.require_context(project_id, request.context),
                 ),
                 None,
-                message_images=images,
+                message_images=images, payloads=request.assets,
             )
             self.notify(job.id, config)
             return job
@@ -321,6 +311,8 @@ class Runtime:
         config: ClientSettings | None = None,
         *,
         images: list[UUID] | None = None,
+        context: ClientContext | None = None,
+        payloads=None,
     ):
         """Retry or clarification creates a new identity, never mutating historical execution state.
 
@@ -337,9 +329,10 @@ class Runtime:
             raise Conflict("Job state does not allow this action.")
         if self.store.latest_job(job.project_id).id != job_id:
             raise Conflict("Only the latest task execution may be retried or answered.")
-        inputs = self.store.inputs(job_id)
+        inputs = self._local_inputs(job, context)
+        inputs.checkpoint = self._checkpoint_for(job, inputs)
         if answer is not None:
-            clarification = {"questions": job.questions, "answer": answer}
+            clarification = {"questions": inputs.context.questions if inputs.context and inputs.context.questions else job.questions, "answer": answer}
             if images:
                 clarification["answer_images"] = [str(image) for image in images]
                 inputs.images += [
@@ -351,8 +344,36 @@ class Runtime:
         return self._start(
             job.project_id, inputs, base, config,
             message_text=answer if answer is not None else "重试本次制作。",
-            message_images=images,
+            message_images=images, payloads=payloads,
         )
+
+    def _local_inputs(self, job, context) -> JobInput:
+        """Use the client's durable retry state after acknowledgement has cleared the server input."""
+        context = self.store.require_context(job.project_id, context)
+        inputs = JobInput.model_validate(context.input.model_dump()) if context.input else self.store.inputs(job.id)
+        inputs.context = context
+        inputs.request = context.request or inputs.request or self.store.project(job.project_id).request
+        inputs.finalized = False
+        return inputs
+
+    def _checkpoint_for(self, job: GenerationJob, inputs: JobInput):
+        """Read durable progress, or reconstruct a pre-upgrade failure from its successful workspace receipts."""
+        if inputs.parameters is not None:
+            return None
+        if inputs.checkpoint is not None:
+            return inputs.checkpoint
+        path = self.store.audit_path(job.project_id, job.id)
+        if not path.is_file():
+            return None
+        from .checkpoints import from_audit
+        from .tools.workspace import restore_version_files, starter_files
+
+        base = self.store.version(job.base_version_id) if job.base_version_id else None
+        request = inputs.request or self.store.project(job.project_id).request
+        requested = {name for name in ("two_tier", "keyword_effect", "bilingual") if getattr(request, name)}
+        family = (FontStore.active.families() if FontStore.active is not None else [DEFAULT_FAMILY])[0]
+        files = restore_version_files(base.spec, base.candidate) if base else starter_files(request.sprite_kind, requested, family)
+        return from_audit(path, files)
 
     async def code_report(
         self, component: ComponentDefinition, *, export_code: str
@@ -380,6 +401,8 @@ class Runtime:
                 self.active.cancel()
             with suppress(asyncio.CancelledError):
                 await self.active
+        else:
+            shutil.rmtree(self.store.job_dir(job_id), ignore_errors=True)
         return job
 
     async def delete_work(self, work_id: UUID) -> None:
@@ -445,18 +468,23 @@ class Runtime:
             on_progress=lambda phase: self.store.progress(job_id, phase),
             on_round=lambda record: self.store.round(job_id, record),
         )
-        context = self.store.conversation(job.project_id)
+        inputs = self.store.inputs(job_id)
+        context = Conversation.from_client(inputs.context.state) if inputs.context else Conversation()
+        self.store.running_contexts[job_id] = context
+        model_task = False
         try:
             async with asyncio.timeout(settings.job_timeout_seconds):
                 job = self.store.job(job_id)
                 project = self.store.project(job.project_id)
                 inputs = self.store.inputs(job_id)
+                project = project.model_copy(update={"request": inputs.request or project.request})
                 # The work's original image first, then images attached to the messages this task answers.
                 references = reference_images(project, inputs)
-                # Reference images may have to be downloaded from the object store; keep that off the event loop.
-                images = await asyncio.to_thread(
-                    lambda: [self.store.asset_path(UUID(entry["asset_id"])) for entry in references]
-                )
+                if inputs.parameters is None:
+                    references += earlier_images(context, references)
+                images = [self.store.job_dir(job_id) / "references" / f"{UUID(entry['asset_id'])}.png" for entry in references] if inputs.parameters is None else []
+                if any(not path.is_file() for path in images):
+                    raise ValueError("本次任务缺少本地参考图片，请从原设备重试。")
                 base = (
                     self.store.version(job.base_version_id)
                     if job.base_version_id
@@ -470,7 +498,7 @@ class Runtime:
                     "parameters": patch,
                     "clarifications": inputs.clarifications,
                     # Source stays out of the persisted Outer window; the tool session shows the base's
-                    # Presets to the layer that edits code.
+                    # workspace to the layer that edits code.
                     "accepted_base": base.spec.model_dump(mode="json", exclude_unset=True, exclude={"sprite"}) if base else None,
                     "reference_images": references,
                 }
@@ -485,6 +513,7 @@ class Runtime:
                         ),
                     }
                 # Manual edits are already durable job inputs; only model tasks enter its sliding window.
+                model_task = patch is None
                 if patch is None:
                     context.append(
                         [
@@ -513,6 +542,10 @@ class Runtime:
                     parameter_patch=patch,
                     context=context,
                     intent=intent,
+                    # A free-form edit can go back to any earlier version of the work.
+                    **({"versions": await asyncio.to_thread(self.store.versions, job.project_id)} if patch is None else {}),
+                    **({"checkpoint": inputs.checkpoint,
+                        "on_checkpoint": lambda value: self.store.save_checkpoint(job_id, value)} if patch is None else {}),
                 )
                 if isinstance(result, DialogueOutput):
                     self.store.update(
@@ -527,11 +560,9 @@ class Runtime:
                     )
                     return
                 candidate, spec, report, attempt_dir = result
-                self.store.update(job_id, usage=budget.summary())
+                self.store.update(job_id, usage=budget.summary(), **({"reply": budget.reply} if budget.reply else {}))
                 budget.progress("preparing")
-                version = await asyncio.to_thread(self.store.publish, job_id, candidate, spec, report, attempt_dir)
-                if patch is None:
-                    await asyncio.to_thread(record_uses, version)
+                await asyncio.to_thread(self.store.publish, job_id, candidate, spec, report, attempt_dir)
         except asyncio.CancelledError:
             self.store.update(
                 job_id, status="interrupted", stage="finished", usage=budget.summary()
@@ -582,8 +613,13 @@ class Runtime:
         finally:
             # Candidates and renders are scratch; the audit log lives outside the job folder until it expires.
             shutil.rmtree(self.store.job_dir(job_id), ignore_errors=True)
-            self.store.save_conversation(job.project_id, context)
             final = self.store.job(job_id)
+            if model_task and final.status in {"succeeded", "answered"}:
+                self.store.save_checkpoint(job_id, None)
+            if model_task:
+                context.append([outcome_record(final)])
+            self.store.finalize_job(job_id)
+            self.store.running_contexts.pop(job_id, None)
             budget.record(
                 "run_finished",
                 status=final.status,
