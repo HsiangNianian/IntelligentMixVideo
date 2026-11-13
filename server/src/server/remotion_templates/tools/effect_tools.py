@@ -27,7 +27,7 @@ from .contracts import (
 )
 from .registry import ToolFault
 from .workspace import (
-    CODE, MANIFEST, assemble, contract_probes, line_count, parse_manifest, physical_lines, preview_keywords, keyframes, motion_facts, restore_files, review_box, text_fit_parameters, trial_frames,
+    CODE, MANIFEST, assemble, contract_probes, line_count, parse_manifest, physical_lines, preview_keywords, keyframes, motion_facts, restore_version_files, review_box, text_fit_parameters, trial_frames,
 )
 
 # 内容运行时 "imv" 的源码：workspace.read 只读地给出它，Agent 照着类型与实现写 Effect.tsx。
@@ -51,10 +51,14 @@ def _diagnostic_problem(item) -> EffectProblem:
 
 
 def _long_text(values: dict) -> dict:
-    """The default lines repeated until the text is as long as templates may make it, in the effect's own shape."""
+    """Repeat the default lines in their original shape, counting newlines in the 100-character preview budget."""
     lines = physical_lines(values)
-    share = max(1, LONG_TEXT // max(1, len(lines)))
-    filled = [(line * (share // max(1, len(line)) + 1))[:share] if line else line for line in lines]
+    separators = len(lines) - (2 if "textEn" in values else 1)
+    share, remainder = divmod(LONG_TEXT - separators, len(lines))
+    filled = []
+    for index, line in enumerate(lines):
+        length = share + (index < remainder)
+        filled.append((line * (length // len(line) + 1))[:length] if line else line)
     if "textEn" not in values:
         return {"text": "\n".join(filled)}
     if len(filled) == 4:
@@ -101,7 +105,6 @@ class EffectTools:
         if request.version is not None:
             if request.version not in self.versions or request.path == RUNTIME_FILE.name:
                 raise ToolFault("INVALID_ARGUMENT", f"Earlier versions hold {CODE} and {MANIFEST}; the versions of this work are {sorted(self.versions)}.", field="/version")
-            from .workspace import restore_version_files
             content = restore_version_files(*self.versions[request.version])[request.path]
         elif request.path == RUNTIME_FILE.name:
             content = RUNTIME_FILE.read_text(encoding="utf-8")
@@ -311,14 +314,16 @@ class EffectTools:
     async def base_preview(self) -> None:
         """Render the accepted version's acceptance sheet once for an edit, as `base_frames` and the first observation images, without using a preview.
 
-        The Plan and the Executor share the render. A failure leaves the edit without them (the Executor can still look with
-        preview_render) and is recorded in the private audit.
+        The Plan and the Executor share the render, assembled from the accepted version and its current saved parameters,
+        never the editable or recovered workspace. A failure leaves the edit without them (the Executor can still look
+        with preview_render) and is recorded in the private audit.
         """
         if self.base_frames:
             self.observations, self.observations_fresh = list(self.base_frames), True
             return
         try:
-            draft, _notes = await self._assemble()
+            files = restore_version_files(self.spec, self.base)
+            draft, _notes = await asyncio.to_thread(assemble, files, fonts=self._fonts(), requested=set(), duration=self._duration())
             capture = self._capture(draft, [draft.composition.duration_frames // 2], preview_keywords(draft), trace=trial_frames(draft))
             report = await self.validator.validate_render(RenderValidationInput(
                 component=ComponentDefinition(code=draft.code, parameter_schema=draft.parameter_schema, default_parameters=draft.default_parameters),

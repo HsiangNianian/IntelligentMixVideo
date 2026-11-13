@@ -27,7 +27,7 @@ from server.remotion_templates.tools.session import ToolSession
 from server.remotion_templates.tools.workspace import CODE, MANIFEST, starter_files
 
 from .conftest import DEVICE
-from .test_remotion_free_effects import FakeHarness, call, needs_bundler, report, stub_checks
+from .test_remotion_free_effects import FakeHarness, build, call, needs_bundler, report, stub_checks
 
 
 class ScriptedHarness(FakeHarness):
@@ -108,6 +108,40 @@ def test_retry_continues_checked_files_without_rebuilding(checks, store, tmp_pat
     first_window = json.dumps(resumed_harness.windows[0], ensure_ascii=False)
     assert "task_resumed" in first_window and '"checked"' in first_window
     assert str(store.job_dir(job.id)) not in first_window
+
+
+@needs_bundler
+def test_recovered_edit_renders_accepted_parameters_as_its_baseline(checks, tmp_path):
+    """恢复后 Plan 回看已验收版本及用户保存参数，不能把未完成红字草稿当作基线，也不能重置草稿。"""
+    draft, _ = build(starter_files("text", set(), "Noto Sans CJK SC"))
+    spec = SimpleNamespace(sprite=draft, sprite_kind="text")
+    base = SimpleNamespace(default_config={**draft.default_parameters, "color": "#00FF00"})
+    intent = {"original_request": {"description": "白色字"}, "instruction": "改成红色", "accepted_base": {"name": "v1"}}
+    first = AgentRun(FakeHarness([], tmp_path), spec, Budget(), tmp_path / "first", [], lambda *_: None, base=base, intent=intent)
+    first._outer_control(PlanAction(action="delegate"))
+    first.session.files[MANIFEST] = first.session.files[MANIFEST].replace("#00FF00", "#FF0000")
+    first.session.files[CODE] = first.session.files[CODE].replace("props.color", '"#FF0000"')
+    checkpoint = capture(first)
+    resumed = AgentRun(FakeHarness([], tmp_path), spec, Budget(), tmp_path / "resumed", [], lambda *_: None,
+                       base=base, intent=intent, checkpoint=checkpoint)
+    mounted = []
+    original_render = resumed.session.validator.validate_render
+
+    async def inspect_render(request, **options):
+        """Record the real source/defaults passed to the renderer and retain the fixture's image output."""
+        mounted.append(request.component)
+        return await original_render(request, **options)
+
+    resumed.session.validator.validate_render = inspect_render
+    asyncio.run(resumed._switch(Layer.PLAN))
+    assert mounted[0].default_parameters["color"] == "#00FF00"
+    assert "props.color" in mounted[0].code
+    assert resumed.session.base_frames and "accepted version" in resumed.session.base_frames[0][1]
+    assert resumed.session.files == checkpoint["files"]
+    assert base.default_config["color"] == "#00FF00" and draft.default_parameters["color"] == "#FFFFFF"
+    # Reusing the baseline evidence neither renders again nor consumes the draft's preview allowance.
+    asyncio.run(resumed.session.base_preview())
+    assert len(mounted) == 1 and resumed.session.renders_left == 12
 
 
 def test_runtime_retains_progress_on_timeout_and_continues_a_followup(store, tmp_path, monkeypatch):

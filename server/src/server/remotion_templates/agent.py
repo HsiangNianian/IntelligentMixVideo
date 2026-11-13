@@ -603,6 +603,8 @@ class AgentRun:
             if status in {"plan_done", "blocked", "needs_input"}:
                 try:
                     payload = PlanResult.model_validate(payload).model_dump(mode="json")
+                    if payload["status"] == "needs_input":
+                        self._refuse_question()
                     self._check_completion(payload.get("sprite_id"))
                 except ValueError as exc:
                     self._set_feedback(str(exc))
@@ -639,7 +641,9 @@ class AgentRun:
         return reply
 
     def _allow_dialogue(self, reply):
-        """An answer cannot replace building once the task delegated or saved; a clarification is always allowed."""
+        """A clarification must precede saving; an answer cannot replace delegated work."""
+        if reply.questions:
+            self._refuse_question()
         if reply.answer and (self.generation_started or self._latest_sprite_id() or self.delegation is not None):
             raise ValueError("This task is building a Sprite; an ordinary answer cannot replace it. Delegate again "
                              "(the Executor reads the request from user_intent), ask, or stop with the reason.")

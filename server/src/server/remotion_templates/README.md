@@ -61,7 +61,9 @@ all historical versions open through `restore_version_files` in the same task-lo
   `image.inspect` crops reach the Executor once, as a message appended to its window; that message numbers its own
   images from 1, independently of reference images and earlier observation messages. An edit starts with the accepted
   version's middle frame, rendered once by the host and shared with the Plan layer, which sees it after the reference images
-  (`accepted_version_images`) when it designs or recovers an edit.
+  (`accepted_version_images`) when it designs or recovers an edit. This baseline always uses the accepted source and
+  saved parameters, including after checkpoint recovery; unfinished workspace edits never become baseline evidence.
+  Long-text previews preserve the line/language shape and count inserted newlines within their 100-character budget.
 - **Motion from the running code, pictures as the fallback.** Each capture also measures every line and keyword hit on the
   trial frames (`measureSubjects` in the validation worker: text box centre and width with transforms applied, painted
   opacity, share of characters painted), and `tools/workspace.motion_facts` turns that into sentences in `motion` on the
@@ -78,7 +80,7 @@ all historical versions open through `restore_version_files` in the same task-lo
   completion and automatic completion at the tool limit; an exhausted task with unsaved edits fails instead of delivering
   an older candidate. Steps with the `effect` module can supply `steps.<id>.outputs.sprite` to later steps.
   A step the Plan layer designs without the effect module
-  is done when `validate.check` passed on the files as they stand. Outer gets low-detail images. Once a candidate is saved, `needs_input` and `ask` are refused:
+  is done when `validate.check` passed on the files as they stand. Outer gets low-detail images. Once a candidate is saved, `needs_input` and `ask` are refused through both tool calls and text-protocol replies:
   the last step's `tools_report_step` carries `choices` and `suggestions`, stored as `GenerationJob.reply` and shown
   as the assistant message (suggestions as options) instead of the fixed success text.
 - **Prefix cache.** Model providers bill cached input far lower, and a cache hit needs an identical prefix, so every

@@ -33,6 +33,7 @@ from server.remotion_templates.tools.contracts import (
     CheckResult, CodeValidationReport, Composition, RenderValidationReport, WorkspaceEditInput,
 )
 from server.remotion_templates.tools.registry import ToolFault
+from server.remotion_templates.tools.schema import validate_parameters
 from server.remotion_templates.tools.session import ToolSession
 from server.remotion_templates.tools.workspace import (
     CODE, MANIFEST, assemble, contract_probes, parse_manifest, keyframes, motion_facts, restore_files, starter_files, trial_frames,
@@ -438,6 +439,34 @@ def test_previews_render_variants_without_caching_and_are_limited(tmp_path):
     current.renders_left = 0
     with pytest.raises(ToolFault, match="previews"):
         asyncio.run(current.execute("preview.render", {}, available()))
+
+
+@needs_bundler
+@pytest.mark.parametrize("shape", list(SHAPES))
+def test_long_preview_preserves_line_shape_within_the_text_limit(tmp_path, shape):
+    """长文字预览将换行计入 100 字，单行、双栏与双语都保留原行数，实际截帧参数符合 Schema。"""
+    current = free_session(tmp_path, intent={"original_request": {"description": "x", **{key: True for key in SHAPES[shape]}}})
+    original_render = current.validator.validate_render
+    mounted = []
+
+    async def checked_render(request, capture=None, **options):
+        """Validate the same merged values mounted for frame capture before returning fixture images."""
+        values = {**request.component.default_parameters, **capture.parameters}
+        validate_parameters(request.component.parameter_schema, values)
+        mounted.append((values, request.component.default_parameters))
+        return await original_render(request, capture=capture, **options)
+
+    current.validator.validate_render = checked_render
+    files = dict(current.files)
+    shown = asyncio.run(current.execute("preview.render", {"variant": "long", "frames": [75]}, available()))
+    values, defaults = mounted[0]
+    fields = [key for key in ("text", "textEn") if key in defaults]
+    assert sum(len(values[key]) for key in fields) == 100
+    for key in fields:
+        assert len(values[key].split("\n")) == len(defaults[key].split("\n"))
+        assert all(line for line in values[key].split("\n"))
+    assert shown["frames"] and current.files == files
+    assert current.validation_reports == {}
 
 
 @needs_bundler
@@ -935,6 +964,37 @@ def test_once_a_candidate_is_saved_a_question_cannot_replace_it(monkeypatch, tmp
         asyncio.run(run.plan_execute())
     assert "put the open questions into suggestions" in run.session.feedback[0]
     assert run.layer is Layer.EXECUTOR
+
+
+@needs_bundler
+@pytest.mark.parametrize("layer", ["outer", "plan"])
+@pytest.mark.parametrize("protocol", ["tool", "text"])
+def test_saved_candidate_refuses_questions_in_both_protocols(monkeypatch, tmp_path, layer, protocol):
+    """保存后 Outer/Plan 的工具和文本提问都留在当前层纠错，随后仍可交付已回看的候选。"""
+    questions = ["需要再加描边吗？"]
+    question = (call("ask", "tools_plan_execute", {"action": "ask", "questions": questions}) if protocol == "tool" else
+                AssistantMessage(content=json.dumps({"questions": questions, **({"status": "needs_input", "summary": "需要选择外观"} if layer == "plan" else {})})))
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("delegate", "tools_plan_execute", {"action": "delegate"}),
+        call("save", "effect_save", {}),
+        report("blocked", status="blocked", summary="需要选择外观"),
+        *([call("return", "tools_plan_execute", {"action": "stop"})] if layer == "outer" else []),
+        question,
+        call("complete", "tools_plan_execute", {"action": "complete"}),
+    ])
+    result = asyncio.run(run.plan_execute())
+    assert harness.roles[-1] == layer
+    assert "already saved a candidate" in harness.options[-1]["data"]
+    assert harness.published == [result["published"]]
+    assert run.session.sheet_seen == result["published"]
+
+
+def test_outer_text_question_before_saving_still_reaches_the_user(monkeypatch, tmp_path):
+    """尚未保存候选时，文本协议仍允许必要澄清，不生成版本。"""
+    questions = ["需要使用哪张参考图？"]
+    run, harness, _ = free_run(monkeypatch, tmp_path, [AssistantMessage(content=json.dumps({"questions": questions}))])
+    assert asyncio.run(run.plan_execute()).questions == questions
+    assert not harness.published
 
 
 def intent_message(instruction, images=()):
