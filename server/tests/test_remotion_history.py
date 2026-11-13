@@ -20,7 +20,7 @@ from pydantic import SecretStr, ValidationError
 from sqlalchemy import func, select, update
 from server.remotion_templates import deletion, history
 from server.remotion_templates import store as store_module
-from server.remotion_templates.media import save_image
+from .legacy_remotion import save_image
 from server.remotion_templates.models import (
     DialogueOutput,
     GenerateTemplateRequest,
@@ -30,7 +30,8 @@ from server.remotion_templates.models import (
     TaskMessage,
 )
 from server.remotion_templates.routes import router
-from server.remotion_templates.runtime import REFERENCE_MEANINGS, Runtime, reference_images
+from server.remotion_templates.runtime import Runtime
+from server.remotion_templates.references import REFERENCE_MEANINGS, reference_images
 from server.remotion_templates.store import NotFound, Store, asset_key, now
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.tables import (
@@ -53,6 +54,8 @@ OTHER_HEADERS = {"X-IMV-Device": str(OTHER)}
 @pytest.fixture
 def history_store(tmp_path, template_db):
     """Use the per-test SQLite stand-in for MySQL and local objects, never the user's data or models."""
+    from server.remotion_templates.tables import legacy_metadata
+    legacy_metadata.create_all(template_db)
     store = Store(tmp_path / "history")
     store.initialize()
     return store
@@ -175,7 +178,7 @@ def test_public_history_tracks_inputs_and_hides_repairs(history_store):
 
 
 def test_saved_agent_reply_allows_job_reads_and_acknowledgement(history_app, history_store):
-    """另一字效生成器保存的结构化回复不应阻断任务读取或事件确认，读取与确认后仍保留原回复。"""
+    """另一字效生成器保存的结构化回复不应阻断任务读取或事件确认，读取保留原回复，客户端确认后清掉服务端副本。"""
     work, job = history_store.create(GenerateTemplateRequest(description="标题"), DEVICE)
     history_store.claim()
     job = history_store.update(job.id, status="succeeded", stage="finished")
@@ -195,9 +198,9 @@ def test_saved_agent_reply_allows_job_reads_and_acknowledgement(history_app, his
         assert acknowledged.status_code == 204, acknowledged.text
 
     assert history_store.work_events(work.id, 0) == []
-    assert history_store.job(job.id).reply.model_dump() == reply
+    assert history_store.job(job.id).reply is None
     with history_store.reading() as db:
-        assert json.loads(db.execute(select(jobs.c.data).where(jobs.c.id == str(job.id))).scalar_one()) == data
+        assert json.loads(db.execute(select(jobs.c.data).where(jobs.c.id == str(job.id))).scalar_one()) == data | {"reply": None}
 
 
 def test_history_and_state_rollback_together(history_store, monkeypatch):
@@ -390,16 +393,12 @@ def test_history_images_remain_readable_and_integrity_checked(history_app, histo
     buffer = BytesIO()
     Image.new("RGB", (8, 8), "red").save(buffer, format="PNG")
     with TestClient(history_app) as client:
-        uploaded = client.post(
-            "/assets", headers=DEVICE_HEADERS, files={"file": ("reference.png", buffer.getvalue(), "image/png")}
-        )
-        assert uploaded.status_code == 201
-        asset_id = uploaded.json()["id"]
+        asset_id = str(save_image(buffer.getvalue(), history_store, history_app.state.runtime.settings, DEVICE).id)
         assert client.post("/works", headers=OTHER_HEADERS, json={"images": [{"asset_id": asset_id}]}).status_code == 404
         work = client.post("/works", headers=DEVICE_HEADERS, json={"images": [{"asset_id": asset_id}]}).json()["work"]["id"]
         message = history_store.work_events(work, 0)[0]
         assert message.type == "message.created" and message.data["image_asset_ids"] == [asset_id]
-        image = client.get(f"/assets/{asset_id}")
+        image = client.get(f"/assets/{asset_id}", headers=DEVICE_HEADERS)
         assert image.status_code == 200
         assert image.headers["content-type"] == "image/png"
         stored = history_store.root / "objects" / asset_key(asset_id)
@@ -407,11 +406,11 @@ def test_history_images_remain_readable_and_integrity_checked(history_app, histo
         assert stored.is_file() and cached.is_file()
         stored.write_bytes(b"corrupted")
         cached.unlink()
-        assert client.get(f"/assets/{asset_id}").status_code == 409
+        assert client.get(f"/assets/{asset_id}", headers=DEVICE_HEADERS).status_code == 409
         stored.unlink()
-        assert client.get(f"/assets/{asset_id}").status_code == 404
-        assert client.get(f"/assets/{uuid4()}").status_code == 404
-        assert client.get("/assets/not-a-uuid").status_code == 422
+        assert client.get(f"/assets/{asset_id}", headers=DEVICE_HEADERS).status_code == 404
+        assert client.get(f"/assets/{uuid4()}", headers=DEVICE_HEADERS).status_code == 404
+        assert client.get("/assets/not-a-uuid", headers=DEVICE_HEADERS).status_code == 422
 
 
 def test_ack_deletes_delivered_events_and_prunes_finished_jobs(history_app, history_store):
@@ -424,6 +423,7 @@ def test_ack_deletes_delivered_events_and_prunes_finished_jobs(history_app, hist
     store.update(first.id, status="answered", answer="好")
     latest = store.enqueue(work.id, JobInput(mode="edit", instruction="再改"), None)
     store.update(latest.id, status="failed")
+    checkpoint = store.client_context(work.id)
     with TestClient(history_app) as client:
         response = client.post(f"/works/{work.id}/ack", headers=DEVICE_HEADERS, json={"cursor": cursor(store, work.id)})
         assert response.status_code == 204
@@ -436,7 +436,7 @@ def test_ack_deletes_delivered_events_and_prunes_finished_jobs(history_app, hist
         store.job(first.id)
     runtime = Runtime(store, None, None)
     runtime.notify = lambda *args: None
-    retried = runtime.retry(latest.id)
+    retried = runtime.retry(latest.id, context=checkpoint)
     assert [event.data["text"] for event in store.work_events(work.id, 0) if event.type == "message.created"] == ["重试本次制作。"]
     assert store.job(retried.id).status == "queued"
 
@@ -785,21 +785,22 @@ def test_parameter_work_is_refused_but_conversation_is_not(history_app, history_
     with TestClient(history_app) as client:
         work_id = client.post("/works", headers=DEVICE_HEADERS, json={"description": "标题"}).json()["work"]["id"]
         job = history_store.latest_job(work_id)
+        context = {"work_id": work_id, "job_id": str(job.id), "state": "[]"}
         reached = []
         runtime.message = lambda *args: reached.append("message") or job
         runtime.retry = lambda *args, **kwargs: reached.append("retry") or job
         runtime.sandbox_problem = lambda: MISSING_SANDBOX
 
-        patch = client.post(f"/works/{work_id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"size": 80}})
+        patch = client.post(f"/works/{work_id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"size": 80}, "context": context})
         assert patch.status_code == 503 and "darwin" in patch.json()["detail"]
         for body in ({"instruction": "这个模板能做什么？"}, {"instruction": "改大"},
                      {"instruction": "白色", "reply_to_job_id": str(job.id)}):
-            assert client.post(f"/works/{work_id}/messages", headers=DEVICE_HEADERS, json=body).status_code == 202
+            assert client.post(f"/works/{work_id}/messages", headers=DEVICE_HEADERS, json={**body, "context": context}).status_code == 202
         assert reached == ["message"] * 3
 
-        assert client.post(f"/jobs/{job.id}/retry", headers=DEVICE_HEADERS).status_code == 202
-        monkeypatch.setattr(history_store, "inputs", lambda _id: JobInput(mode="parameters", parameters={"size": 80}))
-        assert client.post(f"/jobs/{job.id}/retry", headers=DEVICE_HEADERS).status_code == 503
+        assert client.post(f"/jobs/{job.id}/retry", headers=DEVICE_HEADERS, json=context).status_code == 202
+        context["input"] = {"mode": "parameters", "parameters": {"size": 80}}
+        assert client.post(f"/jobs/{job.id}/retry", headers=DEVICE_HEADERS, json=context).status_code == 503
         assert reached == ["message"] * 3 + ["retry"]
 
 
@@ -857,7 +858,7 @@ def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
     runtime.harness = Harness()
     asyncio.run(runtime._execute(reply.id))
     images, intent, window = seen.pop()
-    assert images == [history_store.asset_path(original.id), history_store.asset_path(answer.id)]
+    assert [path.stem for path in images] == [str(original.id), str(answer.id)]
     assert intent["reference_images"] == [
         {"asset_id": str(original.id), "source": "work_original", "meaning": REFERENCE_MEANINGS["work_original"]},
         {"asset_id": str(answer.id), "source": "clarification_answer", "clarification": 0,
@@ -879,7 +880,7 @@ def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
     assert (message.text, message.image_asset_ids) == ("改成这样", [later.id])
     asyncio.run(runtime._execute(follow.id))
     images, intent, _ = seen.pop()
-    assert images == [history_store.asset_path(original.id), history_store.asset_path(later.id), history_store.asset_path(answer.id)]
+    assert [path.stem for path in images] == [str(original.id), str(later.id), str(answer.id)]
     assert [(entry["asset_id"], entry["source"]) for entry in intent["reference_images"]] == [
         (str(original.id), "work_original"), (str(later.id), "message"), (str(answer.id), "earlier_message"),
     ]
@@ -912,7 +913,7 @@ def test_a_work_carries_earlier_turns_into_the_next_task(history_store, monkeypa
     third = runtime.message(work.id, TaskMessage(instruction="再改一下"))
     asyncio.run(runtime._execute(third.id))
     images, intent, window, versions = seen[-1]
-    assert images == [history_store.asset_path(original.id), history_store.asset_path(later.id)]
+    assert [path.stem for path in images] == [str(original.id), str(later.id)]
     assert [(entry["asset_id"], entry["source"]) for entry in intent["reference_images"]] == [(str(original.id), "work_original"), (str(later.id), "earlier_message")]
     records = [json.loads(message["content"].split(": ", 1)[1])["task_outcome"] for message in window if message["content"].startswith("Host record (data): ")]
     assert [record["status"] for record in records] == ["failed", "answered"] and records[0]["error"] == "画不出来"

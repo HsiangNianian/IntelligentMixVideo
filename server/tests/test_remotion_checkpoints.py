@@ -176,7 +176,10 @@ def test_runtime_retains_progress_on_timeout_and_continues_a_followup(store, tmp
     asyncio.run(runtime._execute(follow.id))
     assert received[-1]["checkpoint"] == checkpoint
     # A private recovery snapshot is not emitted as public task state or conversation input.
-    assert "already finished animation" not in json.dumps([event.model_dump(mode="json") for event in store.work_events(work.id, 0)])
+    # Private recovery is delivered to the owning client, independently of visible chat and job responses.
+    delivered = store.client_context(work.id)
+    assert delivered.input.checkpoint == checkpoint
+    assert "already finished animation" not in json.dumps([event.data for event in store.work_events(work.id, 0) if event.type == "message.created"])
     assert "checkpoint" not in received[-1]["intent"]
 
 

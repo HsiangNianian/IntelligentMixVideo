@@ -2,13 +2,14 @@
 import { updateFetch as fetch } from "@/lib/update-guard";
 import type {
   Composition,
+  ClientContext,
   DiagnosticsReport,
   Job,
   Values,
   Version,
   WorkEvent,
 } from "./model";
-import { deviceId } from "./localSessions";
+import { context, decodeImage, deviceId, encodeImage, image as localImage, saveContext, server, storage } from "./localSessions";
 import { readSettings } from "@/features/settings/api";
 import { apiBase } from "@/lib/api-base";
 
@@ -28,7 +29,7 @@ export class ApiError extends Error {
   }
 }
 
-/** 503 的 detail 是服务端自己编写的就绪原因（缺沙箱、未配置模型等）；缺失或不是文本时回退到通用提示。 */
+/** 读取服务端固定的就绪或窗口丢失说明；缺失或不是文本时回退到通用提示。 */
 async function serviceDetail(response: Response): Promise<string | null> {
   try {
     const body: unknown = await response.json();
@@ -65,7 +66,8 @@ async function request<T>(
       },
     });
     if (!response.ok) {
-      const detail = response.status === 503 ? await serviceDetail(response) : null;
+      const detail = response.status === 503 || (response.status === 409 && path.endsWith("/context"))
+        ? await serviceDetail(response) : null;
       throw new ApiError(
         response.status,
         detail ??
@@ -116,29 +118,31 @@ export function capabilities(
   return modelRequest("/capabilities", { signal });
 }
 /** 上传参考图片；浏览器负责 multipart 边界，图片不作为背景视频。 */
-export function upload(
+export async function upload(
   image: File,
   signal?: AbortSignal,
 ): Promise<{ id: string }> {
   const form = new FormData();
   form.append("file", image);
-  return request("/assets", { method: "POST", body: form, signal });
+  const result = await request<{ id: string; data: string }>("/assets", { method: "POST", body: form, signal });
+  await storage().putImage(server(), result.id, decodeImage(result.data));
+  return { id: result.id };
 }
 /** 首次发送才创建作品；尚未收到 ID 的请求不自动重试。「关键词字效」「双栏」「双语字幕」只在打开时携带，关闭时沿用服务端默认值。 */
-export function create(
+export async function create(
   description: string,
   assets: string[] = [],
   composition?: Composition,
   switches: { keywordEffect?: boolean; twoTier?: boolean; bilingual?: boolean } = {},
 ): Promise<{
-  work: { id: string; current_version_id: string | null; created_at: string; request: { description?: string | null } };
+  work: { id: string; current_version_id: string | null; created_at: string; request: { description?: string | null; images?: { asset_id: string }[] } };
   job: Job;
 }> {
   return modelRequest("/works", {
     method: "POST",
     body: JSON.stringify({
       ...(description.trim() ? { description: description.trim() } : {}),
-      ...(assets.length ? { images: assets.map((asset_id) => ({ asset_id })) } : {}),
+      ...(assets.length ? { images: assets.map((asset_id) => ({ asset_id })), assets: await imagePayloads(assets) } : {}),
       ...(composition ? { composition } : {}),
       ...(switches.keywordEffect ? { keyword_effect: true } : {}),
       ...(switches.twoTier ? { two_tier: true } : {}),
@@ -147,7 +151,7 @@ export function create(
   });
 }
 /** 自然语言修改（文字和／或参考图）、澄清和参数共用同一端点，显式绑定成功版本或问题任务。 */
-export function message(
+export async function message(
   work: string,
   body: {
     instruction?: string;
@@ -157,10 +161,24 @@ export function message(
     reply_to_job_id?: string;
   },
 ): Promise<Job> {
+  const checkpoint = await modelContext(work);
+  const ids = [...(checkpoint.image_ids ?? []), ...(body.images ?? []).map((image) => image.asset_id)];
   return modelRequest(`/works/${encodeURIComponent(work)}/messages`, {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, context: checkpoint, ...(body.parameters || !ids.length ? {} : { assets: await imagePayloads(ids) }) }),
   });
+}
+/** 优先原样复用本地窗口；首次迁移或终态回执未到时补取，落盘成功后才发送。 */
+async function modelContext(work: string): Promise<ClientContext> {
+  const saved = await context(work);
+  if (saved) return saved;
+  const checkpoint = await request<ClientContext>(`/works/${encodeURIComponent(work)}/context`);
+  await saveContext(work, checkpoint);
+  return checkpoint;
+}
+/** 从本地二进制存储自动组装本次所需图片，稳定 ID 与 PNG 字节不随重试改变。 */
+async function imagePayloads(ids: string[]) {
+  return Promise.all([...new Set(ids)].map(async (id) => ({ id, data: encodeImage(await localImage(id)) })));
 }
 /** 只读取已验收版本。 */
 export function version(id: string, signal?: AbortSignal): Promise<Version> {
@@ -200,9 +218,12 @@ export function cancel(id: string): Promise<Job> {
   return request(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
 }
 /** 由用户明确重试已结束任务，避免网络故障产生重复生成。 */
-export function retry(id: string): Promise<Job> {
+export async function retry(id: string, work?: string): Promise<Job> {
+  const project = work ?? (await job(id)).project_id;
+  const checkpoint = await modelContext(project);
   return modelRequest(`/jobs/${encodeURIComponent(id)}/retry`, {
     method: "POST",
+    body: JSON.stringify({ ...checkpoint, ...(checkpoint.image_ids?.length ? { assets: await imagePayloads(checkpoint.image_ids) } : {}) }),
   });
 }
 

@@ -13,7 +13,7 @@ import { useTemplateSession } from "@/features/remotion_templates/useTemplateSes
 import { publishSprite } from "@/features/sprites/api";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { PublishSpriteResponseSchema, SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
-import type { LoopRound, SessionJob, WorkEvent } from "@/features/remotion_templates/model";
+import type { ClientContext, LoopRound, SessionJob, WorkEvent } from "@/features/remotion_templates/model";
 import { remotionJob } from "./remotion-fixtures";
 import { remotionServer, seed } from "./remotion-server";
 import { fetchMock, mockDesktop } from "./setup";
@@ -21,6 +21,10 @@ import contract from "./remotion-sessions-contract.json";
 import { apiBase, setApiBase } from "@/lib/api-base";
 
 const ROUND: LoopRound = { layer: "outer", turn: 1, calls: [{ tool: "tools.plan_execute", status: "pass" }] };
+/** 模型窗口原文（保留 JSON 空格与转义），与可见聊天记录分开存储。 */
+const CONTEXT: ClientContext = {
+  work_id: "work-1", job_id: "job-1", state: '[[{"role": "user", "content": "白字  保留\\n换行"}]]',
+};
 
 /** 一条服务端事件，编号与类型由调用方指定。 */
 function event(id: number, payload: Pick<WorkEvent, "type" | "data">): WorkEvent {
@@ -44,6 +48,11 @@ function desktopStorage(fail: (operation: string) => boolean = () => false) {
     const { operation, payload } = call;
     if (fail(operation)) throw "读写本地会话库失败";
     if (operation === "device") return memory.device();
+    if (operation === "put_image") return memory.putImage(payload.server, payload.id, local.decodeImage(payload.data));
+    if (operation === "image") {
+      const bytes = await memory.image(payload.server, payload.id);
+      return bytes ? local.encodeImage(bytes) : null;
+    }
     if (operation === "works") return memory.works(payload.server);
     if (operation === "work") return memory.work(payload.server, payload.id);
     if (operation === "messages") return memory.messages(payload.server, payload.work, payload.before, payload.limit);
@@ -116,6 +125,89 @@ test("成功版本写入作品指针", async () => {
   await local.apply("work-1", [event(5, { type: "version.ready", data: { version_id: "version-9", job_id: "job-1" } })]);
   expect((await local.snapshot("work-1")).work.current_version_id).toBe("version-9");
   expect((await local.history())[0]).toMatchObject({ id: "work-1", current_version_id: "version-9", title: "本地标题" });
+});
+
+// 页面重新加载仍能取回模型原文；窗口只保存在作品行，聊天快照与历史任务不再各存一份。
+test("模型窗口和终态原子保存到 IndexedDB，刷新后仍可重放", async () => {
+  await browserDatabase(async () => {
+    await recordWork();
+    await local.apply("work-1", [event(1, { type: "job.updated", data: { ...running("answered"), context: CONTEXT } })]);
+    local.setStorage(undefined);
+    expect(await local.context("work-1")).toEqual(CONTEXT);
+    expect((await local.snapshot("work-1")).job).not.toHaveProperty("context");
+    expect((await local.storage().jobs(local.server(), "work-1", ["job-1"]))[0]).not.toHaveProperty("context");
+    await local.forget("work-1");
+    expect(await local.context("work-1")).toBeNull();
+  });
+});
+
+// 新请求从本地取原文；重试也携带同一份，不能只上传 UI 聊天或重新序列化模型消息。
+test("消息和重试原样携带本地模型窗口", async () => {
+  await recordWork();
+  await local.saveContext("work-1", CONTEXT);
+  fetchMock.mockResolvedValueOnce(Response.json(remotionJob("queued")));
+  fetchMock.mockResolvedValueOnce(Response.json(remotionJob("queued")));
+  await api.message("work-1", { instruction: "加粗" });
+  await api.retry("job-1", "work-1");
+  expect(fetchMock.mock.calls).toHaveLength(2);
+  expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ instruction: "加粗", context: CONTEXT });
+  expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual(CONTEXT);
+});
+
+// 旧会话首次补取窗口后必须等本地落盘，落盘失败不发送新任务；修复后可以再次补取并继续。
+test("迁移窗口写入失败时不提交，重试先落盘再发送", async () => {
+  await recordWork();
+  let writes = 0;
+  fetchMock.mockImplementation((async (url: RequestInfo | URL) => {
+    if (String(url).endsWith("/context")) return Response.json(CONTEXT);
+    expect(await local.context("work-1")).toEqual(CONTEXT);
+    writes++;
+    return Response.json(remotionJob("queued"));
+  }) as typeof fetch);
+  spyOn(local.storage(), "save").mockRejectedValueOnce(new local.LocalStoreError("磁盘已满"));
+  await expect(api.message("work-1", { instruction: "继续" })).rejects.toThrow("磁盘已满");
+  expect(writes).toBe(0);
+  expect(await local.context("work-1")).toBeNull();
+  await api.message("work-1", { instruction: "继续" });
+  expect(writes).toBe(1);
+});
+
+// 窗口与任务错配时不推进游标，调用方也就不能 ACK；来自旧任务的合法迟到回执不能替换最新窗口。
+test("窗口错配不确认，旧任务回执不覆盖最新窗口", async () => {
+  await recordWork();
+  await expect(local.apply("work-1", [event(1, {
+    type: "job.updated", data: { ...running("answered"), context: { ...CONTEXT, work_id: "work-2" } },
+  })])).rejects.toBeInstanceOf(local.LocalStoreError);
+  expect((await local.snapshot("work-1")).cursor).toBe(0);
+  await local.apply("work-1", [event(1, { type: "job.updated", data: { ...running("answered"), context: CONTEXT } })]);
+  const next = { ...CONTEXT, job_id: "job-2", state: "[]" };
+  await local.track({ ...remotionJob("queued"), id: "job-2" });
+  expect(await local.context("work-1")).toBeNull();
+  await local.apply("work-1", [event(2, {
+    type: "job.updated", data: { ...running("answered"), id: "job-2", created_at: "2026-09-14T09:00:00Z", context: next },
+  })]);
+  await local.apply("work-1", [event(3, { type: "job.updated", data: { ...running("answered"), context: CONTEXT } })]);
+  expect(await local.context("work-1")).toEqual(next);
+});
+
+// 写入终态失败时 SSE 不确认；修复本地库后恢复读取，模型窗口与终态一起送达并确认。
+test("模型窗口落盘后才确认服务端清理", async () => {
+  const fake = remotionServer((path) => path === "/works"
+    ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") }) : undefined);
+  await seed("恢复上下文");
+  const { result } = renderHook(() => useTemplateSession(() => {}));
+  act(() => result.current.select("work-1"));
+  await waitFor(() => expect(result.current.connection).toBe("live"));
+  const before = Math.max(0, ...(fake.acks.get("work-1") ?? []));
+  spyOn(local.storage(), "save").mockRejectedValueOnce(new local.LocalStoreError("磁盘写入失败"));
+  act(() => fake.emit("work-1", { type: "job.updated", data: { ...running("answered"), context: CONTEXT } }));
+  const terminal = fake.emitted.at(-1)!.id;
+  await waitFor(() => expect(result.current.error).toContain("磁盘写入失败"));
+  expect(Math.max(0, ...(fake.acks.get("work-1") ?? []))).toBe(before);
+  expect(await local.context("work-1")).toBeNull();
+  act(() => result.current.retry());
+  await waitFor(async () => expect(await local.context("work-1")).toEqual(CONTEXT));
+  await waitFor(() => expect(fake.acks.get("work-1")).toContain(terminal));
 });
 
 // 同一会话的读写串行：恢复读取排在进行中的事件写入之后，读到的游标包含这批事件；后台同步与 SSE 不会交错写入。
@@ -455,5 +547,48 @@ test("桌面会话存储的 IPC 参数符合 Rust 契约夹具", async () => {
   await local.history();
   await local.markDeleting("work-1");
   await local.forget("work-1");
+  await local.storage().putImage(local.server(), "image-contract", new Uint8Array([0, 127, 255]));
+  expect(await local.storage().image(local.server(), "image-contract")).toEqual(new Uint8Array([0, 127, 255]));
   expect(calls).toEqual(contract);
+});
+
+// 刷新后图片和恢复点都从本地取，后端已清理也能直接重试；顺序和 PNG 字节保持不变。
+test("图片与恢复点刷新后自动随重试发送，删除会话只清理其独占图片", async () => {
+  await browserDatabase(async () => {
+    await recordWork();
+    const bytes = new Uint8Array([0, 255, 120]);
+    await local.storage().putImage(local.server(), "image-local", bytes);
+    const checkpoint = { ...CONTEXT, image_ids: ["image-local"], input: { checkpoint: { files: { "Effect.tsx": "const saved = 1;" } } } };
+    await local.apply("work-1", [event(1, { type: "job.updated", data: { ...running("failed"), context: checkpoint } })]);
+    local.setStorage(undefined);
+    fetchMock.mockResolvedValueOnce(Response.json(remotionJob("queued")));
+    await api.retry("job-1", "work-1");
+    expect(fetchMock.mock.calls).toHaveLength(1);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      ...checkpoint, assets: [{ id: "image-local", data: local.encodeImage(bytes) }],
+    });
+    await local.record({ id: "other", current_version_id: null, created_at: "2026-01-01", request: { images: [{ asset_id: "image-local" }] } }, { ...remotionJob(), id: "other-job", project_id: "other" });
+    await local.forget("work-1");
+    expect(await local.storage().image(local.server(), "image-local")).toEqual(bytes);
+    await local.forget("other");
+    expect(await local.storage().image(local.server(), "image-local")).toBeNull();
+  });
+});
+
+// 图片迁移失败不能推进游标；重试成功才连同关联一起保存，后续不再读取云端图片。
+test("旧图片迁移落盘后才保存终态游标", async () => {
+  await recordWork();
+  const storage = local.storage();
+  const put = spyOn(storage, "putImage").mockRejectedValueOnce(new local.LocalStoreError("disk full"));
+  fetchMock.mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": "image/png" } }));
+  const terminal = event(1, { type: "job.updated", data: { ...running("failed"), context: { ...CONTEXT, legacy_image_ids: ["old-image"] } } });
+  await expect(local.apply("work-1", [terminal])).rejects.toThrow("disk full");
+  expect((await local.snapshot("work-1")).cursor).toBe(0);
+  put.mockRestore();
+  fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])));
+  await local.apply("work-1", [terminal]);
+  expect((await local.snapshot("work-1")).cursor).toBe(1);
+  const count = fetchMock.mock.calls.length;
+  expect(await local.image("old-image")).toEqual(new Uint8Array([1, 2, 3]));
+  expect(fetchMock.mock.calls).toHaveLength(count);
 });

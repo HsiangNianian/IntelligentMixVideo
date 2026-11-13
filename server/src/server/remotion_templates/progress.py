@@ -41,7 +41,7 @@ PUBLIC_TOOLS = {
     "preset.search", "sprite.compose", "sprite.create", "validate.code",
     "validate.render", "image.info", "image.resize", "image.crop",
     "workspace.read", "workspace.write", "workspace.edit", "preview.render",
-    "validate.check", "effect.save", "library.search", "image.inspect",
+    "validate.check", "effect.save", "library.search", "library.read", "image.inspect",
 }
 CALL_TEXT_LIMIT = 2000
 ARGUMENTS_LIMIT = 4000
@@ -52,6 +52,8 @@ PUBLIC_ERRORS = {
     "CODE_VALIDATION_FAILED": "代码校验未通过。",
     "COMPOSITION_FAILED": "组合生成失败。",
     "PRESET_STORE_FAILED": "预设保存失败。",
+    "SOURCE_STORE_FAILED": "共享源码库暂不可用。",
+    "SOURCE_NOT_FOUND": "共享源码不存在。",
     "SPRITE_STORE_FAILED": "字效保存失败。",
     "PRESET_NOT_FOUND": "预设不存在。",
     "VALIDATION_UNAVAILABLE": "校验环境暂不可用，请检查服务端校验环境。",

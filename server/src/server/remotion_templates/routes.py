@@ -6,6 +6,7 @@ and need no header, like the public-read objects behind them.
 """
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -13,7 +14,7 @@ import re
 from pathlib import Path
 from collections.abc import Sequence
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import (
     APIRouter,
@@ -35,10 +36,13 @@ from .settings import ClientSettings
 from .fonts import SYSTEM_FONT_ID, Font, FontExists, FontRejected, FontStore, Slot, cards
 from .managed_fonts import ManagedFont, bundled_font, managed_font, selected_font
 from .history import WorkEvent
-from .media import save_image
+from .media import normalize_image
 from .object_store import ObjectStoreError
 from .models import (
-    Asset,
+    ImagePayload,
+    CreateWorkRequest,
+    RetryRequest,
+    ClientContext,
     GenerateTemplateRequest,
     PublicJob,
     PublicVersion,
@@ -158,35 +162,31 @@ def capabilities(service: Service, config: Config) -> dict:
 
 @router.post(
     "/assets",
-    response_model=Asset,
+    response_model=ImagePayload,
     status_code=201,
     tags=["参考素材"],
-    summary="上传参考图片",
+    summary="规范化本地参考图片",
 )
-async def upload(service: Service, owner: Device, file: Annotated[UploadFile, File()]) -> Asset:
-    """通过 multipart 表单的 `file` 字段上传单帧 PNG、JPEG 或 WebP 图片。
-
-    图片经校验后统一保存为 PNG，返回的 `id` 可用于创建作品或后续消息 `images` 中的 `asset_id`。
-    默认大小上限为 10 MiB；超限返回 413，内容无效返回 422。
-    上传后 24 小时仍未被任何作品或消息引用的图片（例如消息提交失败）由服务端每小时的清理回收。
-    """
+async def upload(service: Service, owner: Device, file: Annotated[UploadFile, File()]) -> ImagePayload:
+    """校验并规范化为 PNG，直接返回客户端写入 SQLite；不写 MySQL、磁盘素材库或 ZOS。"""
     try:
         content = await file.read(service.settings.max_upload_bytes + 1)
         if len(content) > service.settings.max_upload_bytes:
             raise HTTPException(413, "Image exceeds the upload size limit.")
         try:
-            return await asyncio.to_thread(save_image, content, service.store, service.settings, owner)
+            payload = await asyncio.to_thread(normalize_image, content, service.settings)
+            return ImagePayload(id=uuid4(), data=base64.b64encode(payload).decode("ascii"))
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         except OSError as exc:
-            raise HTTPException(503, "参考图暂时无法保存，请稍后重试。") from exc
+            raise HTTPException(503, "参考图暂时无法处理，请稍后重试。") from exc
     finally:
         await file.close()
 
 
 @router.post("/works", status_code=202, tags=["模板作品"], summary="创建作品并生成模板")
 async def create(
-    request: GenerateTemplateRequest, service: Service, owner: Device, config: Config
+    request: CreateWorkRequest, service: Service, owner: Device, config: Config
 ) -> dict[str, TemplateProject | PublicJob]:
     """根据文字描述和／或参考图片创建作品，并提交异步生成任务。
 
@@ -199,9 +199,11 @@ async def create(
     if not settings.models_configured:
         raise HTTPException(503, "请配置 Agent 模型及密钥")
     require_sandbox(service)
-    for image in request.images:
-        service.store.asset(image.asset_id, owner)
-    project, job = service.store.create(request, owner)
+    try:
+        project, job = await asyncio.to_thread(service.store.create,
+            GenerateTemplateRequest.model_validate(request.model_dump(exclude={"assets"})), owner, request.assets)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     service.notify(job.id, config)
     return {"work": project, "job": PublicJob.from_job(job)}
 
@@ -231,7 +233,7 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service, owner: Dev
     """通过参数补丁 `parameters` 或自然语言 `instruction` 修改模板，两者必须二选一。
 
     自然语言修改由 `instruction` 和／或参考图片 `images`（`POST /assets` 返回的 ID，最多 4 张、不能重复）组成，至少提供一项；
-    本次任务连同作品的原参考图一起读取这些图片，图片不能与参数补丁同时提交。
+    客户端通过 `assets` 提供本地所需图片字节，连同原参考图用于本次任务；图片不能与参数补丁同时提交。
     默认基于当前成功版本，也可用 `base_version_id` 指定历史成功版本。
     回答问题时用 instruction 和／或 images 提交答案，并用 reply_to_job_id 绑定提出问题的任务；回答沿用该任务已有的参考图片。
     图片不存在时返回 404，属于正在删除的会话时返回 409。
@@ -243,6 +245,8 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service, owner: Dev
     尚无成功版本的会话也可继续提问或描述生成需求；参数修改仍须已有成功版本。
     """
     service.store.project(work_id, owner)
+    if request.context is None:
+        raise HTTPException(409, "请升级客户端并从本地会话提交上下文。")
     # Deciding may download the base's player bundle; doing it in a thread also warms the cache `_start` reads.
     if request.parameters is not None and await asyncio.to_thread(
         parameters_need_sandbox, service, request.base_version_id, work_id,
@@ -322,19 +326,33 @@ async def cancel(job_id: UUID, service: Service, owner: Device) -> PublicJob:
     tags=["生成任务"],
     summary="重试生成任务",
 )
-async def retry(job_id: UUID, service: Service, owner: Device, config: Config) -> PublicJob:
+async def retry(job_id: UUID, service: Service, owner: Device, config: Config, context: RetryRequest | None = None) -> PublicJob:
     """为失败、已取消或中断的任务创建一次新的执行，返回新的任务 ID。
 
     保留已完成的代码修改、当前步骤与最近工具回执，从最后恢复点继续；保存和发布前重新验证，
     不复用旧渲染文件。没有恢复点的旧任务按原需求开始；不符合重试条件时返回 409。
     更早版本的参数修订任务重试需要渲染校验环境，缺失时返回 503；组合版本的参数修订与对话类任务仍可重试，环境问题在校验工具调用时报告。
     """
-    if service.store.inputs(job_id).mode == "parameters" and await asyncio.to_thread(
-        parameters_need_sandbox, service, service.store.job(job_id, owner).base_version_id,
+    current = service.store.job(job_id, owner)
+    if context is None:
+        raise HTTPException(409, "请升级客户端并从本地会话提交上下文。")
+    if context.input is not None and context.input.mode == "parameters" and await asyncio.to_thread(
+        parameters_need_sandbox, service, current.base_version_id,
     ):
         require_sandbox(service)
-    service.store.job(job_id, owner)
-    return PublicJob.from_job(service.retry(job_id, config=config))
+    try:
+        return PublicJob.from_job(service.retry(job_id, config=config,
+            context=ClientContext.model_validate(context.model_dump(exclude={"assets"})), payloads=context.assets))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+
+@router.get("/works/{work_id}/context", response_model=ClientContext, tags=["生成任务"])
+def context_checkpoint(work_id: UUID, service: Service, owner: Device) -> ClientContext:
+    """取回尚未送达或待迁移的模型窗口；客户端先本地落盘，之后的请求原样带回。"""
+    service.store.project(work_id, owner)
+    return service.store.client_context(work_id)
 
 
 def artifact_path(service: Runtime, version_id: UUID, filename: str) -> Path:
@@ -695,8 +713,9 @@ async def font_preview(font_id: str, service: Service) -> FileResponse:
 
 
 @router.get("/assets/{asset_id}", tags=["参考素材"], summary="读取历史参考图片")
-def asset_image(asset_id: UUID, service: Service) -> Response:
+def asset_image(asset_id: UUID, service: Service, owner: Device) -> Response:
     """读取已登记、去除元数据的 PNG，供历史聊天显示；缺失返回 404，损坏返回 409。"""
+    service.store.asset(asset_id, owner)
     try:
         payload = service.store.asset_path(asset_id).read_bytes()
     except FileNotFoundError as exc:

@@ -87,7 +87,7 @@ test("刷新恢复历史图片、成功版本和服务端时间", async () => {
   localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, "work-1");
   const view = render(<RemotionWorkspace />);
   const image = await screen.findByAltText<HTMLImageElement>("历史参考图片");
-  expect(image.src).toBe(api.apiUrl("/assets/asset-1"));
+  await waitFor(() => expect(image.src).toStartWith("blob:"));
   await waitFor(() => expect(fake.streams.size).toBe(1));
   view.unmount();
   await waitFor(() => expect(fake.streams.size).toBe(0));

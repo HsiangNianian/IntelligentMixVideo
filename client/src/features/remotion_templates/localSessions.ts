@@ -1,16 +1,17 @@
 /**
- * 字效会话的本地存储：聊天消息、任务公开状态与本机设备 ID 只保存在使用者这一端；版本列表与代码按需从服务端读取。
+ * 字效会话的本地存储：聊天消息、任务公开状态、模型窗口与本机设备 ID 保存在使用者这一端；版本列表与代码按需从服务端读取。
  *
  * 桌面通过 Tauri `remotion_sessions` 命令读写应用数据目录下的 SQLite；浏览器保存在当前站点的 IndexedDB，
  * 刷新或重启浏览器后仍在。会话按当前 API 服务地址归属，切换服务只看到该服务下的会话。同一会话的读写按调用顺序串行，
  * 打开会话的 SSE 订阅与后台同步（`backgroundSync.ts`）不会交错写入。两种实现共用同一存储接口，事件合并规则只在本文件实现一次：会话订阅把服务端事件交给
  * `apply` 写入本地后，再向服务端确认送达，服务端随即删除已送达的事件。
  */
-import { updateInvoke as invoke } from "@/lib/update-guard";
+import { updateFetch as fetch, updateInvoke as invoke } from "@/lib/update-guard";
 import { isTauri } from "@tauri-apps/api/core";
 import { apiBase } from "@/lib/api-base";
 import type {
   ChatMessage,
+  ClientContext,
   Job,
   SessionJob,
   SessionSnapshot,
@@ -19,7 +20,7 @@ import type {
 } from "./model";
 
 /**
- * 一条本地会话：作品指针、最新任务、侧栏标题、最后活动时间与已写入的最后事件编号。
+ * 一条本地会话：作品指针、最新任务及模型窗口、侧栏标题、最后活动时间与已写入的最后事件编号。
  * `deleting` 表示服务端已报告该作品不存在或正在清理（404/410）：本地记录保留到用户在侧栏重试删除。
  */
 export interface StoredWork {
@@ -29,12 +30,14 @@ export interface StoredWork {
   updated_at: string;
   cursor: number;
   deleting?: boolean;
+  context?: ClientContext;
 }
 /** 一次原子写入：会话行与本批新增或更新的消息、任务。 */
 export interface SessionChange {
   work: StoredWork;
   messages: ChatMessage[];
   jobs: SessionJob[];
+  image_ids?: string[];
 }
 /**
  * 本地存储后端。会话及其消息、任务按服务地址 `server` 归属（见 `server()`），不同服务的记录互不可见；
@@ -48,6 +51,8 @@ export interface SessionStorage {
   jobs(server: string, work: string, ids: string[]): Promise<SessionJob[]>;
   save(server: string, change: SessionChange): Promise<void>;
   remove(server: string, work: string): Promise<void>;
+  image(server: string, id: string): Promise<Uint8Array | null>;
+  putImage(server: string, id: string, bytes: Uint8Array): Promise<void>;
 }
 
 /** 本机没有这条会话（浏览器站点数据已清除、记录已删除或属于其他服务）；与服务端 404/410 区分。 */
@@ -60,6 +65,40 @@ export class MissingLocalWork extends Error {
 /** 本地会话库读写失败：与服务端错误区分，会话订阅据此停止并提示，而不是当作断线反复重连。 */
 export class LocalStoreError extends Error {}
 
+/** 图片通过 JSON/IPC 传输时才转 Base64，SQLite/IndexedDB 内保存二进制。 */
+export function encodeImage(bytes: Uint8Array): string {
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 8192) binary += String.fromCharCode(...bytes.subarray(at, at + 8192));
+  return btoa(binary);
+}
+/** 从传输字符串还原规范化的 PNG 字节，不重新压缩或改写图像。 */
+export function decodeImage(data: string): Uint8Array {
+  return Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+}
+/** 本批会话、消息与原始请求所关联的图片；旧记录没有这些字段时兼容空列表。 */
+function changeImages(change: SessionChange): string[] {
+  return [...new Set([
+    ...(change.image_ids ?? []),
+    ...change.messages.flatMap((message) => message.image_asset_ids ?? []),
+    ...(change.work.context?.image_ids ?? []),
+    ...(change.work.context?.legacy_image_ids ?? []),
+  ])];
+}
+/** 优先读本机；只为旧云端记录补取一次，写入失败时阻止送达确认和后续提交。 */
+export async function image(id: string): Promise<Uint8Array> {
+  const scope = server();
+  const saved = await storage().image(scope, id);
+  if (saved) return saved;
+  const response = await fetch(`${apiBase()}/api/templates/assets/${encodeURIComponent(id)}`, {
+    headers: { "X-IMV-Device": await deviceId() }, signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw new LocalStoreError(`参考图片无法从本机或旧服务恢复（${response.status}），未确认送达。`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > 30 * 1024 * 1024) throw new LocalStoreError("历史参考图片大小无效。");
+  await storage().putImage(scope, id, bytes);
+  return bytes;
+}
+
 /** 桌面实现：每个操作是一次 Rust 侧 SQLite 调用，保存在一个事务内完成。 */
 function tauriStorage(): SessionStorage {
   /** 统一调用入口；Rust 以字符串返回的中文错误包装为 LocalStoreError，原文展示。 */
@@ -71,6 +110,11 @@ function tauriStorage(): SessionStorage {
     });
   }
   return {
+    image: async (server, id) => {
+      const data = await call<string | null>("image", { server, id });
+      return data === null ? null : decodeImage(data);
+    },
+    putImage: (server, id, bytes) => call("put_image", { server, id, data: encodeImage(bytes) }),
     device: () => call("device"),
     works: (server) => call("works", { server }),
     work: (server, id) => call("work", { server, id }),
@@ -93,13 +137,21 @@ function browserStorage(): SessionStorage {
   function database() {
     if (opening) return opening;
     const current = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("imv-remotion-sessions", 1);
+      const request = indexedDB.open("imv-remotion-sessions", 2);
       request.onupgradeneeded = () => {
         const db = request.result;
-        db.createObjectStore("meta");
-        db.createObjectStore("works", { keyPath: ["server", "id"] }).createIndex("server", "server");
-        db.createObjectStore("messages", { keyPath: ["server", "id"] }).createIndex("work", ["server", "work", "sequence"]);
-        db.createObjectStore("jobs", { keyPath: ["server", "id"] }).createIndex("work", ["server", "work"]);
+        if (!db.objectStoreNames.contains("meta")) {
+          db.createObjectStore("meta");
+          db.createObjectStore("works", { keyPath: ["server", "id"] }).createIndex("server", "server");
+          db.createObjectStore("messages", { keyPath: ["server", "id"] }).createIndex("work", ["server", "work", "sequence"]);
+          db.createObjectStore("jobs", { keyPath: ["server", "id"] }).createIndex("work", ["server", "work"]);
+        }
+        if (!db.objectStoreNames.contains("images")) {
+          db.createObjectStore("images", { keyPath: ["server", "id"] });
+          const links = db.createObjectStore("imageLinks", { keyPath: ["server", "work", "id"] });
+          links.createIndex("work", ["server", "work"]);
+          links.createIndex("image", ["server", "id"]);
+        }
       };
       request.onsuccess = () => {
         const db = request.result;
@@ -154,6 +206,32 @@ function browserStorage(): SessionStorage {
   const conversation = (server: string, work: string, before = Infinity) =>
     IDBKeyRange.bound([server, work, -Infinity], [server, work, before], false, true);
   return {
+    image: (server, id) => run(["images"], "readonly", (transaction) => {
+      const request = transaction.objectStore("images").get([server, id]);
+      return () => request.result?.bytes ?? null;
+    }),
+    putImage: (server, id, bytes) => run(["images", "imageLinks"], "readwrite", (transaction) => {
+      const images = transaction.objectStore("images");
+      const previous = images.get([server, id]);
+      previous.onsuccess = () => {
+        const saved: Uint8Array | undefined = previous.result?.bytes;
+        if (saved && (saved.length !== bytes.length || saved.some((value, index) => value !== bytes[index]))) {
+          transaction.abort();
+        } else images.put({ server, id, bytes, created: Date.now() });
+      };
+      // Failed submissions can leave local images; reclaim only unassociated copies older than one day.
+      const cursor = images.openCursor();
+      cursor.onsuccess = () => {
+        const row = cursor.result;
+        if (!row) return;
+        if ((row.value.server !== server || row.value.id !== id) && row.value.created < Date.now() - 86_400_000) {
+          const count = transaction.objectStore("imageLinks").index("image").count([row.value.server, row.value.id]);
+          count.onsuccess = () => { if (!count.result) images.delete(row.primaryKey); };
+        }
+        row.continue();
+      };
+      return () => undefined;
+    }),
     device: () =>
       run(["meta"], "readwrite", (transaction) => {
         // 读取与首次生成在同一写事务内，多个页签同时打开也只会生成一个设备 ID。
@@ -203,8 +281,15 @@ function browserStorage(): SessionStorage {
         return () => requests.flatMap((request) => (request.result?.work === work ? [request.result.data as SessionJob] : []));
       }),
     save: (server, change) =>
-      run(["works", "messages", "jobs"], "readwrite", (transaction) => {
+      run(["works", "messages", "jobs", "images", "imageLinks"], "readwrite", (transaction) => {
         const work = change.work.work.id;
+        for (const id of changeImages(change)) {
+          const image = transaction.objectStore("images").get([server, id]);
+          image.onsuccess = () => {
+            if (!image.result) transaction.abort();
+            else transaction.objectStore("imageLinks").put({ server, work, id });
+          };
+        }
         transaction.objectStore("works").put({ server, id: work, data: change.work });
         for (const message of change.messages)
           transaction.objectStore("messages").put({ server, id: message.id, work, sequence: message.sequence ?? 0, data: message });
@@ -212,8 +297,19 @@ function browserStorage(): SessionStorage {
         return () => undefined;
       }),
     remove: (server, work) =>
-      run(["works", "messages", "jobs"], "readwrite", (transaction) => {
+      run(["works", "messages", "jobs", "images", "imageLinks"], "readwrite", (transaction) => {
         transaction.objectStore("works").delete([server, work]);
+        const links = transaction.objectStore("imageLinks");
+        const linked = links.index("work").openCursor(IDBKeyRange.only([server, work]));
+        linked.onsuccess = () => {
+          const cursor = linked.result;
+          if (!cursor) return;
+          const id = cursor.value.id;
+          cursor.delete();
+          const count = links.index("image").count([server, id]);
+          count.onsuccess = () => { if (!count.result) transaction.objectStore("images").delete([server, id]); };
+          cursor.continue();
+        };
         for (const [name, range] of [
           ["messages", conversation(server, work)],
           ["jobs", IDBKeyRange.only([server, work])],
@@ -237,9 +333,18 @@ export function memoryStorage(): SessionStorage {
   const works = new Map<string, { server: string; work: StoredWork }>();
   const messages = new Map<string, { server: string; work: string; message: ChatMessage }>();
   const jobs = new Map<string, { server: string; job: SessionJob }>();
+  const images = new Map<string, Uint8Array>();
+  const imageLinks = new Map<string, Set<string>>();
   /** 同一 ID 在不同服务下是不同记录。 */
   const key = (server: string, id: string) => JSON.stringify([server, id]);
   return {
+    image: async (server, id) => images.get(key(server, id))?.slice() ?? null,
+    putImage: async (server, id, bytes) => {
+      const saved = images.get(key(server, id));
+      if (saved && (saved.length !== bytes.length || saved.some((value, index) => value !== bytes[index])))
+        throw new LocalStoreError("同一参考图片 ID 的内容不能改变。");
+      images.set(key(server, id), bytes.slice());
+    },
     device: async () => device,
     works: async (server) =>
       [...works.values()]
@@ -263,6 +368,11 @@ export function memoryStorage(): SessionStorage {
       }),
     save: async (server, change) => {
       const work = change.work.work.id;
+      for (const id of changeImages(change)) {
+        const refs = imageLinks.get(key(server, id)) ?? new Set<string>();
+        refs.add(work);
+        imageLinks.set(key(server, id), refs);
+      }
       works.set(key(server, work), { server, work: structuredClone(change.work) });
       for (const job of change.jobs) jobs.set(key(server, job.id), { server, job: structuredClone(job) });
       for (const message of change.messages)
@@ -270,6 +380,11 @@ export function memoryStorage(): SessionStorage {
     },
     remove: async (server, work) => {
       works.delete(key(server, work));
+      for (const [id, refs] of imageLinks) {
+        if (JSON.parse(id)[0] !== server) continue;
+        refs.delete(work);
+        if (!refs.size) { imageLinks.delete(id); images.delete(id); }
+      }
       for (const [id, item] of jobs) if (item.server === server && item.job.project_id === work) jobs.delete(id);
       for (const [id, item] of messages) if (item.server === server && item.work === work) messages.delete(id);
     },
@@ -351,6 +466,25 @@ export async function pendingWorks(): Promise<StoredWork[]> {
 export function snapshot(work: string, before?: number, limit = 50): Promise<SessionSnapshot> {
   return serial(work, () => read(work, before, limit));
 }
+/** 读取当前任务的本地模型窗口；旧任务回执不能用于下一次提交。 */
+export function context(work: string): Promise<ClientContext | null> {
+  return serial(work, async () => {
+    const stored = await storage().work(server(), work);
+    return stored?.context?.job_id === stored?.job.id ? stored?.context ?? null : null;
+  });
+}
+/** 将断线补取或旧服务器窗口先写入本地；失败时不得继续提交新任务。 */
+export function saveContext(work: string, context: ClientContext): Promise<void> {
+  return serial(work, async () => {
+    const scope = server();
+    const stored = await storage().work(scope, work);
+    if (!stored) throw new MissingLocalWork();
+    if (context.work_id !== work || context.job_id !== stored.job.id)
+      throw new Error("模型上下文与当前会话任务不一致，请刷新任务后重试。");
+    for (const id of new Set([...(context.image_ids ?? []), ...(context.legacy_image_ids ?? [])])) await image(id);
+    await storage().save(scope, { work: { ...stored, context }, messages: [], jobs: [] });
+  });
+}
 /** 快照的实际读取。 */
 async function read(work: string, before: number | undefined, limit: number): Promise<SessionSnapshot> {
   const scope = server();
@@ -371,7 +505,7 @@ async function read(work: string, before: number | undefined, limit: number): Pr
 }
 /** 新建作品后立即登记本地会话，后续消息与状态由事件写入。 */
 export function record(
-  project: { id: string; current_version_id: string | null; created_at: string; request: { description?: string | null } },
+  project: { id: string; current_version_id: string | null; created_at: string; request: { description?: string | null; images?: { asset_id: string }[] } },
   job: Job,
 ): Promise<void> {
   const initial: SessionJob = { ...job, created_at: project.created_at, updated_at: project.created_at, parameters: null };
@@ -388,6 +522,7 @@ export function record(
     },
     messages: [],
     jobs: [initial],
+    ...(project.request.images?.length ? { image_ids: project.request.images.map((image) => image.asset_id) } : {}),
   }));
 }
 /** 提交消息、参数或重试后先登记服务端返回的新任务为最新任务，事件到达前界面也不会回到旧任务状态。 */
@@ -426,10 +561,14 @@ async function merge(work: string, events: WorkEvent[]): Promise<StoredWork> {
   for (const event of fresh) {
     if (event.type === "message.created") messages.push(event.data);
     else if (event.type === "job.updated") {
+      const { context, ...data } = event.data;
+      if (context && (context.work_id !== work || context.job_id !== data.id))
+        throw new LocalStoreError("模型上下文与任务不一致，未确认送达，请刷新任务后重试。");
       const previous = jobs.get(event.data.id) ?? (stored.job.id === event.data.id ? stored.job : undefined);
-      const job = { ...previous, ...event.data, rounds: event.data.rounds ?? previous?.rounds ?? [] };
+      const job = { ...previous, ...data, rounds: data.rounds ?? previous?.rounds ?? [] };
       jobs.set(job.id, job);
       if (job.id === stored.job.id || job.created_at >= stored.job.created_at) stored.job = job;
+      if (context && context.job_id === stored.job.id) stored.context = context;
     } else if (event.type === "job.round") {
       const job = jobs.get(event.data.job_id);
       const round = event.data.round;
@@ -443,6 +582,8 @@ async function merge(work: string, events: WorkEvent[]): Promise<StoredWork> {
     if (event.created_at > stored.updated_at) stored.updated_at = event.created_at;
     stored.cursor = event.id;
   }
+  // Images must commit before the cursor: acknowledging this event must never discard the only image copy.
+  for (const id of changeImages({ work: stored, messages, jobs: [] })) await image(id);
   // 侧栏摘要不需要轮次明细，完整任务状态保存在任务行。
   await storage().save(scope, {
     work: { ...stored, job: { ...stored.job, rounds: [] } },
