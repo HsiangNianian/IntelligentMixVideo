@@ -27,9 +27,8 @@ const started = performance.now();
  * Generate the trusted entry: managed fonts, then one Sequence per placement in bottom-to-top order, each Sprite
  * inside the shared host layer that applies its placement transform around its content box.
  * A Sprite reads useVideoConfig().durationInFrames from its own Sequence, exactly as when it was accepted
- * standalone, so its source runs unmodified. An instance with `hold` (a short subtitle) is frozen on `hold.frame`
- * of a `hold.length`-frame timeline, so the Sprite reads the length it was accepted at, and is shown for its first
- * `hold.frames` frames only. Remotion clamps a Sequence to its composition, so the
+ * standalone. Fixed-clock text sources include the shared render-time wrapper, also used by text-fit probes.
+ * Remotion clamps a Sequence to its composition, so the
  * composition spans the latest clip end (`duration_in_frames`) and only `frames` of it are rendered.
  */
 function entrypoint() {
@@ -39,21 +38,18 @@ function entrypoint() {
     const scale = Math.max(composition.width / width, composition.height / height);
     const host = item.host ?? {box: {x: 0, y: 0, width, height}, transform: {}};
     const layer = `<HostLayer box={${JSON.stringify(host.box)}} transform={${JSON.stringify(host.transform)}}><Sprite${codes.indexOf(item.code)} {...${JSON.stringify(item.config)}} /></HostLayer>`;
-    const content = item.hold ? `<Hold frame={${item.hold.frame}} frames={${item.hold.frames}} length={${item.hold.length}}>${layer}</Hold>` : layer;
     const visible = item.visible_start_frame === undefined ? "" : `frame >= ${item.visible_start_frame} && frame < ${item.visible_end_frame} && `;
-    return `{${visible}<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}} width={${width}} height={${height}} style={{width:${width},height:${height},left:${(composition.width-width*scale)/2},top:${(composition.height-height*scale)/2},transform:'scale(${scale})',transformOrigin:'top left'}}>${content}</Sequence>}`;
+    return `{${visible}<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}} width={${width}} height={${height}} style={{width:${width},height:${height},left:${(composition.width-width*scale)/2},top:${(composition.height-height*scale)/2},transform:'scale(${scale})',transformOrigin:'top left'}}>${layer}</Sequence>}`;
   }).join("");
   return `/** Trusted overlay host waits for both managed font weights. */
 import React from 'react';
-import {AbsoluteFill, Composition, Freeze, Sequence, registerRoot, delayRender, continueRender, staticFile, useCurrentFrame} from 'remotion';
+import {AbsoluteFill, Composition, Sequence, registerRoot, delayRender, continueRender, staticFile, useCurrentFrame} from 'remotion';
 import {HostLayer} from './host-layer';
 import {loadManagedFonts} from './font-loader.mjs';
 ${imports}
 const handle = delayRender('managed fonts');
 loadManagedFonts({400:staticFile('font-400.otf'),700:staticFile('font-700.otf')}, staticFile('font-fallback.otf'))
   .then(() => continueRender(handle));
-/** A still instance: frozen on one frame of a \`length\`-frame timeline and shown only for its first \`frames\` frames. */
-const Hold = ({frame, frames, length, children}) => useCurrentFrame() < frames ? <Freeze frame={frame}><Sequence durationInFrames={length}>{children}</Sequence></Freeze> : null;
 /** Transparent canvas: nothing paints a background, so unplaced frames stay fully transparent. */
 const Overlay = () => { const frame = useCurrentFrame(); return <AbsoluteFill>${placed}</AbsoluteFill>; };
 const Root = () => <Composition id="Overlay" component={Overlay} width={${composition.width}} height={${composition.height}} fps={${composition.fps}} durationInFrames={${composition.duration_in_frames}} />;

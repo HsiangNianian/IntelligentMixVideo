@@ -15,7 +15,7 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.json_format import MessageToDict
 
 from server.video_composition.remotion_content import ContentError, dynamic_duration, resolve_config, roles
-from server.video_composition.remotion_timing import retime_source
+from server.remotion_templates.retiming import RetimingError, retime_source
 from server.remotion_templates.overlay_render import Overlay, OverlayError
 from server.remotion_templates.settings import Settings
 from server.remotion_templates import render_resources
@@ -247,6 +247,44 @@ def test_invalid_dynamic_declaration_is_still_rejected():
     """移除额外准入要求不能放行损坏的显式声明。"""
     with pytest.raises(ContentError, match="布尔值"):
         dynamic_duration({"x-imv-dynamic-duration": "yes"})
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_dotted_duration_roles_keep_the_composition_clock(nested):
+    """字面键中的点不构成业务路径，时钟判定和实际参数注入保持同一规则。"""
+    sprite = asset()
+    schema = deepcopy(SCHEMA)
+    schema.pop("x-imv-dynamic-duration")
+    schema["properties"]["layer"]["properties"]["frames"].pop("x-imv-role")
+    field = {"type": "integer", "x-imv-role": "duration"}
+    schema["properties"]["timing.frames"] = {"type": "object", "properties": {"length": field}} if nested else field
+    value = {"length": 90} if nested else 90
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**DEFAULTS, "timing.frames": value})
+    assert roles(schema)["duration"] == []
+    assert not dynamic_duration(schema)
+    assert resolve_config(sprite, "新文案", "", 6)["timing.frames"] == value
+
+
+@pytest.mark.parametrize("present,required", [(False, False), (True, False), (False, True)])
+def test_composition_duration_roles_preserve_optional_objects(present, required):
+    """未启用的可选对象保持缺省，存在时注入；缺失必填对象仍拒绝，默认值不变。"""
+    sprite = asset()
+    schema = deepcopy(SCHEMA)
+    schema["properties"]["timing"] = {"type": "object", "properties": {
+        "frames": {"type": "integer", "x-imv-role": "duration", "minimum": 1}}}
+    if required:
+        schema["required"] = ["timing"]
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**DEFAULTS, **({"timing": {}} if present else {})})
+    original = sprite.SerializeToString()
+    if required and not present:
+        with pytest.raises(ContentError):
+            resolve_config(sprite, "新文案", "", 6)
+    else:
+        result = resolve_config(sprite, "新文案", "", 6)
+        assert result.get("timing") == ({"frames": 6} if present else None)
+    assert sprite.SerializeToString() == original
 
 
 def test_plan_uses_absolute_asr_gaps_and_full_audio(composition_case):
@@ -926,20 +964,22 @@ def test_fixed_asset_rejects_invalid_metadata_and_unsafe_imports():
     """固定时钟必须有合法时长；打包只解析源码，不能借资产导入读取本地文件。"""
     sprite = asset()
     sprite.canvas.preview_frames = 0
-    with pytest.raises(ContentError, match="发布时长"):
+    with pytest.raises(RetimingError, match="发布时长"):
         retime_source(sprite)
     sprite.canvas.preview_frames = 90
     sprite.tsx_code = 'import secret from "/etc/passwd"; export default secret;'
-    with pytest.raises(ContentError, match="打包失败") as rejected:
+    with pytest.raises(RetimingError, match="打包失败") as rejected:
         retime_source(sprite)
     assert "Unsupported Sprite import" in rejected.value.__cause__.stderr
 
 
 # 场景：业务区间与发布时长不成整数比时，映射到资产的帧号仍须是整数，按帧下标取值的资产不会取到 undefined。
-def test_fixed_clock_maps_to_whole_source_frames(tmp_path):
-    """用替身 React/Remotion 执行真实打包的时间宿主：每帧都是整数，首尾对齐发布首尾帧且单调不减。"""
+@pytest.mark.parametrize("length", [1, 2, 3, 18, 44, 45, 46, 60, 200, 301])
+@pytest.mark.parametrize("preview", [1, 6, 150])
+def test_fixed_clock_maps_to_whole_source_frames(tmp_path, length, preview):
+    """短/长区间和旧阈值两侧均遍历原时钟；减速产生重复源帧时后续行也不提前显示。"""
     sprite = asset()
-    sprite.canvas.preview_frames = 150
+    sprite.canvas.preview_frames = preview
     (tmp_path / "timed.mjs").write_text(retime_source(sprite))
     stubs = {
         "react/package.json": '{"name":"react","type":"module","exports":{".":"./index.js","./jsx-runtime":"./jsx-runtime.js"}}',
@@ -957,14 +997,29 @@ export const Internals = {RemotionContextProvider: "provider",
         (tmp_path / "node_modules" / name).write_text(content)
     (tmp_path / "probe.mjs").write_text("""/** 逐帧读取宿主交给资产的发布帧号。 */
 import TimedSprite from "./timed.mjs";
-globalThis.length = 60;
-const frames = [];
-for (globalThis.frame = 0; globalThis.frame < 60; globalThis.frame++) frames.push(TimedSprite({}).props.contexts.timelineContext.frame.overlay);
-console.log(JSON.stringify(frames));
+globalThis.length = Number(process.argv[2]);
+const frames = [], visible = [];
+const starts = [0, Math.min(3, globalThis.length - 1), globalThis.length - 1];
+for (globalThis.frame = 0; globalThis.frame < globalThis.length; globalThis.frame++) {
+  const result = TimedSprite({lineStartFrames: starts});
+  const source = result.props.contexts.timelineContext.frame.overlay;
+  frames.push(source);
+  visible.push(result.props.children.props.lineStartFrames.map((start) => source >= start));
+}
+console.log(JSON.stringify({frames, visible, starts}));
 """)
-    frames = json.loads(subprocess.run(["node", "probe.mjs"], cwd=tmp_path, capture_output=True, text=True, check=True).stdout)
+    result = json.loads(subprocess.run(["node", "probe.mjs", str(length)], cwd=tmp_path, capture_output=True, text=True, check=True).stdout)
+    frames = result["frames"]
     assert all(isinstance(frame, int) for frame in frames)
-    assert frames[0] == 0 and frames[-1] == 149 and frames == sorted(frames)
+    starts = [0, min(3, length - 1), length - 1]
+    assert result["starts"] == starts
+    if length <= 2:
+        assert frames == [(preview - 1) // 2] * length
+        assert result["visible"] == [[True, True, True]] * length
+    else:
+        assert frames[0] == 0 and frames[-1] == preview - 1 and frames == sorted(frames)
+        assert len(set(frames)) == min(preview, length)
+        assert result["visible"] == [[frame >= start for start in starts] for frame in range(length)]
 
 
 @pytest.mark.skipif(not REAL_RENDER, reason="set IMV_TEST_RENDERER=1 for upstream clock regression")
@@ -1010,9 +1065,10 @@ export default function Text(p) {
     video = asyncio.run(render_overlay(Renderer(settings), remotion.plan(data, 120), tmp_path / "render"))
     pixels = subprocess.run(["ffmpeg", "-v", "error", "-c:v", "libvpx-vp9", "-i", str(video),
         "-f", "rawvideo", "-pix_fmt", "rgba", "-"], capture_output=True, check=True).stdout
-    # 短动画仍遍历首尾，长动画超过源 10 帧之后仍可见，一/二帧都保留可读画面。
-    for frame, color, alpha in [(0,None,0),(3,None,0),(5,"green",0.8),(6,"green",1),(7,"green",0.9),
-        (8,None,0),(15,None,0),(50,"red",0.525),(65,"red",1),(88,"red",0.076),(89,None,0),
+    # 短动画遍历整数发布帧：输出第 5/7 帧采样源第 4/7 帧，内层为第 2/5 帧，均完全可见。
+    # 长区间第 50/88 帧采样源第 3/9 帧，内层为第 1/7 帧，alpha 为 0.5/0；一/二帧保持可见。
+    for frame, color, alpha in [(0,None,0),(3,None,0),(5,"green",1),(6,"green",1),(7,"green",1),
+        (8,None,0),(15,None,0),(50,"red",0.5),(65,"red",1),(88,None,0),(89,None,0),
         (90,None,0),(96,"green",1),(97,None,0),(100,"red",1),(101,"red",1),(102,None,0)]:
         offset = (frame*180*320 + 100*180+100)*4
         pixel = pixels[offset:offset+4]
@@ -1199,12 +1255,11 @@ def test_multi_line_text_slot_keeps_only_the_lines_inside_its_interval(compositi
 
 
 def test_fixed_clock_multi_line_starts_follow_the_preview_clock(composition_case, monkeypatch):
-    """固定时钟的资产读到预览时钟：行起点按宿主同样的线性映射换算到预览帧，排版预检仍按实际帧测量。"""
+    """固定时钟宿主接收真实行起点，随后在内部统一换算；排版预检同样保留真实帧。"""
     monkeypatch.setattr(remotion, "retime_source", lambda sprite: "timed source")
     result = remotion.plan(multi_line_case(composition_case, dynamic=False), 120)
     first = result.instances[0]
-    # 30 of 60 real frames is round(30 * 89 / 59) of the 90 preview frames.
-    assert first["config"]["lineStartFrames"] == [0, 45] and first["reveal_frame"] == 30 and first["code"] == "timed source"
+    assert first["config"]["lineStartFrames"] == [0, 30] and first["reveal_frame"] == 30 and first["code"] == "timed source"
 
 
 @pytest.mark.parametrize("title, expected", [

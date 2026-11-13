@@ -46,7 +46,7 @@
 
 ## Remotion 叠加
 
-- 合成侧解析 Remotion 资产业务参数的代码只放在 `remotion_content.py`，读取已发布资产的契约，不修改 Agent 生成或发布流程；固定时长资产的时钟映射只在 `remotion_timing.py` / `remotion-timing.mjs`。
+- 合成侧解析 Remotion 资产业务参数的代码放在 `remotion_content.py`，读取已发布资产的契约，不修改 Agent 生成或发布流程；动态时长声明与固定时钟映射由 `remotion_templates/retiming.py` / `remotion-timing.mjs` 与单 Sprite 渲染共用。
 - 新模板用 `text_target`／`transition_boundary` 槽位，旧的 `editor.remotion.businessTarget` 保留兼容，两者都有时新字段优先。
 - 渲染前在共享渲染名额内做与叠加渲染相同的排版预检，放不下以 `remotion_text_too_long` 失败；排版调整只改这次渲染的摆放，不改保存的摆放。整段透明 WebM 从 0 秒加入 IMS 最后一条视频轨，实际输出的 IMS 文字在它上层；上传结果持久化供恢复；发布 TSX 必须在组装时间线前记录到 `remotion.input`，实际渲染源码也在 `remotion` 模块按指纹保存。同字段内相同正文引用复用，不跨输入输出复用，实例只记指纹，源码仍按统一规则脱敏。
 - 英文标题和字幕固定单行：普通双栏字效作用在英文上只用上栏（英文标题的换行按空格合并、英文字幕不按句分组），另缩到能单行显示的最大字号，避免中英双语出现四行；启用英文字幕时英文字幕向下、中文字幕向上展开，两条字幕不互相压住。

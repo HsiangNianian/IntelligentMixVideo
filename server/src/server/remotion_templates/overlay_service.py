@@ -45,7 +45,7 @@ from .overlay_render import (
 )
 from .renderer import Renderer
 from .settings import Settings
-from .sprite_render import join_problem, plan_sprite_render, render_sprite
+from .sprite_render import adapt_sprite_render, join_problem, plan_sprite_render, render_sprite
 from .render_resources import RenderCapacity, RenderCapacityTimeout
 from .store import NotFound, Store
 from .tables import overlay_renders
@@ -59,6 +59,25 @@ PERSIST_DELAY_SECONDS = 2
 TERMINAL = ("succeeded", "failed")
 # Finished tasks whose callback was delivered (or that have none) stay queryable this long, then the sweep drops them.
 FINISHED_RETENTION = timedelta(days=30)
+
+
+def _sprite_snapshot(publication: pb.PublishedSprite, overlay: Overlay) -> dict:
+    """Bind an accepted Sprite plan to its publication, storing the source once rather than once per cue."""
+    return {
+        "publication": MessageToDict(publication, preserving_proto_field_name=True),
+        "plan": {
+            "width": overlay.width, "height": overlay.height, "fps": overlay.fps, "frames": overlay.frames,
+            "instances": [{key: value for key, value in item.items() if key != "code"} for item in overlay.instances],
+        },
+    }
+
+
+def _restore_sprite(snapshot: dict) -> tuple[pb.PublishedSprite, Overlay]:
+    """Restore the accepted plan without reading the mutable catalog or regrouping its content."""
+    publication = ParseDict(snapshot["publication"], pb.PublishedSprite())
+    plan = snapshot["plan"]
+    instances = [{**item, "code": publication.tsx_code} for item in plan["instances"]]
+    return publication, Overlay(**{**plan, "instances": instances})
 
 
 def prune_finished(store: Store, before: datetime) -> None:
@@ -195,10 +214,10 @@ class OverlayRenders:
         )
 
     async def accept_sprite(self, message: pb.SpriteRenderInput) -> str:
-        """Validate one Sprite render completely (it needs no network probe), persist it and start it.
+        """Validate the input and persist its publication-bound plan without starting a bundler or browser.
 
         Besides the overlay renderer an effect longer than one chunk needs ffmpeg to join the chunks, so such a request
-        on a host without it is a 503.
+        on a host without it is a 503. Source adaptation happens after render admission and may fail the task.
         """
         try:
             callback_url = media_url(message.callback_url) if message.callback_url else None
@@ -206,16 +225,20 @@ class OverlayRenders:
             raise HTTPException(422, "callback_url 必须是不含空白、用户信息或片段的 HTTP(S) 地址") from None
         self._require_environment()
         try:
-            overlay = plan_sprite_render(message, await asyncio.to_thread(self._publication, message.sprite_id))
+            publication = await asyncio.to_thread(self._publication, message.sprite_id)
+            overlay = await asyncio.to_thread(plan_sprite_render, message, publication, adapt_source=False)
         except OverlayError as exc:
             raise HTTPException(422, exc.message) from None
         if missing := join_problem(overlay, self.settings):
             logger.error("单 Sprite 渲染环境缺少 %s，拒绝受理", missing)
             raise HTTPException(503, "叠加渲染环境不可用，请检查服务端环境")
         task_id = str(uuid4())
-        await asyncio.to_thread(self._insert, task_id, {"request": {
-            "sprite_render": MessageToDict(message, preserving_proto_field_name=True), "callback_url": callback_url,
-        }})
+        await asyncio.to_thread(self._insert, task_id, {
+            "request": {
+                "sprite_render": MessageToDict(message, preserving_proto_field_name=True), "callback_url": callback_url,
+            },
+            "sprite_snapshot": _sprite_snapshot(publication, overlay),
+        })
         self._spawn(self._run(task_id))
         return task_id
 
@@ -300,19 +323,25 @@ class OverlayRenders:
     async def _execute(self, task_id: str, work: Path) -> None:
         """Plan the task, render it and publish it to ZOS.
 
-        A template overlay first resolves its duration; a single Sprite render carries its time. Only the render
-        holds a slot: the remote audio probe before it and the upload after it would otherwise keep
+        A template overlay first resolves its duration; a single Sprite render restores its accepted plan.
+        Source bundling, text fitting and rendering hold the slot:
+        the remote audio probe before it and the upload after it would otherwise keep
         every queued render waiting on the network.
         """
         await asyncio.to_thread(shutil.rmtree, work, True)
         started = perf_counter()
-        _, data = self._read(task_id)
+        status, data = self._read(task_id)
         request = data["request"]
-        # The accepted input is rendered as stored; only the published Sprites are read again.
         if "sprite_render" in request:
             message = ParseDict(request["sprite_render"], pb.SpriteRenderInput())
-            publications = {message.sprite_id: await asyncio.to_thread(self._publication, message.sprite_id)}
-            overlay = plan_sprite_render(message, publications[message.sprite_id])
+            if "sprite_snapshot" in data:
+                publication, overlay = _restore_sprite(data["sprite_snapshot"])
+            else:
+                # Pre-snapshot tasks bind to the first publication recovered by this version, then keep it.
+                publication = await asyncio.to_thread(self._publication, message.sprite_id)
+                overlay = await asyncio.to_thread(plan_sprite_render, message, publication, adapt_source=False)
+                await self._persist(task_id, status, sprite_snapshot=_sprite_snapshot(publication, overlay))
+            publications = {message.sprite_id: publication}
             render, key = render_sprite, f"imv/sprite_render/{task_id}.webm"
         else:
             placements = [OverlayPlacement.model_validate(item) for item in request["placements"]]
@@ -332,6 +361,8 @@ class OverlayRenders:
             await self._persist(task_id, "rendering")
             await asyncio.to_thread(record_performance, work, plan_ms=plan_ms, slot_wait_ms=slot_wait_ms,
                                     resource_wait_ms=grant.wait_ms, granted_chunks=grant.chunks, reserved_memory_mb=grant.reserved_memory_mb)
+            if render is render_sprite:
+                await asyncio.to_thread(adapt_sprite_render, overlay, publication)
             await measured(work, "text_fit", fit_texts(self.renderer, overlay, publications, work / "fit"))
             output = await render(self.renderer, overlay, work, chunk_concurrency=grant.chunks, frame_concurrency=grant.pages)
         await self._persist(task_id, "uploading")
