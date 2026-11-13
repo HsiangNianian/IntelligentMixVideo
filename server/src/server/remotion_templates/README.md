@@ -778,10 +778,13 @@ lives in `sprite_router.py` on the main app and borrows the Remotion runtime.
 video. A Sprite is a fixed style (the sealed code plus `resolved_style` and `transform`, the placement's editor) with
 its content: one `text` with `keywords` for the whole effect (a title), or the bus's subtitle `cues` (text, keywords
 and a frame range each; ordered, non-overlapping, at least one frame), each shown once by the same Sprite in its own
-frames so the Sprite reads the cue's length as `durationInFrames`, transparent in between. A text effect shown for
-less than 1.5 s (`STATIC_TEXT_SECONDS`, most subtitle cues) plays no entrance or exit: it is frozen (`Freeze`) on the
-middle frame of the published preview length, which the Sprite still reads as its length, and shows only its own
-frames, so short subtitles neither flicker nor run animation code in fewer frames than it was accepted at. The time is
+frames, transparent in between. Text effects share video composition's `retiming.py` clock: each actual interval
+of N frames samples the published animation's M frames from start to end, using integer frame positions. There is
+no fixed seconds cutoff that disables animation. Only one/two-frame intervals sample the published `static_frame`
+(when nonzero), or its middle frame, instead of sampling two potentially transparent endpoints. This sample is not
+a guarantee of readability for arbitrary source code. Explicitly duration-aware assets keep their actual-length
+clock; non-text effects keep their existing behavior. Sources are parsed/bundled once per plan in a worker thread,
+never executed outside the existing sandbox, and sealed code/defaults remain unchanged. The time is
 `effect_total_frames`, 0.5 to 120 seconds and the output's frame count, whatever length was previewed when the Sprite
 was generated. `sprite_render.py` renders the effect in one overlay worker run that writes consecutive chunks of at
 most 15 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
@@ -790,8 +793,9 @@ splits a request. A multi-line text effect groups up to `line_count` consecutive
 a cue's `sentence` changes (when both cues give one), or when one more line would exceed the text parameter's
 `maxLength` or start beyond the line start limit, so cues valid on their own never fail for being grouped. Each group is one instance from its first cue's start to its
 last cue's end; its text is the cues' texts one per line, its keywords theirs in order, and `lineStartFrames` holds
-each cue's start counted from the group's start, so line i appears when cue i starts and the group clears together.
-A held group (shorter than 1.5 s) shows every line from frame 0, and so does a multi-line `text`, which may have at
+each cue's actual start offset. The fixed-clock wrapper maps it to the published clock and keeps waiting lines
+hidden until their actual cue starts, even when slowing down repeats a source frame; the group clears together.
+One/two-frame stills show every line from frame 0, and so does a multi-line `text`, which may have at
 most `line_count` lines; a cue's text cannot contain a line break. The text fit measures a group only from the frame
 its last line appears (`reveal_frame`). Text effects need `text` or `cues`, other
 kinds take no content, keywords need a Sprite that publishes them, and content cannot be passed as a style override;
@@ -865,8 +869,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 - **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
   placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text
   Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's
-  own values at the length its Sprite plays in the render (the length it reads as `durationInFrames`; a held text its
-  previewed length; a clip cut by the video's end is measured only on its rendered frames) and measures the text
+  own values using the final timing wrapper and actual interval (a clip cut by the video's end is measured only
+  on its rendered frames) and measures the text
   boxes the same way `sprite.create` does: cut off by an ancestor whose
   overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves,
   scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
@@ -910,7 +914,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Sprite ID, instance, text length, measured font size, sampled frames and failure reasons; it does not include
   the text itself. Other Sprites skip the pass, and a fit sandbox
   that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
-  text or cue (a held text is measured on its frozen frame), and a video composition (`video_composition/remotion.py`)
+  text or cue, and a video composition (`video_composition/remotion.py`)
   on its titles and subtitles: it measures the code it renders (the timing wrapper of a fixed-clock asset) on the
   asset's own canvas, and only the part of that canvas the video shows after scaling it to cover counts as on the
   canvas; the failure there is `remotion_text_too_long`. All text Sprites of a render are measured in one browser

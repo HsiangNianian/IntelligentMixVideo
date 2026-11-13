@@ -48,9 +48,6 @@ _FAILED_STATUSES = {"failed", "fail", "error"}
 # 总线渲染 Sprite 时传入的时长范围（秒）；Agent 生成时选的时长只用于预览，最终时长由合成决定。
 MIN_RENDER_SECONDS = 0.5
 MAX_RENDER_SECONDS = 120
-# 字效（标题、字幕）显示不足这个时长时不播出入场，定格在预览长度的中间帧（见 sprite_render）：出入场通常共需
-# 0.6～1.3 秒，更短的字幕几乎看不到完整画面，还会闪烁。所以字效从不按更短的长度播放。
-STATIC_TEXT_SECONDS = 1.5
 
 
 class FrameCapture(NamedTuple):
@@ -77,10 +74,10 @@ class FitSprite(NamedTuple):
 def render_lengths(fps: int, *, text: bool = False) -> list[int]:
     """Sprite 可能按自身长度播放的最短与最长帧数，秒转帧与叠加渲染一致（半帧向后取整）；生成与发布在预览长度之外也挂载它们。
 
-    字效更短时会被定格，所以它的最短长度是 `STATIC_TEXT_SECONDS`，其他分类是 `MIN_RENDER_SECONDS`。
+    字幕切片可以只有一帧；能自行处理动态时长的字效必须在这一边界也不抛错。
     """
-    shortest = STATIC_TEXT_SECONDS if text else MIN_RENDER_SECONDS
-    return [max(1, math.floor(seconds * fps + 0.5)) for seconds in (shortest, MAX_RENDER_SECONDS)]
+    return [1 if text else max(1, math.floor(MIN_RENDER_SECONDS * fps + 0.5)),
+            max(1, math.floor(MAX_RENDER_SECONDS * fps + 0.5))]
 
 
 def _reported_stages(checks: list[Any], stages: tuple[str, ...]) -> tuple[str, ...] | None:

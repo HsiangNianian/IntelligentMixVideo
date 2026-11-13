@@ -15,7 +15,7 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.json_format import MessageToDict
 
 from server.video_composition.remotion_content import ContentError, dynamic_duration, resolve_config, roles
-from server.video_composition.remotion_timing import retime_source
+from server.remotion_templates.retiming import RetimingError, retime_source
 from server.remotion_templates.overlay_render import Overlay, OverlayError
 from server.remotion_templates.settings import Settings
 from server.remotion_templates import render_resources
@@ -926,20 +926,22 @@ def test_fixed_asset_rejects_invalid_metadata_and_unsafe_imports():
     """固定时钟必须有合法时长；打包只解析源码，不能借资产导入读取本地文件。"""
     sprite = asset()
     sprite.canvas.preview_frames = 0
-    with pytest.raises(ContentError, match="发布时长"):
+    with pytest.raises(RetimingError, match="发布时长"):
         retime_source(sprite)
     sprite.canvas.preview_frames = 90
     sprite.tsx_code = 'import secret from "/etc/passwd"; export default secret;'
-    with pytest.raises(ContentError, match="打包失败") as rejected:
+    with pytest.raises(RetimingError, match="打包失败") as rejected:
         retime_source(sprite)
     assert "Unsupported Sprite import" in rejected.value.__cause__.stderr
 
 
 # 场景：业务区间与发布时长不成整数比时，映射到资产的帧号仍须是整数，按帧下标取值的资产不会取到 undefined。
-def test_fixed_clock_maps_to_whole_source_frames(tmp_path):
-    """用替身 React/Remotion 执行真实打包的时间宿主：每帧都是整数，首尾对齐发布首尾帧且单调不减。"""
+@pytest.mark.parametrize("length", [1, 2, 3, 18, 44, 45, 46, 60, 200, 301])
+@pytest.mark.parametrize("preview", [1, 6, 150])
+def test_fixed_clock_maps_to_whole_source_frames(tmp_path, length, preview):
+    """短/长区间和旧阈值两侧均遍历原时钟；减速产生重复源帧时后续行也不提前显示。"""
     sprite = asset()
-    sprite.canvas.preview_frames = 150
+    sprite.canvas.preview_frames = preview
     (tmp_path / "timed.mjs").write_text(retime_source(sprite))
     stubs = {
         "react/package.json": '{"name":"react","type":"module","exports":{".":"./index.js","./jsx-runtime":"./jsx-runtime.js"}}',
@@ -957,14 +959,29 @@ export const Internals = {RemotionContextProvider: "provider",
         (tmp_path / "node_modules" / name).write_text(content)
     (tmp_path / "probe.mjs").write_text("""/** 逐帧读取宿主交给资产的发布帧号。 */
 import TimedSprite from "./timed.mjs";
-globalThis.length = 60;
-const frames = [];
-for (globalThis.frame = 0; globalThis.frame < 60; globalThis.frame++) frames.push(TimedSprite({}).props.contexts.timelineContext.frame.overlay);
-console.log(JSON.stringify(frames));
+globalThis.length = Number(process.argv[2]);
+const frames = [], visible = [];
+const starts = [0, Math.min(3, globalThis.length - 1), globalThis.length - 1];
+for (globalThis.frame = 0; globalThis.frame < globalThis.length; globalThis.frame++) {
+  const result = TimedSprite({lineStartFrames: starts});
+  const source = result.props.contexts.timelineContext.frame.overlay;
+  frames.push(source);
+  visible.push(result.props.children.props.lineStartFrames.map((start) => source >= start));
+}
+console.log(JSON.stringify({frames, visible, starts}));
 """)
-    frames = json.loads(subprocess.run(["node", "probe.mjs"], cwd=tmp_path, capture_output=True, text=True, check=True).stdout)
+    result = json.loads(subprocess.run(["node", "probe.mjs", str(length)], cwd=tmp_path, capture_output=True, text=True, check=True).stdout)
+    frames = result["frames"]
     assert all(isinstance(frame, int) for frame in frames)
-    assert frames[0] == 0 and frames[-1] == 149 and frames == sorted(frames)
+    starts = [0, min(3, length - 1), length - 1]
+    assert result["starts"] == starts
+    if length <= 2:
+        assert frames == [(preview - 1) // 2] * length
+        assert result["visible"] == [[True, True, True]] * length
+    else:
+        assert frames[0] == 0 and frames[-1] == preview - 1 and frames == sorted(frames)
+        assert len(set(frames)) == min(preview, length)
+        assert result["visible"] == [[frame >= start for start in starts] for frame in range(length)]
 
 
 @pytest.mark.skipif(not REAL_RENDER, reason="set IMV_TEST_RENDERER=1 for upstream clock regression")
@@ -1199,12 +1216,11 @@ def test_multi_line_text_slot_keeps_only_the_lines_inside_its_interval(compositi
 
 
 def test_fixed_clock_multi_line_starts_follow_the_preview_clock(composition_case, monkeypatch):
-    """固定时钟的资产读到预览时钟：行起点按宿主同样的线性映射换算到预览帧，排版预检仍按实际帧测量。"""
+    """固定时钟宿主接收真实行起点，随后在内部统一换算；排版预检同样保留真实帧。"""
     monkeypatch.setattr(remotion, "retime_source", lambda sprite: "timed source")
     result = remotion.plan(multi_line_case(composition_case, dynamic=False), 120)
     first = result.instances[0]
-    # 30 of 60 real frames is round(30 * 89 / 59) of the 90 preview frames.
-    assert first["config"]["lineStartFrames"] == [0, 45] and first["reveal_frame"] == 30 and first["code"] == "timed source"
+    assert first["config"]["lineStartFrames"] == [0, 30] and first["reveal_frame"] == 30 and first["code"] == "timed source"
 
 
 @pytest.mark.parametrize("title, expected", [

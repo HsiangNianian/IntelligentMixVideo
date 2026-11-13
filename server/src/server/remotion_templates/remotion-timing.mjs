@@ -1,5 +1,5 @@
 /**
- * 合成专用时间宿主：只打包已封存的资产，不执行它，也不修改发布或预览文件。
+ * 字效渲染与视频合成共用的时间宿主：只打包已封存的资产，不执行它，也不修改发布或预览文件。
  * 复用锁定的 Remotion 上下文，使固定 Sequence、硬编码帧动画和 useVideoConfig 使用同一原始时钟。
  */
 import fs from "node:fs";
@@ -18,6 +18,15 @@ export default function TimedSprite(props) {
   // Remotion 只提供整数帧；资产可能按帧下标取字符或判断奇偶，映射结果取最近的发布帧。
   const sourceFrame = config.durationInFrames <= 2 ? ${still}
     : Math.max(0, Math.min(${frames - 1}, Math.round(frame * ${frames - 1} / (config.durationInFrames - 1))));
+  // Rounded source frames can repeat when slowed down. Until a cue really starts, keep its mapped start ahead
+  // of the sampled frame so a later line cannot appear early. Callers always supply actual cue-frame offsets.
+  const sourceProps = Array.isArray(props.lineStartFrames) ? {...props,
+    lineStartFrames: props.lineStartFrames.map((start) => {
+      if (config.durationInFrames <= 2) return 0;
+      const mapped = Math.max(0, Math.min(${frames - 1}, Math.round(start * ${frames - 1} / (config.durationInFrames - 1))));
+      return frame < start ? Math.max(mapped, sourceFrame + 1) : mapped;
+    }),
+  } : props;
   const sourceConfig = {...config, durationInFrames: ${frames}, fps: ${fps}};
   const clock = {
     ...contexts,
@@ -26,7 +35,7 @@ export default function TimedSprite(props) {
     sequenceContext: {...contexts.sequenceContext, absoluteFrom: 0, cumulatedFrom: 0, relativeFrom: 0,
       parentFrom: 0, cumulatedNegativeFrom: 0, durationInFrames: ${frames}},
   };
-  return <Internals.RemotionContextProvider contexts={clock}><Source {...props}/></Internals.RemotionContextProvider>;
+  return <Internals.RemotionContextProvider contexts={clock}><Source {...sourceProps}/></Internals.RemotionContextProvider>;
 }`;
 
 const result = await build({

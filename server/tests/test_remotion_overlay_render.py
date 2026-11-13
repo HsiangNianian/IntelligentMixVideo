@@ -1426,36 +1426,108 @@ def test_sprite_render_shows_one_text_for_the_whole_effect() -> None:
 
 
 # 场景：字幕按总线切分的时间逐条显示：每个切片一个实例、各带文字与关键词；切片之间透明。
-# 不短于 1.5 秒（45 帧）的切片按自身长度播放，Sprite 读到的时长就是切片长度；更短的切片不播出入场，
-# 按资产的预览长度（90 帧）定格在中间帧，只显示切片自己的帧数。
+# 宿主按实际切片区间缩放发布动画，短切片也不再按固定秒数定格。
 def test_sprite_render_shows_each_subtitle_cue_in_its_own_frames() -> None:
-    """60 帧的切片按自身长度播放；18 帧与 14 帧的切片定格在 90 帧预览的第 45 帧，各显示 18、14 帧。"""
+    """18、60、14 帧切片都保留自身区间，文字和关键词不改，动画通过同一时间宿主运行。"""
     message = render_input(text="", keywords=[], effect_total_frames=200,
                            cues=[cue("看新闻了吗", 7, 25), cue("AI把数学圈", 52, 112, "数学圈"), cue("搞炸了", 112, 126)])
     overlay = plan_sprite_render(message, T)
     assert overlay.frames == 200
     assert [(item["start_frame"], item["duration_frames"], item.get("hold"), item["config"]["text"], item["config"]["keywords"]) for item in overlay.instances] == [
-        (7, 90, {"frame": 45, "frames": 18, "length": 90}, "看新闻了吗", []),
+        (7, 18, None, "看新闻了吗", []),
         (52, 60, None, "AI把数学圈", ["数学圈"]),
-        (112, 90, {"frame": 45, "frames": 14, "length": 90}, "搞炸了", []),
+        (112, 14, None, "搞炸了", []),
     ]
 
 
-# 场景：定格只针对字效：显示不足 1.5 秒的标题同样定格；滤镜等视觉 Sprite 本身就是动画，再短也按自身长度播放。
-def test_only_short_text_effects_hold_still() -> None:
-    """1 秒的标题定格；1 秒的滤镜按 30 帧播放；正好 1.5 秒的标题按自身长度播放。
-    预览比字幕还短时，实例持续字幕的帧数，Sprite 仍读到预览长度，字幕不会提前消失。"""
+# 场景：只对文字使用共享时钟：短/长标题按真实区间播放，滤镜保留原有时钟。
+def test_only_text_effects_use_the_shared_animation_clock() -> None:
+    """长于预览的标题不会在预览结尾提前消失；短标题也不再定格，滤镜源码不变。"""
     [title] = plan_sprite_render(render_input(effect_total_frames=30), T).instances
-    assert (title["duration_frames"], title["hold"]) == (90, {"frame": 45, "frames": 30, "length": 90})
+    assert title["duration_frames"] == 30 and "hold" not in title and title["code"] != T.tsx_code
     brief = pb.PublishedSprite()
     brief.CopyFrom(T)
     brief.canvas.preview_frames = 9
-    [held] = plan_sprite_render(render_input(effect_total_frames=36), brief).instances
-    assert (held["duration_frames"], held["hold"]) == (36, {"frame": 4, "frames": 36, "length": 9})
+    [longer] = plan_sprite_render(render_input(effect_total_frames=36), brief).instances
+    assert longer["duration_frames"] == 36 and "hold" not in longer
     [tint] = plan_sprite_render(render_input(sprite_id="f", text="", keywords=[], effect_total_frames=30), F).instances
     assert (tint["duration_frames"], "hold" in tint) == (30, False)
+    assert tint["code"] == F.tsx_code
     [long] = plan_sprite_render(render_input(effect_total_frames=45), T).instances
     assert (long["duration_frames"], "hold" in long) == (45, False)
+
+
+# 场景：分词产生的任意长度都保持原区间，不再存在 1.5 秒前后的行为断点。
+@pytest.mark.parametrize("frames", [1, 2, 3, 14, 44, 45, 46, 89, 91, 179])
+def test_subtitle_intervals_have_no_seconds_cutoff(frames) -> None:
+    """实例始终只持续切片实际帧数，原资产和请求保持不变，没有旧的定格元数据。"""
+    message = render_input(text="", keywords=[], cues=[cue("实际切片", 7, 7 + frames)])
+    original = T.SerializeToString()
+    [item] = plan_sprite_render(message, T).instances
+    assert (item["start_frame"], item["duration_frames"]) == (7, frames)
+    assert "hold" not in item
+    assert T.SerializeToString() == original and message.cues[0].end_frame == 7 + frames
+
+
+# 场景：历史资产声明自行适配时长时不能再次拉伸；否则入场和逐行时序会被双重换算。
+def test_duration_aware_text_keeps_its_own_clock(monkeypatch) -> None:
+    """显式动态字效直接接收实际区间，不调用固定时钟打包器。"""
+    sprite = pb.PublishedSprite()
+    sprite.CopyFrom(T)
+    sprite.config_schema_json = json.dumps({**json.loads(T.config_schema_json), "x-imv-dynamic-duration": True})
+    monkeypatch.setattr(sprite_render, "retime_source", lambda _: pytest.fail("dynamic effect was rescaled"))
+    [item] = plan_sprite_render(render_input(text="", keywords=[], cues=[cue("短句", 5, 11)]), sprite).instances
+    assert item["code"] == sprite.tsx_code and item["duration_frames"] == 6 and "hold" not in item
+
+
+# 场景：历史嵌套 duration 角色必须与实际使用的时钟一致，显式固定声明仍使用发布时长。
+@pytest.mark.parametrize("flag,expected", [(None, 6), (True, 6), (False, 90)])
+def test_duration_role_receives_the_render_clock(flag, expected) -> None:
+    """注入角色值但不改发布默认值；超出封存参数范围时明确失败。"""
+    sprite = pb.PublishedSprite()
+    sprite.CopyFrom(T)
+    schema = json.loads(T.config_schema_json)
+    schema["properties"]["timing"] = {"type": "object", "properties": {
+        "length": {"type": "integer", "minimum": 1, "maximum": 3600, "x-imv-role": "duration"}}}
+    if flag is not None:
+        schema["x-imv-dynamic-duration"] = flag
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**json.loads(T.default_config_json), "timing": {"length": 90}})
+    message = render_input(text="", keywords=[], cues=[cue("短句", 5, 11)])
+    [item] = plan_sprite_render(message, sprite).instances
+    assert item["config"]["timing"]["length"] == expected
+    assert json.loads(sprite.default_config_json)["timing"]["length"] == 90
+    if flag is not False:
+        assert item["code"] == sprite.tsx_code
+        schema["properties"]["timing"]["properties"]["length"]["minimum"] = 10
+        sprite.config_schema_json = json.dumps(schema)
+        with pytest.raises(OverlayError, match="不支持当前字幕时长") as caught:
+            plan_sprite_render(message, sprite)
+        assert caught.value.code == "content_invalid"
+
+
+# 场景：同一个字效渲染许多切片只打包一次，打包失败不能默默回退为静态字幕。
+def test_subtitle_clock_bundles_once_and_reports_failure(monkeypatch) -> None:
+    """共享代码供各个实际区间使用；私有打包错误通过异常链保留，不进入公开说明。"""
+    from server.remotion_templates.retiming import RetimingError
+
+    calls = []
+    def bundle(sprite):
+        """记录每个资产实际发生的打包。"""
+        calls.append(sprite.sprite_id)
+        return "adapted source"
+    monkeypatch.setattr(sprite_render, "retime_source", bundle)
+    message = render_input(text="", keywords=[], cues=[cue("一", 0, 8), cue("二", 20, 80)])
+    items = plan_sprite_render(message, T).instances
+    assert calls == [T.sprite_id] and all(item["code"] == "adapted source" for item in items)
+    def fail(_):
+        """模拟包含私有源码的打包诊断。"""
+        raise RetimingError("private source detail")
+    monkeypatch.setattr(sprite_render, "retime_source", fail)
+    with pytest.raises(OverlayError, match="字效时长适配不可用") as caught:
+        plan_sprite_render(message, T)
+    assert caught.value.code == "sprite_unavailable" and "private source detail" not in str(caught.value)
+    assert isinstance(caught.value.__cause__, RetimingError)
 
 
 # 场景：固定 15 秒连续帧区间，尾块保留余数；短片不硬凑六块。
@@ -1565,12 +1637,12 @@ def sentence_cue(text: str, start: int, end: int, sentence: int, *keywords: str)
     ((1, 1, 1, 2, 2), [(0, 120, "看新闻了吗\nAI把数学圈", [0, 60], ["新闻", "数学圈"]), (130, 60, "搞炸了", [0, 0], []),
                        (200, 90, "下一句\n收尾", [0, 60], [])]),
     ((0, 0, 0, 0, 0), [(0, 120, "看新闻了吗\nAI把数学圈", [0, 60], ["新闻", "数学圈"]), (130, 130, "搞炸了\n下一句", [0, 70], []),
-                       (260, 90, "收尾", [0, 0], [])]),
+                       (260, 30, "收尾", [0, 0], [])]),
 ])
 def test_multi_line_render_groups_consecutive_cues_of_one_sentence(sentences, expected) -> None:
     """每组一个实例，文字按行连接、关键词按序去重，行起点从组的起点算起；排版预检从最后一行出现的帧开始测量。
 
-    没给句子序号时最后只剩 30 帧的一行，不足 1.5 秒，按 90 帧预览定格。
+    宿主内部映射到发布时钟，配置仍为实际行起点，最后一个 30 帧切片也保持真实区间。
     """
     frames = [(0, 60), (60, 120), (130, 190), (200, 260), (260, 290)]
     texts = ["看新闻了吗", "AI把数学圈", "搞炸了", "下一句", "收尾"]
@@ -1579,17 +1651,17 @@ def test_multi_line_render_groups_consecutive_cues_of_one_sentence(sentences, ex
     overlay = plan_sprite_render(render_input(text="", keywords=[], effect_total_frames=300, cues=cues), M)
     assert [(item["start_frame"], item["duration_frames"], item["config"]["text"], item["config"]["lineStartFrames"], item["config"]["keywords"])
             for item in overlay.instances] == expected
-    assert [item["reveal_frame"] for item in overlay.instances] == [entry[3][-1] for entry in expected]
-    assert ["hold" in item for item in overlay.instances] == [False, False, sentences[0] == 0]
+    assert [item["reveal_frame"] for item in overlay.instances] == ([60, 0, 60] if sentences[0] else [60, 70, 0])
+    assert not any("hold" in item for item in overlay.instances)
 
 
-# 场景：不足 1.5 秒的一组同样定格，但所有行从第 0 帧显示，定格的中间帧不会少显示一行；整段 text 也从第 0 帧显示全部行。
+# 场景：短组仍按切片逐行出现，完整标题从第 0 帧显示全部行。
 def test_multi_line_short_groups_and_whole_text_show_every_line() -> None:
-    """20 帧的两行组按 90 帧预览定格，行起点都是 0；两行的 text 行起点也是 0；单行字效不注入行起点。"""
+    """20 帧的两行组仍保留第 10 帧出现第二行，预检从实际第 10 帧测量。"""
     cues = [sentence_cue("看新闻", 0, 10, 1), sentence_cue("了吗", 10, 20, 1)]
     [held] = plan_sprite_render(render_input(text="", keywords=[], effect_total_frames=30, cues=cues), M).instances
-    assert (held["duration_frames"], held["hold"], held["config"]["text"], held["config"]["lineStartFrames"]) == (
-        90, {"frame": 45, "frames": 20, "length": 90}, "看新闻\n了吗", [0, 0])
+    assert (held["duration_frames"], held["config"]["text"], held["config"]["lineStartFrames"], held["reveal_frame"]) == (
+        20, "看新闻\n了吗", [0, 10], 10)
     [whole] = plan_sprite_render(render_input(text="第一行\n第二行", effect_total_frames=300), M).instances
     assert whole["config"]["lineStartFrames"] == [0, 0] and whole["config"]["text"] == "第一行\n第二行"
     [single] = plan_sprite_render(render_input(effect_total_frames=300), T).instances
@@ -1701,7 +1773,7 @@ def test_sprite_render_task_joins_its_chunks(service, monkeypatch, caplog) -> No
     [request] = renderer.requests
     assert request["ranges"] == [[0, 449], [450, 899], [900, 1349], [1350, 1799], [1800, 2099]]
     assert request["composition"]["frames"] == 2100
-    assert [(item["start_frame"], item["duration_frames"]) for item in request["instances"]] == [(0, 90), (890, 90)]
+    assert [(item["start_frame"], item["duration_frames"]) for item in request["instances"]] == [(0, 30), (890, 30)]
     assert joined == [[f"chunk-{index}.webm" for index in range(5)]]
     assert uploads == [(f"imv/sprite_render/{task_id}.webm", "video/webm", b"joined")]
     [entry] = [record for record in caplog.records if record.msg.startswith("Remotion performance task_id=")]
@@ -1871,12 +1943,10 @@ def still_title(code: str) -> pb.PublishedSprite:
     )
 
 
-# 场景：真实沙箱里，0.4 秒的短字幕定格在预览中间帧、整段全亮且结束后透明，不淡入淡出；2 秒的字幕照常按自身长度淡入；
-# 比 1 秒预览更长的 1.33 秒短字幕也显示满自己的帧数，不会在预览长度处消失。
+# 场景：真实沙箱里短/长字幕都播放原动画且严格按切片结束；只有一/二帧字幕取可见中间帧。
 @pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
-def test_real_short_subtitles_hold_still(tmp_path: Path) -> None:
-    """切片 0～12 帧：第 0/11 帧 alpha 1、第 12 帧 0；切片 30～90 帧：第 30 帧 alpha 0（淡入开始）、第 60 帧 1；
-    切片 100～140 帧：第 135 帧 alpha 1、第 140 帧 0。"""
+def test_real_subtitles_adapt_animation_to_actual_intervals(tmp_path: Path) -> None:
+    """0.4 秒字幕可观察到淡入、停留、淡出；长字幕不提前结束，极短字幕可见，间隙透明。"""
     configured = {
         name: Path(value)
         for name, value in (
@@ -1887,9 +1957,13 @@ def test_real_short_subtitles_hold_still(tmp_path: Path) -> None:
         if value
     }
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
-    message = pb.SpriteRenderInput(sprite_id="still", effect_total_frames=150, cues=[cue("短句", 0, 12), cue("长句", 30, 90), cue("长于预览", 100, 140)])
+    message = pb.SpriteRenderInput(sprite_id="still", effect_total_frames=150, cues=[
+        cue("短句", 0, 12), cue("长句", 30, 90), cue("长于预览", 100, 140),
+        cue("一帧", 143, 144), cue("两帧", 146, 148)])
     video = asyncio.run(sprite_render.render_sprite(Renderer(settings), plan_sprite_render(message, still_title(EDGE_FADE)), tmp_path / "job"))
-    for frame, expected in ((0, 1.0), (11, 1.0), (12, 0.0), (30, 0.0), (60, 1.0), (135, 1.0), (140, 0.0)):
+    for frame, expected in ((0, 0.0), (1, 0.3), (6, 1.0), (11, 0.1), (12, 0.0), (30, 0.0), (60, 1.0),
+                            (89, 0.1), (90, 0.0), (135, 0.4), (139, 0.1), (140, 0.0),
+                            (143, 1.0), (144, 0.0), (146, 1.0), (147, 1.0), (148, 0.0)):
         assert decoded_alpha(video, frame) == pytest.approx(expected, abs=0.05), frame
 
 
@@ -1925,11 +1999,13 @@ def test_real_multi_line_text_reveals_lines_and_clears_together(tmp_path: Path) 
         "lineStartFrames": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600}, "minItems": 2, "maxItems": 2},
     }})
     lines.default_config_json = json.dumps({"text": "一\n二", "lineStartFrames": [0, 15]})
-    message = pb.SpriteRenderInput(sprite_id="still", effect_total_frames=200, cues=[
-        sentence_cue("一", 0, 60, 1), sentence_cue("二", 60, 120, 1), sentence_cue("三", 130, 190, 2)])
+    message = pb.SpriteRenderInput(sprite_id="still", effect_total_frames=240, cues=[
+        sentence_cue("一", 0, 60, 1), sentence_cue("二", 60, 120, 1), sentence_cue("三", 130, 190, 2),
+        sentence_cue("短组上行", 200, 209, 3), sentence_cue("稍后下行", 209, 214, 3)])
     video = asyncio.run(sprite_render.render_sprite(Renderer(settings), plan_sprite_render(message, lines), tmp_path / "job"))
     bottom = 200 * 180
-    for frame, top_alpha, bottom_alpha in ((10, 1.0, 0.0), (70, 1.0, 1.0), (125, 0.0, 0.0), (140, 1.0, 0.0)):
+    for frame, top_alpha, bottom_alpha in ((10, 1.0, 0.0), (70, 1.0, 1.0), (125, 0.0, 0.0), (140, 1.0, 0.0),
+                                          (208, 1.0, 0.0), (209, 1.0, 1.0), (213, 1.0, 1.0), (214, 0.0, 0.0)):
         assert decoded_alpha(video, frame) == pytest.approx(top_alpha, abs=0.05), frame
         assert decoded_alpha(video, frame, bottom) == pytest.approx(bottom_alpha, abs=0.05), frame
 
@@ -2303,10 +2379,10 @@ def test_real_browser_grows_a_wrapped_subtitle_away_from_the_other_language(tmp_
     assert stayed.instances[0]["host"]["transform"] == {}
 
 
-# 场景：单 Sprite 渲染的字幕：相同内容只测一次并共用结果；定格的切片只在定格帧上量，按自身长度播放的切片量首、尾和中间帧；
+# 场景：单 Sprite 渲染的字幕：相同内容只测一次并共用结果；包括短字幕在内都测实际时钟的首、尾和中间帧；
 # 一个 Sprite 只启动一次浏览器运行，缩小结果写回所有相同内容的实例。
 def test_sprite_render_fits_each_distinct_cue_in_one_browser_run(tmp_path) -> None:
-    """四个切片里两个文字相同、一个定格：worker 只收到 3 个条目；缩小结果写回所有相同内容的实例。"""
+    """四个切片里两个文字相同：worker 收到 3 个条目，使用最终时钟包装；缩小结果写回相同实例。"""
     message = render_input(text="", keywords=[], effect_total_frames=300, cues=[
         cue("短句", 0, 20), cue("短句", 30, 50), cue("测" * 30, 60, 160), cue("够短", 170, 290)])
     overlay = plan_sprite_render(message, T)
@@ -2314,9 +2390,9 @@ def test_sprite_render_fits_each_distinct_cue_in_one_browser_run(tmp_path) -> No
     asyncio.run(overlay_render.fit_texts(renderer, overlay, {"t": T}, tmp_path / "fit"))
     [request] = renderer.requests
     [sprite] = request["sprites"]
-    # Each item is mounted at the length its Sprite reads: the previewed 90 frames when held, otherwise its own.
+    # Fit mounts the same timing wrapper at each actual interval used in the final render.
     assert [(item["text"], item["frames"], item["length"]) for item in sprite["fit"]] == [
-        ("短句", [45], 90), ("测" * 30, [0, 24, 49, 74, 99], 100), ("够短", [0, 29, 59, 89, 119], 120)]
+        ("短句", [0, 4, 9, 14, 19], 20), ("测" * 30, [0, 24, 49, 74, 99], 100), ("够短", [0, 29, 59, 89, 119], 120)]
     assert request["composition"]["duration_frames"] == 120
     assert [item["config"]["fontSize"] for item in overlay.instances] == [40, 40, 40, 40]
 

@@ -266,15 +266,12 @@ def plan_overlay(
 def _fit_frames(instance: dict, end: int) -> tuple[list[int], int]:
     """The frames at which a placement's text is shown, and the length its Sprite plays at.
 
-    A held text (shown for less than the static threshold) is frozen on one frame of its previewed length; any other
-    one plays its own length and is measured on the first, last and three frames in between of the part that is
-    rendered: a clip running past the video's `end` frame keeps its length, but its frames after `end` never show.
+    Each instance's final code, including its timing wrapper, is measured on the first, last and three frames in
+    between of the part that is rendered: a clip running past the video's `end` frame keeps its length, but its
+    frames after `end` never show.
     A multi-line text is complete only once its last line appears (`reveal_frame`), so only the frames from there on
     are measured.
     """
-    hold = instance.get("hold")
-    if hold:
-        return [hold["frame"]], hold["length"]
     length = instance["duration_frames"]
     shown = max(1, min(length, end - instance["start_frame"], instance.get("visible_end_frame", end) - instance["start_frame"]))
     first = min(shown - 1, max(instance.get("reveal_frame", 0), instance.get("visible_start_frame", instance["start_frame"]) - instance["start_frame"]))
