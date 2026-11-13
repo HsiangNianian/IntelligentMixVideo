@@ -13,7 +13,8 @@ def duration_paths(schema: dict, prefix: tuple[str, ...] = ()) -> list[tuple[str
     """Locate the existing integer duration role without guessing parameter names or following external refs."""
     paths = []
     for name, field in schema.get("properties", {}).items():
-        if not isinstance(field, dict):
+        # Business paths use dots as separators, so literal dotted names are not addressable.
+        if "." in name or not isinstance(field, dict):
             continue
         path = (*prefix, name)
         if field.get("x-imv-role") == "duration":
@@ -23,6 +24,24 @@ def duration_paths(schema: dict, prefix: tuple[str, ...] = ()) -> list[tuple[str
         if field.get("type") == "object":
             paths.extend(duration_paths(field, path))
     return paths
+
+
+def inject_duration(config: dict, paths: list[tuple[str, ...]], frames: int) -> None:
+    """Update duration leaves in present objects without enabling absent optional groups.
+
+    The caller validates the complete config afterwards, so missing required objects still fail its schema.
+    Only the runtime copy is changed; published defaults stay immutable.
+    """
+    for path in paths:
+        target = config
+        for part in path[:-1]:
+            if part not in target:
+                break
+            target = target[part]
+            if not isinstance(target, dict):
+                raise RetimingError("动态时长参数的父级必须是对象")
+        else:
+            target[path[-1]] = frames
 
 
 def dynamic_duration(schema: dict) -> bool:

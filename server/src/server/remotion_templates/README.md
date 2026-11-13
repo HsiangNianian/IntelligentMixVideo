@@ -783,8 +783,10 @@ of N frames samples the published animation's M frames from start to end, using 
 no fixed seconds cutoff that disables animation. Only one/two-frame intervals sample the published `static_frame`
 (when nonzero), or its middle frame, instead of sampling two potentially transparent endpoints. This sample is not
 a guarantee of readability for arbitrary source code. Explicitly duration-aware assets keep their actual-length
-clock; non-text effects keep their existing behavior. Sources are parsed/bundled once per plan in a worker thread,
-never executed outside the existing sandbox, and sealed code/defaults remain unchanged. The time is
+clock; non-text effects keep their existing behavior. Duration roles use the same explicit object paths as video
+composition; literal dotted keys are ignored, and absent optional parent objects stay absent. The complete config
+is still schema-validated. Sources are parsed/bundled once per execution attempt in a worker thread after acquiring
+the render slot and resource capacity, never executed outside the existing sandbox, and sealed code/defaults remain unchanged. The time is
 `effect_total_frames`, 0.5 to 120 seconds and the output's frame count, whatever length was previewed when the Sprite
 was generated. `sprite_render.py` renders the effect in one overlay worker run that writes consecutive chunks of at
 most 15 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
@@ -799,9 +801,13 @@ One/two-frame stills show every line from frame 0, and so does a multi-line `tex
 most `line_count` lines; a cue's text cannot contain a line break. The text fit measures a group only from the frame
 its last line appears (`reveal_frame`). Text effects need `text` or `cues`, other
 kinds take no content, keywords need a Sprite that publishes them, and content cannot be passed as a style override;
-every refusal, a canvas other than the publication's or an unknown Sprite is a 422 at acceptance
+invalid input, a canvas other than the publication's or an unknown Sprite is a 422 at acceptance
 (`SpriteRenderAccepted {task_id}`), and the overlay render's environment checks, plus `ffmpeg` when an effect needs joining, are 503s. The task
-shares the overlay renders' table, render slot, recovery and callback body below, uploads to ZOS
+stores its accepted publication and content plan together, so later overwrites/deletion and process restarts cannot
+change the code, defaults, canvas or cue grouping. Source is stored once per task, not once per cue. Acceptance does
+not bundle source; adaptation failures become a terminal `sprite_unavailable` task error. Older tasks without a
+snapshot bind to the current publication on their first recovery by this version and persist that snapshot before
+waiting for admission. The task shares the overlay renders' table, render slot, recovery and callback body below, uploads to ZOS
 `imv/sprite_render/{taskId}.webm`, and is read with `GET /api/sprites/render/{taskId}` (`SpriteRenderTask`); each
 query endpoint only finds its own kind of task. The overlay worker bundles each distinct Sprite module once, however
 many instances use it.
@@ -937,12 +943,13 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
   (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 1800 seconds / 30 minutes), `overlay_service.py` owns the MySQL `remotion_overlay_renders` task table,
-  up to six renders at a time by default (`IMV_OVERLAY_TASK_CONCURRENCY`; each slot covers only the render: the remote audio probe before it and the ZOS upload after it
+  up to six renders at a time by default (`IMV_OVERLAY_TASK_CONCURRENCY`; each slot covers source adaptation, text fit and rendering: the remote audio probe before it and the ZOS upload after it
   run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
   when the runtime is first built
   (`routes.runtime_for`, oldest first; a damaged row is logged and skipped, and the overlay routes retry if the table
   could not be read), and ZOS upload via `video_composition.zos.upload_public`. The placements are stored with the
-  task, so a recovered task renders exactly what was accepted and only re-reads the published Sprites. State writes retry a locked database
+  template overlay task; recovery uses those placements and re-reads the published Sprites. Single Sprite tasks
+  instead restore their accepted publication and plan as described above. State writes retry a locked database
   three times; if it stays unwritable the row keeps its previous state (never rewritten as a failure) and the next
   start re-runs it. Sealed sources are not re-policy-checked in this worker.
 - **Worker failures**: an exception exits the isolated overlay worker immediately, including a browser connection
