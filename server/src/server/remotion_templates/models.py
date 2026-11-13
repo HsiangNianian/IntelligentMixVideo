@@ -84,7 +84,7 @@ class GenerateTemplateRequest(Contract):
     # The user asked in the new-chat form for a keyword effect: the text effect gives keyword hits their own look or motion.
     # The Agent reads it from user_intent.original_request for every job of the work (see EXECUTOR_RULES).
     keyword_effect: StrictBool = False
-    # The user asked in the new-chat form for a two-tier text (双栏); a new work's sprite.create refuses a single-line text then.
+    # The user asked in the new-chat form for a two-tier text (双栏); a new work's effect.save refuses a single-line text then.
     two_tier: StrictBool = False
     # The user asked for a bilingual subtitle (双语字幕): the two tiers show the Chinese line and its English translation.
     bilingual: StrictBool = False
@@ -539,7 +539,7 @@ class JobError(Contract):
 
 
 class JobReply(Contract):
-    """Preserve structured replies saved by the free-form agent when reading existing jobs."""
+    """What a finished free-form task tells the user: what it built, how it read anything ambiguous and where to go next."""
 
     summary: Text
     choices: list[Text] = Field(default_factory=list, max_length=5)
@@ -571,6 +571,7 @@ class GenerationJob(Contract):
     answer: Text | None = None
     error: JobError | None = None
     usage: dict[str, int] = Field(default_factory=dict)
+    # The Agent's own reply to a successful free-form task, shown instead of the fixed success text.
     reply: JobReply | None = None
     created_at: datetime
     updated_at: datetime
@@ -610,7 +611,7 @@ class MessageImage(Contract):
 
 
 class JobInput(Contract):
-    """Persisted execution input allows explicit retries without replaying hidden state."""
+    """Private execution input and recoverable workspace; never accepted from the public request body."""
 
     mode: Literal["generate", "edit", "parameters"] = "generate"
     instruction: str | None = None
@@ -618,6 +619,7 @@ class JobInput(Contract):
     clarifications: list[str] = Field(default_factory=list)
     # Reference images attached to later chat messages; the work's original image is read from its request.
     images: list[MessageImage] = Field(default_factory=list)
+    checkpoint: dict[str, JsonValue] | None = None
 
 
 class PublicJob(Contract):

@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from server.remotion_templates.planning import Plan, PlanAction
 
 
-def step(identifier, refs, modules=("preset",)):
+def step(identifier, refs, modules=("workspace",)):
     """构造一个带指定引用与模块的步骤。"""
     return {
         "id": identifier,
@@ -28,13 +28,13 @@ def step(identifier, refs, modules=("preset",)):
         ["user_intent"],
         ["accepted_base"],
         ["user_intent", "steps.first.outputs.sprite"],
-        ["steps.first.outputs.presets"],
+        ["steps.first.outputs.effect"],
     ],
 )
 def test_accepted_references_validate(refs):
     """文档写明的引用形式都必须被接受，包括引用前序步骤保存的 Sprite 与准备好的预设。"""
     plan = Plan(
-        goal="组合", steps=[step("first", ["user_intent"], ("preset", "sprite")), step("second", refs)]
+        goal="组合", steps=[step("first", ["user_intent"], ("workspace", "effect")), step("second", refs)]
     )
     assert plan.steps[1].input_refs == refs
 
@@ -55,8 +55,8 @@ def test_rejected_references_report_the_accepted_forms(refs):
             goal="组合", steps=[step("first", ["user_intent"]), step("second", refs)]
         )
     assert (
-        "Inputs must reference user_intent, accepted_base, steps.<earlier_id>.outputs.sprite "
-        "or steps.<earlier_id>.outputs.presets"
+        "Inputs must reference user_intent, accepted_base, steps.<earlier_id>.outputs.sprite, "
+        "or steps.<earlier_id>.outputs.effect"
         in str(failure.value)
     )
 
@@ -83,12 +83,13 @@ def test_delegate_refuses_a_plan_it_would_ignore():
     assert PlanAction(action="update_plan", plan=plan).plan.steps[0].id == "first"
 
 
-def test_reference_requires_a_saved_output_before_dispatch():
+@pytest.mark.parametrize("module", ["effect"])
+def test_reference_requires_a_saved_output_before_dispatch(module):
     """合法语法不等于已取得产物：前一步没有 Sprite 时不能唤醒依赖它的下一步。"""
     from server.remotion_templates.planning import ExecutionState
 
     state = ExecutionState(4, 3)
-    plan = Plan(goal="组合", steps=[step("first", ["user_intent"], ("sprite",)), step("second", ["steps.first.outputs.sprite"])])
+    plan = Plan(goal="组合", steps=[step("first", ["user_intent"], (module,)), step("second", ["steps.first.outputs.sprite"])])
     state.control(PlanAction(action="update_plan", plan=plan))
     state.finish_batch("step_done", sprite_id=None)
     before = state.snapshot()
@@ -105,8 +106,8 @@ def test_a_reference_to_an_output_the_step_cannot_produce_is_refused_when_planne
     from server.remotion_templates.planning import ExecutionState
 
     state = ExecutionState(4, 3)
-    bad = {"goal": "组合", "steps": [step("build", ["user_intent"]), step("compose", ["steps.build.outputs.sprite"], ("sprite",))]}
-    with pytest.raises(ValueError, match="has no sprite module"):
+    bad = {"goal": "组合", "steps": [step("build", ["user_intent"]), step("compose", ["steps.build.outputs.sprite"], ("effect",))]}
+    with pytest.raises(ValueError, match="has no effect module"):
         state.control(PlanAction(action="update_plan", plan=bad))
     assert state.plan is None and state.batches == 0
 
@@ -117,15 +118,15 @@ def test_update_plan_keeps_completed_steps_and_takes_only_pending_ones():
 
     state = ExecutionState(4, 3)
     state.control(PlanAction(action="update_plan", plan={"goal": "组合", "steps": [step("first", ["user_intent"]), step("second", ["user_intent"])]}))
-    state.finish_batch("step_done", presets=[{"kind": "stored", "preset_id": "p1"}])
+    state.finish_batch("step_done", summary="built effect")
     rewritten = {**step("first", ["user_intent"]), "goal": "改写过的已完成步骤"}
     state.control(PlanAction(action="update_plan", plan={
-        "goal": "组合", "steps": [rewritten, step("save", ["steps.first.outputs.presets"], ("preset", "sprite"))],
+        "goal": "组合", "steps": [rewritten, step("save", ["steps.first.outputs.effect"], ("workspace", "effect"))],
     }))
     assert [item.id for item in state.plan.steps] == ["first", "save"]
     assert state.plan.steps[0].goal == "first 步骤"
     assert state.step.id == "save"
-    assert state.snapshot()["step_inputs"] == {"steps.first.outputs.presets": [{"kind": "stored", "preset_id": "p1"}]}
+    assert state.snapshot()["step_inputs"] == {"steps.first.outputs.effect": "built effect"}
 
 
 def test_update_plan_names_the_completed_steps_it_kept():
@@ -134,7 +135,7 @@ def test_update_plan_names_the_completed_steps_it_kept():
 
     state = ExecutionState(4, 3)
     state.control(PlanAction(action="update_plan", plan={"goal": "组合", "steps": [step("first", ["user_intent"]), step("second", ["user_intent"])]}))
-    state.finish_batch("step_done", presets=[{"kind": "stored", "preset_id": "p1"}])
+    state.finish_batch("step_done", summary="built effect")
     redo = {**step("first", ["user_intent"]), "goal": "重写预设"}
     assert state.control(PlanAction(action="update_plan", plan={"goal": "组合", "steps": [redo, step("second", ["user_intent"])]})) == ["first"]
     assert state.control(PlanAction(action="continue")) == []
@@ -163,42 +164,8 @@ def test_default_plan_composes_and_saves_in_one_step(edit):
     from server.remotion_templates.planning import default_plan
 
     plan = default_plan(edit=edit)
-    assert [item.id for item in plan.steps] == ["preset", "sprite"]
-    assert plan.steps[1].tool_modules == ["preset", "sprite"]
-    assert plan.steps[1].input_refs == ["user_intent", "steps.preset.outputs.presets"]
+    assert len(plan.steps) == 1
+    assert plan.steps[0].id == ("edit" if edit else "build")
+    assert "effect" in plan.steps[0].tool_modules
+    assert "effect_save" in plan.steps[0].goal
     assert ("accepted_base" in plan.steps[0].input_refs) is edit
-
-
-def test_a_legacy_base_is_not_offered_base_drafts_it_does_not_have():
-    """审计复现：没有 Sprite 的旧版基线也走编辑计划，提示却让执行层复用并不存在的 base_* 草稿；现在改为提示按 legacy_code 写预设。"""
-    from server.remotion_templates.planning import default_plan
-
-    legacy = default_plan(edit=True, base_drafts=False)
-    assert "accepted_base" in legacy.steps[0].input_refs
-    assert "base_*" not in legacy.steps[0].goal and "base_*" not in legacy.steps[1].goal
-    assert "base.legacy_code" in legacy.steps[0].goal
-    sprite_base = default_plan(edit=True)
-    assert "base_* drafts" in sprite_base.steps[0].goal and "base_* drafts" in sprite_base.steps[1].goal
-    assert "base_*" not in default_plan(edit=False).steps[1].goal
-
-
-def test_an_edit_plan_asks_for_exact_edits_of_the_base_drafts():
-    """审计复现 a1cccb1c：编辑计划曾让执行层「用 preset_create 存一份改好的副本」，模型于是整份重写；现在要求从 base_* 草稿出发用 edits 只替换相关行，新作品的计划不变。"""
-    from server.remotion_templates.planning import default_plan
-
-    edit = default_plan(edit=True).steps[0].goal
-    assert "preset_modify" in edit and "edits" in edit and "only the lines involved" in edit
-    assert "write complete code" not in edit
-    assert "write complete code with preset_create" in default_plan(edit=False).steps[0].goal
-
-
-def test_an_edit_changes_a_value_written_into_the_code_by_editing_that_line():
-    """编辑计划与 Executor 规则曾说所有数值改动都走参数、不碰代码；可基线常把下划线颜色等写死在代码里（a1cccb1c 的 #FFD400），
-    没有参数可改时模型只能违背规则或被拒。现在只有基线已暴露的参数走 sprite_compose，写死的数值改那一行。"""
-    from server.remotion_templates.agent import EXECUTOR_RULES
-    from server.remotion_templates.planning import default_plan
-
-    plan = default_plan(edit=True).steps[0].goal
-    assert "A value the base exposes as a parameter" in plan and "a value written into a draft's code is changed by editing that line" in plan
-    assert "A change of a value the base exposes" in EXECUTOR_RULES and "A value written into the code" in EXECUTOR_RULES
-    assert "same_code_as" in EXECUTOR_RULES

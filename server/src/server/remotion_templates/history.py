@@ -28,6 +28,8 @@ class ChatMessage(Contract):
     role: Literal["user", "assistant"]
     text: str
     image_asset_ids: list[UUID] = Field(default_factory=list)
+    # Directions the Agent offers after a result; the client shows them as options the user can send as the next instruction.
+    suggestions: list[str] = Field(default_factory=list)
     created_at: datetime
 
 
@@ -64,7 +66,7 @@ def append_event(db: Connection, work_id: UUID, kind: str, data: dict, stamp: da
     ))
 
 
-def append_message(db: Connection, job: GenerationJob, role: str, text: str, *, images: list[UUID] | None = None) -> None:
+def append_message(db: Connection, job: GenerationJob, role: str, text: str, *, images: list[UUID] | None = None, suggestions: list[str] | None = None) -> None:
     """Publish each task's user/assistant message once, including on retry and replay."""
     exists = db.execute(select(chat_messages.c.id).where(
         chat_messages.c.job_id == str(job.id), chat_messages.c.role == role,
@@ -82,6 +84,7 @@ def append_message(db: Connection, job: GenerationJob, role: str, text: str, *, 
         role=role,
         text=text,
         image_asset_ids=images or [],
+        suggestions=suggestions or [],
         created_at=job.created_at if role == "user" else job.updated_at,
     )
     db.execute(chat_messages.update().where(chat_messages.c.id == str(identifier)).values(data=message.model_dump_json()))
@@ -142,7 +145,7 @@ def record_job(db: Connection, job: GenerationJob) -> None:
     elif job.status == "answered":
         text = job.answer
     elif job.status == "succeeded":
-        text = "模板已就绪。可以调整参数，或继续描述你想修改的效果。"
+        text = reply_text(job.reply) if job.reply is not None else "模板已就绪。可以调整参数，或继续描述你想修改的效果。"
         if job.result_version_id is not None:
             append_event(
                 db, job.project_id, "version.ready",
@@ -153,7 +156,16 @@ def record_job(db: Connection, job: GenerationJob) -> None:
     elif job.status in {"failed", "interrupted"}:
         text = PublicJob.from_job(job).message
     if text:
-        append_message(db, job, "assistant", text)
+        append_message(db, job, "assistant", text, suggestions=job.reply.suggestions if job.status == "succeeded" and job.reply else None)
+
+
+def reply_text(reply) -> str:
+    """The assistant message of a successful free-form task: what was built, then how anything ambiguous was read."""
+    parts = [reply.summary]
+    if reply.choices:
+        parts.append("我是这样理解的：\n" + "\n".join(f"- {item}" for item in reply.choices))
+    parts.append("可以直接调整参数，或继续描述想修改的地方。")
+    return "\n\n".join(parts)
 
 
 def events(db: Connection, work_id: UUID, after: int, limit: int = 100) -> list[WorkEvent]:
