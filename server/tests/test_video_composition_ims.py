@@ -43,7 +43,8 @@ async def test_official_sdk_async_request_and_response(composition_settings, mon
                                                "MediaURL": "https://test-output.oss-cn-shanghai.aliyuncs.com/actual.mp4"}}, "statusCode": 200}
 
     monkeypatch.setattr(provider.client, "call_api_async", call)
-    timeline = {"VideoTracks": [{"VideoTrackClips": [{"MediaURL": "https://media.test/片.mp4?x=a%2Fb"}]}]}
+    timeline = {"VideoTracks": [{"VideoTrackClips": [{"MediaURL": "https://media.test/片.mp4?x=a%2Fb",
+                                                      "MaskVideoUrl": "https://media.test/mask.mp4"}]}]}
     payload = submission("stable-task-uuid", timeline, composition_settings.output(), "test-vod.oss-cn-shanghai.aliyuncs.com")
     assert await provider.submit(payload) == {"JobId": "ims-123"}
     result = await provider.get("ims-123")
