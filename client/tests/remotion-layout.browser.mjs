@@ -130,7 +130,6 @@ try {
   async function createWork() {
     await page.getByLabel("字效描述").fill("做一个简洁的居中标题，淡入出现。");
     await page.getByRole("button", { name: "发送", exact: true }).click();
-    await page.getByRole("button", { name: /温暖的电影标题/ }).first().waitFor();
     await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
   }
   await page.goto(url);
@@ -180,11 +179,13 @@ try {
   await rounds.getByText(/COMPOSITION_FAILED：组合生成失败。：Sprite bundler unavailable/).waitFor();
   await page.screenshot({ path: join(screenshots, "imv-audit-rounds.png"), fullPage: true });
   await rounds.getByRole("button", { name: /循环记录 · 2 轮/ }).click();
-  // 桌面删除先确认，取消不影响当前播放器或历史选择。
+  // 桌面历史按需浮出；删除先确认，取消不影响当前播放器或历史选择。
+  await page.getByRole("button", { name: "历史会话", exact: true }).click();
   await page.getByRole("button", { name: "删除聊天", exact: true }).click();
   await page.getByRole("dialog").waitFor();
   await page.getByRole("button", { name: "取消", exact: true }).click();
   assert.equal(deleted, false);
+  await page.getByRole("button", { name: "历史会话", exact: true }).click();
   const frame = page.locator('iframe[title="Remotion 字效播放器"]');
   const rect = await frame.boundingBox();
   // iframe 与外框保持成功版本的真实画布比例；外框完整落在预览区内。
@@ -251,27 +252,35 @@ try {
       ).width - before.width,
     ) < 2,
   );
-  // 预览/参数分隔线调整预览宽度；极端拖动也必须保留三个面板的最小可用宽度。
-  const second = await page
-    .getByRole("separator", { name: "调整预览与参数宽度" })
-    .boundingBox();
+  // 三栏横排；第二条分隔支持拖动、键盘和刷新恢复，预览保留最小宽度。
+  const secondHandle = page.getByRole("separator", { name: "调整预览与参数宽度" });
+  const second = await secondHandle.boundingBox();
   const previewBefore = await page.locator("#preview").boundingBox();
-  await page.mouse.move(second.x + second.width / 2, second.y + 100);
+  const parametersBefore = await page.locator("#parameters").boundingBox();
+  assert(Math.abs(previewBefore.y - parametersBefore.y) < 2);
+  assert(parametersBefore.x >= previewBefore.x + previewBefore.width);
+  await page.mouse.move(second.x + second.width / 2, second.y + second.height / 2);
   await page.mouse.down();
-  await page.mouse.move(second.x + 60, second.y + 100, { steps: 8 });
+  await page.mouse.move(second.x - 60, second.y + second.height / 2, { steps: 8 });
   await page.mouse.up();
-  assert(
-    (await page.locator("#preview").boundingBox()).width >
-      previewBefore.width + 30,
-  );
-  await page.mouse.move(second.x + 60, second.y + 100);
+  const previewAfter = await page.locator("#preview").boundingBox();
+  assert(previewAfter.width < previewBefore.width - 30);
+  await secondHandle.focus();
+  await page.keyboard.press("ArrowRight");
+  const resizedPreview = (await page.locator("#preview").boundingBox()).width;
+  assert(resizedPreview > previewAfter.width + 1);
+  await page.reload();
+  await page.getByRole("button", { name: "AI 字效", exact: true }).click();
+  await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
+  assert(Math.abs((await page.locator("#preview").boundingBox()).width - resizedPreview) < 2);
+  const restoredHandle = await secondHandle.boundingBox();
+  await page.mouse.move(restoredHandle.x + restoredHandle.width / 2, restoredHandle.y + restoredHandle.height / 2);
   await page.mouse.down();
-  await page.mouse.move(300, second.y + 100, { steps: 8 });
+  await page.mouse.move(0, restoredHandle.y + restoredHandle.height / 2, { steps: 8 });
   await page.mouse.up();
-  assert(
-    (await page.locator("#preview").boundingBox()).width >= 219,
-  );
+  assert((await page.locator("#preview").boundingBox()).width >= 219);
   await page.getByRole("button", { name: "恢复布局" }).click();
+  assert(Math.abs((await page.locator("#preview").boundingBox()).width - previewBefore.width) < 2);
   // 点击成功卡片只替换预览；返回最新后恢复参数编辑。
   await page.getByRole("button", { name: "预览 V1", exact: true }).click();
   await page
@@ -290,6 +299,23 @@ try {
     .and(page.locator(":enabled"))
     .waitFor({ timeout: 10_000 });
   await page.getByLabel("字号", { exact: true }).fill("104");
+  // 收起参数将宽度平分给对话与预览，展开后恢复三栏并保留输入与同一个播放器实例。
+  const parameterWidth = (await page.locator("#parameters").boundingBox()).width;
+  const chatWidth = (await page.locator("#chat").boundingBox()).width;
+  const previewWidth = (await page.locator("#preview").boundingBox()).width;
+  const playerNode = await frame.elementHandle();
+  await page.getByRole("button", { name: "收起参数", exact: true }).click();
+  await page.getByRole("button", { name: "展开参数", exact: true }).waitFor();
+  assert((await page.locator("#parameters").boundingBox()).width < 1);
+  assert(Math.abs((await page.locator("#chat").boundingBox()).width - chatWidth - parameterWidth / 2) < 2);
+  assert(Math.abs((await page.locator("#preview").boundingBox()).width - previewWidth - parameterWidth / 2) < 2);
+  await page.getByRole("button", { name: "展开参数", exact: true }).click();
+  await page.getByRole("button", { name: "收起参数", exact: true }).waitFor();
+  assert.equal(await page.getByLabel("字号", { exact: true }).inputValue(), "104");
+  assert(await frame.evaluate((element, original) => element === original, playerNode));
+  assert(Math.abs((await page.locator("#parameters").boundingBox()).width - parameterWidth) < 2);
+  assert(Math.abs((await page.locator("#chat").boundingBox()).width - chatWidth) < 2);
+  assert(Math.abs((await page.locator("#preview").boundingBox()).width - previewWidth) < 2);
   await page.getByRole("button", { name: "预览 V1", exact: true }).click();
   await page.getByRole("dialog").waitFor();
   await page.getByRole("button", { name: "取消", exact: true }).click();
@@ -403,7 +429,7 @@ try {
   );
   assert.equal(errors.length, 0, errors.join("\n"));
   console.log(
-    "PASS: 预览尺寸、拖拽/键盘调宽、栏宽恢复、刷新后从本地库恢复会话、历史预览、未保存保护、新增聊天、桌面删除确认与窄屏删除清理、新会话时长工具栏不溢出及 390px 窄屏布局。截图：" +
+    "PASS: 预览尺寸、三栏拖拽/键盘调整、栏宽恢复、刷新后从本地库恢复会话、历史预览、未保存保护、新增聊天、桌面删除确认与窄屏删除清理、新会话时长工具栏不溢出及 390px 窄屏布局。截图：" +
       screenshots,
   );
 } finally {
