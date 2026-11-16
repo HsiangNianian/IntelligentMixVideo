@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 
 /** 以字体自己的样子显示它的名称；`className` 调整预览条的尺寸。 */
 export function FontName({ label, url, className }: { label: string; url: string | null; className?: string }) {
-  if (!url) return <span className="truncate">{label}</span>;
+  if (!url) return <span className="truncate" style={{ fontFamily: "system-ui, sans-serif" }}>{label}</span>;
   return (
     <span
       role="img"

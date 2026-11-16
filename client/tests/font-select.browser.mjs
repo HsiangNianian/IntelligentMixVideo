@@ -76,3 +76,33 @@ export async function testFontSelect(page, origin = "http://localhost:18766") {
   await closed();
   console.log("PASS: 11 张真实字形预览、搜索、键盘选择、独立状态、主题颜色与 Remotion 目录。");
 }
+
+/** 字体库布局回归：在至少 1024px 宽的窗口执行，固定目录与本地字体不依赖后端。 */
+export async function testFontLibrary(page, origin = "http://localhost:18766") {
+  await page.goto(`${origin}/tests/font-select.html?library`);
+  await page.waitForFunction(() => document.querySelector('[aria-label="字样"]'));
+  // 场景：长列表和多字号字样都在栏内滚动，隐藏读屏文案不能撑长外层页面。
+  const layout = await page.evaluate(() => {
+    const list = document.querySelector('ul[aria-label="字体家族"]');
+    const panel = document.querySelector('[role="tabpanel"]');
+    return {
+      width: innerWidth, viewport: innerHeight, height: document.documentElement.scrollHeight,
+      listHeight: list.clientHeight, listScroll: list.scrollHeight,
+      panelHeight: panel.clientHeight, panelScroll: panel.scrollHeight,
+      sizes: [...document.querySelectorAll('[aria-label="字样"] p[title]')].map((row) => row.title),
+    };
+  });
+  assert(layout.width >= 1024, "请使用桌面窗口运行两栏滚动回归");
+  assert.equal(layout.height, layout.viewport, "页面不应有外层空白滚动");
+  assert(layout.listScroll > layout.listHeight, "长列表应在左栏内滚动");
+  assert(layout.panelScroll > layout.panelHeight, "多字号应在右栏内滚动");
+  assert.equal(layout.sizes.length, 11);
+  // 场景：详情替换右栏内容，既不打开对话框，也不留下原字样占位。
+  await page.click('[role="tab"][id$="trigger-details"]');
+  await page.waitForFunction(() => document.querySelector('[aria-label="字体家族信息"]'));
+  assert.equal(await page.evaluate(() => document.querySelectorAll('[role="dialog"], [aria-label="字样"]').length), 0);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollHeight), layout.viewport);
+  await page.click('[role="tab"][id$="trigger-regular"]');
+  await page.waitForFunction(() => document.querySelector('[aria-label="字样"]'));
+  console.log("PASS: 字体库无外层空白、两栏内部滚动、11 档字号与同级详情页。");
+}

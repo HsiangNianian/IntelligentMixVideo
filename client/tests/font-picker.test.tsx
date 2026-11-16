@@ -31,6 +31,46 @@ const LIBRARY = [
 ];
 
 const UPLOADED = font("u-1", "Zed Display", "我的字体", { source: "upload" });
+
+// 场景：选中家族即在右栏显示真实字样，换字形、搜索与卸载会释放对应文件；不弹出对话框。
+test("字体列表选择和字形切换更新常驻字样并释放字体", async () => {
+  const loaded: string[] = [];
+  const released: string[] = [];
+  const loader: FaceLoader = async (url) => {
+    const id = url.split("/").pop()!;
+    loaded.push(id);
+    return { family: `actual-${id}`, release: () => released.push(id) };
+  };
+  fontServer(undefined, [...LIBRARY, font("u-1", "Zed Serif", "我的衬线", { faces: [face("u-1", "regular"), face("u-2", "bold")] })]);
+  const view = render(<FontLibrary loader={loader} />);
+  fireEvent.click(await screen.findByRole("button", { name: "选择字体 我的衬线" }));
+  expect((await screen.findByLabelText("字样")).style.fontFamily).toContain("actual-u-1");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "粗体" }), { button: 0, ctrlKey: false });
+  await waitFor(() => expect(screen.getByLabelText("字样").style.fontFamily).toContain("actual-u-2"));
+  expect(released).toEqual(["u-1"]);
+  fireEvent.change(screen.getByRole("textbox", { name: "示例文字" }), { target: { value: "真实字形" } });
+  expect(within(screen.getByLabelText("字样")).getAllByText("真实字形")).toHaveLength(12);
+  fireEvent.change(screen.getByRole("textbox", { name: "搜索字体" }), { target: { value: "brush" } });
+  await waitFor(() => expect(screen.getByLabelText("字样").style.fontFamily).toContain("actual-ma-shan-zheng"));
+  expect(released).toEqual(["u-1", "u-2"]);
+  view.unmount();
+  expect(loaded).toEqual(["u-1", "u-2", "ma-shan-zheng"]);
+  expect(released).toEqual(loaded);
+});
+
+// 场景：切换字体后旧文件才完成加载，旧字形不得覆盖新选择，且立即释放迟到资源。
+test("常驻字样丢弃并释放迟到的字体", async () => {
+  const slow = deferred<{ family: string; release: () => void }>();
+  const released: string[] = [];
+  fontServer(undefined, [LIBRARY[1]!, UPLOADED]);
+  render(<FontLibrary loader={(url) => url.endsWith("u-1") ? Promise.resolve({ family: "new-face", release: () => {} }) : slow.promise} />);
+  fireEvent.click(await screen.findByRole("button", { name: "选择字体 我的字体" }));
+  expect((await screen.findByLabelText("字样")).style.fontFamily).toContain("new-face");
+  slow.resolve({ family: "old-face", release: () => released.push("old") });
+  await waitFor(() => expect(released).toEqual(["old"]));
+  expect(screen.getByLabelText("字样").style.fontFamily).toContain("new-face");
+});
 /** 文件名是一串哈希、英文家族名 Zed Display、简体中文名“我的字体”的字体文件。 */
 const uploadFile = () => fontFile("0b7027d34f9546b7993e082b48c22401.ttf", [english("Zed Display"), [3, 1, 0x0804, 1, "我的字体"]]);
 
@@ -356,7 +396,7 @@ test("字体库页面列出全部字体并支持搜索", async () => {
   expect(await screen.findByText("共 2 个字体")).toBeTruthy();
   expect(screen.getAllByRole("img").map((item) => item.getAttribute("aria-label"))).toEqual(["思源黑体（默认）", "马善政毛笔楷书"]);
   expect(screen.getByText("系统默认")).toBeTruthy();
-  expect(screen.getByText("随系统安装")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "选择字体 思源黑体（默认）" }).textContent).toContain("随系统安装");
   expect(screen.getByText("预装")).toBeTruthy();
   fireEvent.change(screen.getByRole("textbox", { name: "搜索字体" }), { target: { value: "brush" } });
   await waitFor(() => expect(screen.getByText("共 2 个字体，匹配 1 个")).toBeTruthy());
@@ -365,86 +405,89 @@ test("字体库页面列出全部字体并支持搜索", async () => {
   expect(await screen.findByText("没有匹配的字体")).toBeTruthy();
 });
 
-// 场景：一张字体卡片是一个家族：卡片列出已有的字形；点击卡片打开字体详情，四个字形里已有的显示预览条、字重、大小与 SHA-256，
-// 缺少的标为未上传，并给出家族名（fontFamily 的取值）、来源与许可证；Esc 关闭后回到列表。
-test("点击字体卡片查看各字形的详情", async () => {
+// 场景：字形与家族详情是同级页面，缺少的字形禁用；元数据跟随家族，字形文件信息留在对应字样页。
+test("字体详情与各字形在右栏切换而不弹窗", async () => {
   const bold = face("u-2", "bold", { weights: [700], size: 2048, sha256: "ab".repeat(32), preview_url: null });
   fontServer(undefined, [...LIBRARY, font("u-1", "Zed Serif", "我的衬线", { source: "upload", faces: [face("u-1", "regular"), bold] })]);
-  render(<FontLibrary />);
-  const card = await screen.findByRole("button", { name: "查看字体 我的衬线" });
+  render(<FontLibrary loader={async () => ({ family: "test-face", release: () => {} })} />);
+  const card = await screen.findByRole("button", { name: "选择字体 我的衬线" });
   expect(card.textContent).toContain("常规 · 粗体");
   fireEvent.click(card);
-  const dialog = await screen.findByRole("dialog");
-  expect(within(dialog).getByText("Zed Serif")).toBeTruthy();
-  expect(within(dialog).getByText("用户上传")).toBeTruthy();
-  expect(within(dialog).getByRole("listitem", { name: "常规" }).textContent).toContain("字重 400 · 1 KB");
-  const boldItem = within(dialog).getByRole("listitem", { name: "粗体" });
-  expect(boldItem.textContent).toContain("字重 700 · 2 KB");
-  expect(boldItem.textContent).toContain(`SHA-256 ${"ab".repeat(32)}`);
-  expect(within(dialog).getByRole("listitem", { name: "斜体" }).textContent).toContain("未上传，渲染时由浏览器合成");
-  expect(within(dialog).getByRole("listitem", { name: "粗斜体" }).textContent).toContain("未上传");
-  fireEvent.keyDown(dialog, { key: "Escape" });
-  await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
-  fireEvent.click(screen.getByRole("button", { name: "查看字体 马善政毛笔楷书" }));
-  expect((await screen.findByRole("dialog")).textContent).toContain("预装 · OFL-1.1");
+  expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["常规", "粗体", "斜体", "粗斜体", "字体详情"]);
+  expect(screen.getByRole("tab", { name: "斜体" }).hasAttribute("disabled")).toBe(true);
+  expect(screen.getByRole("tab", { name: "粗斜体" }).hasAttribute("disabled")).toBe(true);
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "字体详情" }), { button: 0, ctrlKey: false });
+  const details = await screen.findByRole("region", { name: "字体家族信息" });
+  expect(within(details).getByText("Zed Serif")).toBeTruthy();
+  expect(within(details).getByText("用户上传")).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByLabelText("字样")).toBeNull();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "粗体" }), { button: 0, ctrlKey: false });
+  await screen.findByLabelText("字样");
+  expect(screen.getByRole("tabpanel").textContent).toContain("粗体 · 字重 700 · 2 KB");
+  expect(screen.getByText("ab".repeat(32))).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "选择字体 马善政毛笔楷书" }));
+  expect(screen.getByRole("tab", { name: "常规" }).getAttribute("aria-selected")).toBe("true");
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "字体详情" }), { button: 0, ctrlKey: false });
+  expect(screen.getByRole("region", { name: "字体家族信息" }).textContent).toContain("OFL-1.1");
 });
 
-// 场景：服务端还是字体卡片之前的版本（条目没有 faces 与 license），字体库页面照常列出字体并打开详情，不会因读取
-// `faces` 抛错而让整个界面变成黑屏。
+// 场景：旧服务端条目没有 faces 与 license，仍补出常规页并展示家族信息。
 test("早于字体卡片的服务端也能打开字体库", async () => {
   const { faces: _faces, license: _license, ...old } = LIBRARY[1]!;
   fetchMock.mockImplementation((async (_input: RequestInfo | URL) => Response.json([old])) as typeof fetch);
   render(<FontLibrary />);
-  const card = await screen.findByRole("button", { name: "查看字体 马善政毛笔楷书" });
-  expect(card.textContent).toContain("常规");
-  fireEvent.click(card);
-  const dialog = await screen.findByRole("dialog");
-  expect(within(dialog).getByRole("listitem", { name: "常规" }).textContent).toContain("字重 400 · 1 KB");
-  expect(within(dialog).getByText("预装")).toBeTruthy();
+  expect((await screen.findByRole("button", { name: "选择字体 马善政毛笔楷书" })).textContent).toContain("常规");
+  expect(screen.getByRole("tab", { name: "常规" }).hasAttribute("disabled")).toBe(false);
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "字体详情" }), { button: 0, ctrlKey: false });
+  const details = screen.getByRole("region", { name: "字体家族信息" });
+  expect(within(details).getByText("预装")).toBeTruthy();
+  expect(within(details).getByText("未提供")).toBeTruthy();
 });
 
-// 场景：系统默认字体在本机没有安装文件时，详情仍展示常规字形与元数据，但不提供会 404 的字样按钮。
+// 场景：系统默认字体没有本机文件，不请求字样；家族详情仍可查看。
 test("系统字体文件不在本机时不打开字样", async () => {
   fontServer();
-  render(<FontLibrary />);
-  fireEvent.click(await screen.findByRole("button", { name: "查看字体 思源黑体（默认）" }));
-  const dialog = await screen.findByRole("dialog");
-  expect(within(dialog).getByRole("listitem", { name: "常规" }).textContent).toContain("随系统安装");
-  expect(within(dialog).queryByRole("button", { name: "查看常规字样" })).toBeNull();
-  expect(within(dialog).getByText("本机未安装该字体文件，无法查看字样。")).toBeTruthy();
+  const loads: string[] = [];
+  render(<FontLibrary loader={async (url) => { loads.push(url); return { family: "test", release: () => {} }; }} />);
+  await screen.findByRole("button", { name: "选择字体 思源黑体（默认）" });
+  expect(screen.getByText("本机未安装该字体文件，无法查看字样。")).toBeTruthy();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "字体详情" }), { button: 0, ctrlKey: false });
+  expect(within(screen.getByRole("region", { name: "字体家族信息" })).getByText("随系统安装")).toBeTruthy();
+  expect(loads).toEqual([]);
 });
 
-// 场景：在字体详情里点击已有的字形打开它的字样——读取这个字形的字体文件（file_url），用它排出标题、字母数字与字号阶梯，示例句可修改；
-// 读取失败时提示并可重试；缺少的字形不能点击；返回后回到详情并移除注册的字体。
-test("点击字形查看它的字样", async () => {
+// 场景：常规和粗体都使用自己的文件展示完整字号阶梯；失败可重试，进入详情释放字体。
+test("字形页展示多字号并支持加载重试", async () => {
   const loads: string[] = [];
   const released: string[] = [];
   let failures = 1;
   const loader: FaceLoader = async (url) => {
-    loads.push(url);
-    if (failures-- > 0) throw new Error("bad font");
-    return { family: "imv-specimen-test", release: () => released.push(url) };
+    const id = url.split("/").pop()!;
+    loads.push(id);
+    if (id === "u-2" && failures-- > 0) throw new Error("bad font");
+    return { family: `actual-${id}`, release: () => released.push(id) };
   };
   const bold = face("u-2", "bold", { weights: [700] });
-  fontServer(undefined, [...LIBRARY, font("u-1", "Zed Serif", "我的衬线", { source: "upload", faces: [face("u-1", "regular"), bold] })]);
+  fontServer(undefined, [LIBRARY[0]!, font("u-1", "Zed Serif", "我的衬线", { source: "upload", faces: [face("u-1", "regular"), bold] })]);
   render(<FontLibrary loader={loader} />);
-  fireEvent.click(await screen.findByRole("button", { name: "查看字体 我的衬线" }));
-  const dialog = await screen.findByRole("dialog");
-  expect(within(dialog).queryByRole("button", { name: "查看斜体字样" }) === null).toBe(true);
-  fireEvent.click(within(dialog).getByRole("button", { name: "查看粗体字样" }));
+  fireEvent.click(await screen.findByRole("button", { name: "选择字体 我的衬线" }));
+  const regular = await screen.findByLabelText("字样");
+  expect(regular.style.fontFamily).toContain("actual-u-1");
+  expect([...regular.querySelectorAll("p[title]")].map((row) => row.getAttribute("title"))).toEqual(["12px", "14px", "16px", "20px", "24px", "32px", "40px", "48px", "64px", "80px", "96px"]);
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "粗体" }), { button: 0, ctrlKey: false });
   expect((await screen.findByRole("alert")).textContent).toContain("字体文件读取失败");
   fireEvent.click(screen.getByRole("button", { name: "重试" }));
   const specimen = await screen.findByLabelText("字样");
-  expect(loads.map((url) => new URL(url).pathname)).toEqual(["/api/templates/fonts/u-2", "/api/templates/fonts/u-2"]);
-  expect(specimen.style.fontFamily).toContain("imv-specimen-test");
-  expect(specimen.textContent).toContain("我的衬线，粗体");
+  expect(loads).toEqual(["u-1", "u-2", "u-2"]);
+  expect(specimen.style.fontFamily).toContain("actual-u-2");
   expect(specimen.textContent).toContain("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-  expect(within(specimen).getAllByText("我能吞下玻璃而不伤身体。")).toHaveLength(11);
+  expect(within(specimen).getAllByText("让文字，成为画面。")).toHaveLength(12);
   fireEvent.change(screen.getByRole("textbox", { name: "示例文字" }), { target: { value: "你好 Hello" } });
-  expect(within(specimen).getAllByText("你好 Hello")).toHaveLength(11);
-  fireEvent.click(screen.getByRole("button", { name: "返回字体详情" }));
-  expect(await screen.findByRole("button", { name: "查看常规字样" })).toBeTruthy();
-  expect(released.map((url) => new URL(url).pathname)).toEqual(["/api/templates/fonts/u-2"]);
+  expect(within(specimen).getAllByText("你好 Hello")).toHaveLength(12);
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "字体详情" }), { button: 0, ctrlKey: false });
+  expect(screen.getByRole("region", { name: "字体家族信息" })).toBeTruthy();
+  expect(released).toEqual(["u-1", "u-2"]);
 });
 
 // 场景：字体库读取失败（服务端不可用）——显示原因与重试，重试成功后列出字体。
