@@ -285,8 +285,9 @@ def service(tmp_path, monkeypatch, template_db):
     monkeypatch.setattr(overlay_render.asyncio, "create_subprocess_exec", join)
     uploads: list[tuple] = []
 
-    async def probed(path, overlay) -> None:
+    async def probed(path, overlay, *, stream_role="webm") -> None:
         """替身探测：视为规格一致。"""
+        assert stream_role == "webm"
 
     def upload(files, zos, timeout):
         """记录上传并返回公开地址。"""
