@@ -32,13 +32,13 @@
 - 参考图：新图片在入队事务内校验存在、由本设备上传且不属于正在删除的会话（404/409）；作品用到的每张图记在 `remotion_work_assets`，任务记录送达删除后仍据此判断引用。回答图片记录所答 `clarifications` 序号，该条澄清也写入 `answer_images`。上传 24 小时后仍无作品或任务引用的素材由每小时清理调用 `Store.prune_assets` 回收，正在删除的会话仍引用的图留给删除流程；回收失败只记日志，不影响上传或启动。
 - 单次模型请求的图片合计上限为 30 MiB，按转换为检查用 PNG 后、Base64 编码前的字节数计算；窗口参考图与末尾回看帧必须共用预算，超限在发 HTTP 前拒绝。传输上限须容纳 Base64 膨胀与文本封装，不能提前拦住合法边界。
 - 公开进度存 `remotion_job_progress`，与 `job.updated` 在同一事务发布、送达后随任务清理；循环记录经 `job.round` 增量发布、逐条存 `job_rounds`，终态任务不再接受记录。
-- 配置类在 `settings.py`（经 `server.remotion_templates.settings` 导入），继续复用 `config_base.CommonSettings` 读取 `server/.env`，相对数据目录和默认 `server/remotion/` 渲染资源位置不变。渲染默认值集中在这里，`.env.example` 新增的渲染项只写 CPU/内存预留比例；模型预算、超时与重试的默认值与 `.env.example` 同步。
+- 配置类在 `settings.py`（经 `server.remotion_templates.settings` 导入），继续复用 `config_base.CommonSettings` 读取 `server/.env`。GPU 排除规则和宿主 NVENC 会话预算定义在 `gpu_resources.py`，在 `.env.example` 中用注释说明。模型预算、超时与重试的默认值与 `.env.example` 同步。
 - 每个已完成工具和轮次将工作区、当前计划步骤及有界回执保存到任务输入里的私有恢复点；失败重试和同基线的后续消息从它继续，新的执行复制恢复点，不能依赖即将被 ack 清理的旧任务行或临时目录。渲染验收与回看证据不跨执行复用，保存仍须通过完整门禁。旧失败仅可从本任务审计中成功的工作区写入回执恢复源码，不重放工具，不恢复失败写入；恢复点和密钥不得进入公共任务响应。
 
 ## 隔离与渲染
 
 - 生成的代码只在 Linux 沙箱（`bwrap`、`prlimit`、`taskset`）里运行。需要沙箱的入口在入队前检查环境，不满足返回 503 并说明原因，不留下作品或任务。`IMV_ALLOW_UNSANDBOXED_WORKER` 只在 macOS 开发时生效，且不包括 `overlay-worker.mjs`。
-- 沙箱命令只在 `Renderer.command` 构造（字体目录的只读挂载与 `FONTCONFIG_FILE` 也在这里）；不在各 worker 里各自加载字体，不给沙箱开放网络或 GPU。
+- 沙箱命令只在 `Renderer.command` 构造，字体目录只读且网络隔离。只有已取得宿主显存租约的 IMS 叠加 worker 能访问所选单卡，排版、生成和公开单文件渲染使用软件图形。图形或硬编码资源故障才触发重新选路。
 - `validate.check`、`effect.save` 的校验器无法启动时返回 `VALIDATION_UNAVAILABLE`；组件自身抛错是 `CODE_VALIDATION_FAILED`；`PRESET_STORE_FAILED`、`SPRITE_STORE_FAILED` 只用于存储失败。
 - 排版预检、渲染与校验都经 `RenderCapacity` 按 CPU/内存准入，取消或失败时释放。分块渲染保持帧区间连续完整、动画按绝对时钟，拼接无损。
 - 叠加渲染失败只公开稳定错误码与固定说明，渲染器输出等根因只写服务端日志。叠加渲染任务与 IMS 合成的代码和表分开，只复用 `ZosSettings` 与 `zos.upload_public`。
