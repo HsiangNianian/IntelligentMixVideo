@@ -84,8 +84,8 @@ class Settings(ClientSettings, CommonSettings):
     render_max_memory_mb: int = Field(default=153600, ge=1024)
     overlay_chunk_memory_mb: int = Field(default=1024, ge=128, le=16384)
     overlay_resource_wait_seconds: float = Field(default=300, gt=0, le=1800, allow_inf_nan=False)
-    overlay_vp9_cpu_used: int | None = Field(default=4, ge=0, le=8)
-    overlay_vp9_threads: int | None = Field(default=2, ge=1, le=64)
+    overlay_vp9_cpu_used: int | None = Field(default=7, ge=0, le=8)
+    overlay_vp9_threads: int | None = Field(default=3, ge=1, le=64)
     # 瞬时传输故障与上游限流/不可用会等待后重试；等待按次数翻倍，上限 30 秒。
     model_retries: int = Field(default=2, ge=0, le=5)
     model_retry_delay_seconds: float = Field(default=2.0, ge=0.1, le=30.0)

@@ -75,12 +75,14 @@ export const openBrowser = async () => {
   throw new Error('browser connection failed with live handles');
 };
 export const selectComposition = async () => { throw new Error('must not select'); };
-export const renderMedia = async () => { throw new Error('must not render'); };
+export const renderFrames = async () => { throw new Error('must not render'); };
+export const RenderInternals = {};
 ''')
     source = (renderer / "overlay-worker.mjs").read_text()
     source = source.replace('"@remotion/bundler"', json.dumps(stub.as_uri()))
     source = source.replace('"@remotion/renderer"', json.dumps(stub.as_uri()))
     source = source.replace('"./managed-fonts.mjs"', json.dumps((renderer / "managed-fonts.mjs").as_uri()))
+    source = source.replace('"./overlay-encoder.mjs"', json.dumps((renderer / "overlay-encoder.mjs").as_uri()))
     worker = tmp_path / "overlay-worker.mjs"
     worker.write_text(source)
     (tmp_path / "request.json").write_text(json.dumps({"composition": {}, "instances": []}))
@@ -494,7 +496,7 @@ def test_memory_grant_reaches_the_actual_worker(service, monkeypatch):
     monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: 9 * 1024**3)
     assert overlays.get(run_task(overlays, duration=180))["status"] == "succeeded"
     [request] = renderer.requests
-    assert request["concurrency"] == 4 and request["vp9"] == {"cpu_used": 4, "threads": 2}
+    assert request["route"] == "cpu-webm" and request["concurrency"] == 4 and request["vp9"] == {"cpu_used": 7, "threads": 3}
     assert len(request["ranges"]) == 12 and request["chunk_concurrency"] == 2
     assert overlays.capacity.chunks == 0 and overlays.capacity.memory_units == 0
 

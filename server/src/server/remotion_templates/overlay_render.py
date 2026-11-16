@@ -487,6 +487,8 @@ async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Pa
             },
             "instances": overlay.instances,
             "browser": renderer.worker_browser_path(),
+            "route": "cpu-webm",
+            **({"bundled_ffmpeg": True} if shutil.which("ffmpeg") is None else {}),
             "concurrency": frame_concurrency or settings.overlay_frame_concurrency,
             "chunk_concurrency": min(chunk_concurrency or settings.overlay_chunk_concurrency, settings.overlay_chunk_concurrency, len(ranges or [None])),
             **({"vp9": vp9} if vp9 else {}),

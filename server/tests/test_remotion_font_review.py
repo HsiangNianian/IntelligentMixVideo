@@ -175,6 +175,10 @@ const fontLogs=[];
 export const selectComposition = async ({onBrowserLog}) => {fontLogs.forEach(log=>onBrowserLog?.(log));return {id:'fixture'};};
 export const renderStill = async ({onBrowserLog}) => {fontLogs.forEach(log=>onBrowserLog?.(log));};
 export const renderMedia = async ({onBrowserLog}) => {fontLogs.forEach(log=>onBrowserLog?.(log));};
+export const RenderInternals = {};
+export const renderFrames = async ({onBrowserLog}) => {fontLogs.forEach(log=>onBrowserLog?.(log));};
+export class GpuFailure extends Error {}
+export const encodeRange = async ({capture}) => capture(async () => {});
 export async function bundle({entryPoint}) {
   const attempts = [], loaded = [];
   let resume;
@@ -207,7 +211,7 @@ export async function bundle({entryPoint}) {
 }
 '''.replace('__FONT_CHECK__', (renderer / "managed-fonts.mjs").as_uri()))
     source = (renderer / worker).read_text()
-    for dependency in ["@remotion/bundler", "@remotion/renderer", "remotion", "./managed-fonts.mjs", "./typescript.mjs", "./presentation.mjs"]:
+    for dependency in ["@remotion/bundler", "@remotion/renderer", "remotion", "./managed-fonts.mjs", "./overlay-encoder.mjs", "./typescript.mjs", "./presentation.mjs"]:
         source = source.replace(json.dumps(dependency), json.dumps(stub.as_uri()))
     (tmp_path / "test-worker.mjs").write_text(source)
     (work / "request.json").write_text(json.dumps({

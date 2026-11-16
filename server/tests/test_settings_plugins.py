@@ -37,7 +37,7 @@ def test_chunking_defaults_and_optional_vp9_tuning(monkeypatch):
 
     defaults = Settings(_env_file=None)
     assert (defaults.overlay_chunked, defaults.overlay_chunk_concurrency) == (True, 6)
-    assert (defaults.overlay_vp9_cpu_used, defaults.overlay_vp9_threads) == (4, 2)
+    assert (defaults.overlay_vp9_cpu_used, defaults.overlay_vp9_threads) == (7, 3)
     assert (defaults.render_max_cpus, defaults.render_max_memory_mb) == (144, 150 * 1024)
     monkeypatch.setenv("IMV_RENDER_MAX_CPUS", "16")
     monkeypatch.setenv("IMV_RENDER_MAX_MEMORY_MB", "32768")
