@@ -345,6 +345,40 @@ test("工作室导航标记当前页面", () => {
   expect(home.getAttribute("aria-current")).toBeNull();
 });
 
+// 场景：StrictMode 首次只读一次列表；普通切页沿用缓存，成功保存或手动刷新才重新读取。
+test("主页缓存列表并在成功保存后刷新", async () => {
+  let reads = 0;
+  let saves = 0;
+  const template = savedTemplate();
+  fetchMock.mockImplementation((async (url, init) => {
+    if (String(url).includes("/api/sprites")) return emptySpriteCatalog();
+    if (String(url).endsWith("/template") && init?.method !== "POST") {
+      reads++;
+      return jsonListResponse([template]);
+    }
+    if (init?.method === "POST") { saves++; return jsonTemplateResponse(template, "save"); }
+    return jsonTemplateResponse(template, "get");
+  }) as typeof fetch);
+  render(<StrictMode><HomePage /></StrictMode>);
+  await screen.findByRole("region", { name: "全部模板" });
+  expect(reads).toBe(1);
+  fireEvent.change(screen.getByRole("searchbox", { name: "搜索模板名称" }), { target: { value: template.name } });
+  fireEvent.click(screen.getByRole("button", { name: "模板编辑" }));
+  fireEvent.click(screen.getByRole("button", { name: "主页" }));
+  expect(screen.getByRole<HTMLInputElement>("searchbox", { name: "搜索模板名称" }).value).toBe(template.name);
+  expect(reads).toBe(1);
+  fireEvent.click(screen.getByRole("button", { name: `选择模板：${template.name}` }));
+  await screen.findByRole("region", { name: "模板信息" });
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(reads).toBe(2));
+  expect(saves).toBe(1);
+  fireEvent.click(screen.getByRole("button", { name: "主页" }));
+  await screen.findByRole("region", { name: "全部模板" });
+  expect(reads).toBe(2);
+  fireEvent.click(screen.getByRole("button", { name: "刷新模板及封面" }));
+  await waitFor(() => expect(reads).toBe(3));
+});
+
 // 场景：更新前保存的旧导航标识仍可恢复到新版工作区，下一次更新继续保存兼容标识。
 test.each([
   ["library", "模板编辑"], ["remotion", "AI 字效"], ["fonts", "字体库"],
@@ -457,15 +491,15 @@ test("创建表单拒绝空白名称并支持取消", async () => {
   expect(within(dialog).getByLabelText<HTMLInputElement>("模板名称").maxLength).toBe(100);
 });
 
-// 场景：每行名称与说明共同触发模板选择，传递模板 ID。
-test("模板整行选择传递 ID", () => {
+// 场景：画廊显示当前模板说明，点击封面只传递该模板 ID。
+test("模板封面选择传递 ID", () => {
   const template = { ...savedTemplate(), description: "用于产品视频的文字效果" };
   const selections: TemplateSelection[] = [];
   render(<TemplateCollection collection={{ templates: [templateSummary(template)], loading: false, error: "", refresh: () => {} }} onCreate={() => {}}
     onSelect={(selection) => selections.push(selection)} />);
-  const row = screen.getByRole("button", { name: `选择模板：${template.name}` });
-  expect(screen.getByRole("button", { name: `选择模板：${template.name}` })).toBeTruthy();
-  fireEvent.click(within(row).getByText(template.description));
+  const row = within(screen.getByRole("region", { name: "全部模板" })).getByRole("button", { name: `选择模板：${template.name}` });
+  expect(within(screen.getByRole("region", { name: "全部模板" })).getByText(template.description)).toBeTruthy();
+  fireEvent.click(row);
   expect(selections).toEqual([{ templateId: template.template_id }]);
 });
 
@@ -573,6 +607,7 @@ test.each(["success", "missing"] as const)("删除读取中的模板后忽略 %s
   const selection = { templateId: template.template_id };
   const view = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
   await screen.findByText("正在读取模板…");
+  expect(screen.queryByText("还没有打开模板")).toBeNull();
   view.rerender(<TemplateWorkspace selection={selection} deletedTemplate={{ templateId: "00000000-0000-4000-8000-000000000002" }} onHome={() => {}} />);
   expect(screen.getByText("正在读取模板…")).toBeTruthy();
   expect(signal?.aborted).toBe(false);

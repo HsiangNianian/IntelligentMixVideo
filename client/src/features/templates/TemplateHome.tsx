@@ -1,13 +1,18 @@
-/** 主页将真实云端模板接入工作室卡片，读写仍通过既有存储边界。 */
-import { useEffect, useState } from "react";
+/** 主页复用同一份云端列表，展示最近五项、按名称搜索与每页十五项的网格；写入仍走既有存储边界。 */
+import { useCallback, useEffect, useRef, useState } from "react";
+import { isTauri } from "@tauri-apps/api/core";
 import { Tooltip } from "radix-ui";
 import { toast } from "sonner";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { HomePage as HomeView } from "@/components/studio/home/HomePage";
 import { TemplateSection, type SectionState } from "@/components/studio/home/TemplateSection";
+import { TemplateCard } from "@/components/studio/home/TemplateCard";
+import { Button } from "@/components/ui/button";
 import { NewTemplateDialog } from "@/components/studio/home/NewTemplateDialog";
 import { DeleteTemplateDialog } from "@/components/studio/home/DeleteTemplateDialog";
 import { apiBase } from "@/lib/api-base";
-import { deleteTemplate, listTemplates } from "./api";
+import { deleteTemplate, hasCoverBlob, listTemplates, publishCover, readTemplateCover, syncLoadedCovers } from "./api";
+import { releaseCoverTab, requestCoverTab } from "./coverCapture";
 import type { TemplateSummary } from "./model";
 import type { EditingState } from "./TemplateWorkspace";
 
@@ -20,72 +25,193 @@ interface Props {
   onDelete?: (selection: TemplateSelection) => void;
 }
 
-/** 读取云端模板列表并支持重试；卸载或服务地址变化时取消上一次请求。 */
-function useTemplateCollection() {
+/** 列表只读取一次。手动刷新再串行修复未发布的封面，每张成功后直接替换两个陈列区的摘要。 */
+function useTemplateCollection(revision: number, active: boolean) {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [attempt, setAttempt] = useState(0);
+  const [authorize, setAuthorize] = useState<(() => void) | null>(null);
+  const running = useRef<AbortController | null>(null);
+  const repairController = useRef<AbortController | null>(null);
   const address = apiBase();
+  const previousAddress = useRef(address);
+
+  const load = useCallback(async (manual = false) => {
+    running.current?.abort();
+    const controller = new AbortController();
+    const { signal } = controller;
+    running.current = controller;
+    repairController.current = manual ? controller : null;
+    setAuthorize(null);
+    setRefreshing(manual);
+    setError("");
+    let items: TemplateSummary[];
+    try {
+      items = await listTemplates(signal);
+      if (signal.aborted) return;
+      const images = manual ? syncLoadedCovers(items) : undefined;
+      setTemplates(items);
+      if (images) await images;
+      if (signal.aborted) return;
+    } catch (reason) {
+      if (!signal.aborted) {
+        setError(reason instanceof Error ? reason.message : "模板列表加载失败");
+        setRefreshing(false);
+      }
+      return;
+    } finally {
+      if (!signal.aborted) setLoading(false);
+    }
+    if (!manual) return;
+    const pending = items.filter(item => !item.validation_error && (!item.cover?.url || item.cover.revision !== item.cover.publishedRevision));
+    const reupload: TemplateSummary[] = [], capture: TemplateSummary[] = [];
+    const failures: string[] = [];
+    for (const item of pending) {
+      if (hasCoverBlob(item.template_id, item.cover?.revision ?? item.template_id)) reupload.push(item);
+      else if (item.cover?.source === "unavailable") failures.push(item.name + "：请在编辑器选择原视频并保存");
+      else capture.push(item);
+    }
+    /** 每项成功即发布到两个陈列区，单项失败继续下一项。 */
+    async function repair(rows: TemplateSummary[], stream?: MediaStream) {
+      for (const item of rows) {
+        if (signal.aborted) return;
+        const version = item.cover?.revision ?? item.template_id;
+        try {
+          const published = await publishCover(item.template_id, version, async () => {
+            const { captureHomeCover } = await import("./homeCoverCapture");
+            return captureHomeCover(item, signal, stream);
+          }, false, signal);
+          if (signal.aborted) return;
+          setTemplates(current => current.map(row => row.template_id === item.template_id ? { ...row, cover: {
+            source: item.cover?.source ?? "builtin", revision: published.revision, publishedRevision: published.revision, url: published.url,
+          } } : row));
+          await readTemplateCover(item.template_id, published.revision);
+        } catch (reason) {
+          if (!signal.aborted) failures.push(item.name + "：" + (reason instanceof Error ? reason.message : "封面更新失败"));
+        }
+      }
+    }
+    await repair(reupload);
+    if (signal.aborted) return;
+    /** 已缓存的图先重传，只有剩余工作确实需要重新取帧时才向浏览器申请授权。 */
+    async function finish() {
+      setAuthorize(null);
+      setRefreshing(true);
+      let stream: MediaStream | undefined;
+      try {
+        if (capture.length) {
+          stream = await requestCoverTab();
+          await repair(capture, stream);
+        }
+      } catch (reason) {
+        failures.push(reason instanceof Error ? reason.message : "封面更新失败");
+      } finally {
+        releaseCoverTab(stream);
+        if (!signal.aborted) {
+          setRefreshing(false);
+          if (failures.length) toast.error("部分封面更新失败", { description: failures.join("；") });
+        }
+      }
+    }
+    if (!isTauri() && capture.length) {
+      setRefreshing(false);
+      setAuthorize(() => finish);
+    } else await finish();
+  }, [address]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    setError("");
-    void listTemplates(controller.signal)
-      .then((items) => {
-        if (!controller.signal.aborted) setTemplates(items);
-      })
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted)
-          setError(reason instanceof Error ? reason.message : "模板列表加载失败");
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return () => controller.abort();
-  }, [attempt, address]);
-
-  return { templates, loading, error, refresh: () => setAttempt((value) => value + 1) };
+    if (previousAddress.current !== address) {
+      previousAddress.current = address;
+      setTemplates([]); setLoading(true);
+    }
+    let mounted = true;
+    // StrictMode 的临时挂载不发请求，只有首次或切换服务时显示首次加载占位。
+    queueMicrotask(() => { if (mounted) void load(); });
+    return () => { mounted = false; running.current?.abort(); };
+  }, [revision, load]);
+  useEffect(() => {
+    if (!active) {
+      repairController.current?.abort();
+      setAuthorize(null); setRefreshing(false);
+    }
+  }, [active]);
+  return { templates, loading, error, refreshing, authorize, refresh: (): void => { void load(); }, sync: () => { void load(true); } };
 }
 
-type Collection = ReturnType<typeof useTemplateCollection>;
+type Collection = Pick<ReturnType<typeof useTemplateCollection>, "templates" | "loading" | "error" | "refresh">;
 
 /** 真实读取状态映射为视图状态。 */
 function sectionState(collection: Collection): SectionState {
   return collection.loading ? "loading" : collection.error ? "error" : "ready";
 }
 
-/** 模板网格与删除确认；删除成功后通知编辑区并重新读取列表。 */
-export function TemplateCollection({ collection, onCreate, onSelect, onDelete, editing }: Props & {
+/** 最近五项与分页网格共用卡片操作；删除成功通知编辑区并重新读取列表。 */
+export function TemplateCollection({ collection, onCreate, onSelect, onDelete, editing, query = "" }: Props & {
   collection: Collection;
   onCreate: () => void;
   editing?: EditingState | null;
+  query?: string;
 }) {
   const [deleting, setDeleting] = useState<TemplateSummary | null>(null);
+  const [page, setPage] = useState(1);
+  useEffect(() => setPage(1), [query]);
+  const sorted = [...collection.templates].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  const filtered = sorted.filter((template) => template.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const pages = Math.max(1, Math.ceil(filtered.length / 15));
+  const currentPage = Math.min(page, pages);
+  const actions = {
+    onOpen: (template: TemplateSummary) => onSelect({ templateId: template.template_id }),
+    onDelete: setDeleting,
+    onCopyId: async (template: TemplateSummary) => { try { await navigator.clipboard.writeText(template.template_id); toast.success("模板 ID 已复制"); } catch { toast.error("复制失败，请稍后重试"); } },
+  };
   return <Tooltip.Provider delayDuration={350}>
-    <TemplateSection state={sectionState(collection)} templates={collection.templates} error={collection.error} onRefresh={collection.refresh} onCreate={onCreate}
-      editing={editing ? { id: editing.id, dirty: editing.dirty } : null}
-      onOpen={(template) => onSelect({ templateId: template.template_id })} onDelete={setDeleting}
-      onCopyId={async (template) => { try { await navigator.clipboard.writeText(template.template_id); toast.success("模板 ID 已复制"); } catch { toast.error("复制失败，请稍后重试"); } }} />
+    {!query.trim() && <section aria-label="最近修改的模板">
+      {sectionState(collection) === "ready" && sorted.length > 0 && <h3 className="mb-2 text-sm text-muted-foreground">最近修改</h3>}
+      <TemplateSection state={sectionState(collection)} templates={sorted.slice(0, 5)} error={collection.error} onRefresh={collection.refresh} onCreate={onCreate}
+        editing={editing ? { id: editing.id, dirty: editing.dirty } : null} {...actions} />
+    </section>}
+    {query.trim() && collection.loading && <p role="status">正在读取模板…</p>}
+    {query.trim() && collection.error && <p role="alert">{collection.error}<Button variant="ghost" onClick={collection.refresh}>重试</Button></p>}
+    {sectionState(collection) === "ready" && (sorted.length > 0 || query.trim()) && <section aria-label="全部模板" className="mt-10 space-y-5 border-t border-line pt-6">
+      <div className="flex items-center justify-between gap-3"><h3 className="sketch-text text-xl">{query.trim() ? "搜索结果" : "全部模板"}</h3><span role="status" className="text-xs text-muted-foreground">共 {filtered.length} 个模板 · 第 {currentPage} / {pages} 页</span></div>
+      {filtered.length === 0 ? <p className="py-12 text-center text-sm text-muted-foreground">没有找到匹配的模板，请换个名称试试。</p> : <div className="grid grid-cols-2 gap-x-5 gap-y-8 sm:grid-cols-3 xl:grid-cols-5">
+        {filtered.slice((currentPage - 1) * 15, currentPage * 15).map((template) => <div key={template.template_id} className="min-w-0">
+          <TemplateCard template={template} editing={template.template_id === editing?.id} dirty={editing?.dirty ?? false}
+            onOpen={() => actions.onOpen(template)} onDelete={() => actions.onDelete(template)} onCopyId={() => actions.onCopyId(template)} />
+          <h4 title={template.name} className="mt-3 truncate text-sm">{template.name}</h4>
+          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{template.description || "暂无模板说明"}</p>
+          <p className="mt-1 text-[11px] text-fg-subtle">{template.updated_at.slice(0, 10)} · {template.track_count ?? 0} 个对象</p>
+        </div>)}
+      </div>}
+      {pages > 1 && <nav aria-label="模板分页" className="flex items-center justify-center gap-4">
+        <Button variant="outline" size="sm" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)}><ChevronLeft aria-hidden="true" />上一页</Button>
+        <span className="text-sm">{currentPage} / {pages}</span>
+        <Button variant="outline" size="sm" disabled={currentPage === pages} onClick={() => setPage(currentPage + 1)}>下一页<ChevronRight aria-hidden="true" /></Button>
+      </nav>}
+    </section>}
     <DeleteTemplateDialog target={deleting} onClose={() => setDeleting(null)}
       onDelete={async (template) => { await deleteTemplate(template.template_id); onDelete?.({ templateId: template.template_id }); collection.refresh(); }} />
   </Tooltip.Provider>;
 }
 
 /** 新建入口、服务状态与模板网格共用同一次列表读取。 */
-export function TemplateHome({ onSelect, onDelete, onOpenRemotion, onOpenSettings = () => {}, editing }: Props & {
+export function TemplateHome({ onSelect, onDelete, onOpenRemotion, onOpenSettings = () => {}, editing, revision = 0, active = true }: Props & {
   onOpenRemotion: () => void;
   onOpenSettings?: () => void;
   editing?: EditingState | null;
+  revision?: number;
+  active?: boolean;
 }) {
-  const cloud = useTemplateCollection();
+  const cloud = useTemplateCollection(revision, active);
   const [creating, setCreating] = useState(false);
+  const [query, setQuery] = useState("");
   const state = sectionState(cloud);
   return <>
     <HomeView cloudState={state} onCreate={() => setCreating(true)} onOpenEffects={onOpenRemotion} onOpenSettings={onOpenSettings}
-      count={state === "ready" ? cloud.templates.length : 0} refreshing={state === "loading"} onRefresh={cloud.refresh}>
-      <TemplateCollection collection={cloud} onCreate={() => setCreating(true)} onSelect={onSelect} onDelete={onDelete} editing={editing} />
+      count={state === "ready" ? cloud.templates.length : 0} refreshing={cloud.loading || cloud.refreshing} onRefresh={cloud.sync} query={query} onSearch={setQuery}>
+      {cloud.authorize && <Button type="button" variant="outline" size="sm" onClick={cloud.authorize}>共享当前标签页以补截封面</Button>}
+      <TemplateCollection collection={cloud} query={query} onCreate={() => setCreating(true)} onSelect={onSelect} onDelete={onDelete} editing={editing} />
     </HomeView>
     <NewTemplateDialog open={creating} existingNames={cloud.templates.map((template) => template.name)} onClose={() => setCreating(false)} onCreate={({ name, description }) => { onSelect({ templateId: null, name, description }); setCreating(false); }} />
   </>;
