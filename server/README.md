@@ -29,7 +29,7 @@ uv run --locked server
 
 默认监听 `0.0.0.0:20070`（所有 IPv4 接口），本机交互文档为 `http://127.0.0.1:20070/docs`。
 远程访问使用 `http://<服务器 IP 或域名>:20070`，服务器防火墙或云安全组需允许对应端口；客户端 `VITE_API_URL` 配置为实际服务地址。
-仓库根目录可执行 `uv run --locked --project server server`。首次模板请求自动创建缺失的 `templates` 表，不执行旧数据迁移；Remotion 已发布 Sprite 的 `remotion_sprites` 表在首次访问资产目录、发布，或保存含 Remotion 片段的模板时创建；字效工作区的其余 `remotion_*` 表（作品、任务、版本、事件、设备、叠加渲染任务、Presets 等）在第一个 Remotion 请求时创建，要求 MySQL 8.0 及以上，且只部署一个后端实例。
+仓库根目录可执行 `uv run --locked --project server server`。源码启动补图或首次模板请求会自动创建缺失的 `templates` 表，已有库会补加可空 JSON 列 `cover`（首次升级需有 ALTER 权限）。曾使用独立封面表的库会将已有封面信息复制到这一列；Remotion 已发布 Sprite 的 `remotion_sprites` 表在首次访问资产目录、发布，或保存含 Remotion 片段的模板时创建；字效工作区的其余 `remotion_*` 表（作品、任务、版本、事件、设备、叠加渲染任务、Presets 等）在第一个 Remotion 请求时创建，要求 MySQL 8.0 及以上，且只部署一个后端实例。
 应用启动后数据库暂时不可用时，模板接口返回 503，恢复后可重试；首页和用户示例接口本身不查询数据库。
 
 `uv run server` 与 `uv run python -m server` 均读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先。未设置时默认 `20070`；端口须为 1～65535 的整数，空值、非整数或越界值会阻止启动。修改后重启服务。停止服务时最多等待 10 秒收尾，仍未结束的连接（如作品 SSE）随后被断开，旧进程退出后不再运行字效任务队列与清理，新进程可直接接管。
@@ -54,11 +54,19 @@ PORT=8010 uv run --locked server
 | GET | `/template` | 返回 `ListTemplatesResponse`，按更新时间倒序 |
 | POST | `/template` | 接收 `SaveTemplateRequest`；无 `template_id` 创建，携带 ID 完整更新，返回 `SaveTemplateResponse` |
 | GET | `/template/{template_id}` | 返回 `GetTemplateResponse` |
+| PUT | `/template/{template_id}/cover/{revision}` | multipart `file` 上传 9:16 静态 PNG。过期版本返回 409，成功覆盖固定 ZOS 对象 |
+| GET | `/template/{template_id}/cover` | 读取已发布 PNG。按 ETag 校验版本，未变化返回 304，暂无封面返回 404 |
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
 | GET | `/template/preview-mask` | 几何圆角蒙版 MP4，供 SDK 实时预览；不访问用户媒体或数据库 |
 | GET | `/template/preview-circle-mask` | 头部圆形与羽化蒙版 MP4，仅接收预览几何，不分析人脸 |
 | POST | `/template/frame-mask-images` | multipart `file` 上传静态蒙版图片，成功返回 201 与 `{ "imageId": "内容哈希" }` |
 | GET | `/template/frame-mask-images/{image_id}` | 按 64 位小写十六进制引用读取 PNG，不可变缓存；非法引用 422、缺失 404、存储故障 503 |
+
+源码部署时，API 启动后在后台扫描当前 MySQL 模板库。对缺图的有效旧模板，以及发布版本仍为模板 ID 的初版封面，无头 Chrome 打开真实编辑预览，用内置样片定位第 1 秒，等标题、字幕和可见字效绘制完成后上传 PNG 到 ZOS。成功后推进封面版本，后续启动跳过。新版客户端新建模板、修改画面或换视频并保存时，在本机预览取帧并上传；封面失败可单独重试。公开地址保存在 `templates.cover` 的 `url` 字段，同一列保存 `revision`、`published_revision` 和 `source`。查询地址可用 `SELECT template_id, cover->>'$.url' AS cover_url FROM templates`。
+
+源码部署须包含仓库的 `client/` 与内置样片，按锁文件在 `client/` 执行 `bun install --frozen-lockfile` 安装含开发依赖的渲染环境。服务进程需要能运行 Bun 和支持 H.264 的 Chrome/Chromium（可复用 `IMV_BROWSER_EXECUTABLE`），并能加载预览 SDK、字体。使用 `uv run --project server server` 时，补图会连接同一 `PORT` 的本机 API；若自行指定 Uvicorn 的监听端口，请同步设置 `PORT`。源码补图无需封面压缩包或额外的导入命令。独立 wheel 如自带预生成归档，仍按模板 ID 和更新时间导入。
+
+需要为其他模板库制作归档时，可在有 Bun、客户端依赖和 Chrome 的服务端机器上一次性补图。在仓库根目录运行 `bun client/scripts/backfill-template-covers.mjs --api "$IMV_API_URL"`，用三个内置样片渲染实际编辑预览的第 1 秒。加 `--output template-covers-1s-png` 可先导出 PNG 和清单。自动导入用的 ZIP 保留 `template-covers-1s-png/` 顶层目录。也可在接口部署后用 `--input 目录` 直接导入，模板已更新时会拒绝使用旧截图。两种模式均可指定 `--template-id ID`。已发布或已由新版编辑器保存的版本都会跳过。客户端和服务端封面协议须一起升级。
 
 模板列表、详情与保存的成功响应默认使用 `application/json`，采用 Protobuf JSON 映射：字段为 camelCase（如 `templateId`、`createdAt`、`effectIds`），时间为 UTC RFC 3339 字符串；列表为 `{"templates":[...]}`，空库为 `{"templates":[]}`，详情和保存为 `{"template":{...}}`，轨道保留 `template.tracks.tracks` 结构。空数组、空映射和非 optional 标量默认值保留，未设置的 optional 字段省略。POST 请求仍使用 `application/x-protobuf`，JSON 请求返回 415，损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422；错误响应使用 JSON，删除成功仍为 204 空响应。为兼容旧客户端，单一 `Accept: application/x-protobuf` 仍返回 Protobuf 二进制；其他请求（含省略 Accept、`*/*` 或 `application/json`）默认返回 JSON，成功响应带 `Vary: Accept`。新客户端按响应 `Content-Type` 解析 JSON 或旧服务端的 Protobuf 二进制，JSON 解析忽略未知字段；仅响应格式迁移不要求两端同时升级。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
