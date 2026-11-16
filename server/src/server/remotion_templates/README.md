@@ -201,9 +201,11 @@ own private audit while it remains available, without executing recorded tools.
 It writes no asset row, disk asset library or ZOS object. Creation/messages/retries send needed local bytes in
 `assets`; the backend decodes them only into that job's private `references` directory and removes it on completion,
 cancellation or startup recovery. Image normalization and staging run in worker threads for creation, messages
-and retries. Messages/retries recheck the work and context in the insertion transaction, then register credentials
-and schedule tasks on the event loop without yielding; cancelled preparation waits for its image writer before
-removing scratch and inserts no task. Missing required images reject enqueue rather than silently dropping context.
+and retries. Creation inserts the work/task, registers credentials and schedules generation on the event loop
+without yielding, so an existing FIFO worker cannot claim it with default settings. Messages/retries recheck the
+work and context in the insertion transaction, then register credentials and schedule tasks without yielding.
+Cancelled preparation waits for its image writer before removing scratch and inserts no new work or task.
+Missing required images reject enqueue rather than silently dropping context.
 The original references plus recent task/Outer references are selected deterministically, at most eight images.
 Local images remain linked to their works; deleting one work removes only images no other work references.
 Unlinked local images older than 24 hours are reclaimed on the next image save.

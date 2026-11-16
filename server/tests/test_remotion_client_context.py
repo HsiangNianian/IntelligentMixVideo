@@ -7,9 +7,11 @@ import asyncio
 import base64
 import json
 import threading
+from contextlib import contextmanager, suppress
 from datetime import timedelta
 from io import BytesIO
 from types import SimpleNamespace
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -27,7 +29,7 @@ from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Conflict, Store, now
-from server.remotion_templates.tables import conversations, jobs, legacy_metadata, work_events
+from server.remotion_templates.tables import conversations, jobs, legacy_metadata, work_events, works
 from .conftest import DEVICE, DEVICE_HEADERS
 
 
@@ -314,7 +316,7 @@ def test_missing_executed_or_current_context_is_not_replaced_with_empty(store, t
         store.client_context(work.id)
 
 
-@pytest.mark.parametrize("action", ["message", "retry"])
+@pytest.mark.parametrize("action", ["create", "message", "retry"])
 def test_reference_preparation_keeps_http_responsive(store, monkeypatch, action):
     """图片准备阻塞期间，其他请求仍可完成；图片完成并入队后才在事件循环调度任务。"""
     encoded = BytesIO()
@@ -324,7 +326,8 @@ def test_reference_preparation_keeps_http_responsive(store, monkeypatch, action)
     store.update(job.id, status="failed")
     context = store.client_context(work.id).model_dump(mode="json")
     store.acknowledge(work.id, store.work_events(work.id, 0)[-1].id, DEVICE)
-    runtime = Runtime(store, None, Settings(_env_file=None))
+    runtime = Runtime(store, None, Settings(_env_file=None, actor_model="offline", actor_api_key=SecretStr("fixture")))
+    monkeypatch.setattr(runtime, "sandbox_problem", lambda: None)
     app = FastAPI()
     app.include_router(router)
     app.state.runtime = runtime
@@ -356,6 +359,8 @@ def test_reference_preparation_keeps_http_responsive(store, monkeypatch, action)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", headers=DEVICE_HEADERS) as client:
             body = {"context": context, "instruction": "继续制作"} if action == "message" else context
             path = f"/works/{work.id}/messages" if action == "message" else f"/jobs/{job.id}/retry"
+            if action == "create":
+                body, path = {"images": [{"asset_id": str(payload.id)}]}, "/works"
             pending = asyncio.create_task(client.post(path, json={**body, "assets": [payload.model_dump(mode="json")]}))
             try:
                 await asyncio.wait_for(entered.wait(), 2)
@@ -366,9 +371,115 @@ def test_reference_preparation_keeps_http_responsive(store, monkeypatch, action)
                 release.set()
                 response = await pending
             assert response.status_code == 202, response.text
-            assert notified == [store.latest_job(work.id).id]
+            created_work = response.json()["work"]["id"] if action == "create" else work.id
+            assert notified == [store.latest_job(created_work).id]
 
     asyncio.run(scenario())
+
+
+def test_creation_registers_client_config_before_fifo_claim(store, monkeypatch):
+    """已有任务结束时领取新作品，必须使用新请求的模型配置，不能回落服务端默认配置或遗留凭据。"""
+    _work, first = store.create(GenerateTemplateRequest(description="前一个任务"), DEVICE)
+    store.touch(DEVICE)
+
+    async def scenario():
+        """在线程提交后暂缓返回，让真实 FIFO 暴露配置登记前的领取窗口；不调用真实模型。"""
+        loop, loop_thread = asyncio.get_running_loop(), threading.get_ident()
+        entered, finish_first = asyncio.Event(), asyncio.Event()
+        consumed = threading.Event()
+        selected = {}
+
+        class OfflineHarness:
+            """记录 Runtime 实际选用的 Provider 配置，只返回离线问答。"""
+
+            def __init__(self, provider, renderer):
+                """与实际 Harness 构造接口一致，保留所选模型与渲染器。"""
+                self.settings, self.renderer = provider.settings, renderer
+
+            async def generate(self, _spec, _budget, directory, *_args, **_options):
+                """前一任务等待新作品入队，后一任务记录实际采用的模型。"""
+                selected[directory.name] = self.settings.actor_model
+                if directory.name == str(first.id):
+                    entered.set()
+                    await finish_first.wait()
+                else:
+                    consumed.set()
+                return DialogueOutput(answer="离线结果")
+
+        settings = Settings(_env_file=None, actor_model="backend-default", actor_api_key=SecretStr("fixture"))
+        renderer = SimpleNamespace(sandbox_problem=lambda: None)
+        runtime = Runtime(store, OfflineHarness(SimpleNamespace(settings=settings), renderer), settings)
+        monkeypatch.setattr("server.remotion_templates.runtime.Harness", OfflineHarness)
+        runtime.notify(first.id)
+        await asyncio.wait_for(entered.wait(), 2)
+        original = store.transaction
+
+        @contextmanager
+        def transaction():
+            """只暂停后台线程的提交返回；事件循环内的提交与凭据登记继续保持连续。"""
+            with original() as db:
+                yield db
+            if threading.get_ident() != loop_thread:
+                loop.call_soon_threadsafe(finish_first.set)
+                assert consumed.wait(5)
+            else:
+                finish_first.set()
+
+        monkeypatch.setattr(store, "transaction", transaction)
+        app = FastAPI()
+        app.include_router(router)
+        app.state.runtime = runtime
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", headers=DEVICE_HEADERS) as client:
+            response = await client.post("/works", json={"description": "新作品"}, headers={
+                "X-Remotion-Config": quote(json.dumps({"actor_model": "client-selected", "actor_api_key": "fixture"})),
+            })
+        await asyncio.wait_for(runtime.worker, 2)
+        assert response.status_code == 202, response.text
+        assert selected[response.json()["job"]["id"]] == "client-selected"
+        assert runtime.client_configs == {}
+
+    asyncio.run(asyncio.wait_for(scenario(), 8))
+
+
+def test_cancelled_creation_waits_for_image_writer_without_publishing(store, monkeypatch):
+    """创建请求在图片准备时取消，必须等最后写入清理后退出，不留下作品、任务或图片。"""
+    runtime = Runtime(store, None, Settings(_env_file=None, actor_model="offline", actor_api_key=SecretStr("fixture")))
+    monkeypatch.setattr(runtime, "sandbox_problem", lambda: None)
+    app = FastAPI()
+    app.include_router(router)
+    app.state.runtime = runtime
+
+    async def scenario():
+        """在线程最后一次写入之前取消真实 HTTP 调用，并等待执行器排空。"""
+        loop, entered, release = asyncio.get_running_loop(), asyncio.Event(), threading.Event()
+
+        def prepare(job, *_args):
+            """模拟在取消之后才完成的图片写入。"""
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(5)
+            directory = store.job_dir(job.id) / "references"
+            directory.mkdir(parents=True)
+            (directory / "last.png").write_bytes(b"private scratch")
+
+        monkeypatch.setattr(store, "prepare_images", prepare)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", headers=DEVICE_HEADERS) as client:
+            pending = asyncio.create_task(client.post("/works", json={"description": "取消创建"}))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                pending.cancel()
+                await asyncio.sleep(0)
+                waiting_for_writer = not pending.done()
+            finally:
+                release.set()
+                with suppress(asyncio.CancelledError):
+                    await pending
+            return waiting_for_writer
+
+    waited = asyncio.run(scenario())
+    with store.reading() as db:
+        assert db.execute(select(works)).all() == db.execute(select(jobs)).all() == []
+    assert waited
+    assert not list((store.root / "jobs").iterdir())
 
 
 def test_cancelled_enqueue_waits_for_images_without_creating_job(store, monkeypatch):

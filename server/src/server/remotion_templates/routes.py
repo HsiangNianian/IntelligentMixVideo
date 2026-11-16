@@ -11,6 +11,8 @@ import hashlib
 import json
 import logging
 import re
+import shutil
+from contextlib import suppress
 from pathlib import Path
 from collections.abc import Sequence
 from typing import Annotated
@@ -199,9 +201,18 @@ async def create(
     if not settings.models_configured:
         raise HTTPException(503, "请配置 Agent 模型及密钥")
     require_sandbox(service)
+    preparing = asyncio.create_task(asyncio.to_thread(service.store.prepare_creation,
+        GenerateTemplateRequest.model_validate(request.model_dump(exclude={"assets"})), owner, request.assets))
     try:
-        project, job = await asyncio.to_thread(service.store.create,
-            GenerateTemplateRequest.model_validate(request.model_dump(exclude={"assets"})), owner, request.assets)
+        project, job = await asyncio.shield(preparing)
+        # A live FIFO must see the request's credentials before it can claim the new work.
+        service.store.commit_creation(project, job, owner)
+    except asyncio.CancelledError:
+        # Staging has no database rows; wait for its last writer before discarding the private files.
+        with suppress(Exception):
+            _project, staged_job = await preparing
+            await asyncio.to_thread(shutil.rmtree, service.store.job_dir(staged_job.id), ignore_errors=True)
+        raise
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     service.notify(job.id, config)

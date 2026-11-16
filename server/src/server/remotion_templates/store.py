@@ -551,13 +551,22 @@ class Store:
         return GenerationJob.model_validate_json(data)
 
     def create(self, request: GenerateTemplateRequest, device: UUID, payloads: list[ImagePayload] | None = None) -> tuple[TemplateProject, GenerationJob]:
-        """Atomically create a work of this device and its first queued generation."""
+        """Synchronous creation for local callers; HTTP stages off-loop before committing and notifying together."""
+        project, job = self.prepare_creation(request, device, payloads)
+        self.commit_creation(project, job, device)
+        return project, job
+
+    def prepare_creation(self, request: GenerateTemplateRequest, device: UUID, payloads: list[ImagePayload] | None = None) -> tuple[TemplateProject, GenerationJob]:
+        """Allocate a work and stage its private images without exposing a job to the FIFO worker."""
         stamp = now()
         project = TemplateProject(id=uuid4(), request=request, created_at=stamp, updated_at=stamp)
         job = self._new_job(project.id, None)
-        images = [image.asset_id for image in request.images]
-        inputs = JobInput(request=request)
-        self.prepare_images(job, project, inputs, payloads or [], device)
+        self.prepare_images(job, project, JobInput(request=request), payloads or [], device)
+        return project, job
+
+    def commit_creation(self, project: TemplateProject, job: GenerationJob, device: UUID) -> None:
+        """Publish the prepared work and first task atomically; the caller must register credentials before yielding."""
+        request = project.request
         try:
             with self.transaction() as db:
                 self._register(db, device)
@@ -565,12 +574,12 @@ class Store:
                     id=str(project.id), device_id=str(device), deleting=False, data=project.model_dump_json(),
                 ))
                 self._insert_job(
-                    db, job, inputs, request.description or "请参考这张图片制作字效。", images=images,
+                    db, job, JobInput(request=request), request.description or "请参考这张图片制作字效。",
+                    images=[image.asset_id for image in request.images],
                 )
         except BaseException:
             shutil.rmtree(self.job_dir(job.id), ignore_errors=True)
             raise
-        return project, job
 
     def _new_job(self, project_id: UUID, base: UUID | None, running: bool = False) -> GenerationJob:
         """Assign execution identity before it enters the shared FIFO queue, or as already running when it bypasses it."""
