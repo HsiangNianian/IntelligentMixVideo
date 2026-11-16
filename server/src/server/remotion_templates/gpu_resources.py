@@ -30,6 +30,16 @@ COOLDOWN_SECONDS = 60
 NVENC_SESSION_LIMIT = 10
 
 
+class GPUWorkerError(RuntimeError):
+    """An attributable graphics or encoder failure that permits another device or render route."""
+
+    def __init__(self, kind: Literal["graphics", "encoder"], reason: str):
+        """Keep driver-specific details out of the reason recorded by the composition service."""
+        super().__init__(reason)
+        self.kind = kind
+        self.reason = reason
+
+
 @dataclass
 class GPU:
     """One physical card and a single SMI observation, including workloads outside this service."""
@@ -394,3 +404,49 @@ class GPUPool:
             yield grant
         finally:
             grant.release()
+
+
+def sandbox_gpu(grant: GPUGrant) -> tuple[list[str], list[str]]:
+    """Expose one GPU's char devices and PCI/DRM links in the isolated worker; never mount all of /dev, /sys or /proc."""
+    card = grant.device
+    if card is None or grant.uuid != card.uuid:
+        raise GPUWorkerError("graphics", "gpu_selection_missing")
+    dev = Path(f"/dev/nvidia{card.minor}")
+    pci_link = Path("/sys/bus/pci/devices") / card.pci
+    if not dev.is_char_device() or not pci_link.is_dir() or not Path("/dev/nvidiactl").is_char_device():
+        raise GPUWorkerError("graphics", "gpu_device_unavailable")
+    if grant.route == "h264-pair" and not Path("/dev/nvidia-uvm").is_char_device():
+        raise GPUWorkerError("encoder", "gpu_cuda_device_unavailable")
+    physical = pci_link.resolve()
+    mounts = ["--ro-bind", str(physical), str(physical), "--symlink", str(physical), str(pci_link)]
+    devices = [dev, Path("/dev/nvidiactl"), Path("/dev/nvidia-modeset"), Path("/dev/nvidia-uvm")]
+    for name in card.drm:
+        link = Path("/sys/class/drm") / name
+        if (link / "device").resolve() != physical or not (Path("/dev/dri") / name).is_char_device():
+            raise GPUWorkerError("graphics", "gpu_drm_device_changed")
+        mounts.extend(("--symlink", str(physical / "drm" / name), str(link)))
+        devices.append(Path("/dev/dri") / name)
+    for node in devices:
+        if not node.is_char_device():
+            continue
+        mounts.extend(("--dev-bind", str(node), str(node)))
+        rdev = node.stat().st_rdev
+        key = f"{os.major(rdev)}:{os.minor(rdev)}"
+        syspath = Path("/sys/dev/char") / key
+        if syspath.exists():
+            real = syspath.resolve()
+            if not real.is_relative_to(physical):
+                mounts.extend(("--ro-bind", str(real), str(real)))
+            mounts.extend(("--symlink", str(real), str(syspath)))
+        udev = Path("/run/udev/data") / ("c" + key)
+        if udev.is_file():
+            mounts.extend(("--ro-bind", str(udev), str(udev)))
+    for path in ("/sys/module/nvidia", "/sys/module/nvidia_drm", "/sys/module/nvidia_uvm/initstate"):
+        if Path(path).exists():
+            mounts.extend(("--ro-bind", path, path))
+    environment = ["--setenv", "CUDA_VISIBLE_DEVICES", card.uuid]
+    for variable, manifest in (("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"),
+                               ("VK_DRIVER_FILES", "/usr/share/vulkan/icd.d/nvidia_icd.json")):
+        if Path(manifest).is_file():
+            environment.extend(("--setenv", variable, manifest))
+    return mounts, environment

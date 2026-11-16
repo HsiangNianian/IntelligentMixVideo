@@ -9,10 +9,12 @@ import select
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from server.remotion_templates import gpu_resources as gpu
+from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux DRM and flock admission")
@@ -259,3 +261,83 @@ async def test_broken_card_keeps_healthy_graphics_without_guessing_host_sessions
     async with claim(pool) as recovered:
         assert (recovered.route, recovered.uuid, recovered.reason) == ("gpu-webm", cards[5].uuid, "nvenc_sessions_unknown")
     assert set(local) == {cards[0].uuid, cards[5].uuid}
+
+
+def test_bwrap_selected_minor_drm_and_only_overlay(tmp_path, monkeypatch):
+    """The command exposes the selected physical board, only GPU overlay workers receive devices, and env is cleared first."""
+    card = device(1)
+    grant = gpu.GPUGrant("h264-pair", card.uuid, 1, "nvenc_admitted", card)
+    monkeypatch.setattr(gpu.Path, "is_char_device", lambda p: str(p) in {"/dev/nvidia3", "/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/dri/card1", "/dev/dri/renderD129"})
+    original_dir, original_resolve, original_stat = Path.is_dir, Path.resolve, Path.stat
+    physical = Path("/sys/devices/pci0000:00") / card.pci
+    pci = Path("/sys/bus/pci/devices") / card.pci
+    monkeypatch.setattr(gpu.Path, "is_dir", lambda p: True if p == pci else original_dir(p))
+    monkeypatch.setattr(gpu.Path, "resolve", lambda p,*args,**kw: physical if p == pci or
+                        (str(p).startswith("/sys/class/drm/") and p.name == "device") else original_resolve(p,*args,**kw))
+    monkeypatch.setattr(gpu.Path, "stat", lambda p,*a,**kw: SimpleNamespace(st_rdev=os.makedev(226,129))
+                        if str(p).startswith("/dev/") else original_stat(p,*a,**kw))
+    renderer = Renderer(Settings(_env_file=None, data_dir=tmp_path))
+    args = renderer.command(tmp_path, worker="overlay-worker.mjs", gpu=grant)
+    exposed = {args[idx+1] for idx, arg in enumerate(args) if arg == "--dev-bind"}
+    assert exposed == {"/dev/nvidia3","/dev/nvidiactl","/dev/nvidia-uvm","/dev/dri/card1","/dev/dri/renderD129"}
+    assert args.index("--clearenv") < args.index("CUDA_VISIBLE_DEVICES") and args[args.index("CUDA_VISIBLE_DEVICES")+1] == card.uuid
+    assert "--unshare-all" in args and "--dev" in args and "--cap-drop" in args
+    assert not any(args[i:i+3] in (["--ro-bind","/sys","/sys"],["--dev-bind","/dev","/dev"]) for i in range(len(args)))
+    for worker in ("worker.mjs","presentation-worker.mjs","tool-validation-worker.mjs"):
+        with pytest.raises(ValueError, match="Only the isolated overlay"):
+            renderer.command(tmp_path, worker=worker, gpu=grant)
+    assert "--dev-bind" not in renderer.command(tmp_path, worker="overlay-worker.mjs")
+
+
+@pytest.mark.parametrize("standard_exists", [True, False])
+def test_only_overlay_binds_ffmpeg_from_a_nonstandard_prefix(tmp_path, monkeypatch, standard_exists):
+    """An ffmpeg found outside /usr is mounted in the cleared overlay PATH, including the CPU route."""
+    executable = tmp_path / "opt" / "ffmpeg"
+    executable.parent.mkdir()
+    executable.touch()
+    real_which = gpu.shutil.which
+    real_is_file = Path.is_file
+    monkeypatch.setattr(Path, "is_file", lambda p: standard_exists if p == Path("/usr/bin/ffmpeg") else real_is_file(p))
+    monkeypatch.setattr(gpu.shutil, "which", lambda name: str(executable) if name == "ffmpeg" else real_which(name))
+    renderer = Renderer(Settings(_env_file=None, data_dir=tmp_path))
+    args = renderer.command(tmp_path, worker="overlay-worker.mjs")
+    i = args.index(str(executable))
+    target = "/usr/bin/ffmpeg" if standard_exists else "/runtime-bin/ffmpeg"
+    assert args[i-1:i+2] == ["--ro-bind", str(executable), target]
+    assert args[args.index("PATH")+1].split(":")[0] == str(Path(target).parent)
+    assert str(executable) not in renderer.command(tmp_path, worker="presentation-worker.mjs")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("log,kind", [
+    ("bwrap: Can't bind mount /dev/nvidia-uvm: No such device", "encoder"),
+    ("bwrap: Can't find source path /dev/dri/renderD129", "graphics"),
+    ("[overlay] browser connected\nbwrap: Can't find source path /dev/dri/renderD129", None),
+])
+async def test_only_host_bwrap_setup_failures_get_hardware_kind(tmp_path, monkeypatch, log, kind):
+    """Known driver/device mount errors permit targeted retry; arbitrary later user-renderer output stays ordinary."""
+    renderer = Renderer(Settings(_env_file=None, data_dir=tmp_path))
+    card = device()
+    grant = gpu.GPUGrant("h264-pair", card.uuid, 1, "test", card)
+    monkeypatch.setattr(renderer, "command", lambda *args, **kw: ["isolated-worker"])
+    class Exited:
+        """An already-reaped worker, represented by the same wait contract as asyncio.Process."""
+        pid = 999999
+        returncode = 1
+
+        async def wait(self):
+            """Return the simulated worker exit code without starting a child process."""
+            return self.returncode
+
+    async def failed(*args, stdout, **kw):
+        """Place host setup or user-renderer output into the private attempt log."""
+        stdout.write(log.encode())
+        return Exited()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", failed)
+    with pytest.raises(RuntimeError) as caught:
+        await renderer.run_worker(tmp_path, worker="overlay-worker.mjs", gpu=grant)
+    if kind:
+        assert isinstance(caught.value, gpu.GPUWorkerError) and caught.value.kind == kind
+    else:
+        assert not isinstance(caught.value, gpu.GPUWorkerError)
