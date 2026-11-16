@@ -592,3 +592,47 @@ test("旧图片迁移落盘后才保存终态游标", async () => {
   expect(await local.image("old-image")).toEqual(new Uint8Array([1, 2, 3]));
   expect(fetchMock.mock.calls).toHaveLength(count);
 });
+
+// 后续消息发出后尚未接收 SSE，即使响应丢失，离线两天再上传也不能清理它的图片；删除作品仍清理独占图片。
+test.each([false, true])("消息图片在 SSE 前持久关联，响应丢失=%s", async (responseLost) => {
+  await browserDatabase(async () => {
+    await recordWork();
+    await local.saveContext("work-1", CONTEXT);
+    const bytes = new Uint8Array([1, 2, 3]);
+    fetchMock.mockResolvedValueOnce(Response.json({ id: "submitted-image", data: local.encodeImage(bytes) }));
+    const asset = await api.upload(new File([bytes], "reference.png", { type: "image/png" }));
+    if (responseLost) fetchMock.mockRejectedValueOnce(new Error("response lost"));
+    else fetchMock.mockResolvedValueOnce(Response.json({ ...remotionJob("queued"), id: "job-2" }));
+    const submitted = api.message("work-1", { instruction: "参考新图", images: [{ asset_id: asset.id }] });
+    if (responseLost) await expect(submitted).rejects.toThrow("response lost");
+    else await local.track(await submitted);
+    // 模拟重启后在其他会话上传；服务端已删除执行图片，只剩本地字节可恢复事件。
+    local.setStorage(undefined);
+    spyOn(Date, "now").mockReturnValue(Date.now() + 2 * 86_400_000);
+    await local.storage().putImage(local.server(), "unrelated-image", bytes);
+    expect(await local.storage().image(local.server(), asset.id)).toEqual(bytes);
+    const fetched = fetchMock.mock.calls.length;
+    await local.apply("work-1", [event(1, { type: "message.created", data: {
+      id: "new-message", role: "user", text: "参考新图", job_id: "job-2", sequence: 1,
+      image_asset_ids: [asset.id],
+    } })]);
+    expect((await local.snapshot("work-1")).cursor).toBe(1);
+    expect(fetchMock.mock.calls).toHaveLength(fetched);
+    await local.forget("work-1");
+    expect(await local.storage().image(local.server(), asset.id)).toBeNull();
+  });
+});
+
+// 图片字节已经保存，但作品关联写入失败时不得发出消息；修复本地存储后可显式重试。
+test("消息图片关联落盘失败时不提交", async () => {
+  await recordWork();
+  await local.saveContext("work-1", CONTEXT);
+  await local.storage().putImage(local.server(), "new-image", new Uint8Array([1]));
+  const save = spyOn(local.storage(), "save").mockRejectedValueOnce(new local.LocalStoreError("磁盘写入失败"));
+  await expect(api.message("work-1", { images: [{ asset_id: "new-image" }] })).rejects.toThrow("磁盘写入失败");
+  expect(fetchMock.mock.calls).toHaveLength(0);
+  save.mockRestore();
+  fetchMock.mockResolvedValueOnce(Response.json(remotionJob("queued")));
+  await api.message("work-1", { images: [{ asset_id: "new-image" }] });
+  expect(fetchMock.mock.calls).toHaveLength(1);
+});

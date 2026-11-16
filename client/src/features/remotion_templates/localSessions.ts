@@ -485,6 +485,15 @@ export function saveContext(work: string, context: ClientContext): Promise<void>
     await storage().save(scope, { work: { ...stored, context }, messages: [], jobs: [] });
   });
 }
+/** 发送前保留新增图片与作品的关联；响应丢失或 SSE 延迟时仍保留，随作品删除一起清理。 */
+export function linkImages(work: string, ids: string[]): Promise<void> {
+  return serial(work, async () => {
+    const scope = server();
+    const stored = await storage().work(scope, work);
+    if (!stored) throw new MissingLocalWork();
+    await storage().save(scope, { work: stored, messages: [], jobs: [], image_ids: ids });
+  });
+}
 /** 快照的实际读取。 */
 async function read(work: string, before: number | undefined, limit: number): Promise<SessionSnapshot> {
   const scope = server();

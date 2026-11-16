@@ -54,6 +54,7 @@ IPC 参数结构固定在 `client/tests/remotion-sessions-contract.json`，前�
 
 模型窗口、原始请求、澄清问题与失败任务恢复点保存在本地会话行的 `context`，不展示为聊天消息。
 桌面 SQLite/浏览器 IndexedDB 升级为版本 2，新增图片字节与作品关联表，保留版本 1 的全部会话。
+后续消息在发送前先保存新增图片与作品的关联，落盘失败时不提交请求。响应丢失或 SSE 延迟不会解除关联，图片保留至作品删除，避免离线超过 24 小时后被孤立图片回收误删。
 终态 `job.updated` 携带 `{work_id, job_id, state, request, input, base_version_id, questions, image_ids, legacy_image_ids}`；
 先保存所需图片，再将恢复包与状态、游标同事务落盘，之后才 ACK。服务端确认后清理临时副本，未送达沿用 7 天期限。
 后续消息和重试自动从本地取回所需图片与恢复包；历史图片使用本地字节生成的 blob URL，卸载时释放。

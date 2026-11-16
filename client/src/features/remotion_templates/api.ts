@@ -9,7 +9,7 @@ import type {
   Version,
   WorkEvent,
 } from "./model";
-import { context, decodeImage, deviceId, encodeImage, image as localImage, saveContext, server, storage } from "./localSessions";
+import { context, decodeImage, deviceId, encodeImage, image as localImage, linkImages, saveContext, server, storage } from "./localSessions";
 import { readSettings } from "@/features/settings/api";
 import { apiBase } from "@/lib/api-base";
 
@@ -162,7 +162,9 @@ export async function message(
   },
 ): Promise<Job> {
   const checkpoint = await modelContext(work);
-  const ids = [...(checkpoint.image_ids ?? []), ...(body.images ?? []).map((image) => image.asset_id)];
+  const added = (body.images ?? []).map((image) => image.asset_id);
+  if (added.length) await linkImages(work, added);
+  const ids = [...(checkpoint.image_ids ?? []), ...added];
   return modelRequest(`/works/${encodeURIComponent(work)}/messages`, {
     method: "POST",
     body: JSON.stringify({ ...body, context: checkpoint, ...(body.parameters || !ids.length ? {} : { assets: await imagePayloads(ids) }) }),
