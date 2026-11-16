@@ -143,7 +143,7 @@ await task.finish({ keep: [] });
 
 模板库顶部展示模板名称、描述和保存状态，并提供保存按钮。点击名称或描述旁的铅笔进入编辑，点击其他地方时自动保存当前完整草稿；名称输入框支持回车保存，Escape 取消当前字段编辑。未修改不写入，名称不能留空，描述可以清空；失败保留输入，可修正后失焦或点击「保存模板」重试。已有模板沿用原 ID。编辑区填满侧边导航之外的区域，采用三栏：左侧切换特效素材和 AI 资产，中间实时预览，右侧调整选中对象的参数。桌面布局高度随窗口调整，顶栏下方三栏各自滚动；窄屏按顺序排列。
 
-桌面界面截图：[模板主页与 Style ID](../docs/images/template-management/home.png)、[删除确认](../docs/images/template-management/delete.png)、[名称编辑](../docs/images/template-management/edit.png)。截图使用独立测试模板；预览视频受本机媒体与网络环境限制，不代表播放验收。
+桌面界面截图：[模板主页与最近修改的空间陈列](../docs/images/template-management/home.png)、[删除确认](../docs/images/template-management/delete.png)、[名称编辑](../docs/images/template-management/edit.png)。截图使用独立测试模板；预览视频受本机媒体与网络环境限制，不代表播放验收。
 
 右侧设置可通过右上角「×」关闭，关闭时保留对象与未保存参数。移除当前画面对象后自动关闭设置；关闭期间取消对象选中状态，桌面保留设置栏宽度，预览画面尺寸保持不变。选择画面对象或应用资产会重新打开对应设置，切换页面保留关闭状态。
 
