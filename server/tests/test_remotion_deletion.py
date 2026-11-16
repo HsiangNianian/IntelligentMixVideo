@@ -178,15 +178,15 @@ def test_delete_all_versions_jobs_and_files(client, store, candidate, spec):
     )
     store.claim()
     v1 = publish_fixture(store, first.id, candidate, spec, evidence(candidate, spec))
-    second = store.enqueue(
+    second = asyncio.run(store.enqueue(
         work.id, JobInput(mode="parameters", parameters={"0_text": "你好"}), v1.id
-    )
+    ))
     store.claim()
     edited, edited_spec = patch_parameters(candidate, spec, {"0_text": "你好"})
     v2 = publish_fixture(
         store, second.id, edited, edited_spec, evidence(edited, edited_spec)
     )
-    failed = store.enqueue(work.id, JobInput(), v2.id)
+    failed = asyncio.run(store.enqueue(work.id, JobInput(), v2.id))
     store.update(failed.id, status="failed")
     # 升级前遗留的模型窗口也随整条会话删除。
     with store.transaction() as db:
@@ -284,7 +284,7 @@ def test_cleanup_failure_remains_retryable_and_blocks_writes(
     assert client.post(f"/api/templates/works/{work.id}/ack", json={"cursor": 0}).status_code == 410
     assert client.get(f"/api/templates/works/{work.id}/events").status_code == 410
     with pytest.raises(HTTPException) as error:
-        store.enqueue(work.id, JobInput(), None)
+        asyncio.run(store.enqueue(work.id, JobInput(), None))
     assert error.value.status_code == 410
     assert store.claim() is None
     monkeypatch.setattr(deletion, "remove_path", original)
@@ -444,7 +444,7 @@ def test_enqueue_rechecks_deletion_inside_transaction(store, monkeypatch):
 
     monkeypatch.setattr(store, "project", read_then_delete)
     with pytest.raises(HTTPException) as error:
-        store.enqueue(work.id, JobInput(), None)
+        asyncio.run(store.enqueue(work.id, JobInput(), None))
     assert error.value.status_code == 410
     assert count(store, jobs) == 1
 
@@ -497,7 +497,7 @@ def test_deleting_a_work_removes_audit_logs_of_pruned_jobs(store):
     """确认送达后较早的任务记录被清理，删除会话时这些任务的私有审计仍一并删除，不等到保留期结束。"""
     work, first = create_work(store, GenerateTemplateRequest(description="审计"), DEVICE)
     store.update(first.id, status="answered", stage="finished", answer="好")
-    latest = store.enqueue(work.id, JobInput(mode="edit", instruction="再改"), None)
+    latest = asyncio.run(store.enqueue(work.id, JobInput(mode="edit", instruction="再改"), None))
     store.update(latest.id, status="failed", stage="finished")
     for job in (first, latest):
         path = store.audit_path(work.id, job.id)
@@ -571,7 +571,7 @@ def test_follow_up_images_follow_work_lifecycle(store, service, candidate, spec,
     work, first = create_work(store, GenerateTemplateRequest(description="删除", images=[{"asset_id": original.id}]), DEVICE)
     store.claim()
     version = publish_fixture(store, first.id, candidate, spec, evidence(candidate, spec))
-    edit = service.message(work.id, TaskMessage(instruction="参考这张", images=[{"asset_id": attached.id}]))
+    edit = asyncio.run(service.message(work.id, TaskMessage(instruction="参考这张", images=[{"asset_id": attached.id}])))
     assert store.job(edit.id).base_version_id == version.id
     assert store.inputs(edit.id).request == work.request
     paths = store.job_dir(edit.id) / "references"
@@ -625,9 +625,9 @@ def test_unreferenced_uploads_are_reclaimed_after_a_grace_period(store, service,
         GenerateTemplateRequest(description="保留", images=[{"asset_id": original.id}]), DEVICE
     )
     store.update(first.id, status="failed", stage="finished")
-    queued = service.message(work.id, TaskMessage(images=[{"asset_id": follow.id}]))
+    queued = asyncio.run(service.message(work.id, TaskMessage(images=[{"asset_id": follow.id}])))
     with pytest.raises(Conflict):
-        service.message(work.id, TaskMessage(images=[{"asset_id": orphan.id}]))
+        asyncio.run(service.message(work.id, TaskMessage(images=[{"asset_id": orphan.id}])))
     for asset in (original, follow, orphan, later):
         age(store, asset, 25)
     age(store, fresh, 23)

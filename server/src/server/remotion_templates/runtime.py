@@ -172,7 +172,7 @@ class Runtime:
         if self.worker is None or self.worker.done():
             self.worker = asyncio.create_task(self._work())
 
-    def edit(self, project_id: UUID, request: EditTemplateRequest, config: ClientSettings | None = None):
+    async def edit(self, project_id: UUID, request: EditTemplateRequest, config: ClientSettings | None = None):
         """Choose a stable accepted base at enqueue time and reject invalid parameter patches early."""
         from .parameters import patch_parameters
 
@@ -193,9 +193,9 @@ class Runtime:
             images=[MessageImage(asset_id=image) for image in images],
             context=self.store.require_context(project_id, request.context),
         )
-        return self._start(project_id, inputs, base, config, message_images=images, payloads=request.assets)
+        return await self._start(project_id, inputs, base, config, message_images=images, payloads=request.assets)
 
-    def _start(
+    async def _start(
         self,
         project_id: UUID,
         inputs: JobInput,
@@ -210,15 +210,16 @@ class Runtime:
         A parameter revision of a PR76 version whose player bundle reads injected defaults only re-checks the schema
         and seals new defaults, so it must not wait behind another work's generation; it is recorded as running so
         the one-active-job rule still holds. An older bundle would keep showing its compiled defaults, so that
-        revision is queued and rebuilt in the sandbox.
+        revision is queued and rebuilt in the sandbox. Enqueue prepares images off-loop, then commits without
+        yielding before this event loop registers credentials and schedules generation or an instant parameter save.
         """
-        if inputs.mode == "parameters" and base is not None and self.instant(base):
-            job = self.store.enqueue(project_id, inputs, base.id, message_text=message_text, running=True)
+        if inputs.mode == "parameters" and base is not None and await asyncio.to_thread(self.instant, base):
+            job = await self.store.enqueue(project_id, inputs, base.id, message_text=message_text, running=True)
             task = asyncio.create_task(self._save_parameters(job.id, base, inputs.parameters))
             self.saves[job.id] = task
             task.add_done_callback(lambda _done: self.saves.pop(job.id, None))
             return job
-        job = self.store.enqueue(
+        job = await self.store.enqueue(
             project_id, inputs, base.id if base else None,
             message_text=message_text, message_images=message_images, payloads=payloads,
         )
@@ -252,14 +253,14 @@ class Runtime:
         finally:
             shutil.rmtree(self.store.job_dir(job_id), ignore_errors=True)
 
-    def message(self, project_id: UUID, request: TaskMessage, config: ClientSettings | None = None):
+    async def message(self, project_id: UUID, request: TaskMessage, config: ClientSettings | None = None):
         """Route conversation input to generation, accepted-base edits, or outstanding questions."""
         latest = self.store.latest_job(project_id)
         images = [image.asset_id for image in request.images]
         if request.reply_to_job_id:
             if latest.id != request.reply_to_job_id or latest.status != "needs_input":
                 raise Conflict("Question reply is stale or belongs to another task.")
-            return self.retry(latest.id, request.instruction or "", config, images=images, context=request.context, payloads=request.assets)
+            return await self.retry(latest.id, request.instruction or "", config, images=images, context=request.context, payloads=request.assets)
         if latest.status == "needs_input":
             raise Conflict("Answer the outstanding questions using reply_to_job_id.")
         project = self.store.project(project_id)
@@ -276,14 +277,14 @@ class Runtime:
                 known = {image.asset_id for image in inputs.images}
                 inputs.images += [MessageImage(asset_id=image) for image in images if image not in known]
                 base = self.store.version(latest.base_version_id) if latest.base_version_id else None
-                return self._start(project_id, inputs, base, config, message_text=request.instruction, message_images=images, payloads=request.assets)
+                return await self._start(project_id, inputs, base, config, message_text=request.instruction, message_images=images, payloads=request.assets)
         if (
             project.current_version_id is None
             and request.base_version_id is None
             and request.parameters is None
         ):
             # A conversation can start with questions before its first accepted template exists.
-            job = self.store.enqueue(
+            return await self._start(
                 project_id,
                 JobInput(
                     mode="generate",
@@ -292,11 +293,10 @@ class Runtime:
                     context=self.store.require_context(project_id, request.context),
                 ),
                 None,
+                config,
                 message_images=images, payloads=request.assets,
             )
-            self.notify(job.id, config)
-            return job
-        return self.edit(
+        return await self.edit(
             project_id,
             EditTemplateRequest.model_validate(
                 request.model_dump(exclude={"reply_to_job_id"})
@@ -304,7 +304,7 @@ class Runtime:
             config,
         )
 
-    def retry(
+    async def retry(
         self,
         job_id: UUID,
         answer: str | None = None,
@@ -341,7 +341,7 @@ class Runtime:
                 ]
             inputs.clarifications += [json.dumps(clarification, ensure_ascii=False)]
         base = self.store.version(job.base_version_id) if job.base_version_id else None
-        return self._start(
+        return await self._start(
             job.project_id, inputs, base, config,
             message_text=answer if answer is not None else "重试本次制作。",
             message_images=images, payloads=payloads,

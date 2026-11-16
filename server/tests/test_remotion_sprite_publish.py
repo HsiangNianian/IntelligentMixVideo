@@ -201,9 +201,9 @@ def another_version(
         kind="text",
     )
     if same_work:
-        job = published.store.enqueue(
+        job = asyncio.run(published.store.enqueue(
             published.version.project_id, JobInput(mode="edit", instruction=description), published.version.id,
-        )
+        ))
     else:
         _work, job = published.store.create(GenerateTemplateRequest(description="新版本"), DEVICE)
     published.store.claim()

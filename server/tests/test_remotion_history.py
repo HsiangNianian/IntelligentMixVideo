@@ -160,13 +160,13 @@ def test_public_history_tracks_inputs_and_hides_repairs(history_store):
     store.update(job.id, status="needs_input", questions=["标题写什么？"])
     runtime = Runtime(store, None, None)
     runtime.notify = lambda *args: None
-    answer_job = runtime.retry(job.id, "春日快乐")
+    answer_job = asyncio.run(runtime.retry(job.id, "春日快乐"))
     store.update(
         answer_job.id,
         status="failed",
         error=JobError(code="model_error", message="private provider secret"),
     )
-    retry_job = runtime.retry(answer_job.id)
+    retry_job = asyncio.run(runtime.retry(answer_job.id))
     events = store.work_events(work.id, 0)
     messages = [event.data for event in events if event.type == "message.created"]
     assert [m["text"] for m in messages if m["role"] == "user"] == ["居中标题", "春日快乐", "重试本次制作。"]
@@ -421,7 +421,7 @@ def test_ack_deletes_delivered_events_and_prunes_finished_jobs(history_app, hist
     store.progress(first.id, "understanding")
     store.round(first.id, {"layer": "outer", "turn": 1, "calls": []})
     store.update(first.id, status="answered", answer="好")
-    latest = store.enqueue(work.id, JobInput(mode="edit", instruction="再改"), None)
+    latest = asyncio.run(store.enqueue(work.id, JobInput(mode="edit", instruction="再改"), None))
     store.update(latest.id, status="failed")
     checkpoint = store.client_context(work.id)
     with TestClient(history_app) as client:
@@ -436,7 +436,7 @@ def test_ack_deletes_delivered_events_and_prunes_finished_jobs(history_app, hist
         store.job(first.id)
     runtime = Runtime(store, None, None)
     runtime.notify = lambda *args: None
-    retried = runtime.retry(latest.id, context=checkpoint)
+    retried = asyncio.run(runtime.retry(latest.id, context=checkpoint))
     assert [event.data["text"] for event in store.work_events(work.id, 0) if event.type == "message.created"] == ["重试本次制作。"]
     assert store.job(retried.id).status == "queued"
 
@@ -446,7 +446,7 @@ def test_partial_ack_keeps_undelivered_records(history_store):
     store = history_store
     work, first = store.create(GenerateTemplateRequest(description="部分确认"), DEVICE)
     store.update(first.id, status="cancelled")
-    running = store.enqueue(work.id, JobInput(mode="edit", instruction="继续"), None)
+    running = asyncio.run(store.enqueue(work.id, JobInput(mode="edit", instruction="继续"), None))
     store.claim()
     store.progress(running.id, "understanding")
     events = store.work_events(work.id, 0)
@@ -488,7 +488,7 @@ def test_a_work_deleted_while_enqueueing_is_missing(history_store, monkeypatch):
     deletion.finish(history_store, work.id)
     monkeypatch.setattr(history_store, "project", lambda *args: checked)
     with pytest.raises(NotFound):
-        history_store.enqueue(work.id, JobInput(mode="edit", instruction="继续"), None)
+        asyncio.run(history_store.enqueue(work.id, JobInput(mode="edit", instruction="继续"), None))
 
 
 def test_only_devices_with_works_are_recorded(history_app, history_store, monkeypatch):
@@ -548,7 +548,7 @@ def test_sse_replays_all_pages_and_cleans_idle_wait(history_store):
     work, job = store.create(GenerateTemplateRequest(description="长历史"), DEVICE)
     for _ in range(40):
         store.update(job.id, status="cancelled")
-        job = store.enqueue(work.id, JobInput(), None)
+        job = asyncio.run(store.enqueue(work.id, JobInput(), None))
     foreign, _ = store.create(GenerateTemplateRequest(description="其他会话"), DEVICE)
     expected = cursor(store, work.id)
 
@@ -700,7 +700,7 @@ def test_sse_http_reconnect_and_followup_job(history_app, history_store):
             assert all(event["id"] > after for event in events)
             assert [event["type"] for event in events] == ["job.updated", "message.created"]
             assert events[0]["data"]["progress"][-1]["status"] == "stopped"
-            followup = history_store.enqueue(work.id, JobInput(mode="edit", instruction="继续"), None)
+            followup = asyncio.run(history_store.enqueue(work.id, JobInput(mode="edit", instruction="继续"), None))
             events = [json.loads(line[6:]) for line in _data_lines(lines, 2)]
             assert events[0]["data"]["text"] == "继续"
             assert events[1]["data"]["id"] == str(followup.id)
@@ -787,8 +787,18 @@ def test_parameter_work_is_refused_but_conversation_is_not(history_app, history_
         job = history_store.latest_job(work_id)
         context = {"work_id": work_id, "job_id": str(job.id), "state": "[]"}
         reached = []
-        runtime.message = lambda *args: reached.append("message") or job
-        runtime.retry = lambda *args, **kwargs: reached.append("retry") or job
+        async def message(*args):
+            """记录异步消息入口已通过环境门禁。"""
+            reached.append("message")
+            return job
+
+        async def retry(*args, **kwargs):
+            """记录异步重试入口已通过环境门禁。"""
+            reached.append("retry")
+            return job
+
+        runtime.message = message
+        runtime.retry = retry
         runtime.sandbox_problem = lambda: MISSING_SANDBOX
 
         patch = client.post(f"/works/{work_id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"size": 80}, "context": context})
@@ -833,9 +843,9 @@ def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
     )
     history_store.update(job.id, status="needs_input", stage="finished", questions=["什么颜色？"])
 
-    reply = runtime.message(
+    reply = asyncio.run(runtime.message(
         work.id, TaskMessage(images=[{"asset_id": answer.id}], reply_to_job_id=job.id)
-    )
+    ))
     assert history_store.inputs(reply.id).images == [
         MessageImage(asset_id=answer.id, source="clarification_answer", clarification=0)
     ]
@@ -872,9 +882,9 @@ def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
     with pytest.raises(ValidationError):
         TaskMessage(parameters={"size": 80}, images=[{"asset_id": later.id}])
     with pytest.raises(NotFound):
-        runtime.message(work.id, TaskMessage(instruction="参考", images=[{"asset_id": uuid4()}]))
+        asyncio.run(runtime.message(work.id, TaskMessage(instruction="参考", images=[{"asset_id": uuid4()}])))
     assert history_store.latest_job(work.id).id == reply.id
-    follow = runtime.message(work.id, TaskMessage(instruction="改成这样", images=[{"asset_id": later.id}]))
+    follow = asyncio.run(runtime.message(work.id, TaskMessage(instruction="改成这样", images=[{"asset_id": later.id}])))
     assert history_store.inputs(follow.id).images == [MessageImage(asset_id=later.id)]
     message = messages(history_store, work.id)[-1]
     assert (message.text, message.image_asset_ids) == ("改成这样", [later.id])
@@ -908,9 +918,9 @@ def test_a_work_carries_earlier_turns_into_the_next_task(history_store, monkeypa
 
     runtime.harness = Harness()
     asyncio.run(runtime._execute(job.id))
-    second = runtime.message(work.id, TaskMessage(instruction="参考这张", images=[{"asset_id": later.id}]))
+    second = asyncio.run(runtime.message(work.id, TaskMessage(instruction="参考这张", images=[{"asset_id": later.id}])))
     asyncio.run(runtime._execute(second.id))
-    third = runtime.message(work.id, TaskMessage(instruction="再改一下"))
+    third = asyncio.run(runtime.message(work.id, TaskMessage(instruction="再改一下")))
     asyncio.run(runtime._execute(third.id))
     images, intent, window, versions = seen[-1]
     assert [path.stem for path in images] == [str(original.id), str(later.id)]
@@ -941,7 +951,7 @@ def test_new_chat_switches_reach_every_job_of_the_work(history_store, monkeypatc
     work, job = history_store.create(GenerateTemplateRequest(description="标题", keyword_effect=True, two_tier=True), DEVICE)
     asyncio.run(runtime._execute(job.id))
     history_store.update(job.id, status="answered", stage="finished")
-    follow = runtime.message(work.id, TaskMessage(instruction="关键词再大一点"))
+    follow = asyncio.run(runtime.message(work.id, TaskMessage(instruction="关键词再大一点")))
     asyncio.run(runtime._execute(follow.id))
     assert [(intent["original_request"]["keyword_effect"], intent["original_request"]["two_tier"]) for intent in seen] == [(True, True)] * 2
     default = GenerateTemplateRequest(description="标题")
@@ -961,7 +971,7 @@ def test_other_devices_cannot_attach_my_reference_images(history_store, monkeypa
     work, job = history_store.create(GenerateTemplateRequest(description="他人"), OTHER)
     history_store.update(job.id, status="failed", stage="finished")
     with pytest.raises(NotFound):
-        runtime.message(work.id, TaskMessage(images=[{"asset_id": mine.id}]))
+        asyncio.run(runtime.message(work.id, TaskMessage(images=[{"asset_id": mine.id}])))
     assert counts(history_store, work_assets) == [0]
 
 
@@ -982,9 +992,9 @@ def test_messages_carry_several_reference_images(history_app, history_store, mon
             assert client.post("/works", json=body).status_code == 422
     job = history_store.latest_job(work_id)
     history_store.update(job.id, status="failed", stage="finished")
-    follow = runtime.message(
+    follow = asyncio.run(runtime.message(
         work_id, TaskMessage(images=[{"asset_id": fourth.id}, {"asset_id": third.id}])
-    )
+    ))
     assert history_store.inputs(follow.id).images == [
         MessageImage(asset_id=fourth.id), MessageImage(asset_id=third.id),
     ]

@@ -4,6 +4,7 @@
 默认跳过，不读取 .env、不使用 SQLite 替身、不提交模型或云端任务。
 """
 
+import asyncio
 import os
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -225,13 +226,13 @@ def test_mysql_remotion_store_round_trip(mysql_database, tmp_path):
         remotion.progress(first.id, "understanding")
     remotion.round(first.id, {"layer": "outer", "turn": 1, "calls": []})
     with pytest.raises(Conflict):
-        remotion.enqueue(work.id, JobInput(mode="edit", instruction="并发"), None)
+        asyncio.run(remotion.enqueue(work.id, JobInput(mode="edit", instruction="并发"), None))
     remotion.update(first.id, status="answered", stage="finished", answer="好")
     remotion.finalize_job(first.id)
     remotion.running_contexts.pop(first.id)
     checkpoint = remotion.client_context(work.id)
     assert checkpoint.state == window.serialize()
-    latest = remotion.enqueue(work.id, JobInput(mode="edit", instruction="再改", context=checkpoint), None)
+    latest = asyncio.run(remotion.enqueue(work.id, JobInput(mode="edit", instruction="再改", context=checkpoint), None))
     remotion.update(latest.id, status="failed", stage="finished")
     with remotion.reading() as db:
         assert len(db.execute(select(job_progress.c.job_id)).all()) == 1

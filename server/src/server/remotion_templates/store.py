@@ -301,7 +301,7 @@ class Store:
 
     def client_context(self, project_id: UUID) -> ClientContext:
         """Export an undelivered checkpoint or a legacy window; acknowledged new windows live only on the client."""
-        self.project(project_id)
+        project = self.project(project_id)
         with self.reading() as db:
             latest = self._latest(db, project_id)
             if latest is None or latest.status in ACTIVE or db.execute(select(jobs.c.active_work_id).where(jobs.c.id == str(latest.id))).scalar():
@@ -314,8 +314,16 @@ class Store:
                 if checkpoint and checkpoint["job_id"] == str(latest.id):
                     return ClientContext.model_validate(checkpoint)
             legacy = self.legacy_state(db, project_id)
+            data = json.loads(db.execute(select(jobs.c.input_data).where(jobs.c.id == str(latest.id))).scalar_one())
+            inputs = JobInput.model_validate(data)
+            # Pre-upgrade initial jobs cancelled in the queue never created a conversation. Only their
+            # untouched legacy input may represent an empty history; new or executed windows must not reset.
+            if (legacy is None and "finalized" not in data and latest.status == "cancelled"
+                    and latest.base_version_id is None and project.current_version_id is None
+                    and project.request is not None and not latest.attempts and not latest.usage
+                    and inputs == JobInput()):
+                legacy = "[]"
             if legacy is not None:
-                inputs = JobInput.model_validate_json(db.execute(select(jobs.c.input_data).where(jobs.c.id == str(latest.id))).scalar_one())
                 return self.delivery_context(db, latest, legacy, inputs, self.require_work_request(db, project_id))
         raise Conflict("模型上下文已由客户端保存或过期，请使用原设备的本地会话；本地数据丢失时需新建会话。")
 
@@ -602,7 +610,7 @@ class Store:
         history.record_input(db, job, inputs, message_text, images=images)
         history.record_job(db, job)
 
-    def enqueue(
+    async def enqueue(
         self,
         project_id: UUID,
         inputs: JobInput,
@@ -618,7 +626,8 @@ class Store:
         ``message_images`` are the images the user attached to this chat message; ``inputs.images`` may also carry
         images inherited from the task being answered or retried. ``running`` records a job the caller executes
         itself at once (an instant parameter revision); the FIFO worker only claims queued jobs, and the
-        one-active-job rule still applies.
+        one-active-job rule still applies. Image work runs off-loop; insertion and the caller's notification have
+        no suspension between them, so a running FIFO worker cannot claim a job before its credentials are ready.
         """
         self.project(project_id)
         if base is not None and self.version(base).project_id != project_id:
@@ -629,17 +638,26 @@ class Store:
         if inputs.request is None:
             raise Conflict("本地会话缺少原始请求，请从原设备恢复。")
         inputs.finalized = False
-        self.prepare_images(job, project, inputs, payloads or [], self.owner(project_id))
+        preparing = asyncio.create_task(asyncio.to_thread(
+            self.prepare_images, job, project, inputs, payloads or [], self.owner(project_id),
+        ))
         try:
+            await asyncio.shield(preparing)
             with self.transaction() as db:
                 # The work may have been deleted since the check above: report it as missing, not as a server error.
                 self.require_work(db, project_id)
                 self._insert_job(db, job, inputs, message_text, images=message_images)
+        except asyncio.CancelledError:
+            # A cancelled request must wait for its last image writer before removing unpublished scratch.
+            with suppress(Exception):
+                await preparing
+            await asyncio.to_thread(shutil.rmtree, self.job_dir(job.id), ignore_errors=True)
+            raise
         except IntegrityError as exc:
-            shutil.rmtree(self.job_dir(job.id), ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, self.job_dir(job.id), ignore_errors=True)
             raise Conflict("this work already has a queued or running job") from exc
         except BaseException:
-            shutil.rmtree(self.job_dir(job.id), ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, self.job_dir(job.id), ignore_errors=True)
             raise
         return job
 

@@ -4,8 +4,11 @@
 """
 
 import asyncio
+import base64
 import json
+import threading
 from datetime import timedelta
+from io import BytesIO
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -14,16 +17,17 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import delete, insert, inspect, select
+from PIL import Image
+from sqlalchemy import delete, insert, inspect, select, update
 
 from server.remotion_templates.context import Conversation
-from server.remotion_templates.models import ClientContext, DialogueOutput, GenerateTemplateRequest, JobInput, TaskMessage
+from server.remotion_templates.models import ClientContext, DialogueOutput, GenerateTemplateRequest, ImagePayload, JobInput, TaskMessage
 from server.remotion_templates.provider import Budget, Provider
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Conflict, Store, now
-from server.remotion_templates.tables import conversations, jobs, work_events
+from server.remotion_templates.tables import conversations, jobs, legacy_metadata, work_events
 from .conftest import DEVICE, DEVICE_HEADERS
 
 
@@ -90,7 +94,7 @@ def test_images_remain_local_and_retry_restores_after_ack(store):
     with store.reading() as db:
         assert json.loads(db.execute(select(works.c.data)).scalar_one())["request"] is None
         assert not {"remotion_assets", "remotion_work_assets", "remotion_conversations"} & set(inspect(db).get_table_names())
-    retried = runtime.retry(job.id, context=checkpoint, payloads=[payload])
+    retried = asyncio.run(runtime.retry(job.id, context=checkpoint, payloads=[payload]))
     assert store.inputs(retried.id).checkpoint == draft
     store.claim()
     asyncio.run(runtime._execute(retried.id))
@@ -202,7 +206,7 @@ def test_runtime_delivers_then_replays_client_window(store):
         assert checkpoint.state not in db.execute(select(jobs.c.input_data)).scalar_one()
     with pytest.raises(Conflict, match="本地会话"):
         store.client_context(work.id)
-    follow = runtime.message(work.id, TaskMessage(instruction="加粗", context=checkpoint))
+    follow = asyncio.run(runtime.message(work.id, TaskMessage(instruction="加粗", context=checkpoint)))
     assert store.inputs(follow.id).context == checkpoint
     store.claim()
     asyncio.run(runtime._execute(follow.id))
@@ -219,7 +223,7 @@ def test_terminal_paths_clear_input_but_keep_deliverable_context(store, status):
     work, first = store.create(GenerateTemplateRequest(description="继续"), DEVICE)
     store.update(first.id, status="answered", answer="好")
     incoming = ClientContext(work_id=work.id, job_id=first.id, state=window().serialize())
-    follow = store.enqueue(work.id, JobInput(context=incoming), None)
+    follow = asyncio.run(store.enqueue(work.id, JobInput(context=incoming), None))
     if status == "interrupted":
         store.interrupt_unfinished()
     else:
@@ -252,10 +256,186 @@ def test_legacy_export_waits_for_a_client_copy_before_removal(store, template_db
         assert db.execute(select(conversations.c.data)).scalar_one() == source
     runtime = Runtime(store, None, None)
     runtime.notify = lambda *args: None
-    retried = runtime.retry(first.id, context=checkpoint)
+    retried = asyncio.run(runtime.retry(first.id, context=checkpoint))
     assert store.inputs(retried.id).context == checkpoint
     with store.reading() as db:
         assert db.execute(select(conversations)).all() == []
+
+
+def legacy_cancelled_work(store, template_db, *, input_changes=None, job_changes=None):
+    """保留旧版排队取消并 ACK 后的原始请求/任务输入；执行前没有 conversation 行。"""
+    legacy_metadata.create_all(template_db)
+    store.initialize()
+    work, job = store.create(GenerateTemplateRequest(description="排队时取消的红色标题"), DEVICE)
+    job = job.model_copy(update={"status": "cancelled", "stage": "finished", **(job_changes or {})})
+    inputs = {"mode": "generate", "instruction": None, "parameters": None,
+              "clarifications": [], "images": [], "checkpoint": None, **(input_changes or {})}
+    with store.transaction() as db:
+        db.execute(update(jobs).where(jobs.c.id == str(job.id)).values(
+            status=job.status, active_work_id=None, data=job.model_dump_json(), input_data=json.dumps(inputs)))
+        db.execute(delete(work_events).where(work_events.c.work_id == str(work.id)))
+    return work, job
+
+
+@pytest.mark.parametrize("action", ["message", "retry"])
+def test_legacy_queued_cancellation_migrates_empty_history(store, template_db, action):
+    """升级前未执行就取消的首次任务可导出真实空窗口，原设备保存后能继续或重试。"""
+    work, job = legacy_cancelled_work(store, template_db)
+    runtime = Runtime(store, None, Settings(_env_file=None))
+    runtime.notify = lambda *_: None
+    app = FastAPI()
+    app.include_router(router)
+    app.state.runtime = runtime
+    with TestClient(app, headers=DEVICE_HEADERS) as client:
+        response = client.get(f"/works/{work.id}/context")
+        assert response.status_code == 200, response.text
+        context = response.json()
+        assert context["state"] == "[]" and context["request"] == work.request.model_dump(mode="json")
+        if action == "retry":
+            response = client.post(f"/jobs/{job.id}/retry", json=context)
+        else:
+            response = client.post(f"/works/{work.id}/messages", json={"instruction": "继续制作", "context": context})
+        assert response.status_code == 202, response.text
+        resumed = store.inputs(store.latest_job(work.id).id)
+        assert resumed.request == work.request and resumed.context.state == "[]"
+
+
+@pytest.mark.parametrize(("inputs", "job"), [
+    ({}, {"status": "failed"}),
+    ({}, {"usage": {"total_tokens": 10}}),
+    ({"instruction": "再改大一些"}, {}),
+    ({"finalized": False}, {}),
+    ({"finalized": True}, {}),
+])
+def test_missing_executed_or_current_context_is_not_replaced_with_empty(store, template_db, inputs, job):
+    """已执行/后续任务丢失旧窗口，以及新协议事件丢失或已清理时，仍明确拒绝重置历史。"""
+    work, _job = legacy_cancelled_work(store, template_db, input_changes=inputs, job_changes=job)
+    with pytest.raises(Conflict, match="本地会话"):
+        store.client_context(work.id)
+
+
+@pytest.mark.parametrize("action", ["message", "retry"])
+def test_reference_preparation_keeps_http_responsive(store, monkeypatch, action):
+    """图片准备阻塞期间，其他请求仍可完成；图片完成并入队后才在事件循环调度任务。"""
+    encoded = BytesIO()
+    Image.new("RGBA", (8, 8), "red").save(encoded, format="PNG")
+    payload = ImagePayload(id=uuid4(), data=base64.b64encode(encoded.getvalue()).decode())
+    work, job = store.create(GenerateTemplateRequest(images=[{"asset_id": payload.id}]), DEVICE, [payload])
+    store.update(job.id, status="failed")
+    context = store.client_context(work.id).model_dump(mode="json")
+    store.acknowledge(work.id, store.work_events(work.id, 0)[-1].id, DEVICE)
+    runtime = Runtime(store, None, Settings(_env_file=None))
+    app = FastAPI()
+    app.include_router(router)
+    app.state.runtime = runtime
+
+    async def scenario():
+        """用线程事件控制真实图片准备边界，不依赖图片大小或机器速度制造延迟。"""
+        loop = asyncio.get_running_loop()
+        entered = asyncio.Event()
+        release = threading.Event()
+        original = store.prepare_images
+        notified = []
+
+        def prepare(*args):
+            """只在工作线程等待；旧实现会立即失败，避免把测试自身锁死。"""
+            assert threading.get_ident() != loop_thread, "image preparation blocked the ASGI loop"
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(5), "image preparation was not released"
+            return original(*args)
+
+        def notify(identifier, config):
+            """队列通知必须在图像已落盘后、原事件循环上执行。"""
+            assert asyncio.get_running_loop() is loop
+            assert (store.job_dir(identifier) / "references" / f"{payload.id}.png").read_bytes() == encoded.getvalue()
+            notified.append(identifier)
+
+        loop_thread = threading.get_ident()
+        monkeypatch.setattr(store, "prepare_images", prepare)
+        monkeypatch.setattr(runtime, "notify", notify)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", headers=DEVICE_HEADERS) as client:
+            body = {"context": context, "instruction": "继续制作"} if action == "message" else context
+            path = f"/works/{work.id}/messages" if action == "message" else f"/jobs/{job.id}/retry"
+            pending = asyncio.create_task(client.post(path, json={**body, "assets": [payload.model_dump(mode="json")]}))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                other = await asyncio.wait_for(client.get(f"/jobs/{job.id}"), 2)
+                assert other.status_code == 200 and other.json()["status"] == "failed"
+                assert not pending.done() and notified == []
+            finally:
+                release.set()
+                response = await pending
+            assert response.status_code == 202, response.text
+            assert notified == [store.latest_job(work.id).id]
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_enqueue_waits_for_images_without_creating_job(store, monkeypatch):
+    """请求在图片准备中取消时，等最后一次写入结束再删除临时目录，不提交任务。"""
+    work, first = store.create(GenerateTemplateRequest(description="保留原任务"), DEVICE)
+    store.update(first.id, status="failed")
+    context = store.client_context(work.id)
+
+    async def scenario():
+        """取消事件不取消后台图片线程，也不能留下它随后写出的孤立目录。"""
+        loop, entered, release = asyncio.get_running_loop(), asyncio.Event(), threading.Event()
+
+        def prepare(job, *_args):
+            """模拟晚于取消到达的最后一次文件写入。"""
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(5)
+            directory = store.job_dir(job.id) / "references"
+            directory.mkdir(parents=True)
+            (directory / "last.png").write_bytes(b"private scratch")
+
+        monkeypatch.setattr(store, "prepare_images", prepare)
+        pending = asyncio.create_task(store.enqueue(work.id, JobInput(context=context), None))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            pending.cancel()
+            await asyncio.sleep(0)
+            assert not pending.done()
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        assert store.latest_job(work.id).id == first.id
+        assert not list((store.root / "jobs").iterdir())
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_submissions_recheck_context_after_image_preparation(store, monkeypatch):
+    """同时准备图片的两个消息只能提交一个；败者不留新任务或临时文件。"""
+    work, first = store.create(GenerateTemplateRequest(description="并发提交"), DEVICE)
+    store.update(first.id, status="failed")
+    context = store.client_context(work.id)
+    runtime = Runtime(store, None, Settings(_env_file=None))
+    notified = []
+    runtime.notify = lambda job, _config: notified.append(job)
+    barrier = threading.Barrier(2, timeout=5)
+
+    def prepare(job, *_args):
+        """让两次提交都先完成临时文件准备，再竞争同一上下文的入队事务。"""
+        directory = store.job_dir(job.id) / "references"
+        directory.mkdir(parents=True)
+        (directory / "prepared.png").write_bytes(b"prepared")
+        barrier.wait()
+
+    monkeypatch.setattr(store, "prepare_images", prepare)
+
+    async def scenario():
+        """两次发送共享同一最新任务，第二次提交必须被事务中的绑定校验拒绝。"""
+        results = await asyncio.gather(*(
+            runtime.message(work.id, TaskMessage(instruction="继续", context=context)) for _ in range(2)
+        ), return_exceptions=True)
+        assert sum(isinstance(result, Conflict) for result in results) == 1
+        latest = store.latest_job(work.id)
+        assert latest.id != first.id and notified == [latest.id]
+        assert list((store.root / "jobs").iterdir()) == [store.job_dir(latest.id)]
+
+    asyncio.run(scenario())
 
 
 def test_context_is_bound_to_work_and_latest_job_inside_enqueue(store):
@@ -267,10 +447,10 @@ def test_context_is_bound_to_work_and_latest_job_inside_enqueue(store):
     checkpoint = store.require_context(work.id, None)
     with pytest.raises(Conflict):
         store.require_context(other.id, checkpoint)
-    second = store.enqueue(work.id, JobInput(context=checkpoint), None)
+    second = asyncio.run(store.enqueue(work.id, JobInput(context=checkpoint), None))
     store.update(second.id, status="answered", answer="好")
     with pytest.raises(Conflict):
-        store.enqueue(work.id, JobInput(context=checkpoint), None)
+        asyncio.run(store.enqueue(work.id, JobInput(context=checkpoint), None))
     assert store.latest_job(work.id).id == second.id
 
 

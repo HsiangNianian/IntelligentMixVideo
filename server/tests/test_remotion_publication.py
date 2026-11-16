@@ -117,7 +117,7 @@ def save_parameters(service: Runtime, work, initial, parameters: dict, *, contex
     """Submit a parameter patch through the runtime and wait for the instant revision to finish."""
     async def scenario():
         """The revision runs as a task outside the FIFO queue; wait for it like the event stream would."""
-        job = service.edit(work.id, EditTemplateRequest(parameters=parameters, base_version_id=initial.id, context=context))
+        job = await service.edit(work.id, EditTemplateRequest(parameters=parameters, base_version_id=initial.id, context=context))
         await asyncio.gather(*service.saves.values())
         return job
 
@@ -215,7 +215,7 @@ def test_a_bundle_without_injected_defaults_is_rebuilt_in_the_sandbox(harness, s
     with TestClient(application) as client:
         refused = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"context": store.client_context(work.id).model_dump(mode="json"), "parameters": {"title": {"text": "新标题"}}, "base_version_id": str(initial.id)})
         assert refused.status_code == 503
-    job = store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "新标题"}}), initial.id)
+    job = asyncio.run(store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "新标题"}}), initial.id))
     store.claim()
     asyncio.run(service._execute(job.id))
     final = store.job(job.id)
@@ -255,7 +255,7 @@ def test_invalid_parameters_and_a_busy_work_are_refused(harness, sprite):
     store, work, initial = accepted_version(harness, sprite)
     service = Runtime(store, harness, harness.settings)
     with pytest.raises(ValueError, match="invalid parameter value: 1 is not of type 'string'"):
-        service.edit(work.id, EditTemplateRequest(parameters={"title": {"text": 1}}, base_version_id=initial.id))
+        asyncio.run(service.edit(work.id, EditTemplateRequest(parameters={"title": {"text": 1}}, base_version_id=initial.id)))
     application = FastAPI()
     application.include_router(router, prefix="/api/templates")
     application.state.runtime = service
@@ -263,9 +263,9 @@ def test_invalid_parameters_and_a_busy_work_are_refused(harness, sprite):
         # Regression: the schema error escaped as an HTTP 500 instead of a 422 the client can show.
         response = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"context": store.client_context(work.id).model_dump(mode="json"), "parameters": {"title": {"text": 1}}, "base_version_id": str(initial.id)})
     assert response.status_code == 422 and "invalid parameter value" in response.json()["detail"]
-    store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "x"}}), initial.id, running=True)
+    asyncio.run(store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "x"}}), initial.id, running=True))
     with pytest.raises(Conflict):
-        service.edit(work.id, EditTemplateRequest(parameters={"title": {"text": "y"}}, base_version_id=initial.id))
+        asyncio.run(service.edit(work.id, EditTemplateRequest(parameters={"title": {"text": "y"}}, base_version_id=initial.id)))
 
 
 def test_a_failed_revision_is_reported_on_its_job(harness, sprite, monkeypatch):

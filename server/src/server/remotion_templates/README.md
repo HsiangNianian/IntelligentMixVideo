@@ -200,13 +200,19 @@ own private audit while it remains available, without executing recorded tools.
 `POST /assets` now only validates/normalizes an uploaded image and returns `{id, data}` (Base64 PNG) to save locally.
 It writes no asset row, disk asset library or ZOS object. Creation/messages/retries send needed local bytes in
 `assets`; the backend decodes them only into that job's private `references` directory and removes it on completion,
-cancellation or startup recovery. Missing required images reject enqueue rather than silently dropping context.
+cancellation or startup recovery. Image normalization and staging run in worker threads for creation, messages
+and retries. Messages/retries recheck the work and context in the insertion transaction, then register credentials
+and schedule tasks on the event loop without yielding; cancelled preparation waits for its image writer before
+removing scratch and inserts no task. Missing required images reject enqueue rather than silently dropping context.
 The original references plus recent task/Outer references are selected deterministically, at most eight images.
 Local images remain linked to their works; deleting one work removes only images no other work references.
 Unlinked local images older than 24 hours are reclaimed on the next image save.
 
 For upgrades, `/works/{id}/context` exports an undelivered envelope or the old conversation. The client also downloads
 all old work images through device-scoped `GET /assets/{id}` and saves them before ACK or its next submission.
+An initial legacy generation cancelled before execution may have no conversation row: its retained original
+request, untouched legacy input and absence of recorded execution allow an empty-window migration. This exception
+does not reset later requests, executed jobs or missing/expired deliveries under the current protocol.
 Legacy `remotion_conversations`, `remotion_assets` and `remotion_work_assets` are read only; new databases do not
 create them. Once the client returns its context or acknowledges the migrated delivery, old private associations
 are removed; the existing orphan-image sweep handles the old cloud records. Deploy client and server together.

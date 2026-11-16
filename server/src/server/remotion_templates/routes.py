@@ -253,7 +253,7 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service, owner: Dev
     ):
         require_sandbox(service)
     try:
-        return PublicJob.from_job(service.message(work_id, request, config))
+        return PublicJob.from_job(await service.message(work_id, request, config))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -341,7 +341,7 @@ async def retry(job_id: UUID, service: Service, owner: Device, config: Config, c
     ):
         require_sandbox(service)
     try:
-        return PublicJob.from_job(service.retry(job_id, config=config,
+        return PublicJob.from_job(await service.retry(job_id, config=config,
             context=ClientContext.model_validate(context.model_dump(exclude={"assets"})), payloads=context.assets))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
