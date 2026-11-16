@@ -602,6 +602,18 @@ class Store:
             raise NotFound("job not found")
         return JobInput.model_validate_json(data)
 
+    def save_checkpoint(self, job_id: UUID, checkpoint: dict | None) -> None:
+        """Keep the latest completed tool boundary in the existing private job row, independent of scratch files.
+
+        Terminal rows are retained for retry; only their execution inputs change here, never their outcome or
+        public events. Copying these inputs into a retry makes recovery independent of pruning the older job.
+        """
+        with self.transaction() as db:
+            data = db.execute(select(jobs.c.input_data).where(jobs.c.id == str(job_id)).with_for_update()).scalar_one()
+            inputs = JobInput.model_validate_json(data)
+            inputs.checkpoint = checkpoint
+            db.execute(update(jobs).where(jobs.c.id == str(job_id)).values(input_data=inputs.model_dump_json()))
+
     def _save_job(self, db: Connection, job: GenerationJob) -> None:
         """Update indexed status and serialized state, and publish the public state change."""
         job.updated_at = now()
@@ -635,12 +647,12 @@ class Store:
             return job
 
     def interrupt_unfinished(self) -> None:
-        """Startup never pretends to resume a half-completed model call or render."""
+        """Interrupt unfinished requests; explicit retry resumes the last completed tool boundary."""
         with self.transaction() as db:
             for data in db.execute(select(jobs.c.data).where(jobs.c.status.in_(ACTIVE))).scalars().all():
                 job = GenerationJob.model_validate_json(data)
                 job.status, job.stage = "interrupted", "finished"
-                job.error = JobError(code="interrupted", message="Server stopped; retry starts a new execution.")
+                job.error = JobError(code="interrupted", message="Server stopped; retry continues from saved progress in a new execution.")
                 self._save_job(db, job)
 
     def publish(

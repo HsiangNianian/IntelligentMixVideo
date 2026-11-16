@@ -929,21 +929,21 @@ class FontStore:
 
     def guide(self) -> str:
         """Prompt section giving the Agent the font library as an enum to choose from, one entry per card with the
-        styles it has."""
+        styles it has and their use in the effect workspace."""
         library = cards(self.available())
         lines = [
             f'- "{family}" ({files[0].label}; {files[0].style}; styles '
             + ", ".join(f"{font.slot.replace('_', ' ')} {font.weight_text}" for font in files) + ")"
             for family, files in library.items()
         ]
-        enum = json.dumps(list(library), ensure_ascii=False)
+        usage = (
+            "Each line's family in effect.json text.fonts is the exact family name of one of these fonts (these families only, never others); "
+            "the host exposes it as fontFamily (one line) or line1FontFamily, line2FontFamily, ... so users and templates can switch fonts, "
+            "and TextRoot applies it to the line, so draw the text in the font it inherits. "
+        )
         return (
             "Font library (the only fonts that exist; all are installed for rendering and previews):\n" + "\n".join(lines) + "\n"
-            f'Each tier\'s font_family in a text block is the exact family name of one of these fonts (the host exposes it as fontFamily '
-            f'{{"type":"string","enum":{enum}}}, or line1FontFamily and line2FontFamily for two tiers; these families only, never others) so users and '
-            "templates can switch fonts, and passes it to the tier's text Preset as its fontFamily prop; write it into CSS as fontFamily: "
-            "`\"${props.fontFamily}\", \"" + DEFAULT_FAMILY + "\", sans-serif` (quoted, with "
-            "the default as fallback). Look at the user's reference image or description (serif or Song, brush, rounded, "
+            + usage + "Look at the user's reference image or description (serif or Song, brush, rounded, "
             "handwritten, condensed, Latin-only) and pick the listed font whose style is closest; when none fits, choose "
             f'"{DEFAULT_FAMILY}". A font uses its bold style for font_weight 700 and its italic style for italic text when it '
             "has them; without one the browser synthesizes bold or slants the text. A Latin-only font draws Chinese "

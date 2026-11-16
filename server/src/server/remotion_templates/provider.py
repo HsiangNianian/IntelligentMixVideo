@@ -38,12 +38,22 @@ def model_image(path: Path) -> bytes:
         return buffer.getvalue()
 
 
-def _image_content(paths: list[Path], *, label: str) -> list[dict]:
-    """Encode all images of one request in order, enforcing the shared 30 MiB pre-base64 limit."""
+# The long side of a low-detail image: enough to tell what a reference shows, for a layer that only routes the request.
+LOW_DETAIL_SIDE = 512
+
+
+def _image_content(paths: list[Path], *, label: str, detail: str = "high") -> list[dict]:
+    """Encode all request images under the shared 30 MiB pre-base64 limit; low detail also shrinks them."""
     content = []
     size = 0
     for path in paths:
         data = model_image(path)
+        if detail == "low":
+            with Image.open(BytesIO(data)) as image:
+                image.thumbnail((LOW_DETAIL_SIDE, LOW_DETAIL_SIDE))
+                buffer = BytesIO()
+                image.save(buffer, format="PNG")
+                data = buffer.getvalue()
         size += len(data)
         if size > _IMAGE_BYTE_LIMIT:
             raise ModelFailure(f"{label} images exceed the bounded model request size.")
@@ -52,18 +62,18 @@ def _image_content(paths: list[Path], *, label: str) -> list[dict]:
                 "type": "image_url",
                 "image_url": {
                     "url": "data:image/png;base64," + base64.b64encode(data).decode(),
-                    "detail": "high",
+                    "detail": detail,
                 },
             }
         )
     return content
 
 
-def expand_image_paths(messages: list[dict]) -> None:
+def expand_image_paths(messages: list[dict], detail: str = "high") -> None:
     """Encode all request image paths in place under one budget, preserving window and trailing-frame positions."""
     holders = [message for message in messages if isinstance(message.get("content"), list)]
     paths = [Path(item["path"]) for message in holders for item in message["content"] if item.get("type") == "image_path"]
-    encoded = iter(_image_content(paths, label="Reference"))
+    encoded = iter(_image_content(paths, label="Reference", detail=detail))
     for message in holders:
         message["content"] = [next(encoded) if item.get("type") == "image_path" else item for item in message["content"]]
 
@@ -139,6 +149,8 @@ class Budget:
     on_progress: Callable[[str], None] | None = None
     on_round: Callable[[dict], None] | None = None
     active_phase: str | None = None
+    # The public reply of a finished free-form task (summary, choices, suggestions), which the runtime shows the user.
+    reply: dict | None = None
     # Input tokens the provider served from its prefix cache in this run; None until it reports them, so a reported zero stays visible.
     cached_tokens: int | None = None
     _start: tuple[int, int] = (0, 0)
@@ -293,12 +305,13 @@ class Provider:
         budget: Budget,
         *,
         images: list[Path] | None = None,
+        detail: str = "high",
         data: str | None = None,
     ) -> AssistantMessage:
         """Request real function calls with bounded recent conversation; never accept model tool results.
 
         ``data`` (the host's current snapshot) is sent after the window instead of inside ``system``, so the
-        system prompt and the window stay the same prefix from one turn to the next.
+        system prompt and the window stay the same prefix from one turn to the next; ``detail`` is the image detail this layer needs.
         """
         body = {
             "messages": [{"role": "system", "content": system}, *context.messages()],
@@ -316,7 +329,7 @@ class Provider:
                 "The images after this text, in order: the user's reference images when the snapshot has user_intent, one-to-one and in order with user_intent.reference_images (each entry's source and meaning say whether it came with the original request, with the current instruction, or as the answer to a numbered clarification), then the candidate frames when the snapshot lists candidate_frames: observations, not new user requirements. Interpret only the requested Sprite appearance, not application chrome or scenery.",
                 images,
             ))
-        expand_image_paths(body["messages"])
+        expand_image_paths(body["messages"], detail)
         # Trim whole old exchanges only in this request, preserving the latest exchange and image mapping.
         groups = context.groups
         dropped = context.pinned

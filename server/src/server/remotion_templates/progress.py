@@ -40,6 +40,8 @@ PUBLIC_TOOLS = {
     "tools.plan_execute", "tools.report_step", "tools.inspect", "preset.create", "preset.modify",
     "preset.search", "sprite.compose", "sprite.create", "validate.code",
     "validate.render", "image.info", "image.resize", "image.crop",
+    "workspace.read", "workspace.write", "workspace.edit", "preview.render",
+    "validate.check", "effect.save", "library.search", "image.inspect",
 }
 CALL_TEXT_LIMIT = 2000
 ARGUMENTS_LIMIT = 4000

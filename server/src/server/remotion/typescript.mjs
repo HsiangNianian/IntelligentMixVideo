@@ -1,6 +1,10 @@
 /** Managed TypeScript language-service diagnostics; reads source and declarations without executing TSX. */
 import ts from "typescript";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** The `imv` content runtime source, resolved for the language service. */
+const RUNTIME = path.join(path.dirname(fileURLToPath(import.meta.url)), "imv-runtime.tsx");
 
 /** Typecheck candidate and the actual default-props call site against installed declarations. */
 export function languageDiagnostics(root) {
@@ -15,6 +19,8 @@ export function languageDiagnostics(root) {
     moduleResolution: ts.ModuleResolutionKind.Bundler,
     esModuleInterop: true,
     types: ["react", "react-dom"],
+    // Free-form effects import the host content runtime as "imv"; it is checked from its source next to this file.
+    paths: { imv: [RUNTIME] },
   };
   // Language service checks the same real source/default-props call sites used for rendering.
   const service = ts.createLanguageService({

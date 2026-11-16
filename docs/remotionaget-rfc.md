@@ -1,6 +1,6 @@
 # Remotion Agent 重构 RFC
 
-- 状态：Draft，已合入 2026-09-29 的工具分类和双层 ReAct 说明。
+- 状态：历史设计记录，已由 [统一组件工作区契约](remotion-agent-tool-contracts.md) 取代；下文保留早期讨论，不代表当前可调用工具。
 - 参考基线：首次调研的本地 main（`cc5d112`）及 [PR #74](https://github.com/HsiangNianian/IntelligentMixVideo/pull/74)（当时 head 为 `f4002db`）。接入时需重新核对实际合入版本。
 - 范围：本次仅更新重构文档；以下工具名、数据结构和计数细则是设计提案，尚未实现。
 

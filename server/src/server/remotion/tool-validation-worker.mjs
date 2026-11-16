@@ -53,7 +53,8 @@ function sourcePolicy(code) {
   function visit(node) {
     if (ts.isImportDeclaration(node)) {
       const module = node.moduleSpecifier.text;
-      if (!["react", "react/jsx-runtime", "react/jsx-dev-runtime", "remotion"].includes(module)) throw new PolicyError(`Import not permitted: ${module}`, node, source);
+      // `imv` is the host content runtime of free-form effects; the bundler inlines it like a local module.
+      if (!["react", "react/jsx-runtime", "react/jsx-dev-runtime", "remotion", "imv"].includes(module)) throw new PolicyError(`Import not permitted: ${module}`, node, source);
       const clause = node.importClause;
       if (!clause || (clause.name && module !== "react") || (clause.namedBindings && !ts.isNamedImports(clause.namedBindings) && !ts.isNamespaceImport(clause.namedBindings))) throw new PolicyError("Only React/Remotion imports are permitted.", node, source);
     }
@@ -348,6 +349,50 @@ async function transparencyCheck(page) {
  * to `request.capture.box` at `request.capture.scale`, as `frames/frame-<n>.png` for the Agent to compare with what was
  * asked. The checks before may leave other values or another render length mounted, so these are put back first.
  */
+/**
+ * What each line and keyword hit of a text effect is doing on the current frame, measured from the running code rather than
+ * seen in a picture: the centre and size of its text (transforms included), the opacity it is painted with (its own and its
+ * ancestors') and the share of its characters painted at all. Copies of a text count as one subject.
+ */
+function measureSubjects() {
+  const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
+  if (!layer) return [];
+  const opacityOf = (element) => {
+    let opacity = 1;
+    for (let item = element; item && layer.contains(item); item = item.parentElement) {
+      const style = getComputedStyle(item);
+      if (style.visibility === "hidden" || style.display === "none") return 0;
+      opacity *= Number(style.opacity);
+    }
+    return opacity;
+  };
+  const measure = (node, name) => {
+    const range = document.createRange();
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let [left, top, right, bottom, opacity, painted, total, text] = [Infinity, Infinity, -Infinity, -Infinity, 0, 0, 0, ""];
+    for (let item = walker.nextNode(); item; item = walker.nextNode()) {
+      const value = item.nodeValue.replace(/\s+/g, "");
+      if (!value) continue;
+      total += value.length;
+      text += value;
+      range.selectNodeContents(item);
+      const rect = range.getBoundingClientRect();
+      const own = opacityOf(item.parentElement);
+      if (!rect.width || !rect.height || own <= 0.01) continue;
+      painted += value.length;
+      opacity = Math.max(opacity, own);
+      [left, top, right, bottom] = [Math.min(left, rect.left), Math.min(top, rect.top), Math.max(right, rect.right), Math.max(bottom, rect.bottom)];
+    }
+    if (!total) return null;
+    const shown = painted > 0;
+    return { name, text: text.slice(0, 24), x: shown ? (left + right) / 2 : null, y: shown ? (top + bottom) / 2 : null, width: shown ? right - left : 0, opacity, revealed: painted / total };
+  };
+  return [
+    ...[...layer.querySelectorAll("[data-imv-tier]")].map((node) => measure(node, `line ${Number(node.getAttribute("data-imv-tier")) + 1}`)),
+    ...[...layer.querySelectorAll("[data-imv-keyword]")].map((node, index) => measure(node, `keyword ${index + 1}`)),
+  ].filter(Boolean);
+}
+
 async function captureFrames(page) {
   const { frames, box, scale } = request.capture;
   await fs.mkdir(`${root}/frames`, { recursive: true });
@@ -356,12 +401,17 @@ async function captureFrames(page) {
   const client = page._client();
   await client.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 128, g: 128, b: 128, a: 1 } });
   try {
-    for (const frame of frames) {
+    const measured = request.capture.trace ?? [];
+    const motion = {};
+    for (const frame of [...new Set([...frames, ...measured])].sort((a, b) => a - b)) {
       await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+      if (measured.includes(frame)) motion[frame] = await page.evaluate(measureSubjects);
+      if (!frames.includes(frame)) continue;
       const shot = await client.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: true, clip: { ...box, scale } });
       // The renderer's protocol client wraps the CDP result as `{ value: { data } }`.
       await fs.writeFile(`${root}/frames/frame-${frame}.png`, Buffer.from((shot.value ?? shot).data, "base64"));
     }
+    if (measured.length) await fs.writeFile(`${root}/frames/motion.json`, JSON.stringify(motion), "utf8");
   } finally {
     await client.send("Emulation.setDefaultBackgroundColorOverride", {});
   }
@@ -1095,6 +1145,155 @@ async function lineJumpProblem(page, lines, layout = {}) {
   }
 }
 
+/** Frames the wiring probe compares, in the order it tries them: the middle first, then towards both ends. */
+function wiringFrames(total) {
+  const last = total - 1;
+  return [...new Set([0.5, 0.1, 0.9, 0.03, 0.97, 0.25, 0.75].map((share) => Math.round(last * share)))];
+}
+
+/**
+ * Contract probes of a free-form effect (`Effect.tsx`, `request.effect_contract`), on the behaviour the bus, templates
+ * and composition rely on. For a text effect: text injected instead of the sample must be what it shows; a keyword hit
+ * must take the keyword options (colour, bold) with the keyword effect off; every default line must be shown in full on
+ * the middle frame (with historical cue wrappers off for layout), where the bus freezes subtitles shorter than 1.5 s;
+ * and lowering `fontSize` must shrink the text,
+ * which the host's fit relies on. Style parameter sampling (`wiring`, two extreme values) is advisory: identical ends
+ * cannot prove a control unused (for example, 0 and 360 degrees). Runtime errors still fail. Returns a failed check
+ * listing contract problems, or a passed check whose optional message is a sampling note for the user-review workflow.
+ */
+async function effectContractCheck(page) {
+  const spec = request.effect_contract;
+  const total = request.composition.duration_frames;
+  // Match sprite_render's short-subtitle hold, including even preview lengths (150 frames holds frame 75).
+  const middle = Math.floor(total / 2);
+  const problems = [];
+  const unobserved = [];
+  // Historical cue wrappers may remove an earlier line when a later one appears. Keep the old layout-only
+  // cue-off patch for content measurements; wiring below uses actual enabled effects and staggered starts.
+  const layout = { ...spec.layout, ...(spec.starts ? { lineStartFrames: spec.starts } : {}) };
+  const mount = async (patch, frame) => {
+    await page.evaluate((values) => window.__imvTool.setParameters(values), patch);
+    await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+    return page.evaluate(() => window.__imvRuntimeError ?? null);
+  };
+  const compact = (value) => String(value).replace(/\s+/g, "");
+  try {
+    if (spec.probe) {
+      const failure = await mount({ ...spec.probe, keywords: [], ...layout }, middle);
+      if (failure) problems.push(`The effect throws with other text: ${failure}`);
+      else {
+        const shown = compact(await page.evaluate(() => document.querySelector("[data-imv-host-layer]")?.firstElementChild?.textContent ?? ""));
+        const missing = spec.probe_lines.filter((line) => line && !shown.includes(compact(line)));
+        const fixed = spec.lines.filter((line) => line && !spec.probe_lines.some((probe) => compact(probe).includes(compact(line))) && shown.includes(compact(line)));
+        if (missing.length || fixed.length)
+          problems.push(`With the text set to ${JSON.stringify(spec.probe_lines)} the effect ${missing.length ? `does not show ${JSON.stringify(missing)}` : ""}${missing.length && fixed.length ? " and " : ""}${fixed.length ? `still shows the sample ${JSON.stringify(fixed)}` : ""}. `
+            + "Templates pass new text and keywords on every render: draw the lines useTextContent(props) returns (inside TextRoot), never the sample written into the code.");
+      }
+    }
+    if (spec.keyword) {
+      const failure = await mount({ ...spec.sample, keywords: [spec.keyword], keywordColor: "#13579B", keywordBold: true, ...("keywordEffect" in (request.parameter_schema?.properties ?? {}) ? { keywordEffect: false } : {}), ...layout }, middle);
+      const found = failure ? null : await page.evaluate((word) => {
+        const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
+        const compact = (value) => String(value).replace(/\s+/g, "");
+        for (const hit of layer?.querySelectorAll("[data-imv-keyword]") ?? []) {
+          if (!compact(hit.textContent).includes(compact(word))) continue;
+          const walker = document.createTreeWalker(hit, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (!compact(node.nodeValue)) continue;
+            const style = getComputedStyle(node.parentElement);
+            return { color: style.color, weight: Number(style.fontWeight) };
+          }
+        }
+        return { color: null, weight: 0 };
+      }, spec.keyword);
+      if (failure) problems.push(`The effect throws with keywords ["${spec.keyword}"]: ${failure}`);
+      else if (found.color === null)
+        problems.push(`With keywords ["${spec.keyword}"] no keyword hit is marked: draw each run whose keyword is true inside <KeywordRun> from "imv" (LineText does it), so templates can style and measure the hit.`);
+      else if (found.color !== "rgb(19, 87, 155)" || found.weight < 700)
+        problems.push(`With keywords ["${spec.keyword}"], keywordColor #13579B and keywordBold on (keywordEffect off), the hit is drawn in ${found.color} at weight ${found.weight}. `
+          + "Templates style keyword hits with the six keyword options: keep them on the text inside <KeywordRun> and draw the effect's own keyword look only while content.keywordEffect is on.");
+    }
+    if (spec.lines?.length) {
+      const failure = await mount({ ...spec.sample, keywords: [], ...layout }, middle);
+      if (failure) problems.push(`The effect throws on its middle frame ${middle}: ${failure}`);
+      else for (const [index, line] of spec.lines.entries()) {
+        if (!line) continue;
+        const verdict = await textFitProblems(page, line, UNPLACED);
+        if (!verdict || verdict.problems.length) {
+          problems.push(`On the middle frame ${middle} of the ${total}-frame preview line ${index + 1} "${line}" is not shown in full${verdict ? `: ${verdict.problems.join("; ")}` : ""}. `
+            + (Object.keys(spec.layout ?? {}).length
+              ? "The preserved cue switches are off for this layout measurement; keep the original text readable before a later line triggers its cue."
+              : "The bus freezes subtitles shorter than 1.5 s on this frame, so every line must be fully visible there: finish entrances before the middle and start exits after it."));
+          break;
+        }
+      }
+      if (!failure && spec.font_size && spec.font_size.min < spec.font_size.max) {
+        const area = async (size) => {
+          await mount({ ...spec.sample, keywords: [], fontSize: size, ...layout }, middle);
+          const verdict = await textFitProblems(page, spec.lines.find(Boolean), UNPLACED);
+          return verdict?.extent ? (verdict.extent.right - verdict.extent.left) * (verdict.extent.bottom - verdict.extent.top) : null;
+        };
+        const [large, small] = [await area(spec.font_size.max), await area(spec.font_size.min)];
+        if (large !== null && small !== null && small > large * 0.9)
+          problems.push(`Lowering fontSize from ${spec.font_size.max} to ${spec.font_size.min} does not make the text smaller. The host lowers fontSize to fit long text: `
+            + "draw every line at the font size TextRoot gives it (line.fontSize), without fixed font sizes, scale factors derived from the text length or fixed-size boxes.");
+      }
+    }
+    if (spec.wiring?.length) {
+      const client = page._client();
+      // Preserve alpha: white text disappearing must differ from white text, even on Chrome's white page.
+      await client.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
+      const shot = async () => {
+        const image = await client.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: true, clip: { x: 0, y: 0, width: request.composition.width, height: request.composition.height, scale: 0.25 } });
+        return (image.value ?? image).data;
+      };
+      const switches = spec.wiring.filter((item) => item.values.every((value) => typeof value === "boolean"));
+      /** Compare only this parameter's endpoints under one fixed set of other controls; runtime errors are failures. */
+      const changesWith = async (item, controls) => {
+        for (const frame of wiringFrames(total)) {
+          const shots = [];
+          for (const value of item.values) {
+            const failure = await mount({ ...spec.base, ...controls, [item.name]: value }, frame);
+            if (failure) return { error: `The effect throws while checking ${item.name} at frame ${frame}: ${failure}` };
+            shots.push(await shot());
+          }
+          if (shots[0] !== shots[1]) return { changed: true };
+        }
+        return { changed: false };
+      };
+      for (const item of spec.wiring) {
+        // Defaults can hide a working parameter behind an off switch. Try each other boolean flipped, then all on/off
+        // for nested switches, without an exponential search. Both endpoints always use the same other controls.
+        const others = switches.filter((control) => control.name !== item.name);
+        const contexts = [{}, ...others.map(({ name }) => ({ [name]: !spec.base[name] })),
+          ...[true, false].map((enabled) => Object.fromEntries(others.map(({ name }) => [name, enabled])))];
+        const seen = new Set();
+        let result = { changed: false };
+        for (const controls of contexts) {
+          const key = JSON.stringify({ ...spec.base, ...controls });
+          if (seen.has(key)) continue;
+          seen.add(key);
+          result = await changesWith(item, controls);
+          if (result.changed || result.error) break;
+        }
+        if (result.error) { problems.push(result.error); break; }
+        if (!result.changed) unobserved.push(`${item.name} (${item.values.map((value) => JSON.stringify(value)).join(" and ")})`);
+        await mount(spec.base, 0);
+      }
+    }
+  } finally {
+    if (spec.wiring?.length) await page._client().send("Emulation.setDefaultBackgroundColorOverride", {});
+    await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
+    await page.evaluate(() => window.__imvTool.setFrame(0));
+  }
+  return problems.length
+    ? { name: "effect_contract", status: "failed", message: problems.join("\n").slice(0, 6000) }
+    : { name: "effect_contract", status: "passed", ...(unobserved.length ? { message: (
+      `Parameter sampling found no visible difference between the endpoints of: ${unobserved.join(", ")}. `
+      + "This is advisory: identical endpoints or limited samples do not prove a control unused. The effect can be saved for user review; do not remove controls or retry solely because of this note."
+    ).slice(0, 6000) } : {}) };
+}
+
 /** The smallest `keywordSize` a placement may set (0 follows the text size, which is not scaled). */
 const KEYWORD_SIZE_MIN = 12;
 
@@ -1459,6 +1658,7 @@ async function main() {
     if (baseReady && request.transparency === true) checks.push(await transparencyCheck(page));
     if (baseReady && Array.isArray(request.lengths)) checks.push(await lengthsCheck(page));
     if (baseReady && request.text_fit === true) checks.push(await textFitCheck(page));
+    if (baseReady && request.effect_contract) checks.push(await effectContractCheck(page));
     if (baseReady && request.capture && checks.every((item) => item.status === "passed" || item.status === "pass")) await captureFrames(page);
     if (!baseReady) {
       result.tests = (request.tests ?? []).map((test) => ({ name: test.name, status: "not_run", message: "Base render failed.", assertions: [] }));

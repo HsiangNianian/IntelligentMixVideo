@@ -1,72 +1,42 @@
-"""按公开文档构造真实调用方，验证工具目录、输入输出 Schema 及检查回执兼容。"""
+"""公开工具文档与注册目录、检查回执、调用示例和转换清单的一致性；pytest tests/test_remotion_documented_contracts.py。"""
 
 import asyncio
 import json
 import re
-import sys
 from pathlib import Path
-from types import ModuleType
-from typing import get_type_hints
 
 import pytest
-from pydantic import BaseModel, TypeAdapter
 
 from server.remotion_templates.tools.catalog import PLAN_TOOL, REPORT_TOOL
+from server.remotion_templates.tools.contracts import EffectManifest, ToolDescriptor
 from server.remotion_templates.tools.registry import get_tool, registered_tools
 
-
-@pytest.fixture
-def published_contract(monkeypatch):
-    """加载仓库文档的声明代码，不调用其中占位函数或任何业务实现。"""
-    document = Path(__file__).parents[2] / "docs/remotion-agent-tool-contracts.md"
-    blocks = re.findall(r"^```python\n(.*?)^```", document.read_text(), re.MULTILINE | re.DOTALL)
-    module = ModuleType("imv_published_contract")
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    exec(compile("\n\n".join(blocks), str(document), "exec"), module.__dict__)
-    for value in tuple(vars(module).values()):
-        if isinstance(value, type) and issubclass(value, BaseModel) and value.__module__ == module.__name__:
-            value.model_rebuild(_types_namespace=vars(module))
-    return module
+DOCUMENT = Path(__file__).parents[2] / "docs/remotion-agent-tool-contracts.md"
 
 
-def validation_schema(value):
-    """只忽略 Schema 的展示文案，保留字段、枚举、默认值和校验约束。"""
-    if isinstance(value, dict):
-        return {key: validation_schema(item) for key, item in value.items()
-                if not (key in {"description", "title"} and isinstance(item, str))}
-    if isinstance(value, list):
-        return [validation_schema(item) for item in value]
-    return value
-
-
-@pytest.mark.parametrize("tool", registered_tools(), ids=lambda tool: tool.name)
-def test_documented_input_and_output_match_registered_contract(published_contract, tool):
-    """文档调用方和运行时对相同工具使用同一组字段、返回类型及严格约束。"""
-    declared = get_type_hints(getattr(published_contract, tool.name.replace(".", "_")))
-    assert validation_schema(declared["request"].model_json_schema()) == validation_schema(tool.describe()["input_schema"])
-    assert validation_schema(TypeAdapter(declared["return"]).json_schema()) == validation_schema(tool.describe()["output_schema"])
+def test_documented_catalog_matches_callable_tools():
+    """文档表格只列实际可调用业务工具，已删除路径不能继续作为可用 API 发布。"""
+    names = re.findall(r"^\| `([a-z.]+)` \|", DOCUMENT.read_text(), re.MULTILINE)
+    assert set(names) == {tool.name for tool in registered_tools()}
+    assert len(names) == len(registered_tools())
 
 
 @pytest.mark.parametrize("tool", [*registered_tools(), PLAN_TOOL, REPORT_TOOL], ids=lambda tool: tool.name)
-def test_published_descriptor_accepts_actual_inspection(published_contract, tool):
-    """所有公开名称（含宿主计划控制）返回的真实回执都能被文档消费者解析。"""
+def test_descriptor_accepts_actual_inspection(tool):
+    """注册业务工具与宿主控制的真实检查回执均符合公开严格类型及各自的实际输入输出 Schema。"""
     response = asyncio.run(get_tool("tools.inspect").invoke(None, {"tool_name": tool.name}))
     assert response["ok"] is True
-    descriptor = published_contract.ToolDescriptor.model_validate(response["data"])
+    descriptor = ToolDescriptor.model_validate(response["data"])
     assert descriptor.tool_name == tool.name
-    assert descriptor.contract_version == {"preset.search": 3, "sprite.compose": 10, "sprite.create": 2}.get(tool.name, 1)
+    assert descriptor.contract_version == 1
+    assert descriptor.input_schema == tool.input.model_json_schema()
 
 
-def test_documented_search_examples_follow_the_published_version(published_contract):
-    """文档中的列表和 ID 读取 JSON 示例必须通过真实工具输入输出校验。"""
-    document = Path(__file__).parents[2] / "docs/remotion-agent-tool-contracts.md"
-    section = document.read_text().split("### 6.1 search", 1)[1].split("### 6.2 create", 1)[0]
-    examples = [json.loads(block) for block in re.findall(r"^```json\n(.*?)^```", section, re.MULTILINE | re.DOTALL)]
-    tool = get_tool("preset.search")
-    assert len(examples) == 4
-    for example in examples:
-        if "ok" in example:
-            result = tool.output.validate_python(example)
-            assert result.data.presets
-        else:
-            tool.input.model_validate(example)
+def test_documented_examples_validate_against_the_public_contract():
+    """示例中的历史转换清单及全部新工具调用可由真实类型读取，无需模型或渲染器。"""
+    blocks = [json.loads(block) for block in re.findall(r"^```json\n(.*?)^```", DOCUMENT.read_text(), re.MULTILINE | re.DOTALL)]
+    manifest, calls = blocks
+    assert EffectManifest.model_validate(manifest).contract is not None
+    assert {item["tool"] for item in calls} == {tool.name for tool in registered_tools()}
+    for call in calls:
+        get_tool(call["tool"]).input.model_validate(call["arguments"])

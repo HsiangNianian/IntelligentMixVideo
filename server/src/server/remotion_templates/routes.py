@@ -325,7 +325,8 @@ async def cancel(job_id: UUID, service: Service, owner: Device) -> PublicJob:
 async def retry(job_id: UUID, service: Service, owner: Device, config: Config) -> PublicJob:
     """为失败、已取消或中断的任务创建一次新的执行，返回新的任务 ID。
 
-    保留原任务记录及产物，不从中断位置续跑；不符合重试条件时返回 409。
+    保留已完成的代码修改、当前步骤与最近工具回执，从最后恢复点继续；保存和发布前重新验证，
+    不复用旧渲染文件。没有恢复点的旧任务按原需求开始；不符合重试条件时返回 409。
     更早版本的参数修订任务重试需要渲染校验环境，缺失时返回 503；组合版本的参数修订与对话类任务仍可重试，环境问题在校验工具调用时报告。
     """
     if service.store.inputs(job_id).mode == "parameters" and await asyncio.to_thread(

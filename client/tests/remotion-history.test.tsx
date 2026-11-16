@@ -23,6 +23,23 @@ import { remotionServer, seed } from "./remotion-server";
 import { fetchMock } from "./setup";
 
 // 侧栏选择会话恢复各自消息与版本，新增只清空当前视图，历史会话和任务时间保留。
+// 场景：成功结果后 Agent 给出的可选方向只在最新一条回复下显示为选项，点选即作为下一条指令发送（不带图片）；任务锁定时选项不可点。
+test("最新回复里的建议方向可以直接点选发送", () => {
+  const sent: string[] = [];
+  const messages: ChatMessage[] = [
+    { id: "a1", sequence: 1, role: "assistant", text: "旧回复", suggestions: ["旧建议"] },
+    { id: "u1", sequence: 2, role: "user", text: "再改一下" },
+    { id: "a2", sequence: 3, role: "assistant", text: "金色标题已完成", suggestions: ["改成从左滑入", "关键词加发光"] },
+  ];
+  const props = { busy: false, canStop: false, first: false, onSend: (text: string) => sent.push(text), onStop: () => {} };
+  const view = render(<ChatPanel {...props} disabled={false} messages={messages} />);
+  expect(screen.queryByRole("button", { name: "旧建议" })).toBeNull();
+  fireEvent.click(within(screen.getByLabelText("可选的修改方向")).getByRole("button", { name: "关键词加发光" }));
+  expect(sent).toEqual(["关键词加发光"]);
+  view.rerender(<ChatPanel {...props} disabled messages={messages} />);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "改成从左滑入" }).disabled).toBe(true);
+});
+
 test("历史侧栏切换、任务耗时和新增独立视图", async () => {
   const fake = remotionServer();
   await seed("春日标题");

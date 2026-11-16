@@ -1,0 +1,500 @@
+{
+  "code": "// Sprite.tsx\nimport React from \"react\";\nimport { AbsoluteFill, Freeze, Sequence, useCurrentFrame, useVideoConfig } from \"remotion\";\n// imv-preset:imv:preset/0\nimport { jsx } from \"react/jsx-runtime\";\nfunction Text(props: any): any {\n    return /* @__PURE__ */ jsx(\"div\", { style: { width: \"100%\", fontFamily: props.fontFamily, fontWeight: props.fontWeight, fontSize: props.fontSize, color: props.color, textAlign: \"center\", whiteSpace: \"normal\", wordBreak: \"break-all\" }, children: props.children });\n}\n// Sprite.tsx\nimport { jsx as jsx2, jsxs } from \"react/jsx-runtime\";\nvar __defaults: any = { \"fontSize\": 84, \"keywordBold\": false, \"keywordColor\": \"\", \"keywordItalic\": false, \"keywordSize\": 0, \"keywordStrikeout\": false, \"keywordUnderline\": false, \"keywords\": [], \"line1\": {}, \"line1Color\": \"#FFFFFF\", \"line1FontFamily\": \"Noto Sans SC\", \"line1FontWeight\": 700, \"line1SizeRatio\": 1, \"line2\": {}, \"line2Color\": \"#FFCC00\", \"line2FontFamily\": \"Noto Sans SC\", \"line2FontWeight\": 400, \"line2SizeRatio\": 0.7, \"lineGap\": 24, \"lineStartFrames\": [0, 0], \"text\": \"\\u6D4B\\u8BD5\\u6587\\u5B57\\n\\u4FDD\\u7559\\u6837\\u5F0F\", \"tierLayout\": \"stack\" };\nvar __merge: any = (base: any, patch: any): any => {\n    if (patch === void 0 || patch === null || typeof patch !== \"object\" || Array.isArray(patch))\n        return patch === void 0 ? base : patch;\n    const result: any = { ...base };\n    for (const [key, value] of Object.entries(patch))\n        result[key] = value && typeof value === \"object\" && !Array.isArray(value) && result[key] && typeof result[key] === \"object\" && !Array.isArray(result[key]) ? __merge(result[key], value) : value;\n    return result;\n};\nvar __hits: any = (text: any, keywords: any): any => {\n    const hits: any = [];\n    for (const word of Array.isArray(keywords) ? keywords : []) {\n        if (typeof word !== \"string\" || !word)\n            continue;\n        for (let at: any = text.indexOf(word); at >= 0; at = text.indexOf(word, at + 1)) {\n            if (!hits.some(([start, end]: any): any => at < end && at + word.length > start)) {\n                hits.push([at, at + word.length]);\n                break;\n            }\n        }\n    }\n    return hits.sort((left: any, right: any): any => left[0] - right[0]);\n};\nvar __segments: any = (line: any, hits: any): any => {\n    const out: any = [];\n    let at: any = 0;\n    for (const [start, end] of hits) {\n        const from: any = Math.max(start, at), to: any = Math.min(end, line.length);\n        if (to <= from)\n            continue;\n        if (from > at)\n            out.push({ text: line.slice(at, from), keyword: false });\n        out.push({ text: line.slice(from, to), keyword: true });\n        at = to;\n    }\n    if (at < line.length)\n        out.push({ text: line.slice(at), keyword: false });\n    return out;\n};\nvar __Context: any = React.createContext({ props: {}, effect: {}, cue: null });\nvar __Origin: any = React.createContext(0);\nvar __effects: any = [];\nfunction __BlockBox({ style, children }: any): any {\n    return /* @__PURE__ */ jsx2(\"div\", { style: { ...style, width: \"100%\" }, children });\n}\nfunction __InlineBox({ style, children }: any): any {\n    return /* @__PURE__ */ jsx2(\"span\", { style: { ...style, display: \"inline-block\" }, children });\n}\nvar __clamp: any = (value: any): any => Math.min(1, Math.max(0, value));\nvar __Live: any = React.createContext(null);\nfunction __Hold({ children }: any): any {\n    const frame: any = useCurrentFrame();\n    const { durationInFrames }: any = useVideoConfig();\n    const origin: any = React.useContext(__Origin);\n    return /* @__PURE__ */ jsx2(__Live.Provider, { value: frame, children: /* @__PURE__ */ jsx2(Freeze, { frame: Math.max(0, Math.floor((durationInFrames - 1 - origin) / 2)), children }) });\n}\nfunction __Effects({ at, inline, index = 0, count = 1, units, children }: any): any {\n    const { props, cue }: any = React.useContext(__Context);\n    const origin: any = React.useContext(__Origin);\n    const frame: any = useCurrentFrame();\n    const { fps, durationInFrames }: any = useVideoConfig();\n    let node: any = children;\n    for (const item of __effects) {\n        const target: any = props[\"effect\" + item.k + \"Target\"];\n        if (props[\"effect\" + item.k] === false || !at.includes(target))\n            continue;\n        const span: any = durationInFrames - 1 - origin;\n        const half: any = Math.floor(span / 2);\n        const length: any = Math.max(1, Math.min(Math.round((Number(props[\"effect\" + item.k + \"Seconds\"]) || 0.5) * fps), half));\n        const delay: any = item.slot === \"enter\" || item.slot === \"cue\" ? Math.min(Math.round((Number(props[\"effect\" + item.k + \"Delay\"]) || 0) * fps), Math.max(0, half - length)) : 0;\n        const shown: any = item.slot === \"enter\" ? __clamp((frame - delay) / length) : item.slot === \"exit\" ? __clamp((span - frame) / length) : item.slot === \"cue\" ? cue === null ? 0 : __clamp((frame - (cue - origin) - delay) / length) : 1;\n        const [i, n]: any = units?.[target] ?? [index, count];\n        const stagger: any = Number.isFinite(props[\"effect\" + item.k + \"Stagger\"]) ? __clamp(props[\"effect\" + item.k + \"Stagger\"]) : 1;\n        const progress: any = item.slot !== \"loop\" && units?.[target] ? __clamp((shown - stagger * i / n) / (1 - stagger + stagger / n)) : shown;\n        const completedCount: any = item.slot !== \"loop\" && units?.[target] && stagger > 0 ? Math.min(n, Math.floor(__clamp((shown - 1 + stagger) / stagger) * n + 1e-7)) : shown >= 1 ? n : 0;\n        node = /* @__PURE__ */ jsx2(item.Preset, { ...item.props(props), progress, index: i, count: n, completedCount, Box: inline ? __InlineBox : __BlockBox, children: node });\n    }\n    return node;\n}\nvar __glyphsOn: any = (props: any): any => __effects.some((item: any): any => props[\"effect\" + item.k] !== false && [\"chars\", \"keywordChars\", \"plainChars\"].includes(props[\"effect\" + item.k + \"Target\"]));\nvar __split: any = (text: any): any => typeof Intl.Segmenter === \"function\" ? Array.from(new Intl.Segmenter(void 0, { granularity: \"grapheme\" }).segment(text), (part: any): any => part.segment) : Array.from(text);\nfunction __Unit({ units, children }: any): any {\n    const live: any = React.useContext(__Live);\n    const inner: any = jsx2(__Effects, { at: Object.keys(units), inline: true, units, children });\n    return live === null ? inner : /* @__PURE__ */ jsx2(Freeze, { frame: live, children: inner });\n}\nvar __keywordGlyphs: any = true;\nfunction __line(segments: any, glyphs: any): any {\n    if (!glyphs)\n        return segments.map((segment: any, at: any): any => segment.keyword ? /* @__PURE__ */ jsx2(__Keyword, { text: segment.text }, at) : segment.text);\n    const parts: any = segments.map((segment: any): any => ({ ...segment, glyphs: segment.keyword && !__keywordGlyphs ? [segment.text] : __split(segment.text) }));\n    const shown: any = (text: any): any => text.trim() !== \"\";\n    const total: any = (keyword: any): any => parts.filter((part: any): any => keyword === void 0 || part.keyword === keyword).reduce((sum: any, part: any): any => sum + part.glyphs.filter(shown).length, 0);\n    const all: any = total(), keywords: any = __keywordGlyphs ? total(true) : 0, plain: any = total(false);\n    let i: any = 0, j: any = 0, k: any = 0;\n    const glyph: any = (text: any, at: any, keyword: any): any => shown(text) ? /* @__PURE__ */ jsx2(__Unit, { units: { chars: [i++, all], ...keyword ? { keywordChars: [j++, keywords] } : { plainChars: [k++, plain] } }, children: /* @__PURE__ */ jsx2(\"span\", { \"data-imv-glyph\": \"\", children: text }) }, at) : text;\n    return parts.map((part: any, at: any): any => !part.keyword ? part.glyphs.map((text: any, index: any): any => glyph(text, at + \":\" + index, false)) : __keywordGlyphs ? /* @__PURE__ */ jsx2(__Keyword, { text: part.text, glyphs: part.glyphs.map((text: any, index: any): any => glyph(text, index, true)) }, at) : /* @__PURE__ */ jsx2(__Unit, { units: { chars: [i++, all] }, children: /* @__PURE__ */ jsx2(__Keyword, { text: part.text }) }, at));\n}\nfunction __Keyword({ text, glyphs }: any): any {\n    const { props, effect }: any = React.useContext(__Context);\n    const style: any = { fontWeight: props.keywordBold ? 700 : void 0, fontStyle: props.keywordItalic ? \"italic\" : void 0, textDecorationLine: [props.keywordUnderline && \"underline\", props.keywordStrikeout && \"line-through\"].filter(Boolean).join(\" \") || void 0, color: props.keywordColor || void 0, fontSize: props.keywordSize > 0 ? props.keywordSize : void 0 };\n    const content: any = glyphs ?? text;\n    const live: any = React.useContext(__Live);\n    const inner: any = jsx2(__Effects, { at: [\"keyword\"], inline: true, children: content });\n    return /* @__PURE__ */ jsx2(\"span\", { \"data-imv-keyword\": \"\", style, children: live === null ? inner : /* @__PURE__ */ jsx2(Freeze, { frame: live, children: inner }) });\n}\nfunction Sprite(inputProps: any = {}): any {\n    const props: any = __merge(__defaults, inputProps);\n    const __frame: any = useCurrentFrame();\n    const { durationInFrames: __total }: any = useVideoConfig();\n    const __glyphs: any = __glyphsOn(props);\n    const __text: any = typeof props.text === \"string\" ? props.text : \"\";\n    const __english: any = typeof props.textEn === \"string\" ? props.textEn : \"\";\n    const __lines: any = __text.split(\"\\n\").slice(0, 2);\n    const __found: any = __lines.map((line: any): any => __hits(line, props.keywords));\n    const __overlap: any = __lines.length > 1 && props.tierLayout === \"overlap\";\n    const __cue: any = __lines[1] ? Array.isArray(props.lineStartFrames) && Number.isFinite(props.lineStartFrames[1]) ? props.lineStartFrames[1] : 0 : null;\n    return /* @__PURE__ */ jsx2(__Context.Provider, { value: { props, effect: {}, cue: __cue }, children: /* @__PURE__ */ jsx2(AbsoluteFill, { children: /* @__PURE__ */ jsx2(\"div\", { \"data-imv-instance\": \"text\", style: { position: \"absolute\", left: 54, top: 700, width: 972, height: 1e3, display: \"flex\", flexDirection: \"column\", alignItems: \"center\", justifyContent: \"center\" }, children: /* @__PURE__ */ jsx2(__Effects, { at: [\"block\"], children: /* @__PURE__ */ jsxs(\"div\", { style: __overlap ? { width: \"100%\", display: \"grid\", alignItems: \"center\", justifyItems: \"center\" } : { width: \"100%\", display: \"flex\", flexDirection: \"column\", alignItems: \"center\" }, children: [\n                            ((): any => {\n                                const __lineText: any = __lines[0];\n                                if (!__lineText)\n                                    return null;\n                                const __start: any = Array.isArray(props.lineStartFrames) && Number.isFinite(props.lineStartFrames[0]) ? props.lineStartFrames[0] : 0;\n                                const __waiting: any = __frame < __start;\n                                return /* @__PURE__ */ jsx2(\"div\", { \"data-imv-tier\": 0, style: { width: \"100%\", gridArea: __overlap ? \"1 / 1\" : void 0, marginTop: 0, fontSize: props.fontSize * props.line1SizeRatio, opacity: __waiting ? 0 : 1 }, children: /* @__PURE__ */ jsx2(Freeze, { frame: __start, active: __waiting, children: /* @__PURE__ */ jsx2(Sequence, { from: __start, durationInFrames: Math.max(1, __total - __start), layout: \"none\", children: /* @__PURE__ */ jsx2(__Origin.Provider, { value: __start, children: /* @__PURE__ */ jsx2(__Effects, { at: [\"tiers\", \"line1\"], index: 0, count: 2, children: /* @__PURE__ */ jsx2(__Hold, { children: /* @__PURE__ */ jsx2(Text, { ...props[\"line1\"], ...{ \"color\": props[\"line1Color\"] }, ...{ text: __lineText, segments: __segments(__lineText, __found[0]), Keyword: __Keyword, fontFamily: props.line1FontFamily, fontWeight: props.line1FontWeight, fontSize: props.fontSize * props.line1SizeRatio }, children: __line(__segments(__lineText, __found[0]), __glyphs) }) }) }) }) }) }) }, \"line1\");\n                            })(),\n                            ((): any => {\n                                const __lineText: any = __lines[1];\n                                if (!__lineText)\n                                    return null;\n                                const __start: any = Array.isArray(props.lineStartFrames) && Number.isFinite(props.lineStartFrames[1]) ? props.lineStartFrames[1] : 0;\n                                const __waiting: any = __frame < __start;\n                                return /* @__PURE__ */ jsx2(\"div\", { \"data-imv-tier\": 1, style: { width: \"100%\", gridArea: __overlap ? \"1 / 1\" : void 0, marginTop: __overlap ? 0 : props.lineGap, fontSize: props.fontSize * props.line2SizeRatio, opacity: __waiting ? 0 : 1 }, children: /* @__PURE__ */ jsx2(Freeze, { frame: __start, active: __waiting, children: /* @__PURE__ */ jsx2(Sequence, { from: __start, durationInFrames: Math.max(1, __total - __start), layout: \"none\", children: /* @__PURE__ */ jsx2(__Origin.Provider, { value: __start, children: /* @__PURE__ */ jsx2(__Effects, { at: [\"tiers\", \"line2\"], index: 1, count: 2, children: /* @__PURE__ */ jsx2(__Hold, { children: /* @__PURE__ */ jsx2(Text, { ...props[\"line2\"], ...{ \"color\": props[\"line2Color\"] }, ...{ text: __lineText, segments: __segments(__lineText, __found[1]), Keyword: __Keyword, fontFamily: props.line2FontFamily, fontWeight: props.line2FontWeight, fontSize: props.fontSize * props.line2SizeRatio }, children: __line(__segments(__lineText, __found[1]), __glyphs) }) }) }) }) }) }) }, \"line2\");\n                            })()\n                        ] }) }) }) }) });\n}\nexport default Sprite;\n",
+  "parameter_schema": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100,
+        "title": "文字"
+      },
+      "fontSize": {
+        "type": "number",
+        "minimum": 24,
+        "maximum": 240,
+        "title": "字号"
+      },
+      "line1FontFamily": {
+        "type": "string",
+        "enum": [
+          "Noto Sans SC"
+        ],
+        "title": "上栏字体"
+      },
+      "line1FontWeight": {
+        "type": "integer",
+        "enum": [
+          400,
+          700
+        ],
+        "title": "上栏字重"
+      },
+      "line1SizeRatio": {
+        "type": "number",
+        "minimum": 0.4,
+        "maximum": 2,
+        "title": "上栏字号比例"
+      },
+      "line2FontFamily": {
+        "type": "string",
+        "enum": [
+          "Noto Sans SC"
+        ],
+        "title": "下栏字体"
+      },
+      "line2FontWeight": {
+        "type": "integer",
+        "enum": [
+          400,
+          700
+        ],
+        "title": "下栏字重"
+      },
+      "line2SizeRatio": {
+        "type": "number",
+        "minimum": 0.4,
+        "maximum": 2,
+        "title": "下栏字号比例"
+      },
+      "tierLayout": {
+        "type": "string",
+        "enum": [
+          "stack",
+          "overlap"
+        ],
+        "title": "双栏排布"
+      },
+      "lineGap": {
+        "type": "number",
+        "minimum": -600,
+        "maximum": 300,
+        "title": "栏间距"
+      },
+      "lineStartFrames": {
+        "type": "array",
+        "items": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600
+        },
+        "minItems": 2,
+        "maxItems": 2,
+        "title": "各栏出现帧"
+      },
+      "keywords": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "maxItems": 20,
+        "title": "关键词"
+      },
+      "keywordBold": {
+        "type": "boolean",
+        "title": "关键词加粗"
+      },
+      "keywordItalic": {
+        "type": "boolean",
+        "title": "关键词斜体"
+      },
+      "keywordUnderline": {
+        "type": "boolean",
+        "title": "关键词下划线"
+      },
+      "keywordStrikeout": {
+        "type": "boolean",
+        "title": "关键词删除线"
+      },
+      "keywordColor": {
+        "type": "string",
+        "pattern": "^(?:|#[0-9A-Fa-f]{6})$",
+        "title": "关键词颜色"
+      },
+      "keywordSize": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 300,
+        "title": "关键词字号"
+      },
+      "line1Color": {
+        "type": "string",
+        "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
+        "title": "文字颜色"
+      },
+      "line2Color": {
+        "type": "string",
+        "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
+        "title": "文字颜色"
+      },
+      "line1": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "line2": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    "$defs": {},
+    "additionalProperties": false,
+    "required": [
+      "text",
+      "fontSize",
+      "line1FontFamily",
+      "line1FontWeight",
+      "line1SizeRatio",
+      "line2FontFamily",
+      "line2FontWeight",
+      "line2SizeRatio",
+      "tierLayout",
+      "lineGap",
+      "lineStartFrames",
+      "keywords",
+      "keywordBold",
+      "keywordItalic",
+      "keywordUnderline",
+      "keywordStrikeout",
+      "keywordColor",
+      "keywordSize",
+      "line1Color",
+      "line2Color"
+    ]
+  },
+  "default_parameters": {
+    "text": "测试文字\n保留样式",
+    "fontSize": 84,
+    "line1FontFamily": "Noto Sans SC",
+    "line1FontWeight": 700,
+    "line1SizeRatio": 1.0,
+    "line2FontFamily": "Noto Sans SC",
+    "line2FontWeight": 400,
+    "line2SizeRatio": 0.7,
+    "tierLayout": "stack",
+    "lineGap": 24,
+    "lineStartFrames": [
+      0,
+      0
+    ],
+    "keywords": [],
+    "keywordBold": false,
+    "keywordItalic": false,
+    "keywordUnderline": false,
+    "keywordStrikeout": false,
+    "keywordColor": "",
+    "keywordSize": 0,
+    "line1Color": "#FFFFFF",
+    "line2Color": "#FFCC00",
+    "line1": {},
+    "line2": {}
+  },
+  "description": "历史文字兼容测试",
+  "composition": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "duration_frames": 90
+  },
+  "instances": [
+    {
+      "instance_id": "line1",
+      "preset": {
+        "code": "import React from \"react\";\nexport default function Text(props: {children: React.ReactNode; fontFamily: string; fontWeight: number; fontSize: number; color: string}) {\n  return <div style={{width: \"100%\", fontFamily: props.fontFamily, fontWeight: props.fontWeight, fontSize: props.fontSize, color: props.color, textAlign: \"center\", whiteSpace: \"normal\", wordBreak: \"break-all\"}}>{props.children}</div>;\n}",
+        "parameter_schema": {
+          "type": "object",
+          "properties": {
+            "color": {
+              "type": "string",
+              "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"
+            }
+          },
+          "required": [
+            "color"
+          ],
+          "additionalProperties": false
+        },
+        "default_parameters": {
+          "color": "#FFFFFF"
+        },
+        "description": "合成测试文字",
+        "role": "text"
+      },
+      "parameters": {
+        "color": "#FFFFFF"
+      },
+      "layout": {
+        "x": 54.0,
+        "y": 700.0,
+        "width": 972,
+        "height": 1000,
+        "z_index": 0
+      },
+      "timing": {
+        "start_frame": 0,
+        "duration_frames": 90
+      }
+    },
+    {
+      "instance_id": "line2",
+      "preset": {
+        "code": "import React from \"react\";\nexport default function Text(props: {children: React.ReactNode; fontFamily: string; fontWeight: number; fontSize: number; color: string}) {\n  return <div style={{width: \"100%\", fontFamily: props.fontFamily, fontWeight: props.fontWeight, fontSize: props.fontSize, color: props.color, textAlign: \"center\", whiteSpace: \"normal\", wordBreak: \"break-all\"}}>{props.children}</div>;\n}",
+        "parameter_schema": {
+          "type": "object",
+          "properties": {
+            "color": {
+              "type": "string",
+              "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"
+            }
+          },
+          "required": [
+            "color"
+          ],
+          "additionalProperties": false
+        },
+        "default_parameters": {
+          "color": "#FFCC00"
+        },
+        "description": "合成测试文字",
+        "role": "text"
+      },
+      "parameters": {
+        "color": "#FFCC00"
+      },
+      "layout": {
+        "x": 54.0,
+        "y": 700.0,
+        "width": 972,
+        "height": 1000,
+        "z_index": 1
+      },
+      "timing": {
+        "start_frame": 0,
+        "duration_frames": 90
+      }
+    }
+  ],
+  "kind": "text",
+  "bindings": [
+    {
+      "name": "text",
+      "title": "文字",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "text"
+        }
+      ]
+    },
+    {
+      "name": "fontSize",
+      "title": "字号",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "fontSize"
+        }
+      ]
+    },
+    {
+      "name": "line1FontFamily",
+      "title": "上栏字体",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "line1FontFamily"
+        }
+      ]
+    },
+    {
+      "name": "line1FontWeight",
+      "title": "上栏字重",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "line1FontWeight"
+        }
+      ]
+    },
+    {
+      "name": "line1SizeRatio",
+      "title": "上栏字号比例",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "line1SizeRatio"
+        }
+      ]
+    },
+    {
+      "name": "line2FontFamily",
+      "title": "下栏字体",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "line2FontFamily"
+        }
+      ]
+    },
+    {
+      "name": "line2FontWeight",
+      "title": "下栏字重",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "line2FontWeight"
+        }
+      ]
+    },
+    {
+      "name": "line2SizeRatio",
+      "title": "下栏字号比例",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "line2SizeRatio"
+        }
+      ]
+    },
+    {
+      "name": "tierLayout",
+      "title": "双栏排布",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "tierLayout"
+        }
+      ]
+    },
+    {
+      "name": "lineGap",
+      "title": "栏间距",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "lineGap"
+        }
+      ]
+    },
+    {
+      "name": "lineStartFrames",
+      "title": "各栏出现帧",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "lineStartFrames"
+        }
+      ]
+    },
+    {
+      "name": "keywords",
+      "title": "关键词",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "keywords"
+        }
+      ]
+    },
+    {
+      "name": "keywordBold",
+      "title": "关键词加粗",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "keywordBold"
+        }
+      ]
+    },
+    {
+      "name": "keywordItalic",
+      "title": "关键词斜体",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "keywordItalic"
+        }
+      ]
+    },
+    {
+      "name": "keywordUnderline",
+      "title": "关键词下划线",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "keywordUnderline"
+        }
+      ]
+    },
+    {
+      "name": "keywordStrikeout",
+      "title": "关键词删除线",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "keywordStrikeout"
+        }
+      ]
+    },
+    {
+      "name": "keywordColor",
+      "title": "关键词颜色",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "keywordColor"
+        }
+      ]
+    },
+    {
+      "name": "keywordSize",
+      "title": "关键词字号",
+      "targets": [
+        {
+          "instance_id": "text",
+          "parameter": "keywordSize"
+        }
+      ]
+    },
+    {
+      "name": "line1Color",
+      "title": "文字颜色",
+      "targets": [
+        {
+          "instance_id": "line1",
+          "parameter": "color"
+        }
+      ]
+    },
+    {
+      "name": "line2Color",
+      "title": "文字颜色",
+      "targets": [
+        {
+          "instance_id": "line2",
+          "parameter": "color"
+        }
+      ]
+    }
+  ],
+  "text": {
+    "layout": {
+      "x": 54.0,
+      "y": 700.0,
+      "width": 972,
+      "height": 1000
+    },
+    "tiers": [
+      "line1",
+      "line2"
+    ],
+    "still": true,
+    "preview_keywords": [
+      "测试"
+    ]
+  }
+}

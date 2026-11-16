@@ -1,82 +1,155 @@
-# Remotion Preset → Sprite
+# Remotion effect workspace
 
-This module runs the three-layer ReAct workflow. The Outer loop answers, asks,
-delegates, hands the task to the Plan ReAct (`plan`) or stops through
-`tools_plan_execute`. A delegation starts the host's standard two-step plan
-directly: `preset` readies the Presets and `sprite` composes and saves the Sprite
-(a `plan` sent with `delegate` is refused; only `update_plan` takes one). The
-`plan` action builds no default plan: the Plan ReAct designs the steps with
-`update_plan` and then drives the Executor. The Executor loop calls the tools of
-one step and ends it with `tools_report_step`; the host checks the step's recorded
-outputs, starts the next step and publishes the saved Sprite after the last one.
-A task builds first with sensible choices the user changes afterwards, but a
-genuine ambiguity may be asked: Outer's `ask`, the Executor's `needs_input` and
-the Plan's `ask` end the task as `needs_input` with the questions, and the user's
-answer resumes the same work. A task that delegated cannot end with an ordinary
-answer. The handoff at the start of the Executor's window carries the request
-(`user_intent`) and, for an edit, the accepted base with its source; the Outer and
-Plan snapshots put the request first. A text effect's words and keywords are not asked for:
-templates pass them each time they render, so a work only needs sample text for
-its preview, taken from the request or a reference image or written by the
-Executor, which reads the request from the handoff's `user_intent`
-(`step_inputs` only lists earlier steps' outputs). Besides a `plan` hand-off, the
-Plan loop runs to recover a step that is blocked or used a batch without new
-evidence. The final delivery is a saved Sprite published as an isolated Player preview.
+All generated and edited works use one three-layer ReAct workflow. Outer routes a request with
+`tools.plan_execute`; delegation starts one `build` or `edit` step. Plan designs additional steps when requested
+or recovers a blocked step. Executor edits `Effect.tsx` and `effect.json`, checks and saves the result, then reports
+with `tools.report_step`. The host publishes only the latest task candidate whose files are unchanged and whose
+acceptance image reached Executor. Questions and greetings can finish without a version; a delegated task cannot
+replace its result with an ordinary answer. Ambiguities are resolved with sensible choices and suggestions unless
+the task actually requires user input.
 
-Providers bill input served from their prefix cache far lower, and a hit needs an identical prefix, so the system
-prompt holds only each layer's fixed rules and the snapshot follows the window. The Executor's window
-(`context.StepWindow`) is append-only: the request, the accepted base, the font library and the reference images come
-once at its start, with the font library read once so a live registry update cannot change the cached system prefix.
-Only what changes each turn (`session.turn_state`, review frames) follows it. It is replaced whole only when it
-grows `agent.WINDOW_BYTES` (120 KB) past its start, keeping that start, the newest exchange (unless it fills the budget
-alone), one small exchange before it and a list of the Presets the current step made, whose IDs would otherwise leave with
-their receipts. The previous turn's snapshot is not written into the window: that would miss on the same bytes (the new
-exchange and the new snapshot) and only add input. Validation reports in the snapshot are capped at the newest that fit
-20 KB, since they miss on every turn and each one's outcome was already reported in its tool receipt. Providers without prefix caching may
-cost more on long tasks, because the window no longer evicts turn by turn. `model_usage` audit events record
-`cached_input_tokens` and the job usage `cached_tokens`, absent until the provider reports them, so a reported zero means
-no hit and an absent value means the provider does not say.
+The previous Preset composition path, built-in effect recipes and `IMV_REMOTION_AGENT` setting have been removed.
+Older records remain readable. Opening an older work for a model edit silently converts a copy into this workspace;
+manual parameter saves keep their existing model-free path and historical versions remain immutable.
+
+## Free-form effects
+
+The tool contracts are in `docs/remotion-agent-tool-contracts.md`. New works start with a component and a manifest;
+all historical versions open through `restore_version_files` in the same task-local workspace.
+
+- **Workspace** (`tools/workspace.py`, `tools/effect_tools.py`). The Executor writes `Effect.tsx`, a default-exported
+  component that may import the content runtime `"imv"` (`remotion/imv-runtime.tsx`), and `effect.json`, the manifest
+  `EffectManifest`: kind, description, layout box, for text effects `text` (sample content, keywords, line starts,
+  bilingual, keyword look and its default switch, font size, one font per line, gaps, arrangement) and `params`, the effect's own style
+  parameters with schema, default, title and `group` (stored as `x-imv-group`, a panel label rather than a value constraint). A new work starts from a still starter of its kind that passes
+  every check and follows the new-chat switches; an edit restores the accepted version's files with the user's
+  current parameter values written back into the manifest. `keyword_look` declares the keyword appearance capability;
+  `keyword_enabled` supplies its `keywordEffect` default (true when omitted). Turning it off keeps the capability and
+  controls, and the free-form category gate accepts either boolean default. Restoring older manifests with fewer font
+  entries than lines expands them before applying each line's saved font, weight and size ratio.
+- **Assembly.** `assemble` derives a text effect's configuration parameters from `text` with `text_configuration`
+  (the same names, schemas and titles as a text block, without `effect{k}`), merges the style parameters (bounds, a
+  colour pattern, titles and out-of-range defaults are corrected and noted; numeric enums keep any optional bounds,
+  and a host configuration name is left out)
+  and bundles the single instance `effect` with `compose_source`, which inlines the runtime. The Sprite stores the
+  manifest in `SpriteDraft.effect`; its code still imports only React and Remotion, so publication, templates, the
+  bus and video composition are unchanged. A sample that fits no shape (one line; two for 双栏; two or four
+  alternating Chinese/English lines for 双语) or misses a switch the user turned on is refused with its field.
+- **Runtime.** `useTextContent` splits `text`/`textEn` into the lines the bus fills (by `lineStartFrames`, pairing a
+  bilingual effect's lines), cuts each line at the first literal hit of each keyword and gives each line's start,
+  font and size; `TextRoot` lays the lines out (stack or overlap, `lineGap`, `translationGap`), sets the fonts, keeps
+  a line that has not started hidden with its space and carries the `data-imv-tier` markers; `KeywordRun` applies the
+  six keyword options and `data-imv-keyword`; `useTiming` and `splitGlyphs` are optional helpers. It holds no effects.
+- **Gate.** `validate.check` and `effect.save` run the component's own source policy and TypeScript check, the
+  category's required parameters and, in the isolated browser, transparency, both render lengths, `text_fit` (with an
+  empty `text_fit_parameters` for new components, so lines may be timed independently but must not jump; historical
+  components retain their layout check as described below) and the `effect_contract`
+  probes of the validation worker: other injected text must be what it shows, a keyword hit takes keywordColor and
+  keywordBold with the keyword effect off, every default line is shown in full on frame `duration_frames // 2` (where
+  the bus freezes subtitles shorter than 1.5 s, with every line starting at zero), lowering `fontSize` between two legal
+  sizes at least 25% apart shrinks the text. Style parameters (and `keywordEffect`) are sampled between their two ends
+  (screenshot comparison with alpha preserved, so white text can disappear visibly). If defaults hide a parameter, its endpoints are also compared with each
+  other boolean flipped, then all other booleans on or off, always holding those controls fixed between endpoints.
+  These bounded probes do not enumerate every combination or change saved defaults. No visible difference is only an
+  advisory `notes` entry on check/save: periodic endpoints or limited samples cannot prove a control unused. It does
+  not block saving or frame capture, and the Executor should not remove controls or retry solely to clear the note;
+  the user can inspect the result and ask for adjustments. Actual runtime errors and the required content/layout
+  checks still fail. A check failure is a
+  `passed: false` result; a save failure is `CODE_VALIDATION_FAILED` listing every problem.
+- **Observations.** `preview.render` (at most 12 per task, never cached as a publication report), `effect.save`'s
+  acceptance sheet and
+  `image.inspect` crops reach the Executor once, as a message appended to its window; that message numbers its own
+  images from 1, independently of reference images and earlier observation messages. An edit starts with the accepted
+  version's middle frame, rendered once by the host and shared with the Plan layer, which sees it after the reference images
+  (`accepted_version_images`) when it designs or recovers an edit. This baseline always uses the accepted source and
+  saved parameters, including after checkpoint recovery; unfinished workspace edits never become baseline evidence.
+  Long-text previews preserve the line/language shape and count inserted newlines within their 100-character budget.
+- **Motion from the running code, pictures as the fallback.** Each capture also measures every line and keyword hit on the
+  trial frames (`measureSubjects` in the validation worker: text box centre and width with transforms applied, painted
+  opacity, share of characters painted), and `tools/workspace.motion_facts` turns that into sentences in `motion` on the
+  `effect.save` and `preview.render` replies, relative to the resting position on the middle frame, such as "first painted
+  at frame 3 (0.10 s), 700 px to the right of its resting position". The Executor judges direction and order from them.
+  `effect.save` sends only the middle frame, for what cannot be measured (colours, fills, clipping, doubled text); a preview
+  shows keyframes on request. An edit gets the accepted version's measurements as `base.motion` and its middle frame.
+- **Keyframes.** Unless a preview names frames, the host shoots trial frames (every 3 frames in the opening, the closing
+  and after each later line appears; a few elsewhere; the middle frame) and `tools/workspace.keyframes` keeps at most 8:
+  the first and last visible and the middle frame, and frames spaced evenly by summed brightness change, at least 3 frames apart. A
+  step below 20% of the biggest counts as no motion, so a pulsing glow does not take an entrance's frames; a still effect gets only the fixed ones.
+- **Loop.** The three layers stay. The host's default plan is one step, `build` or `edit`, done when the latest save's
+  result reached the window and the files did not change since. Every publication route checks this, including Plan
+  completion and automatic completion at the tool limit; an exhausted task with unsaved edits fails instead of delivering
+  an older candidate. Steps with the `effect` module can supply `steps.<id>.outputs.sprite` to later steps.
+  A step the Plan layer designs without the effect module
+  is done when `validate.check` passed on the files as they stand. Outer gets low-detail images. Once a candidate is saved, `needs_input` and `ask` are refused through both tool calls and text-protocol replies:
+  the last step's `tools_report_step` carries `choices` and `suggestions`, stored as `GenerationJob.reply` and shown
+  as the assistant message (suggestions as options) instead of the fixed success text.
+- **Prefix cache.** Model providers bill cached input far lower, and a cache hit needs an identical prefix, so every
+  Executor request of a step extends the previous one. The system prompt and the whole workspace tool list stay the same for
+  the task; `StepWindow` never evicts group by group (dropping the oldest group would change everything after it), and
+  `AgentRun` replaces it whole only past `WINDOW_BYTES` or `WINDOW_IMAGES`, with the current files and the newest small
+  exchanges. The request, step, task facts, font library, files and reference images sit at its start and remain pinned
+  when the provider trims old exchanges for the token budget, both on dispatch and after compaction. Inline files have
+  a shared 64 KB serialized UTF-8 budget; larger files stay intact in the workspace, listed under `files_omitted` with
+  instructions to read them. `workspace.read` returns bounded pages; pass its `next_offset` back as `offset` until the
+  field is absent (offsets count Unicode characters). Images are held by path and
+  encoded when sent (`provider.expand_image_paths`); after the window comes only `turn_state`. A step the Plan layer
+  adds gets a new window, keeping the system prompt and tools cached.
+- **Turns.** The runtime appends a `Host record (data):` entry with each task's outcome to the Outer window and
+  re-sends the images of earlier messages (newest first, eight images in all); the Executor's handoff lists the
+  earlier turns. The snapshot lists the work's `versions` (including older composed versions), and `workspace.read {path, version}` returns an
+  earlier version's files with its parameter values, so an edit can go back to it. Style parameter schemas may carry `x-imv-group`, which publication copies into
+  `SpriteParameter.group` so the template editor shows grouped cards that templates adjust per placement.
+- **Library.** An accepted free-form version's single instance (the whole Effect.tsx with its schema) is stored as
+  a role-less Preset by `CatalogStore.solidify`, once per identical drawing, so `library.search` finds it by its
+  manifest description in later works.
+
+### Opening historical versions
+
+`restore_version_files` copies the accepted candidate's complete TSX into `Effect.tsx`. It stores the exact schema
+and current defaults in `effect.json` under `contract.parameter_schema` and `contract.default_parameters`, including
+nested instance props, local schema references and manual parameter revisions. Preview keywords and the original
+content box are retained; the latter preserves the published transform pivot. The source already draws the whole
+canvas, so assembly bundles it directly without placing it in another layout box or re-running a role composer.
+
+For historical still text, `contract.text_fit_parameters` retains the original layout-only cue-off switches: a cue
+may remove an earlier line when the next appears, so content/layout probes temporarily disable that wrapper while
+wiring probes use staggered line starts with the actual effects enabled. The original cue hold and line-jump checks
+still reject hidden waiting text or displaced lines. This metadata must come from an accepted version; workspace
+edits cannot invent measurement bypasses. Neither probe patches nor line starts change saved defaults or source.
+Stored font controls stay open strings; the generation gate checks their defaults against the current font library
+without freezing the schema again.
+
+The converted manifest uses `contract` instead of `text`/`params`. The same preview, validation, save and publication
+checks apply. A successful edit saves a normal workspace version with this contract; reopening it retains the
+edited source and current defaults. `workspace.read {path, version}` performs the same conversion on demand for a
+historical version without writing to storage. No migration job, confirmation prompt, old Agent route or bulk
+rewrite is needed. The parameter panel keeps typed nested controls and falls back to JSON for complex schemas.
+
+Frozen fixtures under `server/tests/fixtures/remotion_legacy` capture outputs of the removed composer. Regression
+tests cover single-line, two-line, bilingual, cue and box compositions, edit/save/reopen, immutable history and content
+bounds; opt-in browser checks compare frames before and after conversion and reject inverted or unwired cues.
 
 ## Tool catalog
 
-Eleven business tools are registered with their full input/output contracts.
-`tools.inspect` also describes the host-owned `tools.plan_execute` and
-`tools.report_step` controls by dotted ID or wire name, without executing them
-or changing role permissions.
-Six business tools have implementations in this build:
+Nine callable tools are registered in `tools/catalog.py`; there are no deferred business tools.
+Provider wire names use underscores (for example `workspace_edit`).
 
-| Tool | Status |
+| Tool | Behavior |
 | --- | --- |
-| `preset.create` | implemented — validates the Preset and saves it |
-| `sprite.compose` | implemented — deterministic combination of Preset instances; keeps the draft host-side and returns its `draft_id` and a code-free summary |
-| `sprite.create` | implemented — takes that `draft_id`; code validation (each distinct Preset source once, then the Sprite), one browser mount that must leave the video visible, and save |
-| `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name; it reads a contract, it does not search or list tools |
-| `image.info` / `image.resize` / `image.crop` | contract only |
-| `preset.search` | implemented: ranked listing by the words of an optional query and by proven uses; the agent picks what to recall |
-| `preset.modify` | implemented: copies a stored Preset or a task draft (`base_*`, earlier `draft_id`), keeps the copy host-side and returns its `draft_id`; compose it with source `{kind: "draft", draft_id}`. Code changes go in as exact `edits` `[{old_str, new_str}]` (each `old_str` occurs once) or as a whole `code`; the receipt counts the changed code lines and notes an edit that copied a stored Preset instead of its `base_*` draft (a stored Preset with the same code, schema and defaults as a `base_*` draft is the one the base draws with and is not noted) |
-| `validate.code` / `validate.render` | contract only |
+| `workspace.read` | Reads current or historical files in bounded pages, or the read-only `imv-runtime.tsx` |
+| `workspace.write` | Replaces one workspace file; a malformed manifest changes nothing |
+| `workspace.edit` | Applies exact replacements atomically; every old string must occur once |
+| `preview.render` | Captures frames and measured motion, optionally with text or duration variants |
+| `validate.check` | Runs the save gate and returns all problems without saving |
+| `effect.save` | Runs the gate, saves a task candidate and provides its motion and middle frame |
+| `library.search` | Searches immutable previously accepted code or reads a record by ID |
+| `image.inspect` | Crops and enlarges a reference image |
+| `tools.inspect` | Reads a named tool's typed contract, including the host controls |
 
-Deferred tools are marked `implemented=False` at registration and are filtered
-out of every layer's tool window, so the model is never offered a tool that
-cannot run. Calling one directly returns `NOT_IMPLEMENTED` rather than a
-fabricated result. `tools.inspect` still describes them and says so in the first
-words of the description (`[Not callable in this build ...]`); an unknown name
-lists callable tools and contract-only tools apart. The host still performs the code, parameter and browser
-checks needed to build a preview; those are not model-facing tools.
-
-Image tools read the reference images the user already uploaded and the server
-registered as reference assets (objects under `imv/remotion/assets/`, read through the verified cache): the work's original images and, for a task started
-by a later chat message (`POST /works/{id}/messages` with `images`, up to four),
-that message's images. `user_intent.reference_images` lists them in the order the model
-receives them, each with its `source` (`work_original`, `message` or
-`clarification_answer` plus the answered `clarification` index) and a host-written
-`meaning`. They take that asset reference, not a URL, and
-never upload anything.
-
-Each model request has a combined 30 MiB image limit, measured after conversion
-to inspection PNGs and before base64 encoding. Window reference images and
-trailing review frames share this limit; exceeding it fails before HTTP is sent.
-The transport limit allows the base64 expansion plus text and JSON framing.
+Outer and Plan execute only `tools.plan_execute`. Executor gets the fixed business tool list plus
+`tools.report_step`; inspection never grants permission to execute another layer's control. Removed names such as
+`preset.create`, `preset.modify`, `sprite.compose` and `sprite.create` are unknown tools. Historical loop records
+may still contain those names and remain readable.
 
 ## Storage
 
@@ -104,6 +177,21 @@ one page per call in the same shape, until an empty page. There is no server-sid
 client's local store. Acknowledged events are deleted; once a work
 has no undelivered events, the progress, rounds and messages of its finished jobs go too, and only the latest job row
 stays because retrying it or answering its questions needs its input.
+
+Generation inputs also retain a private recovery checkpoint in that existing job row: the current `Effect.tsx`
+and `effect.json`, plan position, completed step outputs and bounded recent tool exchanges. Each completed tool
+and turn updates it before another model request. Explicit retry creates a new execution with fresh budgets and
+continues the unfinished Executor step; a follow-up message after failure continues the same draft when its base
+version has not changed, applying the new instruction and reference images. Manual parameter revisions keep their
+existing path. Copying the checkpoint into the new job makes it independent of old-job acknowledgement/pruning.
+Success clears the checkpoint; deleting the work removes it with the job rows. Credentials and temporary image
+paths are not stored in it. Render evidence is recreated by `effect.save` and reviewed before publication, so a
+saved candidate from the previous execution cannot bypass the current acceptance guards.
+
+For failures created before checkpoints existed, retry can reconstruct the draft from successful workspace write
+and edit receipts in that job's private audit. It does not execute recorded tools or restore failed edits. If no
+draft was recorded, the original request starts normally; inconsistent recorded edits refuse recovery instead of
+silently discarding progress. This fallback is available only while the audit is retained.
 
 Sealed version files, reference images and Sprite preview bundles are objects under `imv/remotion/`
 (`object_store.py`): public-read in ZOS once `ZOS_BUCKET` is set, otherwise files under `IMV_DATA_DIR/objects`.
@@ -142,218 +230,36 @@ objects in the target checkout, since a preview may have been rebuilt there.
 
 ## Preset storage
 
-`preset.create` writes through `tools/catalog_store.py` to the MySQL table `remotion_presets`, shared by every
-device. A database failure surfaces as `PRESET_STORE_FAILED`; nothing is written to a local fallback. Records are
-immutable; there is no update or delete. Catalog reads and writes run in worker threads, so database waits do not
-block the event loop or delay cancellation.
+The immutable MySQL library (`remotion_presets`, `tools/catalog_store.py`) remains available through `library.search`.
+Catalog reads and writes run in worker threads. There is no local storage fallback. Search segments Chinese with
+jieba, ranks matching descriptions and historical usage titles, then published uses, accepted uses and recency.
+An empty query lists all records; optional role and slot filters can narrow historical entries. An ID lookup returns
+complete source. Responses are bounded to 40,000 serialized UTF-8 bytes and 1–100 summaries; `has_more` signals
+omissions, while an oversized full record fails instead of truncating code. Storage failures use `PRESET_STORE_FAILED`.
 
-The library is the collection of what earlier works built, so search is how the Agent reuses an effect instead of
-writing it again. `preset.search` cuts the query into words with jieba's search segmentation (Chinese needs no
-spaces; single characters only count when the query has no longer word) and ranks the Presets by how many of those
-words their description or effect usage title contains, leaving out those that contain none. Among equal matches
-the Presets that versions saved to the asset library used come first, then those accepted versions used, then the
-newest; an empty query lists every Preset in that order. Uses live in a second table, `remotion_preset_uses` (one
-row per Preset and accepted version, marked `published` when that version is saved to the asset library): a
-successful Agent job records the stored Presets its version draws with (each instance snapshot names its direct source
-as `source_preset_id`; `CatalogStore.solidify`). A copy the task changed (a fix made with `preset.modify`) is stored as
-a Preset of its own (or found again when an identical one is stored) and credited instead of its original, so a fix
-becomes reusable and a broken original is not ranked up for it. `POST /api/sprites/publish` marks the version's rows
-published. Recording is best effort: a
-database failure is logged and only loses the ranking signal. Optional `role` and `slot` (an effect's usage slot)
-filter the list, and summaries carry an effect's usage and both counts. An effect Preset records its `usage`
-(`title`, `slot`, `target`, `seconds`) when it is created, so a text block's effect entry may name only its source
-and take the rest from it. Legacy timestamps without a timezone are interpreted as UTC; invalid timestamps sort last
-without hiding the record. `tools.inspect` identifies this search contract as version 3 (version 2 required every
-whitespace-separated word and listed newest first).
-`limit` accepts 1–100, and serialized search content is capped at 40,000 UTF-8
-bytes including JSON string escaping. `has_more` marks omitted summaries;
-oversized individual summaries or full records return `RESOURCE_LIMIT_EXCEEDED`
-without truncating source. Search and modify declare `PRESET_STORE_FAILED` for
-storage errors only. `preset.create` and `sprite.create` run the isolated validator
-before storing: when it cannot start (for example `bwrap` is missing) they return
-`VALIDATION_UNAVAILABLE` with the original error and store nothing. `preset.modify`
-only checks the contract and never starts the validator.
+An accepted workspace's complete component is solidified once per identical drawing as a role-less Preset.
+`remotion_preset_uses` records its accepted version, and publishing marks that use as published. This ranking signal
+is best effort; an unavailable catalog does not invalidate a generated version. Reuse copies useful source into
+the workspace. Old role metadata is retained for reading records, never interpreted as a generation recipe.
 
 ## Looking at the result
 
-The Agent writes code without a visual judge, so it gets to see what it saved: for the first two Sprites a task saves
-(`tools/session.VISUAL_REVIEW_ROUNDS`), the browser mount `sprite.create` runs anyway also captures up to six still
-frames once every check has passed (`FrameCapture`, `captureFrames` in the validation worker). They are chosen from
-the Sprite's own timing (`review_frames`: the final frame, half way out of the exit, before the lower tier appears and
-during and at the end of its cue effects, then one frame per entrance effect, labelled with the tier whose clock it
-samples, and the generic middle frame last; without a cue frame that middle one is the only hold evidence and comes
-before the entrances instead). An effect window is measured in the frames its target tier plays, as the host renderer
-measures it, so a transition crowds out only the middle frame, never an entrance. Frames are cut to the text
-block with room around it, at most 720 pixels on the long side, composited onto the neutral #808080 gray the model is
-told is not content; a text effect whose defaults have no keywords is captured with the workspace preview's sample
-keyword (`sample_keywords`), listed in `review.keywords`, so keyword effects show. The receipt lists the frames in
-`review.frames` with sampling times, not claims that the result is complete or correct, and they follow the
-window in every Executor turn of the step (`candidate_frames` in the snapshot maps them) until the step
-ends, a `sprite.compose` takes them away (they only describe the saved Sprite; seen in work eb692e7e, where frames of
-an earlier save stayed attached through 20 recompositions and the Executor kept "fixing" them) and a later save
-replaces them. The rules have the Executor compare them with the request and the reference images
-and change only what is clearly missing or wrong. The completion summary should cite the before/during/after frames
-and the state of each requested subject. Code and runtime checks do not establish visual correctness; the host draws
-no semantic verdict from the images. `agent_examples.py` demonstrates independently clipped copies as a drawing
-primitive, alongside discrete glyph timing; these are executable examples, not installed Presets or a recipe library.
-
-For host-composed still text, generation measures layout with only cue wrappers switched off through the host-only
-`text_fit_parameters` patch. A tier may intentionally disappear as another arrives, and the host's tiers can have
-independent timing. Enter, exit and loop effects remain active for the full-text measurement: an inverted transition
-that hides a tier throughout the hold is still refused, and a second mount (`cueHoldProblem`) starts the lower tier on
-the last frame so every cue stays at its start state, refusing a cue that already hides its tier at progress 0.
-Full-length text, defaults, keywords, clipping and tier spacing remain checked; legacy self-animated text also retains
-its shared-timing check. Runtime mounts, transparency, alternate lengths and review frames always use the original
-enabled effects. The patch is never saved into the Sprite or applied to render requests.
+`effect.save` sends the candidate's middle frame after all checks pass; `preview.render` returns requested frames
+or host-selected keyframes and measured motion. Images are bounded to 720 pixels on the long side and shown on
+neutral gray, which is not effect content. Each observation enters Executor's append-only window once. Edits start
+with the accepted base's motion and middle frame. The host verifies delivery of the latest save's evidence before
+publication, while Executor compares the result with the user's requested appearance and motion. Passing code and
+runtime checks alone does not establish a visual match.
 
 ## Preview
 
 Version previews accept `?overlay=true` to remove the page's checkerboard while reusing the sealed player bundle.
 The client plays URL or local-file backgrounds in a separate bottom layer; these videos are not sent to the player or Agent.
 
-The preview is built from the saved Sprite's exact code, schema and defaults.
-The main canvas is 1080×1920 at 30 FPS and the last instance's exclusive end
-determines the duration. A new work must last exactly the requested
-`composition.duration_in_frames`: the snapshot shows it as `target_duration_frames`
-and `sprite.compose` refuses any other length with `INVALID_ARGUMENT` on `/instances` (`/text/duration_frames` for a text block).
-Edits start from the accepted version and keep deriving the length from the instances.
-
-### Text effects are composed from role Presets
-
-A new text effect (kind `text`) is composed from a text block (`sprite.compose` contract v3, `text`), not from boxes;
-boxes stay for edits of older text effects. A Preset may carry a role. A `text` Preset draws one tier: the host passes
-it `children`, the tier's line the host renders itself (its text with every keyword hit already drawn by the host's
-`Keyword`), and `fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`), and the Executor rules have
-it render `{props.children}` in one block of its own that carries the tier's look (colour, stroke, shadow, gradient,
-underline), so the whole line inherits it. Older text Presets draw the line themselves from `text`, the `segments` of
-that text cut at the keyword hits and the `Keyword` component, which the host still passes; `compose.mjs`
-(`takesChildren`) hands the line only to a Preset whose code names `children`. Its `parameter_schema` declares only its
-own style props, declaring a host prop is refused, and the code check type-checks it with sample host props (`sprite.create`
-re-checks every source Preset with its role). The check's call site passes each default and host prop as its own JSX
-attribute, so a literal default such as `"center"` satisfies a prop typed `"left" | "center" | "right"` (an object
-spread would widen it to `string`). A
-`keyword` Preset draws one hit inline from `text`. The block gives the area, the default text (one line, or
-`upper\nlower` for 双栏), the base font size, each tier's Preset, style parameters, font, weight and (two tiers) size
-ratio, the tier gap and line starts of two tiers, an optional keyword Preset and the duration. `compose.mjs`
-(`textEntry`) writes the host: the tiers are centred in the area, which is also their wrapping width; a tier waits at
-its first frame, invisible but keeping its space, until its start and then plays from there; the first literal hit
-of each keyword in the whole text (earliest first, never overlapping) is wrapped in the six IMS keyword options and,
-while `keywordEffect` is on, drawn by the keyword Preset. The host generates the configuration parameters
-(`compose.text_configuration`: fixed names, schemas and `categories.FIXED_TITLES` titles): `text`, `fontSize`, one
-tier's `fontFamily`/`fontWeight` or each tier's `line{i}FontFamily`/`line{i}FontWeight`/`line{i}SizeRatio` with
-`lineGap` and `lineStartFrames`, the seven keyword parameters (off) and, with a keyword Preset, `keywordEffect` (on).
-They are bindings targeting the pseudo instance `text`, so publishing and the category check read them like any
-other top-level parameter; the edit snapshot leaves them out and hands back `base.text`, the block over `base_*`
-drafts with the current configuration values. The Agent binds style parameters only (`color`, or `line1Color` and
-`line2Color` for two tiers, keyword looks as `keywordEffect…`), never a configuration name.
-
-The Executor distinguishes the user's sample keywords from the reusable keyword style. Explicitly named keywords
-(or substrings singled out for a different look) go in `text.preview_keywords`; their colour and appearance belong
-in the keyword Preset, and keyword-only motion targets `keyword` or `keywordChars`, overriding unrelated stored
-usage defaults. This applies to arbitrary user-selected words, including multiple words, and preserves the base
-look of the remaining text. The bus still supplies real text and keywords on every render: sample
-words and character positions must not be hard-coded into Presets. This is generation guidance, with no added
-composition validation or change to the template keyword defaults.
-
-Motion is split out of the tiers (contract v4): `text.effects` lists `effect` Presets, each with a Chinese title, a
-slot (`enter`, `exit` or `loop`), a default position and, entering or exiting, a length in seconds (0.1–3, default
-0.5). An effect Preset receives `children`, the host's `Box` and `progress` and only restyles what it wraps.
-For enter/exit, 0 means hidden and 1 fully shown; a cue goes from its initial state at 0 to its final state at 1,
-which may remove the wrapped text. The host leaves a wrap point at every position — `block` (the whole column), each tier
-(`tiers` for both, `line1`/`line2` for one; two tiers only), each glyph (`chars`, or only the glyphs of the keyword
-hits `keywordChars` or only the others `plainChars`, each an inline box) and each keyword hit as a whole (`keyword`,
-an inline box) — so
-effect k's configuration parameters `effect{k}` (switch), `effect{k}Target` (position) and `effect{k}Seconds` move it
-or retime it without regenerating (`categories.EFFECT_PARAMETER`; titles from the effect's title); an entrance or cue
-effect also gets `effect{k}Delay`, the seconds it waits before it starts, so effects at different positions can follow
-one another (the keyword's glyphs typing in first, the rest of the line after them), and one placed at a glyph position
-(entering, exiting or at the cue) gets `effect{k}Stagger`, how far its glyphs are spread: 1 one after another, 0 all
-together, in between overlapping. The text block may name `preview_keywords`, the words of its default text that are
-its keywords; while templates pass none, the review frames and the workspace preview show them as keywords instead of
-the opening characters (an Executor once "fixed" a right keyword-first order after frames keyed on the first two
-characters, work 06eb0788). An entrance rises
-from the position's first frame (a tier and its keyword hits count from the tier's start), an exit falls to 0 on the
-last frame, a loop stays at 1, and every length is at most half of the frames its position plays less one, so a text
-frozen on its middle frame still shows in full (a delay counts towards that half). A keyword Preset may take the hit's
-glyphs as `children` too, like a text Preset takes its line; then the glyphs inside a hit are units of their own (with
-an older keyword Preset that draws `text` the hit is one unit and `keywordChars` is not offered). Each glyph position
-numbers its own units. A cue effect (two tiers only) stays at 0 until the lower tier appears
-and then rises to 1 over its length, whatever position it wraps, so the upper tier can make way for the lower one; it
-stays at 0 while a placement has no lower text. An effect may draw `children` more than once inside its Box (clipped
-slices, echoes), and the element around each tier carries the tier's font size, so motion can be measured in em. Two
-tiers are stacked `lineGap` apart or, with the configuration parameter `tierLayout` "overlap" (`arrangement` in the
-block), share one grid cell, centred on each other with the lower tier on top. At `chars` the glyphs share their tier's entrance or exit in turn: while
-such an effect is on, the host cuts each line into units (a grapheme, a keyword hit as one, spaces none) and unit i of
-n shows `clamp(P * n - i)` of the position's progress P at stagger 1, so glyphs transition in reading order, leave from the last
-glyph and a longer line goes faster. A line stays one run of text otherwise. Only tiers whose text Preset takes
-`children` have glyph units, so with an older tier the `effect{k}Target` enum leaves `chars` out and composing an
-effect there is refused with the fix. Every effect Preset also receives `index` and `count`: the unit within its tier
-at `chars`, the tier at `tiers`/`line1`/`line2`, 0 of 1 elsewhere, so a loop can offset its motion per glyph. The text block of a new work records `still`: the host then holds
-each tier Preset on the middle frame of the frames the tier plays (`compose.mjs` `__Hold`), so motion of its own
-never plays and a stored animated text Preset is reused as it is, look kept. A block has only the effects the request
-or the reference asks for: the host adds no default entrance, exit or other effect, so a block without effects shows its
-text still for its whole length. Common
-entrances, exits and loops are host built-ins: a `text.effects` entry names `builtin` (`fade`, `rise`, `pop`,
-`slideLeft`/`slideRight`/`slideUp`/`slideDown`, `blur`, `glow`, `breathing`; `builtin_effects.py`) instead of a
-`source`, and the generated code draws it with `compose.mjs` `__BUILTINS`, so no effect Preset is written for it; an
-omitted title, slot, target or length takes the built-in default (0.5 s for an entrance or exit, none for a loop). A
-built-in's own style props (a glow's colour and strength, a slide's distance) are bound and tuned like a Preset's,
-and the text block records `builtin` so an edit restores it. Transparency of
-a target — the whole text or one tier showing the video through — is a loop effect Preset that multiplies opacity and
-binds its factor as a numeric style parameter, so users adjust the transparency itself; tier colours (`color`,
-`line1Color`, `line2Color`) stay opaque, and the generation path refuses an alpha default there. The keyword
-hits inside a held tier get its live frame back (`__Live`), so a keyword Preset, the switchable keyword effect, and
-the effects at `keyword` keep playing. Edits of a text effect made before effects (no `still`, or boxes) keep playing
-their tier Presets' own motion and need no effects. The workspace parameter panel shows such a block as two sections,
-「文字」 (the text itself) and 「特效」 (one card per effect and the keyword effect, each with its switch, position, length
-and own look).
-
-Glyph targets select the affected text, not the order in which it appears. Contract v10 requires an explicit
-`stagger` on a non-loop glyph effect, either in the composition entry or in the Preset's `usage`; omission is refused
-with an actionable field error. Use 0 to show the selected text together, 1 sequentially, or a fraction for overlap.
-New glyph Presets must record that choice so reuse preserves it. An entry overrides its usage, and changing the entry
-to a non-glyph target or a loop does not inherit an inapplicable `stagger`. Old immutable records remain readable;
-composing one whose usage lacks the choice requires it in the entry. Saved versions are not rewritten.
-
-`progress` remains continuous: setting opacity to it fades a glyph rather than typing it. Every effect also receives
-the host prop `completedCount`, the number of its target's units in this tier whose local progress has reached 1.
-All units of that target see the same count, including exact boundary frames and simultaneous or overlapping timing.
-Outside glyph positions it is `count` at progress 1 and 0 before; loops have all units completed. Discrete visibility
-can use `index < completedCount`; a cursor follows `completedCount - 1`, starts before the first glyph and disappears
-when all are complete. The Executor receives a working example from `agent_examples.py`; real browser tests render
-that same source and check glyph colours, discrete visibility, cursor position and keyword scope frame by frame.
-The reuse instructions require reading the source as well as its description: a saved Preset's name does not prove
-that it implements the requested motion. Existing generated source needs a new version to adopt the correction.
-
-The Agent decides from the request and the reference images whether the block has two tiers and a keyword Preset. The
-new-chat switches are a temporary explicit choice: `POST /works` takes `keyword_effect` and `two_tier` (strict booleans,
-default false) that reach every job as `user_intent.original_request`; for a new work (`ToolSession.requested`)
-compose then requires two tiers or a keyword Preset, and the category check refuses a text without them. An older
-Sprite whose own component draws a keyword effect must expose the `keywordEffect` switch defaulting to true. `text_fit`
-mounts the default text once more with up to two characters opening its first non-empty line as `keywords`, so the
-hit must stay inline and the whole text must still show. In a text block that hit, mounted again on the middle frame
-with the six keyword options and the `keywordEffect` switch off, must also look like the rest of its line: the same
-inherited text paint (colour, fill, stroke, paint order, shadow, font, letter spacing) and no filter, decoration or
-text-clipped background that the line's other text gets from its own elements. A text Preset that strokes only the
-spans of the other segments is refused with the differences (`text_fit: … is drawn without its tier's look …`), so
-the template preview's sample keyword and the composed title keyword keep the tier's look. Text drawn with
-`background-clip: text` (a transparent text fill showing a gradient behind it) must not carry a text-shadow: the shadow
-is painted over that background and the text turns into its shadow colour, so `text_fit` refuses it with the element
-and the fix (outline with `-webkit-text-stroke`, or a separate copy behind). Templates only switch the seven keyword parameters (any
-other `keyword…` parameter is internal there), so the keyword effect is changed in the workspace and saved to the
-library again. `preset.search` ranks by the words of the query and by proven uses and filters by role (see Preset storage).
-
-For Linux renderer validation, install the locked Bun dependencies in
-`server/src/server/remotion`, then run:
-
-```sh
-IMV_TEST_RENDERER=1 uv run --locked --project server pytest server/tests/test_remotion_templates.py -q
-```
-
-The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
-Linux sandboxes also mount `/var/cache/fontconfig` read-only when it exists, so each
-new Chrome can reuse system font metadata instead of rescanning all font files.
-Without that directory, fontconfig keeps its normal per-sandbox cache fallback.
+The preview uses the saved Sprite's exact code, schema and defaults on a 1080×1920 canvas at 30 FPS.
+New works use the requested `composition.duration_in_frames`; edits retain the accepted preview duration.
+The manifest's layout places a new component. Converted complete sources already own their canvas coordinates,
+and their retained content box is used for preview cropping and asset transforms.
 
 ### Font library
 
@@ -458,7 +364,7 @@ style's own file.
 - **Agent**: the Executor rules end with the library as an enum read from the database, one entry per card with the
   styles it has (bold and italic text use the card's bold and italic files). A text effect must expose
   `fontFamily` (an enum of library families, defaulting to the font chosen from the reference image or description);
-  `sprite.create` checks the enum against the library. The stored Sprite keeps a plain string (`maxLength` 100), since
+  `effect.save` checks the enum against the library. The stored Sprite keeps a plain string (`maxLength` 100), since
   the library grows, and a choice is checked against the live library: `placement.resolve` when a template saves or an
   overlay is accepted, `patch_parameters` for a manual revision. Besides the user's reference images the Agent only sees
   the review frames of the Sprites it saves (see Looking at the result), not a render with every font. Older text effects without `fontFamily` keep working and show no font picker.
@@ -512,8 +418,8 @@ storage and source consistency without a model or semantic index.
 
 ## Creating a Sprite
 
-A Sprite is composited over the user's own video, so `sprite.create` must leave that video visible. After code
-validation it mounts the composed Sprite once in the isolated browser and, on the first, last and three
+A Sprite is composited over the user's own video, so `effect.save` must leave that video visible. After code
+validation it mounts the workspace Sprite once in the isolated browser and, on the first, last and three
 in-between frames, measures how much of the canvas is nearly opaque (alpha of 242/255 or more, from a screenshot
 taken without a page background). When at least 80% of the sampled frames (4 of 5) are opaque on 98% or more of
 the canvas the Sprite is refused with `CODE_VALIDATION_FAILED`, the reason names the frames and what to do, and
@@ -527,7 +433,7 @@ the model gets `CODE_VALIDATION_FAILED` and the cause rather than `VALIDATION_UN
 generation asks for the measurement; a user's manual parameter edits and already published versions are
 never blocked by it.
 
-A text effect (`kind=text`) must also show its longest allowed text in full. In the same mount `sprite.create`
+A text effect (`kind=text`) must also show its longest allowed text in full. In the same mount `effect.save`
 fills the `text` parameter with `测` up to its declared `maxLength` and, on the same five sampled frames, measures
 the text boxes of the layer: text cut off by an ancestor whose overflow is not visible (`hidden`, `clip`, `auto` or `scroll`: the
 video never scrolls) or with `contain: paint`, text outside the 1080x1920 canvas, text lines shorter than 20px (the smallest `fontSize` is 24) and text of which only part is rendered (a
@@ -543,42 +449,14 @@ long text whenever it is shown at full size is not; it also fails when the fille
 size and the fix: wrap the text inside a bounded width of about 90 % of the canvas, no fixed-height `overflow: hidden` box, and use `fontSize` as given instead of deriving a size from the character count; `text.maxLength` must remain exactly 100, so text that still cannot fit requires layout and wrapping fixes, never a lower limit). The check fills the text to `maxLength` at the smallest size the host shrinks to (the declared `fontSize` minimum, at least 24), and then measures the default text at the default `fontSize`, which a user sees first and which must fit without the host's help. It is a geometric measurement, not a visual review; like the transparency
 measurement it only applies to generation, and already published versions are not re-checked.
 
-A text effect can show a fixed number of lines (2 to 4, `categories.MAX_LINES`), for example a small lead line above
-a large headline. Generation makes ordinary two-tier texts (双栏, `categories.TIERS`) or bilingual blocks (`bilingual: true`). An ordinary two-tier block has two rows in one column. A bilingual block has one or two content groups: each group is a Chinese row followed by its English translation. The input is `"<Chinese>\n<English>"` or `"<Chinese1>\n<English1>\n<Chinese2>\n<English2>"`; saved `text` contains Chinese rows and `textEn` contains matching English rows, joined with newlines. Both new-chat switches (`two_tier`, `bilingual`) require two complete groups; composition and acceptance reject a single-group substitute. Four-row blocks use `translationGap` (0–100, default 8) within a group and `lineGap` between groups; stack/overlap applies to whole groups. Each pair starts together, for example `[0, 0, 30, 30]`. Generation and publication require nonempty paired defaults, and editing snapshots retain both languages and the bilingual flag. The render check measures the complete default English as well as Chinese text. Each
-tier's font, weight and size ratio (exactly 0.4 to 2; the tier renders at `fontSize` times it, so the host's shrink
-scales both) and the tier gap are host configuration, each tier's colour `line1Color`/`line2Color` an Agent style
-parameter; a two-tier text exposes no top-level `color`, `fontWeight` or `fontFamily`. On the generation path
-(`category_problems` with the font library) the line starts must have two items (four for two bilingual groups), every tier parameter must be
-present with its schema and the three shared styles must not be bound; publishing requires neither the shared colour
-and weight of a multi-line version nor its tier parameters, so earlier multi-line versions still publish. Tier fonts
-are opened like `fontFamily` on save and checked against the live library on overrides and parameter revisions.
-`text_fit` and the host's fit never shrink `fontSize` below 24 divided by the smallest tier ratio below 1 (the
-worker's `readableFontSize`), so a small
-lead tier stays readable. Assets published with 3 or 4 lines keep their line count downstream. An ordinary multi-line text keeps the single `text` parameter, with its lines separated by `\n`, and also
-binds `lineStartFrames`, an integer array of exactly N items (`minItems` = `maxItems` = N, each 0 to 3600), so that
-line i appears from frame `lineStartFrames[i]` of the instance. A line with no text or no start is not rendered.
-All lines are stacked in one column (the text block's host, or one Preset instance of an older text) spaced by `lineGap` (pixels; its minimum may be as low as -600 so the lower tier moves up over the upper one, and its maximum 200 to
-600), which templates may override per placement like `fontSize`, and they share the entrance and exit: line i
-enters from its own start and all lines exit together, timed from `durationInFrames`.
-`categories.category_problems` accepts it when the default text has exactly N non-empty lines, the default
-starts begin at 0 and never decrease and `lineGap` is bound, and it refuses a text whose default has several lines
-but no bound `lineStartFrames` (it would be shown as one line); per-line styles are scalar parameters such as
-`line2Color`, with per-line sizes as ratios of `fontSize` so the host's shrink scales every line; `categories.line_count` reads N, and is 1 for every
-other text effect. With every start at 0, `text_fit` also requires the default lines to be rendered by one composed
-instance (`data-imv-instance`) and to be shown and hidden together on every sampled frame, so a lead line drawn by
-its own instance, or fading out at a constant frame of its own, is refused with the frame and line numbers. A line
-that has not appeared yet keeps its space (opacity 0) from the first frame: with the default lines started evenly
-over the preview, an earlier line that moves in the frame a later line appears by more than it moved the frame
-before plus 6px (or a tenth of its height), as a centred column does when it only adds a line once it starts, is
-refused too.
-The line starts are content the host injects, not a style: publishing leaves them out of the editable parameters
-(templates cannot override them), boundary samples keep the defaults, and the catalog summary reports
-`line_count` so that the template editor and the parameter panel edit the text line by line. `text_fit` fills the
-N lines so that together they reach `maxLength`, and shows every line from frame 0 for both measurements.
+Text configuration comes from the manifest: one line, two tiers, one bilingual pair or two bilingual pairs.
+`text` and `textEn` retain the two languages, with per-line fonts and size ratios, `lineGap`, `translationGap` and
+`lineStartFrames`. Every requested content group must exist. Lines may animate independently but cannot shift when
+another line starts; each line must render fully on the bus freeze frame. The shared `effect_contract` probes also
+check injected content, keywords, font scaling and parameter wiring (see Free-form effects).
 
-Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
-`exec` and `spawn` are refused only as bare identifiers; as member names, such as `RegExp.prototype.exec`,
-they are ordinary methods.
+Contract diagnostics retain source ranges and checked excerpts. `exec` and `spawn` are refused as bare identifiers;
+ordinary member names such as `RegExp.prototype.exec` are allowed.
 
 ## Loop rounds
 
@@ -594,45 +472,19 @@ Only a successful generation-starting tool sets `generation_started`. A failed
 first attempt may still be followed by an explanatory answer; failure after a
 successful generation attempt does not remove the completion requirement.
 
-Drafts are handles: neither the model nor the snapshot carries Sprite or draft source, so a large
-composition is never copied back verbatim. Presets of the same source are bundled once however many
-instances use them. Bundling erases the Presets' TypeScript types and type arguments, so the composed
-adapter types every variable, class field and base class `any` and gives each class an `any` index signature; each Preset is still typechecked on its own before it is composed. For an edit, the accepted base's instances are registered as `base_<instance_id>`
-Preset drafts and listed as `base.instances` in the shape `sprite_compose` takes (source
-`{kind: "draft", draft_id}`), like `base.text`; only the Executor's snapshot shows their source, each distinct source once. The session
-snapshot stays within 200 KB: a base too large for it has its largest sources omitted first (`code_omitted`,
-`legacy_code_omitted`), while their handles still compose unchanged. The execution
-snapshot shows `tool_calls_left_in_batch` and `tool_calls_left_in_task` instead of used/limit pairs.
-Every call returns a fresh `draft_id`, so the no-progress guard ignores draft handles and compares the
-content `digest` that `preset_modify` and `sprite_compose` return: repeating the same draft is no new evidence.
+Workspace sources are included in the initial handoff within its 64 KB budget; larger files use bounded reads.
+Host state reports remaining calls and whether the current file hash has passed checks and been saved. The host
+records outputs from successful saves. A step with `effect` needs a save in that step; a `workspace` step needs a
+passing check of its current files. References are `steps.<id>.outputs.effect` (workspace summary) or
+`steps.<id>.outputs.sprite` (saved candidate). Plans can reference only outputs the earlier step can produce.
+`update_plan` replaces unfinished steps while completed steps remain; resent completed IDs are ignored and listed
+in `ignored_step_ids`. A batch with new evidence continues automatically; a stalled batch wakes Plan.
 
-The host records each step's outputs from tool receipts: the Sprites `sprite_create` saved, and the Preset
-sources that `preset_create`, `preset_search {preset_id}` or `preset_modify` made ready. A step with the
-`sprite` module cannot be reported `step_done` before a `sprite_create` in that step succeeded, and a
-`preset` step needs at least one ready Preset (or, for an edit, the base drafts); the refusal names the tool
-to call next. A pre-Sprite base registers no base drafts: its edit plan says to write the Preset from
-`base.legacy_code` instead of reusing drafts. Plans reference `steps.<id>.outputs.presets` or `steps.<id>.outputs.sprite`, and a reference to
-an output the earlier step's modules cannot produce is refused when the Plan is built. `update_plan` takes
-only the unfinished steps; completed steps are kept by the host and a resent copy is ignored by ID, with
-the ignored IDs listed in the receipt (`ignored_step_ids`) so the Plan knows to redo work under a new ID. At the
-batch limit the host continues a step that observed something new in that batch and wakes the Plan
-otherwise.
-
-Outer has no publish action, so publication is the host's. Besides the last accepted step, a Plan
-`complete` (or a text `plan_done`) publishes the latest Sprite this task saved; a completion that names any
-other Sprite is refused. When the task budget allows no further batch or control call, the host publishes
-the latest task Sprite if there is one, and only otherwise returns `blocked` to Outer.
-A handoff counts for the no-progress guard only once it has happened: an automatic advance or a
-publication the host refuses is recorded as the return to the Plan, not as the transition it attempted.
-
-Call arguments are parsed by the host. Only surplus `}` or `]` after one complete JSON object are dropped
-(and recorded as `tool_arguments_repaired` in the private audit); any other invalid JSON is refused with the
-character position and the text around it, and schema errors give the first JSON Pointer as `field` and up
-to three located messages. A refused create lists up to five errors with file, line:column, code and the
-checked source line (`excerpt`, because the type check runs on a formatted copy whose line numbers can
-differ from the submission), and adds fixed host hints in `details.hints` for props/schema mismatches,
-disallowed imports or capabilities, the transparency gate and schema/default mismatches. The Executor's
-rules include one minimal Preset that passes code validation and the transparency mount.
+All publication routes, including Plan completion and automatic budget completion, require unchanged files and
+delivery of the latest save's acceptance image. The host cannot publish an older candidate after unsaved edits.
+Only a completed handoff counts as progress. Call parsing repairs surplus closing braces after one complete JSON
+object, records that repair privately, and rejects other malformed JSON with located feedback. Schema errors
+include a JSON Pointer. Code checks include their source range and excerpt so fixes can target the relevant line.
 
 Text replies remain a fallback. Executor and Plan accept a single JSON object with ordinary prose or a
 markdown fence around it, and curly quotes used as JSON delimiters are straightened. They reject arrays,
@@ -647,8 +499,7 @@ canonical dotted tool ID, whether it passed, and on failure a whitelisted error
 code plus a fixed host-authored message. So the chat can show what the model actually
 sent, each call also carries the raw `arguments` (4000 characters) and, on failure, the
 tool's real error `detail` (2000). This is published on purpose: `arguments` can hold plan
-step goals (`tools.plan_execute`) and candidate source (`preset.create`, `preset.modify`,
-`sprite.create`), and `detail` is the tool's own error text, which can name server paths or
+step goals (`tools.plan_execute`) and candidate source (`workspace.write`, `workspace.edit`), and `detail` is the tool's own error text, which can name server paths or
 compiler output. A turn without calls carries the model's reply (`message`) or the reason
 its request failed (`error_detail`, the already sanitized `ModelFailure` text); narration
 that accompanies calls is not published. Everything is cut with `…`, so a cut `arguments`
@@ -675,7 +526,8 @@ another asset the unique key makes it a 409, and repeating an overwrite of the v
 refreshes the preview bundle without rendering boundary samples again. Overwrites also preserve every previously
 editable parameter: removing/unbinding it, changing its type (except integer to number), narrowing its bounds,
 enum, string lengths or array size, or adding a restrictive pattern returns 422 before sampling or writing.
-Bounds/enums may widen, new parameters may be added, and defaults/internal instance schemas may change. Fonts are
+Bounds/enums may widen, new parameters may be added, and defaults/internal instance schemas may change. Panel group
+labels (`x-imv-group`) may be retained, added, renamed or removed without affecting compatibility. Fonts are
 compared as open strings, as in placement validation. Root-level cross-parameter constraints cannot be proven
 compatible with arbitrary existing overrides and changed defaults, so those versions require a new asset.
 Repeated saves, overwrites, preview repairs and deletion share the asset's bundle lock. A repeated save re-reads
@@ -717,10 +569,10 @@ A text Sprite's required parameters include the keyword options the bus forwards
 title/subtitle keyword fields: `keywords`, `keywordBold`/`Italic`/`Underline`/`Strikeout`, `keywordColor` (`""`
 keeps the text colour) and `keywordSize` (0 keeps the font size, otherwise 12–300; placements refuse 1–11), with `keywords` items holding at least 12
 characters (the segmentation keywords the bus forwards). Their
-defaults must be off (`[]`, `false`, `""`, `0`), checked by `sprite.create` and again at publish. A parameter revision
+defaults must be off (`[]`, `false`, `""`, `0`), checked by `effect.save` and again at publish. A parameter revision
 (`保存配置`) validates the complete merged defaults, so every keyword option must remain off even when an old version
 supplied it untouched; a refused publication names the options to restore and asks for a new version (saved versions are immutable; a previewed historical version is read-only). An older effect can also be
-repaired in chat: the workspace's refusal banner offers to ask the Agent to regenerate it, and `sprite.create` tells the
+repaired in chat: the workspace's refusal banner offers to ask the Agent to regenerate it, and `effect.save` tells the
 Agent to keep the keyword look in the keyword Preset's own style parameters while giving the options their off defaults,
 so an unused keyword option keeps the plain text style. A text Sprite fixes `text_prop` to `text` and `keywords_prop` to `keywords` (text versions now always bind it;
 `""` remains only for versions without a keywords binding, which only re-saves of older publications reach); other
@@ -867,7 +719,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's
   own values at the length its Sprite plays in the render (the length it reads as `durationInFrames`; a held text its
   previewed length; a clip cut by the video's end is measured only on its rendered frames) and measures the text
-  boxes the same way `sprite.create` does: cut off by an ancestor whose
+  boxes the same way `effect.save` does: cut off by an ancestor whose
   overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves,
   scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
   text at its full size. Placements that differ only in length or transform are measured separately; the
