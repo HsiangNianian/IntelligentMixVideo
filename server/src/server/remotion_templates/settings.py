@@ -71,7 +71,7 @@ class Settings(ClientSettings, CommonSettings):
     overlay_render_timeout_seconds: int = Field(default=1800, ge=1, le=3600)
     # 每块的浏览器渲染页数，与同时执行的渲染任务数分别控制。
     overlay_frame_concurrency: int = Field(default=4, ge=1, le=64)
-    overlay_task_concurrency: int = Field(default=6, ge=1, le=16)
+    overlay_task_concurrency: int = Field(default=12, ge=1, le=16)
     # 两条渲染路径共用固定 15 秒分块；不超过 15 秒只用一块。
     overlay_chunked: bool = True
     overlay_chunk_concurrency: int = Field(default=6, ge=1, le=6)

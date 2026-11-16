@@ -499,11 +499,11 @@ def test_memory_grant_reaches_the_actual_worker(service, monkeypatch):
     assert overlays.capacity.chunks == 0 and overlays.capacity.memory_units == 0
 
 
-@pytest.mark.parametrize("limit", [6, 2])
+@pytest.mark.parametrize("limit", [12, 2])
 def test_render_slots_bound_actual_tasks(service, monkeypatch, limit) -> None:
-    """默认六个任务可同时进入 worker，自定义两个名额也生效；额外任务要等名额释放。"""
+    """默认十二个任务可同时进入 worker，自定义两个名额也生效；额外任务要等名额释放。"""
     original, renderer, _ = service
-    settings = original.settings if limit == 6 else original.settings.model_copy(update={"overlay_task_concurrency": limit})
+    settings = original.settings if limit == 12 else original.settings.model_copy(update={"overlay_task_concurrency": limit})
     overlays = OverlayRenders(original.store, renderer, settings)
     entered, active, peak = [], 0, 0
     run = renderer.run_worker
