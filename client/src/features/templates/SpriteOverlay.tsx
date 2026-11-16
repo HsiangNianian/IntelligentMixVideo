@@ -92,6 +92,8 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     if (sent.current.get(clip.id) === key) return;
     sent.current.set(clip.id, key);
     requests.current += 1;
+    frame.dataset.coverRequest = String(requests.current);
+    delete frame.dataset.coverPainted;
     if (diagnosticsEnabled()) {
       const now = performance.now();
       for (const [requestId, update] of updates.current)
@@ -148,7 +150,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     sent.current.delete(id);
     for (const [requestId, request] of updates.current) if (request.id === id) updates.current.delete(requestId);
     const frame = frames.current.get(id);
-    if (frame) frame.style.visibility = "hidden";
+    if (frame) { frame.style.visibility = "hidden"; delete frame.dataset.coverPainted; }
     setUnsupported((items) => items.includes(id) ? items.filter((item) => item !== id) : items);
     setFixed((items) => items.includes(id) ? items.filter((item) => item !== id) : items);
     startReadyTimer(id);
@@ -205,11 +207,15 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
       const label = `「${clip?.name ?? id}」（资产 ${clip?.spriteId ?? "未知"}）`;
       // 预览页自己发现的问题（如背景或字体加载失败）原来被忽略，现在写进日志。
       if (event.data?.type === "imv-preview-error") {
+        const frame = frames.current.get(id);
+        if (frame) delete frame.dataset.coverPainted;
         if (typeof event.data.requestId === "number") updates.current.delete(event.data.requestId);
         debugLog("AI 资产预览", `${label}的预览页报错：${oneLine(String(event.data.message ?? "未知错误"), 200)}`);
         return;
       }
       if (event.data?.type === "imv-preview-rendered") {
+        const frame = frames.current.get(id);
+        if (frame && frame.dataset.coverRequest === String(event.data.requestId)) frame.dataset.coverPainted = "true";
         const request = updates.current.get(event.data.requestId);
         if (!request) return;
         updates.current.delete(event.data.requestId);

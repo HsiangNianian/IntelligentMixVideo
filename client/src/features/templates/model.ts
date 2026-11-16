@@ -211,8 +211,17 @@ export function activeDraft(draft: Draft): Draft {
   };
 }
 
-/** 列表只携带展示信息与校验结果，无效记录可以定位和删除。 */
+/** 封面目标版本、已发布版本、固定地址和用于重试的素材标识。 */
+export interface CoverInfo {
+  revision: string;
+  publishedRevision: string;
+  url: string;
+  source: string;
+}
+
+/** 主页与操练场共用的模板摘要。 */
 export interface TemplateSummary {
+  cover?: CoverInfo;
   template_id: string;
   name: string;
   description: string;
@@ -226,6 +235,7 @@ export interface TemplateSummary {
 
 /** 后端返回的完整模板，effects 为保存时的可信快照。 */
 export interface Template extends Draft {
+  cover?: CoverInfo;
   template_id: string;
   effect_ids: string[];
   effects: EffectAsset[];
