@@ -302,6 +302,16 @@ message SaveTemplateRequest {
   FrameMask frame_mask = 11;
   // 省略时保留原设置；只供编辑器预览使用。
   AvatarPreview avatar_preview = 12;
+  // 换预览素材或画面变化时发来源标识，仅用于封面重试，不保存本机路径。
+  optional string cover_source = 13;
+}
+
+// 封面图片固定覆盖同一对象，版本只用于保存校验与触发客户端重新读取。
+message TemplateCover {
+  string revision = 1;
+  string published_revision = 2;
+  string url = 3;
+  string source = 4;
 }
 
 // 已保存的模板及效果快照。
@@ -334,6 +344,7 @@ message TemplateRecord {
   // 上下蒙版，每栏可选纯色或渐变；旧模板省略此字段。
   FrameMask frame_mask = 14;
   AvatarPreview avatar_preview = 15;
+  TemplateCover cover = 16;
 }
 
 // 模板列表只返回摘要；无效记录保留标识与原因，不能用于预览和合成。
@@ -347,6 +358,7 @@ message TemplateSummary {
   string subtitle = 7;
   optional uint32 track_count = 8;
   string validation_error = 9;
+  TemplateCover cover = 10;
 }
 
 // 模板列表及单个模板的响应。
