@@ -27,7 +27,7 @@ from .contracts import (
 )
 from .registry import ToolFault
 from .workspace import (
-    CODE, MANIFEST, assemble, contract_probes, line_count, parse_manifest, physical_lines, preview_keywords, keyframes, motion_facts, restore_version_files, review_box, text_fit_parameters, trial_frames,
+    CODE, MANIFEST, assemble, contract_probes, file_page, line_count, parse_manifest, physical_lines, preview_keywords, keyframes, motion_facts, restore_version_files, review_box, text_fit_parameters, trial_frames,
 )
 
 # 内容运行时 "imv" 的源码：workspace.read 只读地给出它，Agent 照着类型与实现写 Effect.tsx。
@@ -110,15 +110,7 @@ class EffectTools:
             content = RUNTIME_FILE.read_text(encoding="utf-8")
         else:
             content = self._workspace()[request.path]
-        if request.offset > len(content):
-            raise ToolFault("INVALID_ARGUMENT", f"offset exceeds the file's {len(content)} characters.", field="/offset")
-        page = content[request.offset:request.offset + 16_000]
-        # Bound encoded text, including escapes, so even several read replies fit one atomic tool exchange.
-        while len(json.dumps(page, ensure_ascii=False).encode()) > 16_000:
-            page = page[:len(page) // 2]
-        end = request.offset + len(page)
-        return WorkspaceFile(path=request.path, content=page, lines=line_count(content), offset=request.offset,
-                             **({"next_offset": end} if end < len(content) else {}))
+        return file_page(request.path, content, request.offset)
 
     def _store(self, path: str, content: str) -> WorkspaceWriteOutput:
         """Replace a file after checking that a manifest still parses; report the lines removed and added."""

@@ -1,4 +1,4 @@
-"""Bounded task-local chat history; completed tool exchanges are trimmed atomically."""
+"""Replayable model history and task-local Executor windows; completed tool exchanges stay atomic."""
 
 import json
 from copy import deepcopy
@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from .models import Contract
+from .models import Contract, GenerationJob
 
 
 class ToolFunction(Contract):
@@ -52,6 +52,18 @@ class AssistantMessage(Contract):
 OUTCOME_PREFIX = "Host record (data): "
 
 
+def outcome_record(job: GenerationJob) -> dict:
+    """The Outer window entry recording how a free-form task ended: its reply, questions or failure."""
+    outcome = {"status": job.status}
+    if job.reply is not None:
+        outcome |= job.reply.model_dump(mode="json")
+    if job.questions:
+        outcome["questions"] = list(job.questions)
+    if job.error is not None:
+        outcome["error"] = job.error.message
+    return {"role": "user", "content": OUTCOME_PREFIX + json.dumps({"task_outcome": outcome}, ensure_ascii=False)}
+
+
 class Conversation:
     """Keep eight complete exchanges within a UTF-8 budget, with no generated summaries."""
 
@@ -59,10 +71,49 @@ class Conversation:
     pinned = 0
 
     def __init__(self, groups: list[list[dict]] | None = None) -> None:
-        """Restore only complete exchanges saved by this service for the current work."""
+        """Restore complete exchanges for one work; external checkpoints must pass through from_client."""
         self.groups: list[list[dict]] = []
         for group in groups or []:
             self.append(group)
+
+    @classmethod
+    def from_client(cls, state: str) -> "Conversation":
+        """Read a bounded text-only checkpoint without changing message text, order or tool arguments.
+
+        Client data cannot introduce system roles, multimodal blocks or local image paths. Only complete
+        exchanges made by the outer Agent are portable; task-local image windows remain server-owned.
+        """
+        if len(state.encode()) > 240_000:
+            raise ValueError("model context exceeds the byte limit")
+        try:
+            groups = json.loads(state)
+        except (ValueError, RecursionError):
+            raise ValueError("invalid model context JSON") from None
+        if not isinstance(groups, list) or len(groups) > 8:
+            raise ValueError("model context must contain at most eight exchange groups")
+        fields = {
+            "user": {"role", "content"},
+            "assistant": {"role", "content", "tool_calls"},
+            "tool": {"role", "content", "tool_call_id"},
+        }
+        for group in groups:
+            if not isinstance(group, list) or not group:
+                raise ValueError("model context groups must be nonempty lists")
+            for message in group:
+                if not isinstance(message, dict) or not isinstance(message.get("role"), str) or message["role"] not in fields:
+                    raise ValueError("invalid model context message role")
+                role = message["role"]
+                if set(message) - fields[role]:
+                    raise ValueError("unexpected model context message fields")
+                content = message.get("content")
+                if not isinstance(content, str) and not (role == "assistant" and content is None):
+                    raise ValueError("model context messages must contain text only")
+                if role == "tool" and not isinstance(message.get("tool_call_id"), str):
+                    raise ValueError("model context tool result requires a call ID")
+        restored = cls(groups)
+        if restored.groups != groups:
+            raise ValueError("model context exceeds the serialized byte limit")
+        return restored
 
     def append(self, group: list[dict]) -> None:
         """Validate call/result pairing, then evict whole old exchanges; never truncate source."""

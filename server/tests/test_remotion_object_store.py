@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from server.remotion_templates import object_store
-from server.remotion_templates.media import save_image
+from .legacy_remotion import create_work, save_image
 from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.object_store import LocalObjects, ObjectStoreError, ZosObjects, load_objects
 from server.remotion_templates.routes import router
@@ -205,7 +205,7 @@ def test_routes_answer_503_while_the_object_store_is_unreachable(tmp_path: Path,
     buffer = BytesIO()
     Image.new("RGB", (8, 8), "red").save(buffer, format="PNG")
     asset = save_image(buffer.getvalue(), store, Settings(_env_file=None), DEVICE)
-    work, _ = store.create(GenerateTemplateRequest(description="对象存储", images=[{"asset_id": asset.id}]), DEVICE)
+    work, _ = create_work(store, GenerateTemplateRequest(description="对象存储", images=[{"asset_id": asset.id}]), DEVICE)
     shutil.rmtree(store.root / "cache", ignore_errors=True)
     store.objects = UnavailableObjects(store.root / "objects")
     app = FastAPI()
@@ -213,8 +213,8 @@ def test_routes_answer_503_while_the_object_store_is_unreachable(tmp_path: Path,
     app.state.runtime = Runtime(store, None, Settings(_env_file=None))
     with TestClient(app) as client:
         uploaded = client.post("/assets", headers=DEVICE_HEADERS, files={"file": ("a.png", buffer.getvalue(), "image/png")})
-        assert uploaded.status_code == 503
-        assert client.get(f"/assets/{asset.id}").status_code == 503
+        assert uploaded.status_code == 201  # Normalization no longer touches ZOS.
+        assert client.get(f"/assets/{asset.id}", headers=DEVICE_HEADERS).status_code == 503
         assert client.delete(f"/works/{work.id}", headers=DEVICE_HEADERS).status_code == 503
     assert store.pending_deletions() == [work.id]
 

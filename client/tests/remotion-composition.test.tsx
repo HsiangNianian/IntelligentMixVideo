@@ -177,6 +177,7 @@ test("图片上传互斥且失败后可重试固定配置", async () => {
   await waitFor(() => expect(result.current.version).not.toBeNull());
   expect(creations()).toEqual([{
     images: [{ asset_id: "asset-1" }],
+    assets: ["asset-1"].map((id) => ({ id, data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==" })),
     composition: { width: 1080, height: 1920, fps: 30, duration_in_frames: 150 },
   }]);
 });
