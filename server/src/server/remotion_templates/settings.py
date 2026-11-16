@@ -79,13 +79,18 @@ class Settings(ClientSettings, CommonSettings):
     overlay_global_chunk_concurrency: int = Field(default=36, ge=1, le=64)
     render_cpu_reserve_percent: int = Field(default=25, ge=10, le=90)
     render_memory_reserve_percent: int = Field(default=25, ge=10, le=90)
-    # 36 块 × 4 页；每页 1 GiB，加六视频各 1 GiB。与整机/cgroup 预留后的余量取更严者。
+    # CPU 与主存的全局上限独立于 GPU；与整机/cgroup 预留后的余量取更严者。
     render_max_cpus: int = Field(default=144, ge=1)
     render_max_memory_mb: int = Field(default=153600, ge=1024)
     overlay_chunk_memory_mb: int = Field(default=1024, ge=128, le=16384)
     overlay_resource_wait_seconds: float = Field(default=300, gt=0, le=1800, allow_inf_nan=False)
     overlay_vp9_cpu_used: int | None = Field(default=7, ge=0, le=8)
     overlay_vp9_threads: int | None = Field(default=3, ge=1, le=64)
+    # 1080×1920、每块四页时的显存估算；双流包含两个 NVENC 上下文。按路线与实际任务尺寸扩展。
+    overlay_gpu_pair_mb: int = Field(default=768, ge=1)
+    overlay_gpu_webm_mb: int = Field(default=256, ge=1)
+    # 同一宿主的所有服务进程需共用本地租约目录，默认使用服务账号的系统临时目录。
+    overlay_gpu_lease_dir: Path | None = None
     # 瞬时传输故障与上游限流/不可用会等待后重试；等待按次数翻倍，上限 30 秒。
     model_retries: int = Field(default=2, ge=0, le=5)
     model_retry_delay_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
