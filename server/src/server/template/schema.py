@@ -467,11 +467,21 @@ class TemplateSave(TemplateData):
         return self
 
 
+class TemplateCover(BaseModel):
+    """目标画面版本与最后发布的静态图；source 只标识重试所需的预览素材。"""
+
+    revision: str
+    published_revision: str = ""
+    url: str = ""
+    source: str = "builtin"
+
+
 class Template(TemplateData):
     """完整模板响应；ID、UTC 时间与效果快照由服务端生成。"""
 
     template_id: UUID
     effects: list[EffectAsset]
+    cover: TemplateCover | None = Field(default=None, exclude=True)
     created_at: datetime
     updated_at: datetime
 
@@ -488,6 +498,7 @@ class TemplateSummary(BaseModel):
     subtitle: str = ""
     track_count: int | None = None
     validation_error: str = ""
+    cover: TemplateCover | None = None
 
 
 def completeness_error(template: TemplateData) -> str:
