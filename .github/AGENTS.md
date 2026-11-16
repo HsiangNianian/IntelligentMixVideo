@@ -64,7 +64,7 @@
 - 排除随包 Wayland/PulseAudio 库，上传前检查 WebKit、GStreamer OpenGL/播放/解码插件。
 - linuxdeploy GTK 钩子把 `GTK_IM_MODULE_FILE` 固定为随包清单，因此构建机安装 `fcitx5-frontend-gtk3`、`ibus-gtk3`，把与随包 GTK/GLib 同版本的输入法模块打进包。不要改为加载宿主模块：GTK 以延迟绑定加载模块，宿主模块依赖更新的 GLib 时会在输入时崩溃。
 - 上传前检查 `im-fcitx5.so`、`im-ibus.so`、`libFcitx5GClient.so.2`、`libibus-1.0.so.5` 与清单中的 fcitx、fcitx5、ibus 登记。
-- Linux 在 GTK 初始化前默认设置 `WEBKIT_GST_DMABUF_SINK_DISABLED=1` 和 `WEBKIT_GST_USE_PLAYBIN3=1`，保留显式环境配置；网页缓存按 WebKit 版本隔离，其他应用数据目录不变。
+- Linux 在 GTK 初始化前默认设置 `WEBKIT_GST_DMABUF_SINK_DISABLED=1` 和 `WEBKIT_GST_USE_PLAYBIN3=1`，检测到 NVIDIA 内核模块的 AppImage 还默认设置 `WEBKIT_DISABLE_DMABUF_RENDERER=1`，避免 WebKit 在 NVIDIA EGL 内崩溃。保留显式环境配置；网页缓存按 WebKit 版本隔离，其他应用数据目录不变。
 - `IMV_GDK_BACKEND=wayland|x11` 保留为显示后端对比入口；不要把打包检查描述为真实播放与性能验证。
 
 ## 正式版本与 tag 发版
