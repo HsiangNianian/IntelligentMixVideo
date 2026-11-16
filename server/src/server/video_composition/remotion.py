@@ -25,7 +25,7 @@ from ..template.schema import EffectTrack, RemotionTrackEditor, active_tracks
 from ..template.timing import resolve_track
 from ..template.transitions import select_transitions
 from .remotion_content import ContentError, dynamic_duration, resolve_config, roles
-from .remotion_timing import retime_source
+from ..remotion_templates.retiming import RetimingError, retime_source
 from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, fit_texts, measured, overlay_ranges, record_performance, render_overlay, to_frames
 from ..remotion_templates.sprite_router import sprite_runtime
 from ..remotion_templates.render_resources import RenderCapacityTimeout
@@ -333,18 +333,19 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             count = last - first
             # 多行字效的换行只用来分行：每一行自己的文字不能再含换行，否则会挤进下一行的样式里。
             text = "\n".join(item.replace("\n", " ") for item in texts) if rows > 1 else texts[0]
-            # 各行出现的帧，从实例起点算起；固定时钟资产读到的是预览时钟，按宿主同样的线性映射换算，
-            # 两帧以内会被定格，所有行同时显示。
+            # 逐行起点始终使用实际切片帧；固定时钟宿主在每帧统一映射，避免提前显示下一行。
             offsets = [min(count - 1, max(0, to_frames(item, fps) - first)) for item in starts]
             preview = sprite.canvas.preview_frames
-            clock = [round(item * (preview - 1) / (count - 1)) if count > 2 else 0 for item in offsets] if fixed_clock else offsets
             values = resolve_config(sprite, text, keywords, preview if fixed_clock else count,
                                     placement.get("text_prop", ""), placement.get("keywords_prop", ""), config=config,
-                                    line_starts=clock, english=english if bilingual_text else None) if dynamic else config
+                                    line_starts=offsets, english=english if bilingual_text else None) if dynamic else config
             code = sprite.tsx_code
             if fixed_clock:
                 if sprite.sprite_id not in timed_sources:
-                    timed_sources[sprite.sprite_id] = retime_source(sprite)
+                    try:
+                        timed_sources[sprite.sprite_id] = retime_source(sprite)
+                    except RetimingError as exc:
+                        raise ContentError(str(exc)) from exc
                 code = timed_sources[sprite.sprite_id]
             # 装饰保留完整动画区间，由成片总长裁尾；动态正文使用实际可见区间。
             length = count if dynamic else max(1, to_frames(min(length_seconds, max_seconds), fps))

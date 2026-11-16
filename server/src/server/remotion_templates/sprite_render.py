@@ -2,15 +2,16 @@
 
 The Sprite's style is its accepted code plus the editable style overrides and host transform of the placement.
 The content is either one `text` with `keywords` shown for the whole effect (a title) or timed `cues` (subtitles,
-each shown once in its own frames, so the Sprite reads the cue's length as `durationInFrames`). A multi-line text
+each shown once within its actual frame interval). A multi-line text
 effect (`categories.line_count` above 1) shows up to that many consecutive cues of one sentence together instead:
 line i appears when cue i starts (the host passes each line's frame as `lineStartFrames`) and the group clears when
 its last cue ends. A bilingual text (双语字幕) is one language per tier, so this request — which carries no
 translation — renders it like a single-line text with its English tier empty; both languages are injected by video
-composition, which reads the task's segments. A text shown for less than `STATIC_TEXT_SECONDS` plays no entrance or exit: the Sprite runs at its
-previewed length, frozen on the middle frame with every line shown, for the text's frames, which avoids flicker and
-code that cannot animate in so few frames. The time is
-`effect_total_frames`, 0.5 to 120 seconds, whatever length the user previewed when generating the Sprite.
+composition, which reads the task's segments. Text effects use the same render-time clock as video composition:
+their published animation is rescaled to each actual interval, while explicitly duration-aware assets keep their
+own clock. Only one/two-frame intervals hold the published still sample instead of both potentially transparent
+endpoints. The total time is `effect_total_frames`, 0.5 to 120 seconds, whatever length the user previewed when
+generating the Sprite.
 `plan_sprite_render` checks the request and places the instances on the whole effect; `render_sprite` renders it in
 one overlay worker run that writes consecutive 15-second chunks from the same composition (so every
 animation continues across a chunk boundary) and joins them losslessly into one WebM. The async task, upload and
@@ -28,11 +29,14 @@ from pydantic import ValidationError
 
 from ..template.schema import RemotionTrackEditor
 from .categories import BILINGUAL_PROP, LINE_START_MAX_FRAMES, LINE_STARTS_PROP, bilingual as is_bilingual, content_line_count, content_line_starts
+from .fonts import open_font_schema
 from .overlay_render import Overlay, OverlayError, chunk_ranges, overlay_ranges, render_overlay, to_frames
 from .settings import Settings
 from .placement import resolve
 from .renderer import Renderer
-from .tool_validation import MAX_RENDER_SECONDS, MIN_RENDER_SECONDS, STATIC_TEXT_SECONDS
+from .retiming import RetimingError, duration_paths, dynamic_duration, inject_duration, retime_source
+from .tool_validation import MAX_RENDER_SECONDS, MIN_RENDER_SECONDS
+from .tools.schema import validate_parameters
 
 
 def _editor(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, text: str, keywords: list[str]) -> RemotionTrackEditor:
@@ -134,15 +138,31 @@ def _groups(cues, contents: list[tuple], lines: int, max_length: int | None) -> 
     ]
 
 
-def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite) -> Overlay:
+def adapt_sprite_render(overlay: Overlay, sprite: pb.PublishedSprite) -> None:
+    """Bundle one fixed-clock source for all instances, shared by fit and rendering.
+
+    Queued tasks call this only after acquiring their render slot and capacity; no asset code executes here.
+    """
+    if sprite.kind != pb.SPRITE_KIND_TEXT:
+        return
+    try:
+        if dynamic_duration(json.loads(sprite.config_schema_json or "{}")):
+            return
+        code = retime_source(sprite)
+    except RetimingError as exc:
+        raise OverlayError("sprite_unavailable", "字效时长适配不可用，请检查字效资产与渲染环境") from exc
+    for instance in overlay.instances:
+        instance["code"] = code
+
+
+def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, *, adapt_source: bool = True) -> Overlay:
     """Check the canvas, time, content and style, and place one instance per content on the whole effect.
 
-    A text shown for less than `STATIC_TEXT_SECONDS` gets a `hold`: frozen on the middle frame of the previewed length
-    the Sprite was accepted at (`hold.length`, which it reads as its length) and shown for the text's frames; the
-    instance lasts the longer of the two, so a preview shorter than the text does not cut it. A multi-line text gets
-    its lines' start frames, all 0 when held so the frozen frame shows every line, and the frame of its last line
-    (`reveal_frame`) for the text fit. Every refusal is an `OverlayError` with a stable code; acceptance turns it into
-    a 422.
+    Text animations follow each cue's actual frame count, with no fixed seconds cutoff. Fixed-clock sources are
+    bundled once per request and map line starts inside their wrapper; text fit keeps the actual last-line
+    reveal frame. Duration-aware sources and non-text effects keep their own clock. Every refusal is an
+    `OverlayError` with a stable code. Queued tasks pass `adapt_source=False` to validate and snapshot the plan
+    cheaply, then bundle it with `adapt_sprite_render` after render admission. Bundling never executes source.
     """
     canvas = sprite.canvas
     fps = canvas.fps
@@ -153,30 +173,41 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
         raise OverlayError("duration_invalid", f"效果时长不能短于 {MIN_RENDER_SECONDS:g} 秒")
     if total > to_frames(MAX_RENDER_SECONDS, fps):
         raise OverlayError("duration_too_long", f"效果时长不能超过 {MAX_RENDER_SECONDS:g} 秒")
-    static = to_frames(STATIC_TEXT_SECONDS, fps) if sprite.kind == pb.SPRITE_KIND_TEXT else 0
-    preview = max(1, canvas.preview_frames)
     instances = []
     schema = json.loads(sprite.config_schema_json or "{}")
     # 此请求只有原文，按内容组数注入并清空英文，避免显示发布时的示例译文。
     bilingual = sprite.kind == pb.SPRITE_KIND_TEXT and is_bilingual(schema)
     lines = content_line_count(schema) if sprite.kind == pb.SPRITE_KIND_TEXT else 1
-    for start, length, text, keywords, starts in _contents(message, sprite, total):
+    contents = _contents(message, sprite, total)
+    try:
+        fixed_clock = sprite.kind == pb.SPRITE_KIND_TEXT and not dynamic_duration(schema)
+        durations = duration_paths(schema) if sprite.kind == pb.SPRITE_KIND_TEXT else []
+    except RetimingError as exc:
+        raise OverlayError("sprite_unavailable", "字效时长适配不可用，请检查字效资产与渲染环境") from exc
+    for start, length, text, keywords, starts in contents:
         try:
             config, host = resolve(sprite, _editor(message, sprite, text, keywords))
         except ValueError as exc:
             raise OverlayError("placement_invalid", f"样式或内容不符合发布契约：{exc}") from None
         if bilingual:
             config[BILINGUAL_PROP] = ""
+        if durations:
+            # Duration roles are render content, not operator overrides. Match video composition's injected clock.
+            try:
+                inject_duration(config, durations, canvas.preview_frames if fixed_clock else length)
+                validate_parameters(open_font_schema(schema), config)
+            except Exception as exc:
+                raise OverlayError("content_invalid", "字效参数契约不支持当前字幕时长") from exc
         instance = {"sprite_id": message.sprite_id, "code": sprite.tsx_code, "config": config, "host": host, "start_frame": start, "duration_frames": length}
-        if length < static:
-            instance.update(duration_frames=max(preview, length), hold={"frame": preview // 2, "frames": length, "length": preview})
-            starts = [0]
         if lines > 1:
             # Content the host injects (not an operator parameter), padded with the last line's start for absent lines.
             config[LINE_STARTS_PROP] = content_line_starts(schema, starts)
             instance["reveal_frame"] = starts[-1]
         instances.append(instance)
-    return Overlay(canvas.width, canvas.height, fps, total, instances)
+    overlay = Overlay(canvas.width, canvas.height, fps, total, instances)
+    if adapt_source:
+        adapt_sprite_render(overlay, sprite)
+    return overlay
 
 
 async def render_sprite(renderer: Renderer, overlay: Overlay, directory: Path, *, chunk_concurrency: int | None = None,

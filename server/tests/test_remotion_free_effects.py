@@ -307,11 +307,11 @@ def free_session(tmp_path, intent=None, spec=None, base=None, report=None):
 @needs_bundler
 @pytest.mark.parametrize("duration", [149, 150])
 def test_save_runs_the_whole_gate_and_attaches_the_acceptance_sheet(tmp_path, duration):
-    """保存走完整门禁，奇偶预览长度的观察图都取总线实际定格帧；通过后记下候选与等待下一轮看过的联系表。"""
+    """保存走含单帧字效边界的完整门禁，奇偶预览长度都取中间帧；通过后记下候选与待回看的联系表。"""
     current = free_session(tmp_path, intent={"original_request": {"description": "demo", "composition": {"duration_in_frames": duration}}})
     saved = asyncio.run(current.execute("effect.save", {}, available()))
     options = current.calls[-1]
-    assert options["transparency"] is True and options["text_fit"] is True and options["lengths"] == [45, 3600]
+    assert options["transparency"] is True and options["text_fit"] is True and options["lengths"] == [1, 3600]
     assert options["text_fit_parameters"] == {} and options["effect_contract"]["keyword"] == "示例"
     assert current.latest_sprite_id == saved["sprite_id"] and current.pending_sheet == saved["sprite_id"]
     # By default only the middle frame is looked at; motion comes from measurements, which the stub does not write.

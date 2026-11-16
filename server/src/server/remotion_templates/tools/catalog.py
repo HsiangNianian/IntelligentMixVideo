@@ -150,7 +150,7 @@ async def preview_render(owner, request: PreviewRenderInput) -> ToolResult[Previ
     examples=[{"input": {}, "output": {"ok": True, "data": {"passed": False, "problems": [{"check": "text_fit", "message": "example"}], "notes": []}}}],
 )
 async def validate_check(owner, request: EffectCheckInput) -> ToolResult[EffectCheckOutput]:
-    """Check the workspace without saving: TypeScript, required parameters, a see-through canvas, 1.5 s and 120 s renders, 100-character text fit, injected text and keywords, whole lines on the middle frame and fontSize scaling. Parameter samples without visible changes produce advisory notes, not failures."""
+    """Check the workspace without saving: TypeScript, required parameters, a see-through canvas, the shortest and longest render lengths, 100-character text fit, injected text and keywords, whole lines on the middle frame and fontSize scaling. Parameter samples without visible changes produce advisory notes, not failures."""
     try:
         return _success(await owner.check_effect(request))
     except Exception as exc:
