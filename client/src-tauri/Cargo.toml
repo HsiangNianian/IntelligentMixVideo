@@ -36,7 +36,7 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
 # 大文件落盘经 block_in_place 让出 Tauri 的异步工作线程；与 tauri 共用同一运行时。
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 # 字效会话本地库；bundled 随包编译 SQLite，不依赖系统库。
 rusqlite = { version = "0.37", features = ["bundled"] }
 # 预览媒体服务（各平台）与 Windows 页面服务共用的回环 HTTP 服务。
@@ -50,6 +50,14 @@ windows-core = "0.62"
 # 调试日志在 Linux 用 dup2 把标准错误接到管道，收集 WebKit/GStreamer 的原生输出。
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+webkit2gtk = "2.0"
+cairo-rs = { version = "0.18", features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2-web-kit = { version = "0.3", default-features = false, features = ["WKWebView", "WKSnapshotConfiguration", "block2", "objc2-app-kit"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSImage", "NSBitmapImageRep", "NSImageRep", "objc2-core-graphics"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSDictionary", "NSError"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

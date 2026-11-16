@@ -345,9 +345,14 @@ name = "client"
 version = "0.9.9"
 dependencies = [
  "base64 0.22.1",
+ "block2",
+ "cairo-rs",
  "imv-update-build",
  "libc",
  "minisign-verify",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
  "reqwest",
  "rusqlite",
  "rustls",
@@ -361,6 +366,7 @@ dependencies = [
  "tiny_http",
  "tokio",
  "uuid",
+ "webkit2gtk",
  "webview2-com",
  "windows-core",
 ]
@@ -2101,6 +2107,7 @@ dependencies = [
  "block2",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
  "objc2-quartz-core",
 ]

@@ -4,6 +4,8 @@
 
 阿里云 SDK 预览见 `client/src/features/templates/AGENTS.md`；更新设计见 `docs/client-update-design.md`；更新签名密钥与 Release 附件检查见 `.github/AGENTS.md`。
 
+主窗口的 `preview_snapshot` 将 WebView 合成画面作为内存 PNG 返回。编辑器截取可视区；主页在 WebKitGTK / WebView2 请求包含视口外预览的文档，按文档坐标裁出画布；WKWebView 使用可视区采样。
+
 ## 调试日志窗口
 
 记录的内容与各平台的行为见 `client/README.md`「调试日志窗口」，改动前先读。代码分布在 `src/diagnostics.rs`、`src/diagnostics/webview2.rs`、`client/src/lib/diagnostics.ts` 与模板预览的 `sdk.ts`、`playbackStats.ts`。
