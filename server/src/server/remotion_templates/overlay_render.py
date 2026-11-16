@@ -26,6 +26,7 @@ from ..template.schema import RemotionTrackEditor
 from ..video_composition.media import ffprobe_json
 from ..video_composition.schema import PositiveSeconds
 from .fonts import FontStore
+from .gpu_resources import GPUGrant, GPUWorkerError
 from .managed_fonts import prepare_fonts
 from .placement import resolve
 from .renderer import CPU_SECONDS, Renderer
@@ -57,8 +58,12 @@ def record_performance(directory: Path, **measurements: float) -> dict:
         path = directory / "performance.json"
         if path.is_file():
             result = numbers(json.loads(path.read_text(encoding="utf-8")), host_fields)
+        # IMS retries recreate only media/. Keep the original fit and slot timings on the job.
+        media = directory / "media"
+        if (media / "performance.json").is_file():
+            result.update(numbers(json.loads((media / "performance.json").read_text(encoding="utf-8")), host_fields))
         result.update(numbers(measurements, host_fields))
-        report = directory / "renderer.json"
+        report = (media if media.is_dir() else directory) / "renderer.json"
         if report.is_file():
             source = json.loads(report.read_text(encoding="utf-8")).get("performance", {})
             worker = numbers(source, worker_fields)
@@ -474,8 +479,9 @@ def overlay_cpu_seconds(timeout_seconds: float) -> int:
 
 
 async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Path, ranges: list[list[int]] | None = None,
-                             *, chunk_concurrency: int | None = None, frame_concurrency: int | None = None) -> None:
-    """Run the isolated worker in `directory`: one `overlay.webm`, or one `chunk-<i>.webm` per inclusive frame range."""
+                             *, chunk_concurrency: int | None = None, frame_concurrency: int | None = None,
+                             gpu: GPUGrant | None = None) -> None:
+    """Prepare sealed inputs and run one isolated CPU or device-bound worker for all its ranges."""
     settings = renderer.settings
 
     def prepare() -> None:
@@ -496,7 +502,7 @@ async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Pa
             },
             "instances": overlay.instances,
             "browser": renderer.worker_browser_path(),
-            "route": "cpu-webm",
+            "route": gpu.route if gpu else "cpu-webm",
             **({"bundled_ffmpeg": True} if shutil.which("ffmpeg") is None else {}),
             "concurrency": frame_concurrency or settings.overlay_frame_concurrency,
             "chunk_concurrency": min(chunk_concurrency or settings.overlay_chunk_concurrency, settings.overlay_chunk_concurrency, len(ranges or [None])),
@@ -514,8 +520,19 @@ async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Pa
         await measured(directory, "worker", renderer.run_worker(
             directory, worker="overlay-worker.mjs", timeout_seconds=settings.overlay_render_timeout_seconds,
             cpu_seconds=overlay_cpu_seconds(settings.overlay_render_timeout_seconds),
+            **({"gpu": gpu} if gpu else {}),
         ))
+    except GPUWorkerError:
+        raise
     except (RuntimeError, TimeoutError) as exc:
+        marker = directory / "gpu-failure.json"
+        if gpu and marker.is_file():
+            failure = json.loads(marker.read_text(encoding="utf-8"))
+            kind = failure.get("kind")
+            if kind == "graphics" or (kind == "encoder" and gpu.route == "h264-pair"):
+                reason = ("nvenc_dimensions_unsupported" if kind == "encoder" and failure.get("reason") == "nvenc_dimensions_unsupported"
+                          else f"worker_{kind}_unavailable")
+                raise GPUWorkerError(kind, reason) from exc
         # The worker log tail holds sandbox paths and source excerpts: only the chained cause carries it.
         message = "叠加视频渲染超时" if isinstance(exc, TimeoutError) else "叠加视频渲染失败"
         raise OverlayError("render_failed", message) from exc
@@ -598,3 +615,42 @@ async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path, 
                              chunk_concurrency=chunk_concurrency, frame_concurrency=frame_concurrency)
     output, _ = await _finish_outputs(overlay, directory, len(ranges))
     return output
+
+
+async def render_ims_overlay(renderer: Renderer, overlay: Overlay, directory: Path, *, chunk_concurrency: int,
+                             frame_concurrency: int, log=None) -> tuple[Path, Path | None]:
+    """Try dual NVENC, hardware drawing with VP9, then software VP9 without waiting for GPU resources."""
+    skip_graphics, skip_nvenc = set(), set()
+    media = directory / "media"
+    ranges = overlay_ranges(overlay, renderer.settings)
+    chunks = min(2, chunk_concurrency, len(ranges))
+    while True:
+        async with renderer.gpu_pool.claim(overlay.width, overlay.height, frame_concurrency, chunks,
+                                           skip_graphics=skip_graphics, skip_nvenc=skip_nvenc) as grant:
+            logger.info("Remotion task_id=%s route=%s gpu=%s chunks=%s reason=%s",
+                        directory.name, grant.route, grant.uuid, grant.chunks, grant.reason)
+            if log:
+                await log("route_selected", step="remotion_video", output={
+                    "route": grant.route, "gpu_uuid": grant.uuid, "chunks": grant.chunks, "reason": grant.reason,
+                })
+            try:
+                await run_overlay_worker(renderer, overlay, media, ranges if len(ranges) > 1 else None,
+                                         chunk_concurrency=grant.chunks, frame_concurrency=frame_concurrency,
+                                         gpu=grant if grant.uuid else None)
+            except GPUWorkerError as exc:
+                if not grant.uuid:
+                    raise
+                logger.warning("Remotion task_id=%s route=%s gpu=%s reason=%s", directory.name, grant.route, grant.uuid, exc.reason)
+                if log:
+                    await log("route_retry", step="remotion_video", output={"route": grant.route, "gpu_uuid": grant.uuid, "reason": exc.reason})
+                if exc.reason == "nvenc_dimensions_unsupported":
+                    skip_nvenc.add("*")
+                else:
+                    (skip_graphics if exc.kind == "graphics" else skip_nvenc).add(grant.uuid)
+                    await asyncio.to_thread(renderer.gpu_pool.failed, grant.uuid, exc.kind)
+            else:
+                break
+        # The worker has exited and its claim is released. Never reuse half-written frames, symlinks or masks.
+        if media.is_dir():
+            await asyncio.to_thread(shutil.rmtree, media)
+    return await _finish_outputs(overlay, media, len(ranges), paired=grant.route == "h264-pair")
