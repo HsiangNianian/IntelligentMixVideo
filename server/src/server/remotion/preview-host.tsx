@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Player, type PlayerRef } from "@remotion/player";
-import { AbsoluteFill, Html5Video } from "remotion";
+import { AbsoluteFill, Html5Video, useCurrentFrame, useVideoConfig } from "remotion";
 import Template from "imv:template";
 import initial from "imv:config";
 import { HostLayer, type HostBox, type HostTransform } from "./host-layer";
@@ -91,6 +91,7 @@ interface PreviewProps {
   transform: HostTransform;
   background: string;
   requestId: number;
+  capture?: { id: string; frame: number; length: number };
 }
 
 /** The longest length the bus renders a Sprite at; a longer clip length in a sync message is clamped to it. */
@@ -101,11 +102,29 @@ const MAX_LENGTH_SECONDS = 120;
  * `host` that it accepts partial values and a placement transform.
  */
 function notify(type: string, message?: string, requestId?: number) {
-  window.parent.postMessage({ type, channel, message, requestId, sync, host: true }, "*");
+  window.parent.postMessage({ type, channel, message, requestId, sync, host: true, captureSeek: sync }, "*");
+}
+
+/** Acknowledge a cover seek only after the requested frame and composition length have reached the painted Player. */
+function CoverFrameAck({ id, frame, length }: NonNullable<PreviewProps["capture"]>) {
+  const current = useCurrentFrame();
+  const { durationInFrames } = useVideoConfig();
+  const sent = useRef("");
+  useEffect(() => {
+    if (current !== frame || durationInFrames !== length || sent.current === id) return;
+    let paint = requestAnimationFrame(() => {
+      paint = requestAnimationFrame(() => {
+        sent.current = id;
+        window.parent.postMessage({ type: "imv-preview-frame-rendered", channel, captureId: id }, "*");
+      });
+    });
+    return () => cancelAnimationFrame(paint);
+  }, [id, frame, length, current, durationInFrames]);
+  return null;
 }
 
 /** Keep both layers on Remotion's frame clock; failed background media leaves the typography visible. */
-function Composition({ values, transform, background, requestId }: PreviewProps) {
+function Composition({ values, transform, background, requestId, capture }: PreviewProps) {
   const [failed, setFailed] = useState("");
   const video = useRef<HTMLVideoElement>(null);
   const [loaded, setLoaded] = useState("");
@@ -134,6 +153,7 @@ function Composition({ values, transform, background, requestId }: PreviewProps)
   }, [requestId, background, loaded, failed]);
   return (
     <AbsoluteFill>
+      {capture && <CoverFrameAck {...capture} />}
       {background && failed !== background && (
         <Html5Video
           key={background}
@@ -195,6 +215,10 @@ function App() {
         const valid = typeof duration === "number" && duration > 0;
         const frames = valid ? Math.max(1, Math.round(Math.min(duration, MAX_LENGTH_SECONDS) * c.fps)) : lengthRef.current;
         const frame = Math.max(0, Math.round(data.time * c.fps));
+        if (typeof data.captureId === "string") {
+          const capture = { id: data.captureId, frame: Math.min(frames - 1, frame), length: frames };
+          setProps(previous => ({ ...previous, capture }));
+        }
         player.current?.pause();
         if (frames !== lengthRef.current) {
           lengthRef.current = frames;

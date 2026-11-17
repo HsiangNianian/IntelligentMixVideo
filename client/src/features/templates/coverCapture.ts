@@ -99,10 +99,26 @@ export async function captureFrame(frame: HTMLElement, stream?: MediaStream): Pr
   }
 }
 
-/** 核对一秒处全部已发布字效的宿主更新回执；漏层或降级的画面不能替换已有封面。 */
-export function coverLayersReady(frame: HTMLElement): boolean {
-  const active = [...frame.querySelectorAll<HTMLIFrameElement>("iframe[sandbox]")].filter(el => el.style.visibility === "visible");
-  return active.length === Number(frame.parentElement?.dataset.coverLayers) && active.every(el => el.dataset.coverPainted === "true");
+/** 各字效按片段内的相对时间定位。等本次取帧和最新参数都画完，才能截取合成画面。 */
+function coverLayersReady(frame: HTMLElement, captureId: string): boolean {
+  const overlays = [...frame.querySelectorAll<HTMLIFrameElement>("iframe[sandbox]")];
+  if (overlays.some(layer => layer.style.visibility === "visible" && layer.dataset.coverAt === undefined)) return false;
+  const layers = overlays.filter(layer => layer.dataset.coverAt !== undefined);
+  if (layers.length !== Number(frame.parentElement?.dataset.coverLayers)) return false;
+  let ready = true;
+  for (const layer of layers) {
+    const data = layer.dataset;
+    if (data.coverSeekSupported === "false") throw new Error("字效预览包不支持封面定位，请重新发布资产后重试");
+    if (layer.style.visibility !== "visible" || data.coverPainted !== "true") { ready = false; continue; }
+    const id = `${captureId}:${data.coverRequest}`;
+    if (data.coverSeek !== id) {
+      data.coverSeek = id;
+      layer.contentWindow?.postMessage({ type: "imv-preview-sync", channel: new URL(layer.src).hash.slice(1),
+        time: Number(data.coverAt), duration: Number(data.coverDuration), captureId: id }, "*");
+    }
+    if (data.coverSeekPainted !== id) ready = false;
+  }
+  return ready;
 }
 
 /** SDK 5.2.2 在独立字幕画布上每帧先清空，再为每个已渲染的 IMS 文字叠一张位图。canplay 早于字体下载和绘制。 */
@@ -130,7 +146,8 @@ export async function prepareCoverFrame(frame: HTMLElement, seek: (seconds: numb
       ctx.drawImage = (image, ...coordinates: number[]) => { Reflect.apply(draw, ctx, [image, ...coordinates]); painted++; };
     }
     seek(1);
-    const complete = () => ready() && stage.dataset.coverTime === "1" && painted >= expected && coverLayersReady(frame);
+    const captureId = crypto.randomUUID();
+    const complete = () => ready() && stage.dataset.coverTime === "1" && painted >= expected && coverLayersReady(frame, captureId);
     await waitForCover(complete, 60000, "1 秒处的标题、字幕或字效未绘制完成，请刷新预览后重试");
     await new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done())));
     if (!complete()) throw new Error("预览已变化，请重试");

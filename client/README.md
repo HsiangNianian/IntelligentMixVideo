@@ -247,6 +247,8 @@ bun run build
 
 测试固定 API 与示例视频地址并拦截 fetch，不需要启动后端、MySQL 或下载 SDK。
 
+封面帧定位回归执行 `bun tests/cover-frame.browser.mjs`，需要 Chrome 和 `server/src/server/remotion/` 的锁定依赖。测试让真实字效播放器延迟 900 毫秒定位，并核对封面 PNG 的像素与 1 秒处的片段帧号。旧版字效预览包在服务端首次预览时重建；若仍无法确认目标帧，补图流程会报告失败，保留原封面。
+
 资产覆盖的浏览器回归执行 `bun tests/sprite-preview.browser.mjs`，需要 Chrome（可用 `IMV_CHROME_PATH` 指定路径）。脚本启动独立 Vite，模拟全部 API，验证同一资产的新版本会重载封面与叠加播放器、重新发送摆放和时间，改名保持原播放器；结束时关闭测试服务与浏览器，不验证真实 Remotion 渲染或视频解码。
 
 `preview-timeline.test.tsx` 检查轨道数据转换、缩略图源时间采样、播放时间同步和键盘定位边界。

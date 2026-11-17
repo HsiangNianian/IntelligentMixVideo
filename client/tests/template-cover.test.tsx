@@ -32,6 +32,16 @@ test("预览已到一秒仍须等同一次绘制中的标题和字幕", async ()
   expect(ctx.clearRect).toBe(clear);
 });
 
+// 服务端重建旧包失败时可能继续提供旧播放器；它已经画好的参数不能充当封面帧回执。
+test("旧字效宿主无法确认定位时保留旧封面", async () => {
+  const view = render(<div data-cover-ready="true" data-cover-time="0" data-cover-text-layers="0" data-cover-layers="1">
+    <div className="template-preview-frame"><iframe sandbox="allow-scripts" data-cover-at="1" data-cover-painted="true" data-cover-seek-supported="false" /></div>
+  </div>);
+  const frame = view.container.querySelector<HTMLElement>(".template-preview-frame")!;
+  await expect(prepareCoverFrame(frame, seconds => { frame.parentElement!.dataset.coverTime = String(seconds); }))
+    .rejects.toThrow("字效预览包不支持封面定位");
+});
+
 // 同步入口集中在搜索框旁；每张卡片只展示该模板的状态和复制、删除等操作。
 test("封面失败保留状态提示，恢复后两个陈列区都不出现卡片刷新入口", async () => {
   const template = templateSummary(savedTemplate());

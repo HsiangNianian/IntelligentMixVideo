@@ -733,8 +733,8 @@ The answer `fonts: null`, or no answer within 30 seconds (the files are large, s
 makes the player fall back to the relative `fonts/{weight}` route.
 `presentation.mjs` writes the host protocol it speaks as the bundle's first line (`publication.PREVIEW_PROTOCOL`).
 Version 1 (`/* imv-preview-protocol 1 */`) covers frame sync, injected defaults and placement overrides. Version 2
-(`/* imv-preview-protocol 2 */`) adds the host fonts. Only that line counts, because the generated code and its
-defaults are bundled too and can contain any text (`publication.bundle_protocol`). A version 1 bundle still reads
+(`/* imv-preview-protocol 2 */`) adds the host fonts. Version 3 acknowledges a cover seek after the requested clip frame has painted. Only the cover capture path requests this acknowledgement. Only that line counts, because the generated code and its
+defaults are bundled too and can contain any text (`publication.bundle_protocol`). A version 1 or 2 bundle still reads
 injected defaults, so parameter revisions stay instant (`revisable`), but it is not current.
 Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one
 is not current and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.

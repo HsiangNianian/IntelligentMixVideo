@@ -15,9 +15,9 @@ from .parameters import patch_parameters
 from .tools.contracts import RenderValidationReport, SpriteDraft
 
 # 预览包首行声明的宿主协议版本，与 presentation.mjs 的 PREVIEW_PROTOCOL 一致。版本 1：逐帧同步、读取页面注入的
-# 默认值与内容区域、接受参数覆盖和宿主变换；版本 2：另可由宿主页面提供受管字体（页面参数 `fonts=host`）。
+# 默认值与内容区域、接受参数覆盖和宿主变换；版本 2：另可由宿主页面提供受管字体（页面参数 `fonts=host`）；版本 3：确认封面定位已绘制。
 # 更早构建的包没有这一行，需要重建。只认首行：生成代码与默认参数也会打进包里，包内任意位置出现的协议字样都不可信。
-PREVIEW_PROTOCOL = b"/* imv-preview-protocol 2 */"
+PREVIEW_PROTOCOL = b"/* imv-preview-protocol 3 */"
 _PROTOCOL_LINE = re.compile(rb"/\* imv-preview-protocol ([1-9][0-9]*) \*/\n")
 
 
