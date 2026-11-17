@@ -4,7 +4,7 @@ from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from botocore.exceptions import EndpointConnectionError
+from botocore.exceptions import ClientError, EndpointConnectionError
 from PIL import Image
 
 from server.template import covers
@@ -71,6 +71,34 @@ def test_publish_retry_replace_and_revalidate(client, template_payload, monkeypa
         assert image.getpixel((10, 10)) == (0, 0, 255)
     assert client.delete(f"/template/{template_id}").status_code == 204
     storage.delete_object.assert_called_once_with(Bucket="test", Key=key)
+
+
+def test_missing_published_object_can_be_repaired(client, template_payload, monkeypatch):
+    """数据库保留发布记录时，只有对象缺失允许补图；强制写回同一键后可读取新的 PNG。"""
+    storage = MagicMock()
+    monkeypatch.setattr(covers, "storage_client", lambda *_: storage)
+    monkeypatch.setattr(covers, "ZosSettings", lambda: SimpleNamespace(zos_bucket="test", zos_web_url="https://images.test"))
+    row = post_template(client, {**template_payload, "cover_source": "builtin"}).json()["template"]
+    base = f"/template/{row['templateId']}/cover"
+    put = f"{base}/{row['cover']['revision']}"
+    files = {"file": ("cover.png", png("green"), "image/png")}
+    published = client.put(put, files=files).json()
+    for code in ("NoSuchBucket", "AccessDenied"):
+        storage.get_object.side_effect = ClientError({"Error": {"Code": code}}, "GetObject")
+        assert client.get(base).status_code == 503
+    storage.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+    missing = client.get(base)
+    assert missing.status_code == 404 and missing.json()["detail"] == {"code": "cover_object_missing"}
+    assert client.get("/template").json()["templates"][0]["cover"]["publishedRevision"] == published["revision"]
+    repaired = client.put(put, files=files, data={"refresh": "true"})
+    assert repaired.status_code == 200 and repaired.json()["revision"] != published["revision"]
+    assert repaired.json()["url"] == published["url"] and storage.put_object.call_count == 2
+    uploaded = storage.put_object.call_args.kwargs
+    storage.get_object.side_effect = None
+    storage.get_object.return_value = {"Body": BytesIO(uploaded["Body"])}
+    restored = client.get(base)
+    assert restored.status_code == 200 and restored.content == uploaded["Body"]
+    assert storage.get_object.call_args.kwargs["Key"] == uploaded["Key"]
 
 
 def test_backfill_keeps_template_order_and_marks_visual_edits(client, template_payload, monkeypatch):

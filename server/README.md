@@ -55,7 +55,7 @@ PORT=8010 uv run --locked server
 | POST | `/template` | 接收 `SaveTemplateRequest`；无 `template_id` 创建，携带 ID 完整更新，返回 `SaveTemplateResponse` |
 | GET | `/template/{template_id}` | 返回 `GetTemplateResponse` |
 | PUT | `/template/{template_id}/cover/{revision}` | multipart `file` 上传 9:16 静态 PNG。过期版本返回 409，成功覆盖固定 ZOS 对象 |
-| GET | `/template/{template_id}/cover` | 读取已发布 PNG。按 ETag 校验版本，未变化返回 304，暂无封面返回 404 |
+| GET | `/template/{template_id}/cover` | 读取已发布 PNG。按 ETag 校验版本，未变化返回 304，暂无封面返回 404；ZOS 对象丢失时返回 404 及 `detail.code=cover_object_missing`，存储读取故障返回 503 |
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
 | GET | `/template/preview-mask` | 几何圆角蒙版 MP4，供 SDK 实时预览；不访问用户媒体或数据库 |
 | GET | `/template/preview-circle-mask` | 头部圆形与羽化蒙版 MP4，仅接收预览几何，不分析人脸 |

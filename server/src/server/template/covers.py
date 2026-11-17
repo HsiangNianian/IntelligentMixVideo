@@ -56,6 +56,8 @@ def read_cover(template_id: str) -> bytes:
             with closing(result["Body"]) as body:
                 return body.read()
     except (ValueError, BotoCoreError, ClientError) as exc:
+        if isinstance(exc, ClientError) and exc.response["Error"]["Code"] in {"NoSuchKey", "NotFound", "404"}:
+            raise HTTPException(404, detail={"code": "cover_object_missing"}) from exc
         raise HTTPException(503, "封面读取失败，请重试") from exc
 
 

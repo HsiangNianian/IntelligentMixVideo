@@ -47,12 +47,13 @@ function useTemplateCollection(revision: number, active: boolean) {
     setRefreshing(manual);
     setError("");
     let items: TemplateSummary[];
+    let missing = new Set<string>();
     try {
       items = await listTemplates(signal);
       if (signal.aborted) return;
       const images = manual ? syncLoadedCovers(items) : undefined;
       setTemplates(items);
-      if (images) await images;
+      if (images) missing = await images;
       if (signal.aborted) return;
     } catch (reason) {
       if (!signal.aborted) {
@@ -64,7 +65,7 @@ function useTemplateCollection(revision: number, active: boolean) {
       if (!signal.aborted) setLoading(false);
     }
     if (!manual) return;
-    const pending = items.filter(item => !item.validation_error && (!item.cover?.url || item.cover.revision !== item.cover.publishedRevision));
+    const pending = items.filter(item => !item.validation_error && (missing.has(item.template_id) || !item.cover?.url || item.cover.revision !== item.cover.publishedRevision));
     const reupload: TemplateSummary[] = [], capture: TemplateSummary[] = [];
     const failures: string[] = [];
     for (const item of pending) {
@@ -81,7 +82,7 @@ function useTemplateCollection(revision: number, active: boolean) {
           const published = await publishCover(item.template_id, version, async () => {
             const { captureHomeCover } = await import("./homeCoverCapture");
             return captureHomeCover(item, signal, stream);
-          }, false, signal);
+          }, missing.has(item.template_id) && version === item.cover?.publishedRevision, signal);
           if (signal.aborted) return;
           setTemplates(current => current.map(row => row.template_id === item.template_id ? { ...row, cover: {
             source: item.cover?.source ?? "builtin", revision: published.revision, publishedRevision: published.revision, url: published.url,

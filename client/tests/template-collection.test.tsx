@@ -260,6 +260,40 @@ test("主页刷新重读上次失败的同版封面，恢复后继续命中缓�
   await waitFor(() => expect([lists, reads, refresh.disabled]).toEqual([4, 3, false]));
 });
 
+// 同版对象丢失时强制写回手头的 PNG，两处陈列共用修复结果，下次刷新继续命中缓存。
+test("主页修复数据库已发布但 ZOS 对象缺失的封面", async () => {
+  const { publishCover } = await import("@/features/templates/api");
+  const cover = { url: "https://images.test/lost.png", revision: "v1", publishedRevision: "v1", source: "builtin" };
+  const item = { ...savedTemplate(), template_id: "lost-object", cover };
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+  await expect(publishCover(item.template_id, "v1", async () => new Blob(["saved PNG"]))).rejects.toThrow();
+  const writes: FormData[] = [];
+  let reads = 0, lists = 0;
+  fetchMock.mockImplementation((async (input, init) => {
+    if (String(input).endsWith("/template")) {
+      lists++;
+      return jsonListResponse([item]);
+    }
+    if (init?.method === "PUT") {
+      writes.push(init.body as FormData);
+      cover.revision = cover.publishedRevision = "v2";
+      return Response.json(cover);
+    }
+    reads++;
+    return writes.length ? new Response("restored PNG") : Response.json({ detail: { code: "cover_object_missing" } }, { status: 404 });
+  }) as typeof fetch);
+  const view = render(<Tooltip.Provider><TemplateHome onSelect={() => {}} onOpenRemotion={() => {}} /></Tooltip.Provider>);
+  const sources = () => Array.from(view.container.querySelectorAll("article img"), image => image.getAttribute("src"));
+  await waitFor(() => expect(sources()).toEqual([cover.url, cover.url]));
+  const refresh = screen.getByRole<HTMLButtonElement>("button", { name: "刷新模板及封面" });
+  fireEvent.click(refresh);
+  await waitFor(() => expect(sources().filter(src => src?.startsWith("blob:"))).toHaveLength(2));
+  expect(writes[0].get("refresh")).toBe("true");
+  expect(await (writes[0].get("file") as File).text()).toBe("saved PNG");
+  fireEvent.click(refresh);
+  await waitFor(() => expect([lists, reads, writes.length, refresh.disabled]).toEqual([3, 3, 1, false]));
+});
+
 // 列表带回已发布的新版本时，旧图在下载期间继续展示，两处卡片共享一次读取。
 test("同步已发布的新版封面时等图片读完再停止旋转", async () => {
   const item = { ...savedTemplate(), template_id: "home-published" };

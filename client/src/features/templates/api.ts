@@ -140,6 +140,9 @@ async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: Abor
   }
 }
 
+/** ZOS 确认已发布的 PNG 缺失时，主页可按原素材重新发布。 */
+class MissingCoverObject extends Error {}
+
 /** 在现有模板路由发送请求，并将 HTTP 错误转换为编辑器可显示的消息。 */
 async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE" | "PUT", signal: AbortSignal, body?: Uint8Array | FormData): Promise<Response> {
   const response = await fetch(`${apiBase()}${path}`, {
@@ -153,6 +156,8 @@ async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE" | "P
   });
   if (!response.ok) {
     const { detail } = await response.json().catch(() => ({})) as { detail?: unknown };
+    if (response.status === 404 && detail && typeof detail === "object" && "code" in detail && detail.code === "cover_object_missing")
+      throw new MissingCoverObject("封面图片已丢失");
     const message = typeof detail === "string" ? detail : Array.isArray(detail)
       ? detail.map((error: { loc?: unknown[]; msg?: string }) => `${error.loc?.slice(1).join(".")}：${error.msg}`).join("；")
       : `HTTP ${response.status}`;
@@ -336,20 +341,21 @@ export function readTemplateCover(id: string, revision: string): Promise<Blob> {
 }
 
 /** 只保留仍挂载且上次下载失败的卡片；手动同步时与最新列表核对后重试。 */
-const failedCoverReads = new Set<(items: TemplateSummary[]) => Promise<void> | undefined>();
+const failedCoverReads = new Set<(items: TemplateSummary[], missing: Set<string>) => Promise<void> | undefined>();
 
 /** 将共享下载结果交给卡片；卸载或更换版本即取消该卡片的回调和重试。 */
 export function watchTemplateCover(id: string, revision: string, show: (image: Blob | null) => void) {
   const address = apiBase();
   let active = true;
   // 版本变化由卡片按新版本加载；只在同一服务、同一发布版本下重试原请求。
-  const retry = (items: TemplateSummary[]) => address === apiBase() && items.some(item =>
-    item.template_id === id && item.cover?.url && item.cover.publishedRevision === revision) ? load() : undefined;
+  const retry = (items: TemplateSummary[], missing: Set<string>) => address === apiBase() && items.some(item =>
+    item.template_id === id && item.cover?.url && item.cover.publishedRevision === revision) ? load(missing) : undefined;
   /** 同一张封面在多个陈列区失败时，readTemplateCover 会合并它们的请求。 */
-  function load() {
+  function load(missing?: Set<string>) {
     return readTemplateCover(id, revision).then(image => {
       if (active) { failedCoverReads.delete(retry); show(image); }
-    }, () => {
+    }, error => {
+      if (error instanceof MissingCoverObject) missing?.add(id);
       if (active) { failedCoverReads.add(retry); show(null); }
     });
   }
@@ -357,14 +363,17 @@ export function watchTemplateCover(id: string, revision: string, show: (image: B
   return () => { active = false; failedCoverReads.delete(retry); };
 }
 
-/** 手动同步等待已挂载的失败卡片重试，以及已读过的封面更新到新版本。 */
-export function syncLoadedCovers(items: TemplateSummary[]) {
-  const changed = items.flatMap(item => {
+/** 手动同步等待当前封面下载及失败卡片的重读；只将存储确认缺失的对象交给补图流程。 */
+export async function syncLoadedCovers(items: TemplateSummary[]) {
+  const missing = new Set<string>();
+  const reads = items.flatMap(item => {
     const cached = publishedCovers.get(apiBase() + "/" + item.template_id);
-    return cached && item.cover?.url && cached.revision !== item.cover.publishedRevision
-      ? [readTemplateCover(item.template_id, item.cover.publishedRevision)] : [];
+    if (!cached || !item.cover?.url) return [];
+    const image = cached.revision === item.cover.publishedRevision ? cached.image : readTemplateCover(item.template_id, item.cover.publishedRevision);
+    return [image.catch(error => { if (error instanceof MissingCoverObject) missing.add(item.template_id); })];
   });
-  return Promise.allSettled([...changed, ...Array.from(failedCoverReads, retry => retry(items))]);
+  await Promise.all([...reads, ...Array.from(failedCoverReads, retry => retry(items, missing))]);
+  return missing;
 }
 
 /** 上传失败只暂存该修订的截图；同一模板只保留最新一次，应用重启后由真实预览重新截取。 */
@@ -376,6 +385,7 @@ export async function publishCover(id: string, revision: string, capture: () => 
   const cached = coverBlobs.get(key);
   if (cached && cached.revision !== revision) coverBlobs.delete(key);
   const item = cached?.revision === revision ? cached : { revision, blob: await capture(), refresh };
+  if (refresh) item.refresh = true;
   signal?.throwIfAborted();
   coverBlobs.set(key, item);
   const body = new FormData();
