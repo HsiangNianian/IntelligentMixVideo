@@ -1,6 +1,6 @@
 /** 纸面画廊封面与卡片：显示已发布的预览 PNG，保留无效状态、编辑提示、打开、复制与删除操作。 */
 import { useEffect, useState } from "react";
-import { readTemplateCover } from "@/features/templates/api";
+import { watchTemplateCover } from "@/features/templates/api";
 import { apiBase } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { Icon } from "../icons";
@@ -14,12 +14,8 @@ export function TemplateCover({ template, compact, className }: { template: Temp
   const [image, setImage] = useState("");
   useEffect(() => {
     if (!cover?.url) { setImage(""); return; }
-    let active = true;
-    readTemplateCover(template.template_id, cover.publishedRevision).then(blob => {
-      if (!active) return;
-      setImage(URL.createObjectURL(blob));
-    }).catch(() => { if (active) setImage(cover.url); });
-    return () => { active = false; };
+    return watchTemplateCover(template.template_id, cover.publishedRevision, blob =>
+      setImage(blob ? URL.createObjectURL(blob) : cover.url));
   }, [address, template.template_id, cover?.url, cover?.publishedRevision]);
   useEffect(() => () => { if (image.startsWith("blob:")) URL.revokeObjectURL(image); }, [image]);
   return <span aria-hidden="true" className={cn("relative flex aspect-[9/16] w-full items-center justify-center overflow-hidden bg-raised text-fg-subtle", className)}>

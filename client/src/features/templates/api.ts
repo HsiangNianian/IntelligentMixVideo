@@ -335,13 +335,36 @@ export function readTemplateCover(id: string, revision: string): Promise<Blob> {
   return image;
 }
 
-/** 手动同步时等已显示过的封面读到新版本；其余模板仍在卡片首次展示时按需读取。 */
+/** 只保留仍挂载且上次下载失败的卡片；手动同步时与最新列表核对后重试。 */
+const failedCoverReads = new Set<(items: TemplateSummary[]) => Promise<void> | undefined>();
+
+/** 将共享下载结果交给卡片；卸载或更换版本即取消该卡片的回调和重试。 */
+export function watchTemplateCover(id: string, revision: string, show: (image: Blob | null) => void) {
+  const address = apiBase();
+  let active = true;
+  // 版本变化由卡片按新版本加载；只在同一服务、同一发布版本下重试原请求。
+  const retry = (items: TemplateSummary[]) => address === apiBase() && items.some(item =>
+    item.template_id === id && item.cover?.url && item.cover.publishedRevision === revision) ? load() : undefined;
+  /** 同一张封面在多个陈列区失败时，readTemplateCover 会合并它们的请求。 */
+  function load() {
+    return readTemplateCover(id, revision).then(image => {
+      if (active) { failedCoverReads.delete(retry); show(image); }
+    }, () => {
+      if (active) { failedCoverReads.add(retry); show(null); }
+    });
+  }
+  void load();
+  return () => { active = false; failedCoverReads.delete(retry); };
+}
+
+/** 手动同步等待已挂载的失败卡片重试，以及已读过的封面更新到新版本。 */
 export function syncLoadedCovers(items: TemplateSummary[]) {
-  return Promise.allSettled(items.flatMap(item => {
+  const changed = items.flatMap(item => {
     const cached = publishedCovers.get(apiBase() + "/" + item.template_id);
     return cached && item.cover?.url && cached.revision !== item.cover.publishedRevision
       ? [readTemplateCover(item.template_id, item.cover.publishedRevision)] : [];
-  }));
+  });
+  return Promise.allSettled([...changed, ...Array.from(failedCoverReads, retry => retry(items))]);
 }
 
 /** 上传失败只暂存该修订的截图；同一模板只保留最新一次，应用重启后由真实预览重新截取。 */

@@ -230,6 +230,36 @@ test("主页刷新只修复待发布封面，保留陈列位置且不进入编�
   expect(selections).toHaveLength(0);
 });
 
+// 断网时两个陈列区都回退到直链；服务恢复后，手动刷新应共享一次重读并原地换图。
+test("主页刷新重读上次失败的同版封面，恢复后继续命中缓存", async () => {
+  const cover = { url: "https://images.test/offline.png", revision: "v1", publishedRevision: "v1", source: "builtin" };
+  const item = { ...savedTemplate(), template_id: "offline-cover", cover };
+  let lists = 0, reads = 0;
+  let online = false;
+  fetchMock.mockImplementation((async (input, init) => {
+    if (init?.method === "GET" && String(input).endsWith("/template")) {
+      lists++;
+      return jsonListResponse([item]);
+    }
+    if (init?.method === "GET" && String(input).endsWith("/offline-cover/cover")) {
+      reads++;
+      return online ? new Response("PNG") : new Response(null, { status: 503 });
+    }
+    throw new Error("意外的请求：" + input);
+  }) as typeof fetch);
+  const view = render(<Tooltip.Provider><TemplateHome onSelect={() => {}} onOpenRemotion={() => {}} /></Tooltip.Provider>);
+  const images = () => [...view.container.querySelectorAll<HTMLImageElement>("article img")].map(img => img.src);
+  await waitFor(() => expect(images()).toEqual([cover.url, cover.url]));
+  const refresh = screen.getByRole<HTMLButtonElement>("button", { name: "刷新模板及封面" });
+  fireEvent.click(refresh);
+  await waitFor(() => expect([lists, reads, refresh.disabled]).toEqual([2, 2, false]));
+  online = true;
+  fireEvent.click(refresh);
+  await waitFor(() => expect(images().filter(src => src.startsWith("blob:"))).toHaveLength(2));
+  fireEvent.click(refresh);
+  await waitFor(() => expect([lists, reads, refresh.disabled]).toEqual([4, 3, false]));
+});
+
 // 列表带回已发布的新版本时，旧图在下载期间继续展示，两处卡片共享一次读取。
 test("同步已发布的新版封面时等图片读完再停止旋转", async () => {
   const item = { ...savedTemplate(), template_id: "home-published" };
