@@ -35,7 +35,6 @@ from .publication import current_bundle
 from .models import TemplateVersion
 from .object_store import PREFIX, ObjectStoreError
 from .store import Conflict, NotFound, Store
-from .tools.catalog_store import CatalogStore
 
 PREVIEW_BUNDLE = "interactive.js"
 
@@ -817,14 +816,4 @@ async def publish(service, request: pb.PublishSpriteRequest, device: UUID) -> pb
                 summary = await run_in_threadpool(_create, store, request, version, fresh or bundle)
             else:
                 summary = await _resave(store, sprite, fresh, name)
-    await run_in_threadpool(_record_published, version)
     return summary
-
-
-def _record_published(version: TemplateVersion) -> None:
-    """Mark the Presets recorded when the published version was accepted as published, which ranks them first in Preset
-    searches; a database failure only loses that ranking signal, so it is logged instead of failing the publication."""
-    try:
-        CatalogStore().mark_published(str(version.id))
-    except Exception:
-        logging.getLogger(__name__).warning("Preset uses of published version %s were not recorded", version.id, exc_info=True)

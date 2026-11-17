@@ -9,6 +9,7 @@ from copy import deepcopy
 import json
 import shutil
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -88,7 +89,7 @@ def test_retry_continues_checked_files_without_rebuilding(checks, store, tmp_pat
     restarted_store = Store(store.root)
     runtime = Runtime(restarted_store, None, Settings(_env_file=None))
     runtime.notify = lambda *args: None
-    retried = runtime.retry(job.id)
+    retried = asyncio.run(runtime.retry(job.id))
     # Delivery acknowledgement can delete the original job without deleting the copied checkpoint.
     cursor = max(event.id for event in restarted_store.work_events(work.id, 0))
     restarted_store.acknowledge(work.id, cursor, DEVICE)
@@ -170,13 +171,16 @@ def test_runtime_retains_progress_on_timeout_and_continues_a_followup(store, tmp
     assert store.job(job.id).error.code == "timeout"
     assert not store.job_dir(job.id).exists()
     assert store.inputs(job.id).checkpoint == checkpoint
-    follow = runtime.message(work.id, TaskMessage(instruction="从刚才的代码继续，裂缝再大一点"))
+    follow = asyncio.run(runtime.message(work.id, TaskMessage(instruction="从刚才的代码继续，裂缝再大一点")))
     assert store.inputs(follow.id).checkpoint == checkpoint
     assert store.inputs(follow.id).instruction == "从刚才的代码继续，裂缝再大一点"
     asyncio.run(runtime._execute(follow.id))
     assert received[-1]["checkpoint"] == checkpoint
     # A private recovery snapshot is not emitted as public task state or conversation input.
-    assert "already finished animation" not in json.dumps([event.model_dump(mode="json") for event in store.work_events(work.id, 0)])
+    # Private recovery is delivered to the owning client, independently of visible chat and job responses.
+    delivered = store.client_context(work.id)
+    assert delivered.input.checkpoint == checkpoint
+    assert "already finished animation" not in json.dumps([event.data for event in store.work_events(work.id, 0) if event.type == "message.created"])
     assert "checkpoint" not in received[-1]["intent"]
 
 
@@ -190,12 +194,12 @@ def test_restart_and_repeated_retries_keep_latest_snapshot(store, monkeypatch):
     assert store.job(job.id).status == "interrupted"
     runtime = Runtime(store, None, None)
     monkeypatch.setattr(runtime, "notify", lambda *args: None)
-    second = runtime.retry(job.id)
+    second = asyncio.run(runtime.retry(job.id))
     updated = deepcopy(store.inputs(second.id).checkpoint)
     updated["files"][CODE] += "\n// next completed edit\n"
     store.save_checkpoint(second.id, updated)
     store.update(second.id, status="failed")
-    third = runtime.retry(second.id)
+    third = asyncio.run(runtime.retry(second.id))
     assert store.inputs(third.id).checkpoint == updated
     assert store.inputs(job.id).checkpoint["files"][CODE] == files[CODE]
 
@@ -265,7 +269,7 @@ def test_pre_upgrade_failure_recovers_only_successful_edits(store, monkeypatch):
     store.update(job.id, status="failed")
     runtime = Runtime(store, None, None)
     monkeypatch.setattr(runtime, "notify", lambda *args: None)
-    retried = runtime.retry(job.id)
+    retried = asyncio.run(runtime.retry(job.id))
     checkpoint = store.inputs(retried.id).checkpoint
     assert checkpoint["files"][CODE] == source.replace("keep this", "keep finished")
     assert json.loads(checkpoint["history"][-1][-1]["content"])["data"]["passed"] is True
@@ -331,6 +335,6 @@ def test_explicit_base_changes_and_manual_parameters_do_not_inherit_drafts(store
     store.update(job.id, status="failed")
     runtime = Runtime(store, None, None)
     edited = []
-    monkeypatch.setattr(runtime, "edit", lambda *args: edited.append(args) or "normal edit")
-    assert runtime.message(work.id, message) == "normal edit"
+    monkeypatch.setattr(runtime, "edit", AsyncMock(side_effect=lambda *args: edited.append(args) or "normal edit"))
+    assert asyncio.run(runtime.message(work.id, message)) == "normal edit"
     assert len(edited) == 1 and store.latest_job(work.id).id == job.id

@@ -45,8 +45,8 @@ all historical versions open through `restore_version_files` in the same task-lo
   empty `text_fit_parameters` for new components, so lines may be timed independently but must not jump; historical
   components retain their layout check as described below) and the `effect_contract`
   probes of the validation worker: other injected text must be what it shows, a keyword hit takes keywordColor and
-  keywordBold with the keyword effect off, every default line is shown in full on frame `duration_frames // 2` (where
-  the bus freezes subtitles shorter than 1.5 s, with every line starting at zero), lowering `fontSize` between two legal
+  keywordBold with the keyword effect off, every default line is shown in full on frame `duration_frames // 2` (the
+  middle-frame sample used for one-/two-frame text intervals, with every line starting at zero), lowering `fontSize` between two legal
   sizes at least 25% apart shrinks the text. Style parameters (and `keywordEffect`) are sampled between their two ends
   (screenshot comparison with alpha preserved, so white text can disappear visibly). If defaults hide a parameter, its endpoints are also compared with each
   other boolean flipped, then all other booleans on or off, always holding those controls fixed between endpoints.
@@ -99,9 +99,9 @@ all historical versions open through `restore_version_files` in the same task-lo
   earlier turns. The snapshot lists the work's `versions` (including older composed versions), and `workspace.read {path, version}` returns an
   earlier version's files with its parameter values, so an edit can go back to it. Style parameter schemas may carry `x-imv-group`, which publication copies into
   `SpriteParameter.group` so the template editor shows grouped cards that templates adjust per placement.
-- **Library.** An accepted free-form version's single instance (the whole Effect.tsx with its schema) is stored as
-  a role-less Preset by `CatalogStore.solidify`, once per identical drawing, so `library.search` finds it by its
-  manifest description in later works.
+- **Library.** Accepted generation atomically archives the complete `Effect.tsx`/`effect.json` pair in
+  `remotion_effect_sources`, deduplicated by content hash. Every user can search descriptions with `library.search`
+  and read files with `library.read`, even before asset publication. Reuse copies source into a fresh workspace.
 
 ### Opening historical versions
 
@@ -142,7 +142,8 @@ Provider wire names use underscores (for example `workspace_edit`).
 | `preview.render` | Captures frames and measured motion, optionally with text or duration variants |
 | `validate.check` | Runs the save gate and returns all problems without saving |
 | `effect.save` | Runs the gate, saves a task candidate and provides its motion and middle frame |
-| `library.search` | Searches immutable previously accepted code or reads a record by ID |
+| `library.search` | Searches summaries of shared accepted complete components |
+| `library.read` | Reads a bounded page of an immutable source file by ID |
 | `image.inspect` | Crops and enlarges a reference image |
 | `tools.inspect` | Reads a named tool's typed contract, including the host controls |
 
@@ -153,7 +154,7 @@ may still contain those names and remain readable.
 
 ## Storage
 
-The backend keeps no SQLite file. Works, jobs, accepted versions, the model's sliding window, public events and
+The backend keeps no SQLite file. Works, jobs, accepted versions, undelivered events and
 overlay render tasks are tables in the shared MySQL database (`tables.py`, created on first use next to
 `remotion_sprites`). The backend runs as a single instance: one in-process lock serializes write transactions,
 startup interrupts jobs a previous process left running and finishes interrupted deletions. A lease row
@@ -169,36 +170,66 @@ Every work belongs to the client device that created it. JSON routes of a work r
 header (a UUID the client keeps in its local session database) and treat another device's work as missing. A device
 is recorded when it creates its first work and its activity time is refreshed at most hourly; other header values add
 no rows;
-browser-embedded reads (preview page, fonts, reference image, artifact download) are addressed by unguessable IDs.
+browser-embedded reads (preview page, fonts, artifact download) are addressed by unguessable IDs.
 Chat history lives on the client: the server buffers public messages and events only until the client stores them
 locally and acknowledges the last event ID with `POST /works/{id}/ack`. The open work streams its events over SSE
 (`GET /works/{id}/stream`; an idle stream sleeps until a commit appends an event of its work, with a 5 second read as a safety net, so it costs the database almost nothing); works the client is not showing catch up through `GET /works/{id}/events?after=<id>`,
 one page per call in the same shape, until an empty page. There is no server-side work list: the sidebar reads the
 client's local store. Acknowledged events are deleted; once a work
-has no undelivered events, the progress, rounds and messages of its finished jobs go too, and only the latest job row
-stays because retrying it or answering its questions needs its input.
+has no undelivered events, its finished progress, rounds and messages go too. Only the latest job's routing/status
+metadata stays. Its input, questions, reply, and the work's original request are cleared after ACK or event expiry.
 
-Generation inputs also retain a private recovery checkpoint in that existing job row: the current `Effect.tsx`
-and `effect.json`, plan position, completed step outputs and bounded recent tool exchanges. Each completed tool
-and turn updates it before another model request. Explicit retry creates a new execution with fresh budgets and
-continues the unfinished Executor step; a follow-up message after failure continues the same draft when its base
-version has not changed, applying the new instruction and reference images. Manual parameter revisions keep their
-existing path. Copying the checkpoint into the new job makes it independent of old-job acknowledgement/pruning.
-Success clears the checkpoint; deleting the work removes it with the job rows. Credentials and temporary image
-paths are not stored in it. Render evidence is recreated by `effect.save` and reviewed before publication, so a
-saved candidate from the previous execution cannot bypass the current acceptance guards.
+The client owns the original request, Outer context, outstanding questions, and recovery checkpoint. Desktop
+SQLite schema 2 adds `images` (PNG BLOBs) and `image_links`; version 1 migrates without losing works/messages.
+The browser uses IndexedDB version 2 with equivalent binary records. A terminal `job.updated.context` carries the
+opaque Outer `state`, original `request`, task `input`, base version, questions and reference IDs. Image bytes are
+stored locally before the context, status and cursor transaction commits; only then may the client ACK. Ordinary
+job responses and the chat UI never expose the replay envelope. Messages and retries load it automatically from
+the local database. The backend checks work/latest-job binding and validates text-only complete tool groups.
+Missing context is an explicit conflict, never a silent empty conversation.
 
-For failures created before checkpoints existed, retry can reconstruct the draft from successful workspace write
-and edit receipts in that job's private audit. It does not execute recorded tools or restore failed edits. If no
-draft was recorded, the original request starts normally; inconsistent recorded edits refuse recovery instead of
-silently discarding progress. This fallback is available only while the audit is retained.
+Active jobs keep a checkpoint in `input_data`: current files, plan position, completed outputs and bounded recent
+exchanges. Completed tools update it before the next model request. Terminal status blocks late publication
+immediately, but its event and queue-slot release wait for the runtime finalizer and its last checkpoint write.
+A crash recovers the last committed checkpoint and emits one terminal delivery. ACK/TTL removes that private
+input; retry or a same-base follow-up restores the client's copy into a new job. Successful generation/answers
+clear the unfinished checkpoint. Render evidence is always recreated and validated. Credentials and temporary
+image paths never enter the portable checkpoint. Old failures may recover successful workspace edits from their
+own private audit while it remains available, without executing recorded tools.
 
-Sealed version files, reference images and Sprite preview bundles are objects under `imv/remotion/`
+`POST /assets` now only validates/normalizes an uploaded image and returns `{id, data}` (Base64 PNG) to save locally.
+It writes no asset row, disk asset library or ZOS object. Creation/messages/retries send needed local bytes in
+`assets`; the backend decodes them only into that job's private `references` directory and removes it on completion,
+cancellation or startup recovery. Image normalization and staging run in worker threads for creation, messages
+and retries. Creation inserts the work/task, registers credentials and schedules generation on the event loop
+without yielding, so an existing FIFO worker cannot claim it with default settings. Messages/retries recheck the
+work and context in the insertion transaction, then register credentials and schedule tasks without yielding.
+Cancelled preparation waits for its image writer before removing scratch and inserts no new work or task.
+Missing required images reject enqueue rather than silently dropping context.
+The original references plus recent task/Outer references are selected deterministically, at most eight images.
+Local images remain linked to their works; deleting one work removes only images no other work references.
+Unlinked local images older than 24 hours are reclaimed on the next image save.
+
+For upgrades, `/works/{id}/context` exports an undelivered envelope or the old conversation. The client also downloads
+all old work images through device-scoped `GET /assets/{id}` and saves them before ACK or its next submission.
+An initial legacy generation cancelled before execution may have no conversation row: its retained original
+request, untouched legacy input and absence of recorded execution allow an empty-window migration. This exception
+does not reset later requests, executed jobs or missing/expired deliveries under the current protocol.
+Legacy `remotion_conversations`, `remotion_assets` and `remotion_work_assets` are read only; new databases do not
+create them. Once the client returns its context or acknowledges the migrated delivery, old private associations
+are removed; the existing orphan-image sweep handles the old cloud records. Deploy client and server together.
+If both the local copy and the server's undelivered/legacy copy are gone, the work cannot resume.
+
+Outer strings, tool arguments/IDs and message order round-trip unchanged. Local PNG bytes and reference order are
+stable; task-local prompts and tools retain the existing prefix-cache strategy. This does not send the full chat:
+Outer still uses eight bounded groups, and checkpoint recovery rebuilds the Executor handoff and evidence.
+Provider cache reuse across retries is therefore not guaranteed; storage location itself does not create an AI cache.
+
+Sealed version files and Sprite preview bundles are objects under `imv/remotion/`
 (`object_store.py`): public-read in ZOS once `ZOS_BUCKET` is set, otherwise files under `IMV_DATA_DIR/objects`.
 Every sealed file of a version is public-read under `imv/remotion/versions/<version_id>/`, including the internal
 `candidate.json`, `spec.json` and `tool-validation.json` that the artifact route never serves; anyone who knows a
-version ID can read them, and `GET /api/sprites` lists each published Sprite's source version ID. Chat reference
-images are public-read under unguessable IDs as well.
+version ID can read them, and `GET /api/sprites` lists each published Sprite's source version ID. Old reference images already uploaded by previous releases retain their existing object ACLs; new chat images never enter ZOS.
 The backend reads them through a verified cache in `IMV_DATA_DIR/cache` (SHA-256 against the MySQL record), one file
 at a time (deciding whether a parameter patch is instant reads only `interactive.js`). Object uploads, downloads and
 deletes run in worker threads and never under the write lock: a version is uploaded under its new ID before its record
@@ -228,19 +259,42 @@ When running a separate checkout against the same local database without ZOS, co
 as well: database rows alone do not contain the sealed exports, previews, or reference images. Keep existing
 objects in the target checkout, since a preview may have been rebuilt there.
 
-## Preset storage
+## Shared source library
 
-The immutable MySQL library (`remotion_presets`, `tools/catalog_store.py`) remains available through `library.search`.
-Catalog reads and writes run in worker threads. There is no local storage fallback. Search segments Chinese with
-jieba, ranks matching descriptions and historical usage titles, then published uses, accepted uses and recency.
-An empty query lists all records; optional role and slot filters can narrow historical entries. An ID lookup returns
-complete source. Responses are bounded to 40,000 serialized UTF-8 bytes and 1–100 summaries; `has_more` signals
-omissions, while an oversized full record fails instead of truncating code. Storage failures use `PRESET_STORE_FAILED`.
+`remotion_effect_sources` contains immutable accepted complete components, shared by all users. Successful Agent
+version publication and source insertion share one database transaction; failed/cancelled candidates and manual
+parameter revisions do not enter the library. A SHA-256 of both files deduplicates identical content. The row stores
+only the source pair, generated description, kind and creation time, without chat, image or work associations.
+Deleting a private work leaves this library intact. `remotion_sprites` remains exclusively the published asset
+catalog; creating a source record does not publish an asset.
 
-An accepted workspace's complete component is solidified once per identical drawing as a role-less Preset.
-`remotion_preset_uses` records its accepted version, and publishing marks that use as published. This ranking signal
-is best effort; an unavailable catalog does not invalidate a generated version. Reuse copies useful source into
-the workspace. Old role metadata is retained for reading records, never interpreted as a generation recipe.
+`library.search` segments Chinese descriptions with jieba and returns recent matching summaries, default 10 and
+at most 50, within 32 KB encoded JSON. `has_more` indicates omissions. `library.read` reads the exact two files in
+bounded pages, using Unicode offsets and `next_offset` like `workspace.read`. Both run in worker threads; there is
+no local fallback. Storage errors use `SOURCE_STORE_FAILED`. Reuse copies source into the workspace and still
+requires the full current acceptance process. Preset table searches and usage ranking are retired; inline legacy
+Preset types remain solely to read and adapt sealed historical versions.
+
+### Existing database rollout
+
+With the backend stopped and a normal database backup available, backfill accepted Agent versions (including
+old generation formats adapted to complete components) from the repository root:
+
+```sh
+uv run --project server python -m server.remotion_templates.storage_migration --backfill
+```
+
+This is idempotent and leaves original versions and published assets intact. It refuses an active queue lease or
+active jobs. After clients have migrated or normal retention has removed old private rows, the separate action:
+
+```sh
+uv run --project server python -m server.remotion_templates.storage_migration --retire
+```
+
+first backfills again, then drops only `remotion_presets`, `remotion_preset_uses`, `remotion_conversations`,
+`remotion_assets` and `remotion_work_assets`. It refuses to drop any of them while old conversations/images/links
+remain. It never deletes ZOS objects; existing objects still follow `ZOS_DELETE_OBJECTS` (false by default).
+Neither action is run automatically during startup. Remaining inactive-device works follow the 90-day retention.
 
 ## Looking at the result
 
@@ -630,10 +684,15 @@ lives in `sprite_router.py` on the main app and borrows the Remotion runtime.
 video. A Sprite is a fixed style (the sealed code plus `resolved_style` and `transform`, the placement's editor) with
 its content: one `text` with `keywords` for the whole effect (a title), or the bus's subtitle `cues` (text, keywords
 and a frame range each; ordered, non-overlapping, at least one frame), each shown once by the same Sprite in its own
-frames so the Sprite reads the cue's length as `durationInFrames`, transparent in between. A text effect shown for
-less than 1.5 s (`STATIC_TEXT_SECONDS`, most subtitle cues) plays no entrance or exit: it is frozen (`Freeze`) on the
-middle frame of the published preview length, which the Sprite still reads as its length, and shows only its own
-frames, so short subtitles neither flicker nor run animation code in fewer frames than it was accepted at. The time is
+frames, transparent in between. Text effects share video composition's `retiming.py` clock: each actual interval
+of N frames samples the published animation's M frames from start to end, using integer frame positions. There is
+no fixed seconds cutoff that disables animation. Only one/two-frame intervals sample the published `static_frame`
+(when nonzero), or its middle frame, instead of sampling two potentially transparent endpoints. This sample is not
+a guarantee of readability for arbitrary source code. Explicitly duration-aware assets keep their actual-length
+clock; non-text effects keep their existing behavior. Duration roles use the same explicit object paths as video
+composition; literal dotted keys are ignored, and absent optional parent objects stay absent. The complete config
+is still schema-validated. Sources are parsed/bundled once per execution attempt in a worker thread after acquiring
+the render slot and resource capacity, never executed outside the existing sandbox, and sealed code/defaults remain unchanged. The time is
 `effect_total_frames`, 0.5 to 120 seconds and the output's frame count, whatever length was previewed when the Sprite
 was generated. `sprite_render.py` renders the effect in one overlay worker run that writes consecutive chunks of at
 most 15 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
@@ -642,14 +701,19 @@ splits a request. A multi-line text effect groups up to `line_count` consecutive
 a cue's `sentence` changes (when both cues give one), or when one more line would exceed the text parameter's
 `maxLength` or start beyond the line start limit, so cues valid on their own never fail for being grouped. Each group is one instance from its first cue's start to its
 last cue's end; its text is the cues' texts one per line, its keywords theirs in order, and `lineStartFrames` holds
-each cue's start counted from the group's start, so line i appears when cue i starts and the group clears together.
-A held group (shorter than 1.5 s) shows every line from frame 0, and so does a multi-line `text`, which may have at
+each cue's actual start offset. The fixed-clock wrapper maps it to the published clock and keeps waiting lines
+hidden until their actual cue starts, even when slowing down repeats a source frame; the group clears together.
+One/two-frame stills show every line from frame 0, and so does a multi-line `text`, which may have at
 most `line_count` lines; a cue's text cannot contain a line break. The text fit measures a group only from the frame
 its last line appears (`reveal_frame`). Text effects need `text` or `cues`, other
 kinds take no content, keywords need a Sprite that publishes them, and content cannot be passed as a style override;
-every refusal, a canvas other than the publication's or an unknown Sprite is a 422 at acceptance
+invalid input, a canvas other than the publication's or an unknown Sprite is a 422 at acceptance
 (`SpriteRenderAccepted {task_id}`), and the overlay render's environment checks, plus `ffmpeg` when an effect needs joining, are 503s. The task
-shares the overlay renders' table, render slot, recovery and callback body below, uploads to ZOS
+stores its accepted publication and content plan together, so later overwrites/deletion and process restarts cannot
+change the code, defaults, canvas or cue grouping. Source is stored once per task, not once per cue. Acceptance does
+not bundle source; adaptation failures become a terminal `sprite_unavailable` task error. Older tasks without a
+snapshot bind to the current publication on their first recovery by this version and persist that snapshot before
+waiting for admission. The task shares the overlay renders' table, render slot, recovery and callback body below, uploads to ZOS
 `imv/sprite_render/{taskId}.webm`, and is read with `GET /api/sprites/render/{taskId}` (`SpriteRenderTask`); each
 query endpoint only finds its own kind of task. The overlay worker bundles each distinct Sprite module once, however
 many instances use it.
@@ -717,8 +781,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 - **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
   placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text
   Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's
-  own values at the length its Sprite plays in the render (the length it reads as `durationInFrames`; a held text its
-  previewed length; a clip cut by the video's end is measured only on its rendered frames) and measures the text
+  own values using the final timing wrapper and actual interval (a clip cut by the video's end is measured only
+  on its rendered frames) and measures the text
   boxes the same way `effect.save` does: cut off by an ancestor whose
   overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves,
   scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
@@ -762,7 +826,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Sprite ID, instance, text length, measured font size, sampled frames and failure reasons; it does not include
   the text itself. Other Sprites skip the pass, and a fit sandbox
   that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
-  text or cue (a held text is measured on its frozen frame), and a video composition (`video_composition/remotion.py`)
+  text or cue, and a video composition (`video_composition/remotion.py`)
   on its titles and subtitles: it measures the code it renders (the timing wrapper of a fixed-clock asset) on the
   asset's own canvas, and only the part of that canvas the video shows after scaling it to cover counts as on the
   canvas; the failure there is `remotion_text_too_long`. All text Sprites of a render are measured in one browser
@@ -785,12 +849,13 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
   (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 1800 seconds / 30 minutes), `overlay_service.py` owns the MySQL `remotion_overlay_renders` task table,
-  up to six renders at a time by default (`IMV_OVERLAY_TASK_CONCURRENCY`; each slot covers only the render: the remote audio probe before it and the ZOS upload after it
+  up to six renders at a time by default (`IMV_OVERLAY_TASK_CONCURRENCY`; each slot covers source adaptation, text fit and rendering: the remote audio probe before it and the ZOS upload after it
   run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
   when the runtime is first built
   (`routes.runtime_for`, oldest first; a damaged row is logged and skipped, and the overlay routes retry if the table
   could not be read), and ZOS upload via `video_composition.zos.upload_public`. The placements are stored with the
-  task, so a recovered task renders exactly what was accepted and only re-reads the published Sprites. State writes retry a locked database
+  template overlay task; recovery uses those placements and re-reads the published Sprites. Single Sprite tasks
+  instead restore their accepted publication and plan as described above. State writes retry a locked database
   three times; if it stays unwritable the row keeps its previous state (never rewritten as a failure) and the next
   start re-runs it. Sealed sources are not re-policy-checked in this worker.
 - **Worker failures**: an exception exits the isolated overlay worker immediately, including a browser connection

@@ -762,7 +762,7 @@ EDGES_SCALED = EDGES_BY_LENGTH.replace(
 @needs_browser
 @pytest.mark.parametrize(("code", "passed"), [(EDGES_BY_LENGTH, False), (EDGES_SCALED, True)], ids=["fixed-edges", "scaled-edges"])
 def test_real_browser_mounts_the_shortest_and_longest_render_length(tmp_path, code, passed):
-    """总线按成片时长渲染（0.5～120 秒；更短的字幕定格在预览长度），不是按预览长度：生成检查在 15 帧与 3600 帧各挂载首、中、尾帧，只在预览长度下成立的写法以 render_lengths 失败并说明长度与帧号。"""
+    """非文字效果在 15 帧与 3600 帧挂载首、中、尾帧；硬编码超出实际区间的动画须明确失败。"""
     settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
     component_ = ComponentDefinition(
         code=code,
@@ -773,10 +773,35 @@ def test_real_browser_mounts_the_shortest_and_longest_render_length(tmp_path, co
         RenderValidationInput(component=component_, duration_frames=150), transparency=True, lengths=render_lengths(30),
     ))
     check = next(item for item in report.checks if item.name == "render_lengths")
-    assert render_lengths(30) == [15, 3600] and render_lengths(30, text=True) == [45, 3600]
+    assert render_lengths(30) == [15, 3600] and render_lengths(30, text=True) == [1, 3600]
     assert report.passed is passed and (check.status == "passed") is passed, check.message
     if not passed:
         assert "Rendered 15 frames long (0.5 s)" in check.message and "at frame 0" in check.message
+
+
+# 场景：分词时长无法预先确定，自适配字效必须支持单帧与不规则短区间，不能只在预览长度下工作。
+@needs_node
+@needs_browser
+@pytest.mark.parametrize("safe", [False, True], ids=["fixed-edges", "adaptive-edges"])
+def test_real_text_validation_covers_single_frame_and_variable_intervals(tmp_path, safe):
+    """固定边界在单帧失败；短区间直接完整显示、其他区间按自身长度分配动画的实现通过。"""
+    source = EDGES_SCALED.replace(
+        "const opacity = interpolate(frame, [0, edge, durationInFrames - edge, durationInFrames], [0, 1, 1, 0]);",
+        "const opacity = durationInFrames <= 2 ? 1 : interpolate(frame, [0, edge, durationInFrames - edge, durationInFrames], [0, 1, 1, 0]);",
+    ) if safe else EDGES_BY_LENGTH
+    component_ = ComponentDefinition(
+        code=source,
+        parameter_schema={"type": "object", "properties": {"tint": {"type": "string"}}, "required": ["tint"], "additionalProperties": False},
+        default_parameters={"tint": "#FFB347"},
+    )
+    report = asyncio.run(ToolValidator(Renderer(Settings(_env_file=None, data_dir=tmp_path, **BROWSER)), tmp_path).validate_render(
+        RenderValidationInput(component=component_, duration_frames=150), transparency=True,
+        lengths=[*render_lengths(30, text=True), 2, 3, 18, 53],
+    ))
+    check = next(item for item in report.checks if item.name == "render_lengths")
+    assert report.passed is safe and (check.status == "passed") is safe, check.message
+    if not safe:
+        assert "Rendered 1 frames long" in check.message
 
 
 @needs_node

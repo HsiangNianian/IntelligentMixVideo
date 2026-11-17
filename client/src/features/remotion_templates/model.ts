@@ -487,6 +487,18 @@ export function backgroundUrl(value: string): string {
   return url.href;
 }
 
+/** 模型窗口的原样回执；按服务、作品与任务隔离，字符串保存避免重写缓存前缀。 */
+export interface ClientContext {
+  work_id: string;
+  job_id: string;
+  state: string;
+  request?: { description?: string | null; images?: { asset_id: string }[]; [key: string]: unknown } | null;
+  input?: { images?: { asset_id: string }[]; checkpoint?: Record<string, unknown> | null; [key: string]: unknown } | null;
+  base_version_id?: string | null;
+  image_ids?: string[];
+  legacy_image_ids?: string[];
+  questions?: string[];
+}
 /** 会话快照和 SSE 公开任务附带稳定时间与待验收参数。 */
 export interface SessionJob extends Job {
   created_at: string;
@@ -494,6 +506,8 @@ export interface SessionJob extends Job {
   parameters: Values | null;
   progress?: ProgressStep[];
   rounds?: LoopRound[];
+  /** 只随终态事件送达，合并后单独保存在本地作品行，不复制进各任务历史。 */
+  context?: ClientContext;
 }
 /**
  * 一次宿主实际执行的工具调用：工具名、结论与模型给出的参数。
