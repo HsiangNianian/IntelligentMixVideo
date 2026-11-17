@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { openBackfillTemplate } from "./open-backfill-template.mjs";
 
 const { values } = parseArgs({ options: { api: { type: "string" }, output: { type: "string" }, "template-id": { type: "string" }, input: { type: "string" }, startup: { type: "boolean" } } });
 if (!values.api) throw new Error("用法：bun scripts/backfill-template-covers.mjs --api 服务地址 [--output 导出目录 | --input 导入目录] [--template-id 模板ID]");
@@ -65,8 +66,7 @@ async function capture(entry) {
     page.setDefaultTimeout(90000);
   }
   await page.goto(server.resolvedUrls.local[0], { waitUntil: "domcontentloaded" });
-  await page.getByRole("searchbox", { name: "搜索模板名称" }).fill(entry.name);
-  await page.locator(`button[data-template-id="${entry.templateId}"]`).last().click();
+  await openBackfillTemplate(page, entry);
   const canvas = page.locator(".template-preview-canvas");
   await canvas.waitFor();
   await canvas.evaluate(el => { el.dataset.capturing = ""; });
