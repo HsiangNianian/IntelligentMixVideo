@@ -19,6 +19,8 @@ from .deletion import finish as finish_deletion
 from .context import Conversation, outcome_record
 from .fonts import DEFAULT_FAMILY, FontStore
 from .settings import ClientSettings, Settings
+from .sprite_search import SpriteSearch
+from . import sprite_events
 from .harness import Harness
 from .overlay_service import FINISHED_RETENTION, OverlayRenders, prune_finished
 from .models import ClientContext, DialogueOutput, EditTemplateRequest, GenerationJob, JobError, JobInput, MessageImage, TaskMessage
@@ -51,6 +53,7 @@ class Runtime:
         self.saves: dict[UUID, asyncio.Task] = {}
         self.maintenance: asyncio.Task | None = None
         self.heartbeat: asyncio.Task | None = None
+        self.sprite_index: asyncio.Task | None = None
         self.fonts: asyncio.Task | None = None
         # Set once another instance took the queue lease over; this instance then claims and sweeps nothing.
         self.fenced = False
@@ -93,6 +96,23 @@ class Runtime:
             self.heartbeat = asyncio.create_task(self._renew())
         if self.fonts is None or self.fonts.done():
             self.fonts = asyncio.create_task(FontStore.for_settings(self.settings).run())
+        if self.sprite_index is None or self.sprite_index.done():
+            self.sprite_index = asyncio.create_task(self._index_sprites())
+
+    async def _index_sprites(self) -> None:
+        """Reconcile after each publication change and periodically after missed notifications."""
+        search = SpriteSearch()
+        with sprite_events.watch() as wake:
+            while not self.fenced:
+                wake.clear()
+                try:
+                    await asyncio.to_thread(search.reconcile)
+                except Exception:
+                    logger.exception("Published Sprite index reconciliation failed")
+                try:
+                    await asyncio.wait_for(wake.wait(), 60)
+                except TimeoutError:
+                    pass
 
     async def _renew(self) -> None:
         """Renew the queue lease; a failed renewal is retried, a lost lease fences this instance for good."""
@@ -107,7 +127,7 @@ class Runtime:
 
     async def close(self) -> None:
         """Stop the background tasks and release the queue lease; called when the application shuts down."""
-        for task in (self.maintenance, self.heartbeat, self.fonts):
+        for task in (self.maintenance, self.heartbeat, self.fonts, self.sprite_index):
             if task is not None:
                 task.cancel()
         self.fenced = True

@@ -15,6 +15,12 @@ Python 3.12+、FastAPI 和 MySQL。模板库在连接此服务的客户端之间
 配置无效、MySQL 不可达、鉴权或建库权限不足时，应用报错并停止启动；修正后重新启动。
 真实 `.env` 已被 Git 忽略，不要把密码写进示例文件或客户端配置。
 
+已发布 Sprite 语义检索使用独立运行的 Chroma 服务。先启动 Chroma 并让 `IMV_SPRITE_CHROMA_URL` 指向其 HTTP 地址；
+在 `.env` 填写 `IMV_SPRITE_EMBEDDING_API_KEY`（阿里云百炼 API Key）。代码转效果描述默认复用已配置的
+`IMV_ACTOR_BASE_URL`、`IMV_ACTOR_MODEL` 和 `IMV_ACTOR_API_KEY`。服务端后台自动回填与更新索引；缺少密钥或
+Chroma 不可用时，新特效请求继续原生成流程。部署到服务器只需把 Chroma 地址改成服务器可访问的地址，
+并保护该服务的网络入口。完整流程见[字效模块说明](src/server/remotion_templates/README.md#sprite-assets)。
+
 公共基类只统一读取规则，各模块保留原配置类、字段、校验和实例化时机。
 优先级为构造参数 > 进程环境变量 > `server/.env` > 字段默认值；保留 `_env_file` 显式覆盖与 `None` 禁用文件。
 固定路径按当前源码布局计算，不自动适配任意安装位置；非源码部署请显式提供配置文件或使用进程环境变量。
