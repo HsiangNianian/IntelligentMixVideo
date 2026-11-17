@@ -75,12 +75,14 @@ export const openBrowser = async () => {
   throw new Error('browser connection failed with live handles');
 };
 export const selectComposition = async () => { throw new Error('must not select'); };
-export const renderMedia = async () => { throw new Error('must not render'); };
+export const renderFrames = async () => { throw new Error('must not render'); };
+export const RenderInternals = {};
 ''')
     source = (renderer / "overlay-worker.mjs").read_text()
     source = source.replace('"@remotion/bundler"', json.dumps(stub.as_uri()))
     source = source.replace('"@remotion/renderer"', json.dumps(stub.as_uri()))
     source = source.replace('"./managed-fonts.mjs"', json.dumps((renderer / "managed-fonts.mjs").as_uri()))
+    source = source.replace('"./overlay-encoder.mjs"', json.dumps((renderer / "overlay-encoder.mjs").as_uri()))
     worker = tmp_path / "overlay-worker.mjs"
     worker.write_text(source)
     (tmp_path / "request.json").write_text(json.dumps({"composition": {}, "instances": []}))
@@ -283,8 +285,9 @@ def service(tmp_path, monkeypatch, template_db):
     monkeypatch.setattr(overlay_render.asyncio, "create_subprocess_exec", join)
     uploads: list[tuple] = []
 
-    async def probed(path, overlay) -> None:
+    async def probed(path, overlay, *, stream_role="webm") -> None:
         """替身探测：视为规格一致。"""
+        assert stream_role == "webm"
 
     def upload(files, zos, timeout):
         """记录上传并返回公开地址。"""
@@ -494,16 +497,16 @@ def test_memory_grant_reaches_the_actual_worker(service, monkeypatch):
     monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: 9 * 1024**3)
     assert overlays.get(run_task(overlays, duration=180))["status"] == "succeeded"
     [request] = renderer.requests
-    assert request["concurrency"] == 4 and request["vp9"] == {"cpu_used": 4, "threads": 2}
+    assert request["route"] == "cpu-webm" and request["concurrency"] == 4 and request["vp9"] == {"cpu_used": 7, "threads": 3}
     assert len(request["ranges"]) == 12 and request["chunk_concurrency"] == 2
     assert overlays.capacity.chunks == 0 and overlays.capacity.memory_units == 0
 
 
-@pytest.mark.parametrize("limit", [6, 2])
+@pytest.mark.parametrize("limit", [12, 2])
 def test_render_slots_bound_actual_tasks(service, monkeypatch, limit) -> None:
-    """默认六个任务可同时进入 worker，自定义两个名额也生效；额外任务要等名额释放。"""
+    """默认十二个任务可同时进入 worker，自定义两个名额也生效；额外任务要等名额释放。"""
     original, renderer, _ = service
-    settings = original.settings if limit == 6 else original.settings.model_copy(update={"overlay_task_concurrency": limit})
+    settings = original.settings if limit == 12 else original.settings.model_copy(update={"overlay_task_concurrency": limit})
     overlays = OverlayRenders(original.store, renderer, settings)
     entered, active, peak = [], 0, 0
     run = renderer.run_worker

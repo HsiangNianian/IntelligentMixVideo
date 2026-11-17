@@ -10,5 +10,5 @@ Remotion 字效服务见 `server/src/server/remotion_templates/AGENTS.md`。
 - 排版预检与字幕容量用的 `tool-validation-host.tsx` 先等待 `loadManagedFonts` 加载 worker 提供的受管字体或完成有限回退，再挂载组件并开放测量（`/font-400.otf`、`/font-700.otf`、`/font-fallback.otf`，由 `tool-validation-worker.mjs` 从尝试目录的 `public/` 提供），fit/capacity 在首次加载宿主页面前完成一次字体诊断与替换，页面切换不能沿用诊断页的临时 FontFace；worker 的页面声明 `lang="zh-CN"`。否则测出的汉字字宽来自系统 TTC 的日文面，与成片不一致；加载不到时宿主仍要挂载并按页面回退测量，不能让预检变成基础设施故障。
 - `overlay-worker.mjs` 捕获错误后必须立即以非零状态退出，由 bubblewrap 清理残留进程、宿主记录失败并释放共享渲染名额。不能只设置 `process.exitCode`：`openBrowser` 连接失败前产生的子进程可能让 Node 长期存活。
 - worker 的私有日志只记浏览器启动、连接与稀疏的帧进度，不写业务正文。
-- 渲染名额：异步受理共用 `IMV_OVERLAY_TASK_CONCURRENCY` 个（默认 6）；视频合成的总并发 `COMPOSITION_CONCURRENCY` 默认也是 6，对外的 `assembling` 阶段包含等待名额、渲染与上传。
+- 叠加名额与整片合成的默认并发各为 12，`assembling` 包含等待 CPU/内存、渲染与上传。普通 IMS 与操练场每任务最多同时处理两个 15 秒分块。编码器按绝对帧号接收同一次绘制的 PNG，颜色和遮罩必须共用帧时钟。
 - `imv-runtime.tsx` 是自由组件字效导入的内容运行时：`compose.mjs` 打包时把它内联进 Sprite（发布代码仍只导入 React 与 Remotion），`typescript.mjs` 按路径映射给类型检查，`tool-validation-worker.mjs` 的源码策略放行 `imv`。它的分行、关键词命中、行出现与测量标记必须与 `compose.mjs` 的文字块和合成侧的注入保持一致。

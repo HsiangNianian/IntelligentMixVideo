@@ -8,6 +8,9 @@ from pydantic_settings import SettingsConfigDict
 from ..config_base import CommonSettings
 from .schema import MediaURL, media_url
 
+# 延迟加载 IMS 凭据时，调度器仍使用同一份合成并发默认值。
+DEFAULT_COMPOSITION_CONCURRENCY = 12
+
 
 class ClientSettings(BaseModel):
     """上海 IMS 凭据与官方地域配置；别名继续兼容原服务端环境变量。"""
@@ -47,7 +50,7 @@ class Settings(ClientSettings, CommonSettings):
     composition_width: int = Field(default=1080, ge=2)
     composition_height: int = Field(default=1920, ge=2)
     composition_fps: int = Field(default=30, ge=1, le=60)
-    composition_concurrency: int = Field(default=6, ge=1, le=16)
+    composition_concurrency: int = Field(default=DEFAULT_COMPOSITION_CONCURRENCY, ge=1, le=16)
     composition_http_timeout_seconds: float = Field(default=30, gt=0, le=300, allow_inf_nan=False)
     composition_poll_seconds: float = Field(default=2, gt=0, le=60, allow_inf_nan=False)
     composition_asr_wait_seconds: float = Field(default=1800, gt=0, le=86400, allow_inf_nan=False)

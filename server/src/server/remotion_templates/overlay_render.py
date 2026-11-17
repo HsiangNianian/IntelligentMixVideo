@@ -1,4 +1,4 @@
-"""Render the Remotion placements of one request into a single transparent VP9 WebM.
+"""Render sealed Remotion placements into a transparent WebM or an IMS color/mask pair.
 
 `resolve_total_seconds` decides the video length (TTS audio wins, then an explicit duration, then the
 latest fixed placement end); `plan_overlay` turns the placements and their publications into per-instance
@@ -14,6 +14,7 @@ import math
 import os
 import shutil
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from time import perf_counter
 
@@ -25,6 +26,7 @@ from ..template.schema import RemotionTrackEditor
 from ..video_composition.media import ffprobe_json
 from ..video_composition.schema import PositiveSeconds
 from .fonts import FontStore
+from .gpu_resources import GPUGrant, GPUWorkerError
 from .managed_fonts import prepare_fonts
 from .placement import resolve
 from .renderer import CPU_SECONDS, Renderer
@@ -56,8 +58,12 @@ def record_performance(directory: Path, **measurements: float) -> dict:
         path = directory / "performance.json"
         if path.is_file():
             result = numbers(json.loads(path.read_text(encoding="utf-8")), host_fields)
+        # IMS retries recreate only media/. Keep the original fit and slot timings on the job.
+        media = directory / "media"
+        if (media / "performance.json").is_file():
+            result.update(numbers(json.loads((media / "performance.json").read_text(encoding="utf-8")), host_fields))
         result.update(numbers(measurements, host_fields))
-        report = directory / "renderer.json"
+        report = (media if media.is_dir() else directory) / "renderer.json"
         if report.is_file():
             source = json.loads(report.read_text(encoding="utf-8")).get("performance", {})
             worker = numbers(source, worker_fields)
@@ -410,24 +416,32 @@ def nudged_host(host: dict, shift: dict) -> dict:
     return {**host, "transform": {**transform, **{axis: transform.get(axis, centre[axis]) + move for axis, move in shift.items() if move}}}
 
 
-async def probe_overlay(path: Path, overlay: Overlay) -> None:
-    """Check size, rate, frame count and the alpha flag of the rendered file; raise on any mismatch."""
+async def probe_overlay(path: Path, overlay: Overlay, *, stream_role: str = "webm") -> None:
+    """Verify the WebM alpha flag or every H.264 presentation time against the same overlay clock."""
     try:
+        paired = stream_role != "webm"
         data = await ffprobe_json(
             str(path), PROBE_SECONDS, "-select_streams", "v:0", "-count_frames",
-            "-show_entries", "stream=codec_name,width,height,avg_frame_rate,nb_read_frames:stream_tags",
+            *(("-show_packets",) if paired else ()),
+            "-show_entries", "stream=codec_name,width,height,avg_frame_rate,nb_read_frames,time_base,color_range"
+            + (":packet=pts" if paired else ":stream_tags"),
             remote=False,
         )
         stream = data["streams"][0]
-        numerator, denominator = map(float, stream["avg_frame_rate"].split("/"))
-        tags = {key.upper(): str(value) for key, value in stream.get("tags", {}).items()}
         correct = (
-            stream["codec_name"] == "vp9"
-            and (stream["width"], stream["height"]) == (overlay.width, overlay.height)
-            and abs(numerator / denominator - overlay.fps) < 0.001
+            (stream["width"], stream["height"]) == (overlay.width, overlay.height)
+            and abs(Fraction(stream["avg_frame_rate"]) - overlay.fps) < 0.001
             and int(stream["nb_read_frames"]) == overlay.frames
-            and tags.get("ALPHA_MODE") == "1"
         )
+        if paired:
+            tick = Fraction(stream["time_base"]) * overlay.fps
+            packets = data["packets"]
+            correct = (correct and stream["codec_name"] == "h264" and len(packets) == overlay.frames
+                       and all(int(packet["pts"]) * tick.numerator == index * tick.denominator for index, packet in enumerate(packets))
+                       and (stream_role != "mask" or stream["color_range"] == "pc"))
+        else:
+            tags = {key.upper(): str(value) for key, value in stream.get("tags", {}).items()}
+            correct = correct and stream["codec_name"] == "vp9" and tags.get("ALPHA_MODE") == "1"
     except (ValueError, KeyError, IndexError, ZeroDivisionError, TypeError):
         correct = False
     if not correct:
@@ -462,8 +476,9 @@ def overlay_cpu_seconds(timeout_seconds: float) -> int:
 
 
 async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Path, ranges: list[list[int]] | None = None,
-                             *, chunk_concurrency: int | None = None, frame_concurrency: int | None = None) -> None:
-    """Run the isolated worker in `directory`: one `overlay.webm`, or one `chunk-<i>.webm` per inclusive frame range."""
+                             *, chunk_concurrency: int | None = None, frame_concurrency: int | None = None,
+                             gpu: GPUGrant | None = None) -> None:
+    """Prepare sealed inputs and run one isolated CPU or device-bound worker for all its ranges."""
     settings = renderer.settings
 
     def prepare() -> None:
@@ -484,6 +499,7 @@ async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Pa
             },
             "instances": overlay.instances,
             "browser": renderer.worker_browser_path(),
+            "route": gpu.route if gpu else "cpu-webm",
             "concurrency": frame_concurrency or settings.overlay_frame_concurrency,
             "chunk_concurrency": min(chunk_concurrency or settings.overlay_chunk_concurrency, settings.overlay_chunk_concurrency, len(ranges or [None])),
             **({"vp9": vp9} if vp9 else {}),
@@ -500,8 +516,19 @@ async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Pa
         await measured(directory, "worker", renderer.run_worker(
             directory, worker="overlay-worker.mjs", timeout_seconds=settings.overlay_render_timeout_seconds,
             cpu_seconds=overlay_cpu_seconds(settings.overlay_render_timeout_seconds),
+            **({"gpu": gpu} if gpu else {}),
         ))
+    except GPUWorkerError:
+        raise
     except (RuntimeError, TimeoutError) as exc:
+        marker = directory / "gpu-failure.json"
+        if gpu and marker.is_file():
+            failure = json.loads(marker.read_text(encoding="utf-8"))
+            kind = failure.get("kind")
+            if kind == "graphics" or (kind == "encoder" and gpu.route == "h264-pair"):
+                reason = ("nvenc_dimensions_unsupported" if kind == "encoder" and failure.get("reason") == "nvenc_dimensions_unsupported"
+                          else f"worker_{kind}_unavailable")
+                raise GPUWorkerError(kind, reason) from exc
         # The worker log tail holds sandbox paths and source excerpts: only the chained cause carries it.
         message = "叠加视频渲染超时" if isinstance(exc, TimeoutError) else "叠加视频渲染失败"
         raise OverlayError("render_failed", message) from exc
@@ -520,16 +547,19 @@ def overlay_ranges(overlay: Overlay, settings: Settings, *, chunked: bool | None
     return chunk_ranges(overlay.frames, overlay.fps)
 
 
-async def join_chunks(directory: Path, count: int) -> Path:
+async def join_chunks(directory: Path, count: int, *, stream_role: str = "webm") -> Path:
     """按帧区间顺序无损拼接已完成的块；worker 并发完成的顺序不改变成片。"""
-    paths = [directory / f"chunk-{index}.webm" for index in range(count)]
+    webm = stream_role == "webm"
+    suffix = ".webm" if webm else f"-{stream_role}.mp4"
+    paths = [directory / f"chunk-{index}{suffix}" for index in range(count)]
     if not all(path.is_file() and path.stat().st_size > 0 for path in paths):
         raise OverlayError("render_failed", "渲染器没有产出全部分块")
-    listing = directory / "chunks.txt"
+    listing = directory / ("chunks.txt" if webm else f"{stream_role}-chunks.txt")
     await asyncio.to_thread(listing.write_text, "".join(f"file '{path.name}'\n" for path in paths), encoding="utf-8")
-    output = directory / "sprite.webm"
+    output = directory / ("sprite.webm" if webm else f"{stream_role}.mp4")
     process = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "concat", "-safe", "1", "-i", listing.name, "-c", "copy", output.name,
+        "ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "concat", "-safe", "1", "-i", listing.name,
+        "-c", "copy", *(("-movflags", "+faststart") if not webm else ()), output.name,
         cwd=directory, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
     )
     try:
@@ -550,14 +580,73 @@ async def join_chunks(directory: Path, count: int) -> Path:
     return output
 
 
+async def _finish_outputs(overlay: Overlay, directory: Path, count: int, *, paired: bool = False) -> tuple[Path, Path | None]:
+    """After releasing the GPU, join and verify every output before handing either one to the uploader."""
+    roles = ("color", "mask") if paired else ("webm",)
+    if count > 1:
+        async def join_all() -> list[Path]:
+            """Remux the encoded ranges in order, preserving the common presentation clock."""
+            return [await join_chunks(directory, count, stream_role=role) for role in roles]
+
+        outputs = await measured(directory, "join", join_all())
+    else:
+        outputs = [directory / (f"{role}.mp4" if paired else "overlay.webm") for role in roles]
+
+    async def verify() -> None:
+        """Decode and check each output while holding a single CPU/RAM grant."""
+        for path, role in zip(outputs, roles):
+            if not path.is_file() or path.stat().st_size == 0:
+                raise OverlayError("render_failed", "渲染器没有产出视频")
+            await probe_overlay(path, overlay, stream_role=role)
+
+    await measured(directory, "probe", verify())
+    return outputs[0], outputs[1] if paired else None
+
+
 async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path, *, chunked: bool | None = None,
                          chunk_concurrency: int | None = None, frame_concurrency: int | None = None) -> Path:
-    """输出并校验透明视频；可选分块与单 Sprite 共用一次打包、浏览器和无损拼接。"""
+    """Keep the public Sprite and template render contracts as a single CPU-rendered fast alpha WebM."""
     ranges = overlay_ranges(overlay, renderer.settings, chunked=chunked)
-    ranges = ranges if len(ranges) > 1 else None
-    await run_overlay_worker(renderer, overlay, directory, ranges, chunk_concurrency=chunk_concurrency, frame_concurrency=frame_concurrency)
-    output = await measured(directory, "join", join_chunks(directory, len(ranges))) if ranges else directory / "overlay.webm"
-    if not output.is_file() or output.stat().st_size == 0:
-        raise OverlayError("render_failed", "渲染器没有产出视频")
-    await measured(directory, "probe", probe_overlay(output, overlay))
+    await run_overlay_worker(renderer, overlay, directory, ranges if len(ranges) > 1 else None,
+                             chunk_concurrency=chunk_concurrency, frame_concurrency=frame_concurrency)
+    output, _ = await _finish_outputs(overlay, directory, len(ranges))
     return output
+
+
+async def render_ims_overlay(renderer: Renderer, overlay: Overlay, directory: Path, *, chunk_concurrency: int,
+                             frame_concurrency: int, log=None) -> tuple[Path, Path | None]:
+    """Try dual NVENC, hardware drawing with VP9, then software VP9 without waiting for GPU resources."""
+    skip_graphics, skip_nvenc = set(), set()
+    media = directory / "media"
+    ranges = overlay_ranges(overlay, renderer.settings)
+    chunks = min(2, chunk_concurrency, len(ranges))
+    while True:
+        async with renderer.gpu_pool.claim(overlay.width, overlay.height, frame_concurrency, chunks,
+                                           skip_graphics=skip_graphics, skip_nvenc=skip_nvenc) as grant:
+            logger.info("Remotion task_id=%s route=%s gpu=%s chunks=%s reason=%s",
+                        directory.name, grant.route, grant.uuid, grant.chunks, grant.reason)
+            if log:
+                await log("route_selected", step="remotion_video", output={
+                    "route": grant.route, "gpu_uuid": grant.uuid, "chunks": grant.chunks, "reason": grant.reason,
+                })
+            try:
+                await run_overlay_worker(renderer, overlay, media, ranges if len(ranges) > 1 else None,
+                                         chunk_concurrency=grant.chunks, frame_concurrency=frame_concurrency,
+                                         gpu=grant if grant.uuid else None)
+            except GPUWorkerError as exc:
+                if not grant.uuid:
+                    raise
+                logger.warning("Remotion task_id=%s route=%s gpu=%s reason=%s", directory.name, grant.route, grant.uuid, exc.reason)
+                if log:
+                    await log("route_retry", step="remotion_video", output={"route": grant.route, "gpu_uuid": grant.uuid, "reason": exc.reason})
+                if exc.reason == "nvenc_dimensions_unsupported":
+                    skip_nvenc.add("*")
+                else:
+                    (skip_graphics if exc.kind == "graphics" else skip_nvenc).add(grant.uuid)
+                    await asyncio.to_thread(renderer.gpu_pool.failed, grant.uuid, exc.kind)
+            else:
+                break
+        # The worker has exited and its claim is released. Never reuse half-written frames, symlinks or masks.
+        if media.is_dir():
+            await asyncio.to_thread(shutil.rmtree, media)
+    return await _finish_outputs(overlay, media, len(ranges), paired=grant.route == "h264-pair")

@@ -25,7 +25,7 @@ from .errors import CompositionError, remaining
 from .execution_log import close_logs, exception_details, log_dispatch_error, recover_logs
 from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, MatchedSegment, PlaygroundRequest, PositiveSeconds, Segment, TaskResponse
-from .settings import ClientSettings, Settings, ZosSettings
+from .settings import DEFAULT_COMPOSITION_CONCURRENCY, ClientSettings, Settings, ZosSettings
 from .timeline import build_timeline, validate_segments
 from .frame_mask import upload_mask
 from . import avatar, split_screen
@@ -298,7 +298,7 @@ class Runtime:
         while not self.stopping:
             self.wake.clear()
             try:
-                capacity = (self.settings.composition_concurrency if self.settings else 6) - len(self.active)
+                capacity = (self.settings.composition_concurrency if self.settings else DEFAULT_COMPOSITION_CONCURRENCY) - len(self.active)
                 if capacity > 0:
                     records = await self.sync(store.pending, list(self.active), capacity)
                     if records and self.settings is None and any(not item["data"]["output"].get("client_config") for item in records):

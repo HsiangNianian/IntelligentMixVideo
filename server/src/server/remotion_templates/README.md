@@ -436,7 +436,7 @@ directory to apply it after checkout; when upgrading Remotion, reassess the patc
 The outer render deadline (1800 seconds for overlays by default) still covers browser startup
 and rendering; this change does not alter per-frame render timeouts.
 
-Remotion 4.0.534 supports VP9 parallel encoding and shared-memory capture without GPU access.
+The overlay worker captures ordered PNG frames with Remotion 4.0.534 and pipes them to FFmpeg.
 Install its matching Headless Shell outside the sandbox with `ensureBrowser()` and point
 `IMV_BROWSER_EXECUTABLE` at the returned absolute binary path; an existing system Chrome path is not
 automatically replaced. The actual render records `parallel_encoding` and `shared_memory_capture` per
@@ -845,12 +845,12 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   template timing, and a clip is at most `IMV_OVERLAY_MAX_SECONDS` long. Remotion clamps a Sequence to its
   composition, so the worker declares the composition up to the latest clip end and renders only the first `total`
   frames of it.
-- **Output**: no audio; the bus/IMS keeps its own audio track and overlays the WebM. The host re-probes the file
+- **Output**: the public overlay and Sprite routes return a silent transparent WebM. The host re-probes the file
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
   (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 1800 seconds / 30 minutes), `overlay_service.py` owns the MySQL `remotion_overlay_renders` task table,
-  up to six renders at a time by default (`IMV_OVERLAY_TASK_CONCURRENCY`; each slot covers source adaptation, text fit and rendering: the remote audio probe before it and the ZOS upload after it
-  run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
+  up to twelve concurrent renders by default (`IMV_OVERLAY_TASK_CONCURRENCY`, covering source adaptation, text fit and rendering while the remote audio probe and ZOS upload
+  run outside each slot), recovery of unfinished tasks and pending notifications
   when the runtime is first built
   (`routes.runtime_for`, oldest first; a damaged row is logged and skipped, and the overlay routes retry if the table
   could not be read), and ZOS upload via `video_composition.zos.upload_public`. The placements are stored with the
@@ -865,7 +865,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   enclosing video-composition stage and includes waiting for this slot.
 - **Performance**: `IMV_OVERLAY_FRAME_CONCURRENCY` caps pages per chunk (default 4), independently of task slots.
   Admission lowers the actual page count on small hosts or CPU quotas, and passes that same count to the worker.
-  `IMV_OVERLAY_CHUNK_CONCURRENCY` caps simultaneous chunks within one video at 6. Single Sprites, full overlays and
+  `IMV_OVERLAY_CHUNK_CONCURRENCY` caps simultaneous chunks within one public WebM at 6. IMS compositions and the playground cap each task at two. Single Sprites, full overlays and
   video compositions share fixed 15-second chunks (`IMV_OVERLAY_CHUNKED=true` by default for the latter two).
   Videos up to 15 seconds use one chunk; the final chunk contains the remaining frames.
   Boundaries preserve every frame exactly once. Only multi-chunk outputs require host `ffmpeg` for joining;
@@ -888,15 +888,23 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Waiting for resources is bounded by `IMV_OVERLAY_RESOURCE_WAIT_SECONDS=300`; cancellation and failure release grants.
   A timeout fails the task with `resource_unavailable` (`remotion_resource_unavailable` for video compositions)
   and a retry-later message. Callers may resubmit after capacity recovers; this does not automatically retry failed tasks.
-  `IMV_OVERLAY_VP9_CPU_USED` and `IMV_OVERLAY_VP9_THREADS` default to 4 and 2 in code, respectively, and can be
+  `IMV_OVERLAY_VP9_CPU_USED` and `IMV_OVERLAY_VP9_THREADS` default to 7 and 3 in code, respectively, and can be
   overridden through environment variables. They only tune the actual VP9 encoder. All paths share the same
   worker and copy-only join, preserving absolute animation time.
   Private `performance.json` and the final `Remotion performance` service log separate planning, slot wait, text fit,
   resource wait/granted chunks/reserved memory, preparation, worker, probe, join and upload. The worker records bundle/browser/composition setup and per-chunk
   wall time. `slot_wait_ms` excludes `resource_wait_ms`, so these two wait fields do not overlap.
-  With parallel encoding, `rendered_ms` includes waiting for pre-encoding, and `encoded_ms` is only the
-  final mux; compare wall time rather than interpreting it as the complete encoding cost. Render deadlines and the
+  With piped encoding, `rendered_ms` includes waiting for encoder backpressure and `encoded_ms` measures
+  the remaining encoder drain and mux. Render deadlines and the
   timeout-times-CPU per-process cap remain in force. Use measured timings for capacity planning.
+
+### Video composition and playground GPUs
+
+The backend first tries GPU drawing and two H.264 NVENC outputs when the host FFmpeg provides `h264_nvenc` and the color and mask filters. IMS receives the color file as `MediaURL` and the full-range grayscale alpha file as `MaskVideoUrl`. Both must match the requested frame clock exactly. If hardware encoding cannot be admitted, GPU drawing can still feed the fast CPU VP9 encoder. If drawing also cannot be admitted, SwiftShader and CPU VP9 produce the same transparent WebM contract. Both WebM routes use the FFmpeg shipped with Remotion. A host without NVIDIA follows the software path. A canvas outside NVENC's supported dimensions falls back to WebM for that task, so the same card can still encode the next compatible canvas.
+
+Admission consults live device memory, external processes and the outstanding part of existing reservations. After adding the candidate's peak estimate, usage must remain at or below 85% of physical VRAM. There is no per-card task count. One 1080p, four-page chunk initially reserves `IMV_OVERLAY_GPU_PAIR_MB=768` or `IMV_OVERLAY_GPU_WEBM_MB=256` MiB. Each double-stream chunk needs two of the host's ten NVENC sessions. GPU selection skips physical index 4. The host budget (`NVENC_SESSION_LIMIT`) and additional exclusions (`EXCLUDED_GPU_UUIDS`) live in `gpu_resources.py`. Adding a board's full UUID there keeps it excluded across index changes. All processes serving the same machine share a local lease directory (`IMV_OVERLAY_GPU_LEASE_DIR`, default under the service account's temporary directory).
+
+Routes run on the machine that accepted the task. Each sandbox receives only its selected card. A confirmed graphics failure excludes that card for both GPU routes, while an encoder failure still permits GPU WebM. The private `remotion_video` step records `route_selected` with the GPU, route, chunk count and reason. A confirmed failure records `route_retry` before the next selection. The CPU/RAM admission timeout still applies independently. Local media validation, uploads and IMS submission retain their existing error handling.
 
 ## Code diagnostics
 
