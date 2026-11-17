@@ -38,8 +38,14 @@ def machine(tmp_path, monkeypatch):
     cards = [device()]
     settings = Settings(_env_file=None, overlay_gpu_lease_dir=tmp_path / "leases", overlay_gpu_pair_mb=768,
                         overlay_gpu_webm_mb=256)
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_text('#!/bin/sh\necho "$2" >> "$0.calls"\ncat "$0$2"\n')
+    ffmpeg.chmod(0o755)
+    (tmp_path / "ffmpeg-encoders").write_text(" V....D h264_nvenc NVIDIA H.264 encoder\n")
+    filters = ("format", "split", "scale", "alphaextract", "setparams")
+    (tmp_path / "ffmpeg-filters").write_text("".join(f" ... {name} V->V\n" for name in filters))
     monkeypatch.setattr(gpu, "_inventory", lambda: (cards, True))
-    monkeypatch.setattr(gpu.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(gpu.shutil, "which", lambda name: str(tmp_path / name))
     return cards, settings
 
 
@@ -207,6 +213,20 @@ async def test_inventory_missing_ffmpeg_or_nvenc(machine, monkeypatch):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("listing,missing", [("encoders", "h264_nvenc"), ("filters", "alphaextract"), ("filters", "setparams")])
+async def test_incomplete_ffmpeg_build_admits_gpu_webm(machine, tmp_path, listing, missing):
+    """A present FFmpeg missing the encoder or a required mask filter keeps GPU drawing, with one probe per binary."""
+    cards, settings = machine
+    path = tmp_path / f"ffmpeg-{listing}"
+    path.write_text(path.read_text().replace(missing, missing + "_other"))
+    pool = gpu.GPUPool(settings)
+    for _ in range(2):
+        async with claim(pool) as grant:
+            assert (grant.route, grant.uuid, grant.reason) == ("gpu-webm", cards[0].uuid, "nvenc_pipeline_unavailable")
+    assert (tmp_path / "ffmpeg.calls").read_text().splitlines().count("-encoders") == 1
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("width,height,skipped", [(1079,1920,set()), (1080,1919,set()), (32,32,{"*"})])
 async def test_unsupported_canvas_uses_webm_without_cooling_a_healthy_gpu(machine, width, height, skipped):
     """Odd dimensions or a confirmed per-job NVENC dimension rejection preserve the card for a compatible job."""
@@ -290,8 +310,8 @@ def test_bwrap_selected_minor_drm_and_only_overlay(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("standard_exists", [True, False])
-def test_only_overlay_binds_ffmpeg_from_a_nonstandard_prefix(tmp_path, monkeypatch, standard_exists):
-    """An ffmpeg found outside /usr is mounted in the cleared overlay PATH, including the CPU route."""
+def test_only_nvenc_binds_ffmpeg_from_a_nonstandard_prefix(tmp_path, monkeypatch, standard_exists):
+    """The NVENC worker sees the probed host binary, while both WebM routes use the bundled encoder."""
     executable = tmp_path / "opt" / "ffmpeg"
     executable.parent.mkdir()
     executable.touch()
@@ -299,13 +319,16 @@ def test_only_overlay_binds_ffmpeg_from_a_nonstandard_prefix(tmp_path, monkeypat
     real_is_file = Path.is_file
     monkeypatch.setattr(Path, "is_file", lambda p: standard_exists if p == Path("/usr/bin/ffmpeg") else real_is_file(p))
     monkeypatch.setattr(gpu.shutil, "which", lambda name: str(executable) if name == "ffmpeg" else real_which(name))
+    monkeypatch.setattr("server.remotion_templates.renderer.sandbox_gpu", lambda grant: ([], []))
     renderer = Renderer(Settings(_env_file=None, data_dir=tmp_path))
-    args = renderer.command(tmp_path, worker="overlay-worker.mjs")
+    card = device()
+    args = renderer.command(tmp_path, worker="overlay-worker.mjs", gpu=gpu.GPUGrant("h264-pair", card.uuid, 1, "test", card))
     i = args.index(str(executable))
     target = "/usr/bin/ffmpeg" if standard_exists else "/runtime-bin/ffmpeg"
     assert args[i-1:i+2] == ["--ro-bind", str(executable), target]
     assert args[args.index("PATH")+1].split(":")[0] == str(Path(target).parent)
-    assert str(executable) not in renderer.command(tmp_path, worker="presentation-worker.mjs")
+    for grant in (None, gpu.GPUGrant("gpu-webm", card.uuid, 1, "test", card)):
+        assert str(executable) not in renderer.command(tmp_path, worker="overlay-worker.mjs", gpu=grant)
 
 
 @pytest.mark.anyio

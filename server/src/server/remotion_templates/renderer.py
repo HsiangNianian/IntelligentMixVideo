@@ -228,8 +228,8 @@ class Renderer:
             if Path(source).exists():
                 command.extend(("--ro-bind", source, source))
         sandbox_path = "/usr/bin:/bin"
-        if worker == "overlay-worker.mjs" and (ffmpeg := shutil.which("ffmpeg")):
-            # 让清空 PATH 的 worker 和准入检查使用同一可执行文件，包括随包/自定义安装路径。
+        if gpu is not None and gpu.route == "h264-pair" and (ffmpeg := shutil.which("ffmpeg")):
+            # 硬编 worker 使用准入时探测的宿主 FFmpeg，WebM 使用 Remotion 内置编码器。
             executable = Path(ffmpeg).resolve()
             standard = Path("/usr/bin/ffmpeg")
             if executable != standard:

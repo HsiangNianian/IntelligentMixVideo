@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 import ctypes
 from dataclasses import dataclass, field
+from functools import cache
 import json
 import math
 import os
@@ -201,6 +202,33 @@ def _inventory() -> tuple[list[GPU], bool]:
     return cards, False
 
 
+@cache
+def _nvenc_unavailable_reason(ffmpeg: str | None) -> str | None:
+    """Cache the installed FFmpeg build's encoder and filter support for paired overlays."""
+    if ffmpeg is None:
+        return "ffmpeg_unavailable"
+    for option, required in (
+        ("-encoders", {"h264_nvenc"}),
+        ("-filters", {"format", "split", "scale", "alphaextract", "setparams"}),
+    ):
+        listing = subprocess.check_output([ffmpeg, "-hide_banner", option], stderr=subprocess.DEVNULL,
+                                          timeout=3, text=True, errors="replace")
+        # In both FFmpeg tables, the second column is the exact encoder or filter name.
+        if not required.issubset(re.findall(r"^[ \t]*\S+[ \t]+(\S+)", listing, re.MULTILINE)):
+            return "nvenc_pipeline_unavailable"
+    return None
+
+
+def _probe_host() -> tuple[list[GPU], bool, str | None]:
+    """Probe hardware and FFmpeg together before locking leases. A failed command can be retried on the next claim."""
+    cards, complete = _inventory()
+    try:
+        reason = _nvenc_unavailable_reason(shutil.which("ffmpeg")) if cards and complete else None
+    except (OSError, subprocess.SubprocessError):
+        reason = "nvenc_pipeline_unavailable"
+    return cards, complete, reason
+
+
 def _process(pid: int) -> tuple[int, int] | None:
     """Read a host PID's parent and birth tick, tolerating an exit during the GPU snapshot."""
     try:
@@ -318,7 +346,7 @@ class GPUPool:
             pass
 
     def _choose(self, cards: list[GPU], width: int, height: int, pages: int, chunks: int,
-                skip_graphics: set[str], skip_nvenc: set[str], complete: bool) -> GPUGrant:
+                skip_graphics: set[str], skip_nvenc: set[str], complete: bool, ffmpeg_issue: str | None) -> GPUGrant:
         """Prefer color/mask on the least session-loaded eligible card, then GPU/WebM and CPU/WebM."""
         import fcntl
 
@@ -345,10 +373,9 @@ class GPUPool:
         present = {card.uuid for card in cards}
         host_sessions += sum(lease["sessions"] for lease in leases if lease["uuid"] not in present)
         free_sessions = NVENC_SESSION_LIMIT - host_sessions
-        ffmpeg = shutil.which("ffmpeg")
         supported_dimensions = width % 2 == 0 and height % 2 == 0 and "*" not in skip_nvenc
         sessions_known = complete and all(card.sessions is not None for card in cards)
-        if not sessions_known or not ffmpeg:
+        if not sessions_known or ffmpeg_issue:
             free_sessions = 0
         scale = max(1.0, width * height / (1080 * 1920)) * max(1.0, pages / 4)
         for route, base in (("h264-pair", self.settings.overlay_gpu_pair_mb), ("gpu-webm", self.settings.overlay_gpu_webm_mb)):
@@ -372,8 +399,8 @@ class GPUPool:
                     raise
                 reason = "nvenc_admitted"
                 if route == "gpu-webm":
-                    if not ffmpeg:
-                        reason = "ffmpeg_unavailable"
+                    if ffmpeg_issue:
+                        reason = ffmpeg_issue
                     elif not supported_dimensions:
                         reason = "nvenc_dimensions_unsupported"
                     elif not sessions_known:
@@ -391,13 +418,13 @@ class GPUPool:
     async def claim(self, width: int, height: int, pages: int, chunks: int, *, skip_graphics: set[str], skip_nvenc: set[str]):
         """Reserve from a fresh snapshot. A '*' in skip_nvenc means this job's canvas was rejected by the encoder."""
         if self._probe is None or self._probe.done():
-            self._probe = asyncio.create_task(asyncio.to_thread(_inventory))
-        cards, complete = await asyncio.shield(self._probe)
+            self._probe = asyncio.create_task(asyncio.to_thread(_probe_host))
+        cards, complete, ffmpeg_issue = await asyncio.shield(self._probe)
         grant = GPUGrant("cpu-webm", None, chunks, "nvidia_unavailable")
         if cards and self.directory is not None:
             try:
                 with self._lock():
-                    grant = self._choose(cards, width, height, pages, chunks, skip_graphics, skip_nvenc, complete)
+                    grant = self._choose(cards, width, height, pages, chunks, skip_graphics, skip_nvenc, complete, ffmpeg_issue)
             except (OSError, ValueError):
                 grant = GPUGrant("cpu-webm", None, chunks, "gpu_accounting_unavailable")
         try:
