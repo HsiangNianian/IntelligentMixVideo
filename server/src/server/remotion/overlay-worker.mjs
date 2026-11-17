@@ -133,9 +133,8 @@ try {
   const ranges = request.ranges ?? [[0, composition.frames - 1]];
   const requestedChunks = Math.min(request.chunk_concurrency ?? 1, ranges.length);
   const chunkConcurrency = gpuRoute ? Math.min(2, requestedChunks) : requestedChunks;
-  const ffmpeg = request.bundled_ffmpeg && route !== "h264-pair"
-    ? RenderInternals.getExecutablePath({type: "ffmpeg", binariesDirectory: null, logLevel, indent: false})
-    : "ffmpeg";
+  const ffmpeg = route === "h264-pair" ? "ffmpeg"
+    : RenderInternals.getExecutablePath({type: "ffmpeg", binariesDirectory: null, logLevel, indent: false});
   timings.chunk_concurrency = chunkConcurrency;
   stageStarted = performance.now();
   /** Render an absolute range without changing any instance clock; one failure ends the isolated worker. */

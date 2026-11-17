@@ -117,15 +117,15 @@ def worker(tmp_path):
     return run
 
 
-@pytest.mark.parametrize("route,chunked,bundled,explicit", [
-    (None, True, True, False), ("cpu-webm", False, False, True), ("gpu-webm", True, False, True),
-    ("h264-pair", True, False, False), ("h264-pair", False, False, False),
+@pytest.mark.parametrize("route,chunked,explicit", [
+    (None, True, False), ("cpu-webm", False, True), ("gpu-webm", True, True),
+    ("h264-pair", True, False), ("h264-pair", False, False),
 ])
-def test_routes_write_ordered_frames_and_report_real_concurrency(tmp_path, worker, route, chunked, bundled, explicit):
+def test_routes_write_ordered_frames_and_report_real_concurrency(tmp_path, worker, route, chunked, explicit):
     """三条路线都按绝对时钟写入每帧；GPU最多两块，共用浏览器，保持逐块进度可观测。"""
     ranges = [[0, 2], [3, 5], [6, 8]] if chunked else [[0, 8]]
-    result = worker(route=route, ranges=ranges if chunked else None, options={
-        "bundled_ffmpeg": bundled, **({"vp9": {"cpu_used": 4, "threads": 2, "row_mt": False}} if explicit else {})})
+    options = {"vp9": {"cpu_used": 4, "threads": 2, "row_mt": False}} if explicit else {}
+    result = worker(route=route, ranges=ranges if chunked else None, options=options)
     assert result.returncode == 0, result.stderr
     calls = [json.loads(row) for row in (tmp_path / "calls.jsonl").read_text().splitlines()]
     gpu = route in ("gpu-webm", "h264-pair")
@@ -145,6 +145,7 @@ def test_routes_write_ordered_frames_and_report_real_concurrency(tmp_path, worke
         for output in outputs:
             encoded = json.loads(output.read_text())
             assert encoded["input"] == list(range(first, last + 1))
+            assert Path(encoded["binary"]).name == ("ffmpeg" if route == "h264-pair" else "bundled-ffmpeg")
             args = encoded["args"]
             if route == "h264-pair":
                 assert [args[n+1] for n, flag in enumerate(args) if flag == "-qp"] == ["24", "15"]
@@ -156,7 +157,6 @@ def test_routes_write_ordered_frames_and_report_real_concurrency(tmp_path, worke
                                     ("-row-mt", "0" if explicit else "1"), ("-crf", "34"), ("-lag-in-frames", "0")):
                     assert args[args.index(flag)+1] == value
                 assert [args[n+1] for n, flag in enumerate(args) if flag == "-threads"] == ["3", "2" if explicit else "3"]
-                assert (Path(encoded["binary"]).name == "bundled-ffmpeg") is bundled
     report = json.loads((tmp_path / "renderer.json").read_text())
     metrics = report["performance"]
     assert report["frames"] == 9 and report["runtime"]["test"]
@@ -208,27 +208,46 @@ def test_only_nvenc_dimension_limits_get_a_per_render_reason(tmp_path, worker, d
         assert not marker.exists()
 
 
-@pytest.mark.parametrize("bundled", [False, True])
-def test_cpu_fast_webm_keeps_decodable_alpha(tmp_path, worker, bundled):
-    """系统和内置软件编码器均保留奇数宽高、逐帧顺序与可解码的透明度。"""
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        pytest.skip("需要 FFmpeg 解码实际 VP9 Alpha")
-    env = {}
-    if bundled:
-        renderer = Path(__file__).parents[1] / "src/server/remotion"
-        if not (renderer / "node_modules/@remotion/renderer").exists():
-            pytest.skip("需要锁定的 Remotion 编码二进制")
-        env["BUNDLED_FFMPEG"] = subprocess.check_output(
-            [shutil.which("node"), "--input-type=module", "-e",
-             'import {RenderInternals} from "@remotion/renderer"; console.log(RenderInternals.getExecutablePath('
-             '{type:"ffmpeg",indent:false,logLevel:"error",binariesDirectory:null}));'],
-            cwd=renderer, text=True, timeout=10).strip()
+@pytest.mark.parametrize("route", ["cpu-webm", "gpu-webm"])
+def test_fast_webm_keeps_alpha_when_path_ffmpeg_lacks_vp9(tmp_path, worker, route):
+    """PATH 中的 FFmpeg 不支持 VP9 时，两条 WebM 路线仍能用内置编码器保留每帧透明度。"""
+    renderer = Path(__file__).parents[1] / "src/server/remotion"
+    if not (renderer / "node_modules/@remotion/renderer").exists():
+        pytest.skip("需要锁定的 Remotion 编码二进制")
+    ffmpeg = Path(subprocess.check_output(
+        [shutil.which("node"), "--input-type=module", "-e",
+         'import {RenderInternals} from "@remotion/renderer"; console.log(RenderInternals.getExecutablePath('
+         '{type:"ffmpeg",indent:false,logLevel:"error",binariesDirectory:null}));'],
+        cwd=renderer, text=True, timeout=10).strip())
+    env = {"BUNDLED_FFMPEG": str(ffmpeg), "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+           "FFMPEG_ERROR": "Unknown encoder 'libvpx-vp9'"}
     width, height = 25, 17
-    result = worker(count=5, real=True, options={"bundled_ffmpeg": bundled}, env=env, size=(width, height))
+    result = worker(route=route, count=5, real=True, env=env, size=(width, height))
     assert result.returncode == 0, result.stderr
-    alpha = subprocess.check_output([ffmpeg, "-v", "error", "-c:v", "libvpx-vp9", "-i", str(tmp_path / "overlay.webm"),
-                                     "-vf", "alphaextract", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1"], timeout=10)
-    size = width * height
-    assert len(alpha) == 5 * size
-    assert all(abs(alpha[i * size + size // 2] - i * 20) <= 4 for i in range(5))
+    subprocess.run([ffmpeg, "-v", "error", "-c:v", "libvpx-vp9", "-i", tmp_path / "overlay.webm",
+                    "-pix_fmt", "rgba", tmp_path / "decoded-%d.png"], check=True, timeout=10, cwd=ffmpeg.parent,
+                   env={**os.environ, "DYLD_LIBRARY_PATH": str(ffmpeg.parent)} if sys.platform == "darwin" else None)
+    decoded = sorted(tmp_path.glob("decoded-*.png"))
+    assert len(decoded) == 5
+    for i, frame in enumerate(decoded):
+        with Image.open(frame) as image:
+            assert image.size == (width, height)
+            assert abs(image.getpixel((width // 2, height // 2))[3] - i * 20) <= 4
+
+
+def test_bundled_ffmpeg_receives_its_darwin_library_directory(tmp_path, worker):
+    """即使从其他目录启动 worker，macOS 编码子进程也能在自己的目录找到动态库。"""
+    preload = tmp_path / "darwin.cjs"
+    preload.write_text("""Object.defineProperty(process, 'platform', {value: 'darwin'});
+const cp = require('node:child_process');
+const original = cp.spawn;
+cp.spawn = (file, args, options) => {
+  const dir = require('node:path').dirname(process.env.BUNDLED_FFMPEG);
+  if (options.cwd !== dir || options.env?.DYLD_LIBRARY_PATH !== dir) throw Error('missing FFmpeg library directory');
+  return original(file, args, options);
+};
+require('node:module').syncBuiltinESMExports();
+""")
+    result = worker(count=1, env={"NODE_OPTIONS": f'--require="{preload}"'})
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "overlay.webm").is_file()

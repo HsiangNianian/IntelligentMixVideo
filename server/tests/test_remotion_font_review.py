@@ -175,7 +175,7 @@ const fontLogs=[];
 export const selectComposition = async ({onBrowserLog}) => {fontLogs.forEach(log=>onBrowserLog?.(log));return {id:'fixture'};};
 export const renderStill = async ({onBrowserLog}) => {fontLogs.forEach(log=>onBrowserLog?.(log));};
 export const renderMedia = async ({onBrowserLog}) => {fontLogs.forEach(log=>onBrowserLog?.(log));};
-export const RenderInternals = {};
+export const RenderInternals = {getExecutablePath: () => '/fixture/ffmpeg'};
 export const renderFrames = async ({onBrowserLog}) => {fontLogs.forEach(log=>onBrowserLog?.(log));};
 export class GpuFailure extends Error {}
 export const encodeRange = async ({capture}) => capture(async () => {});

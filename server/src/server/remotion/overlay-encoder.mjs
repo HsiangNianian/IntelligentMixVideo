@@ -4,6 +4,7 @@
  */
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { performance } from "node:perf_hooks";
 
@@ -57,7 +58,10 @@ const nvencFailures = [
 export async function encodeRange({route, root, index, ffmpeg, vp9, composition, frameRange, chunk, capture, progress}) {
   const [first, last] = frameRange;
   const args = argumentsFor(route, composition.fps, root, index, vp9);
-  const child = spawn(ffmpeg, args, {stdio: ["pipe", "pipe", "pipe"]});
+  // Remotion ships FFmpeg's macOS dylibs alongside its executable.
+  const cwd = route === "h264-pair" ? undefined : dirname(ffmpeg);
+  const env = cwd && process.platform === "darwin" ? {...process.env, DYLD_LIBRARY_PATH: cwd} : undefined;
+  const child = spawn(ffmpeg, args, {cwd, env, stdio: ["pipe", "pipe", "pipe"]});
   const started = performance.now();
   let stderr = "";
   let next = first;
