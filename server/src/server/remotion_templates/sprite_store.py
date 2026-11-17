@@ -36,6 +36,12 @@ sprites = Table(
     UniqueConstraint("source_version_id", "kind", "text_prop", "keywords_prop", name="uq_remotion_sprites_selection"),
     mysql_charset="utf8mb4",
 )
+editable = Table(
+    "remotion_sprite_editable", metadata,
+    Column("sprite_id", String(36), primary_key=True),
+    Column("data", JSON, nullable=False),
+    mysql_charset="utf8mb4",
+)
 _schema_lock = Lock()
 _ready_engine = None
 
@@ -55,6 +61,12 @@ def get(sprite_id: str) -> dict | None:
     """Return the stored publication JSON of one Sprite, or None when no row has that ID."""
     with initialize_schema().connect() as connection:
         return connection.execute(select(sprites.c.data).where(sprites.c.sprite_id == sprite_id)).scalar()
+
+
+def get_editable(sprite_id: str) -> dict | None:
+    """Return the published asset's independent editable snapshot, if it has one."""
+    with initialize_schema().connect() as connection:
+        return connection.execute(select(editable.c.data).where(editable.c.sprite_id == sprite_id)).scalar()
 
 
 def listing() -> list[tuple[str, dict]]:
@@ -93,7 +105,7 @@ def find_any(source_version_id: str, kind: int) -> dict | None:
 
 def insert(
     *, sprite_id: str, source_version_id: str, kind: int, text_prop: str, keywords_prop: str,
-    published_at: datetime, data: dict,
+    published_at: datetime, data: dict, editable_data: dict | None = None,
 ) -> None:
     """Add one publication; a second one for the same source and field choice is a duplicate-key error (1062)."""
     with initialize_schema().begin() as connection:
@@ -102,6 +114,8 @@ def insert(
             text_prop=text_prop, keywords_prop=keywords_prop,
             published_at=published_at.astimezone(UTC).replace(tzinfo=None), data=data,
         ))
+        if editable_data is not None:
+            connection.execute(editable.insert().values(sprite_id=sprite_id, data=editable_data))
     sprite_events.changed()
 
 
@@ -123,7 +137,7 @@ def update_data(sprite_id: str, fields: dict) -> dict | None:
 
 def replace(
     sprite_id: str, *, source_version_id: str, kind: int, text_prop: str, keywords_prop: str,
-    published_at: datetime, data: dict, name: str | None = None,
+    published_at: datetime, data: dict, name: str | None = None, editable_data: dict | None = None,
 ) -> dict | None:
     """Overwrite one publication, including its identifying columns, and return the new JSON.
 
@@ -147,6 +161,9 @@ def replace(
             source_version_id=source_version_id, kind=kind, text_prop=text_prop,
             keywords_prop=keywords_prop, published_at=published_at.astimezone(UTC).replace(tzinfo=None), data=data,
         ))
+        if editable_data is not None:
+            connection.execute(delete(editable).where(editable.c.sprite_id == sprite_id))
+            connection.execute(editable.insert().values(sprite_id=sprite_id, data=editable_data))
     sprite_events.changed()
     return data
 
@@ -155,6 +172,8 @@ def remove(sprite_id: str) -> bool:
     """Delete one publication; False when no row has that ID."""
     with initialize_schema().begin() as connection:
         removed = connection.execute(delete(sprites).where(sprites.c.sprite_id == sprite_id)).rowcount > 0
+        if removed:
+            connection.execute(delete(editable).where(editable.c.sprite_id == sprite_id))
     if removed:
         sprite_events.changed()
     return removed

@@ -657,6 +657,12 @@ def _publication(
     return sprite
 
 
+def _editable_snapshot(version: TemplateVersion) -> dict:
+    """Keep the editable composition independent of the source work's retention period."""
+    return {"candidate": version.candidate.model_dump(mode="json"),
+            "spec": version.spec.model_dump(mode="json")}
+
+
 def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVersion, bundle: bytes) -> pb.SpriteSummary:
     """Record a new publication with its own copy of the player bundle; losing a race to an identical one returns the winner."""
     composition = version.spec.composition
@@ -679,6 +685,7 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
             sprite_id=sprite_id, source_version_id=str(version.id), kind=request.kind,
             text_prop=request.text_prop, keywords_prop=request.keywords_prop, published_at=published_at,
             data=MessageToDict(sprite, preserving_proto_field_name=True),
+            editable_data=_editable_snapshot(version),
         )
     except IntegrityError as exc:
         store.objects.delete_prefix(f"{PREFIX}/sprites/{sprite_id}/")
@@ -724,7 +731,7 @@ def _overwrite(
                 target.sprite_id, source_version_id=str(version.id), kind=request.kind,
                 text_prop=request.text_prop, keywords_prop=request.keywords_prop,
                 published_at=published_at, data=MessageToDict(sprite, preserving_proto_field_name=True),
-                name=request.name.strip() or None,
+                name=request.name.strip() or None, editable_data=_editable_snapshot(version),
             )
         except IntegrityError as exc:
             if exc.orig.args[0] != 1062:
