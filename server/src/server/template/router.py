@@ -6,7 +6,7 @@ import logging
 import re
 import subprocess
 
-from fastapi import APIRouter, File, HTTPException, Path, Query, Request, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Path, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from generated.imv.template.v1 import template_pb2 as pb
@@ -15,7 +15,7 @@ from google.protobuf.message import DecodeError, Message
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from . import images, store
+from . import covers, images, store
 from .schema import Template, TemplateSave
 from .preview_mask import PreviewCircleMask, PreviewMask, circle_mask_video, mask_video
 
@@ -30,6 +30,8 @@ RESPONSE_CONTENT = {"application/json": {"schema": {"type": "object"}}, **PROTOB
 def _template_message(template: Template) -> pb.TemplateRecord:
     """将经过业务校验的模板转换为生成的 Protobuf 消息。"""
     data = template.model_dump(mode="json")
+    if template.cover:
+        data["cover"] = template.cover.model_dump()
     data["tracks"] = {"tracks": data["tracks"]}
     return ParseDict(data, pb.TemplateRecord())
 
@@ -82,12 +84,15 @@ async def save_template(request: Request) -> Response:
         data["tracks"] = data["tracks"].get("tracks", [])
         for track in data["tracks"]:
             track.setdefault("duration", None)
+    source = data.pop("cover_source", None)
+    if source is not None and not re.fullmatch(r"builtin|unavailable|[a-f0-9]{64}", source):
+        raise HTTPException(422, "封面素材标识无效")
     try:
         validated = TemplateSave.model_validate(data)
     except ValidationError as exc:
         errors = [{**error, "loc": ("body", *error["loc"])} for error in exc.errors()]
         raise RequestValidationError(errors) from exc
-    result = await run_in_threadpool(store.save_template, validated)
+    result = await run_in_threadpool(store.save_template, validated, source)
     return _template_response(
         request, pb.SaveTemplateResponse(template=_template_message(result)),
         status_code=200 if validated.template_id else 201,
@@ -172,3 +177,26 @@ def get_template(template_id: UUID, request: Request) -> Response:
 def delete_template(template_id: UUID) -> None:
     """按 URL 中的 UUID 删除模板，成功返回空响应。"""
     store.delete_template(template_id)
+
+
+@router.put("/{template_id}/cover/{revision}")
+async def upload_cover(template_id: UUID, revision: UUID, file: Annotated[UploadFile, File()],
+                       refresh: Annotated[bool, Form()] = False):
+    """客户端与存量补图共用；按图片真实内容验证并写入该模板固定的 PNG 对象。"""
+    try:
+        content = await file.read(covers.MAX_BYTES + 1)
+        if len(content) > covers.MAX_BYTES:
+            raise HTTPException(413, "封面图片过大")
+        return await run_in_threadpool(store.publish_cover, template_id, revision, content, refresh)
+    finally:
+        await file.close()
+
+
+@router.get("/{template_id}/cover")
+def get_cover(template_id: UUID, request: Request) -> Response:
+    """按已发布版本验证客户端缓存，只有版本变化才从 ZOS 读取 PNG。"""
+    etag = f'"{store.published_revision(template_id)}"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(covers.read_cover(str(template_id)), media_type="image/png", headers=headers)

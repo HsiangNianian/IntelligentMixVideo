@@ -182,12 +182,12 @@ export function PreviewPanel({
           </Button>
         )}
       </header>
-      <div className="relative min-h-0 flex-1 bg-[radial-gradient(var(--color-line-strong)_1px,transparent_1px)] bg-size-[18px_18px]">
+      <div className="paper-surface relative min-h-0 flex-1">
         <div className="absolute inset-5 flex items-center justify-center [container-type:size]">
           <div
             ref={stage}
             aria-label="字效画布"
-            className="relative overflow-hidden rounded-xl border border-line-strong bg-black shadow-pop"
+            className="relative overflow-hidden rounded-sm border border-line-strong bg-black text-white shadow-lift"
             style={{ width: `min(100cqw, ${100 * aspect}cqh)`, aspectRatio: aspect }}
           >
             {/* 先读元数据再播放，避免 WebKitGTK 直接自动播放较大 blob 时的解码错误。 */}
@@ -219,9 +219,9 @@ export function PreviewPanel({
             )}
             {!version && !background && (
               <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center">
-                <Film className="mb-3 size-7 text-brand/60" />
+                <Film className="mb-3 size-7 text-white/60" />
                 <p className="text-[13px] font-medium">你的字效将在这里呈现</p>
-                <p className="mt-2 text-xs leading-relaxed text-fg-subtle">
+                <p className="mt-2 text-xs leading-relaxed text-white/60">
                   先在左侧描述想法，再用视频背景查看效果
                 </p>
               </div>

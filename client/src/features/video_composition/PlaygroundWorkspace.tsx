@@ -198,7 +198,7 @@ export function PlaygroundWorkspace({ active = true }: { active?: boolean }) {
   const pickDisabled = !key || loading || !!templateError || submitting || running;
   const canSubmit = !!key && !!selected && !selected.validation_error && !templateError && !submitting && !running;
   return <TooltipPrimitive.Provider delayDuration={350}>
-    <div className="grid h-full min-h-0 overflow-y-auto bg-canvas lg:grid-cols-[340px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[340px_minmax(0,1fr)_320px]">
+    <div className="grid h-full min-h-0 grid-cols-1 overflow-y-auto bg-canvas lg:grid-cols-[340px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[minmax(300px,1fr)_minmax(340px,1.45fr)_minmax(280px,1fr)]">
       <aside aria-label="合成设置" className="flex flex-col border-b lg:min-h-0 border-line bg-surface lg:border-b-0 lg:border-r">
         <header className="px-5 pb-4 pt-6">
           <p className="flex items-center gap-1.5 text-[11.5px] text-fg-subtle"><Icon name="clapperboard-edit" className="size-3.5" />视频合成</p>

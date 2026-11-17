@@ -3,12 +3,12 @@
 import json
 from datetime import UTC, datetime
 from threading import Lock
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 from google.protobuf.json_format import ParseError
-from sqlalchemy import JSON, Column, MetaData, String, Table, delete, select
+from sqlalchemy import JSON, Column, MetaData, String, Table, delete, inspect, select
 from sqlalchemy.dialects.mysql import DATETIME
 from sqlalchemy.exc import IntegrityError
 
@@ -18,7 +18,8 @@ from ..database import get_engine
 from ..remotion_templates import placement, sprite_store, sprites
 from ..remotion_templates.categories import BILINGUAL_PROP, bilingual as is_bilingual
 from ..remotion_templates.store import Conflict
-from .schema import EffectTrack, Template, TemplateSave, TemplateSummary, completeness_error, effect_catalog
+from .covers import delete_cover, encode_cover, upload_cover
+from .schema import EffectTrack, Template, TemplateCover, TemplateSave, TemplateSummary, completeness_error, effect_catalog
 from . import images
 
 # 模板元数据用于查询和约束，配置 JSON 保留完整编辑字段与可信效果快照。
@@ -28,6 +29,7 @@ templates = Table(
     Column("template_id", String(36), primary_key=True),
     Column("name", String(100, collation="utf8mb4_bin"), nullable=False, unique=True),
     Column("configuration", JSON, nullable=False),
+    Column("cover", JSON(none_as_null=True)),
     Column("created_at", DATETIME(fsp=6), nullable=False),
     Column("updated_at", DATETIME(fsp=6), nullable=False, index=True),
     mysql_charset="utf8mb4",
@@ -39,12 +41,26 @@ VFX_KINDS = {sprite_pb.SPRITE_KIND_VIDEO_OVERLAY, sprite_pb.SPRITE_KIND_UNSPECIF
 
 
 def initialize_schema():
-    """首次模板请求创建缺失表；数据库已在应用启动时确保存在，失败后可重试。"""
+    """首次请求创建模板表或升级旧库；已试用独立封面表的库保留原版本和地址。"""
     global _ready_engine
     engine = get_engine()
     with _schema_lock:
         if _ready_engine is not engine:
-            metadata.create_all(engine)
+            with engine.begin() as connection:
+                metadata.create_all(connection)
+                schema = inspect(connection)
+                if "cover" not in {field["name"] for field in schema.get_columns("templates")}:
+                    connection.exec_driver_sql("ALTER TABLE templates ADD COLUMN cover JSON NULL")
+                if schema.has_table("template_covers"):
+                    connection.exec_driver_sql("""
+                        UPDATE templates SET cover = (
+                            SELECT JSON_OBJECT('revision', c.revision, 'source', c.source,
+                                               'published_revision', c.published_revision, 'url', c.url)
+                            FROM template_covers c WHERE c.template_id = templates.template_id
+                        ) WHERE cover IS NULL AND EXISTS (
+                            SELECT 1 FROM template_covers c WHERE c.template_id = templates.template_id
+                        )
+                    """)
             _ready_engine = engine
     return engine
 
@@ -60,6 +76,8 @@ def to_template(row) -> Template:
         created_at=row.created_at.replace(tzinfo=UTC),
         updated_at=row.updated_at.replace(tzinfo=UTC),
     )
+    if row.cover:
+        template.cover = TemplateCover.model_validate(row.cover)
     issue = completeness_error(template)
     if issue:
         raise ValueError(issue)
@@ -85,6 +103,7 @@ def summarize(row) -> TemplateSummary:
     except ValueError as error:
         summary.validation_error = validation_message(error)
         return summary
+    summary.cover = template.cover
     summary.description = template.description
     summary.track_count = len(template.tracks)
     summary.title = next(track.editor.title for track in template.tracks if track.target == "title" and track.language == "zh")
@@ -155,7 +174,7 @@ def check_bilingual(track: EffectTrack, published: sprite_pb.PublishedSprite, tr
         raise HTTPException(422, f"Remotion 字效「{track.id}」是双语字效，已显示英文{role}，请移除额外的英文{role}字效")
 
 
-def save_template(data: TemplateSave) -> Template:
+def save_template(data: TemplateSave, cover_source: str | None = None) -> Template:
     """原子创建或完整覆盖；锁定待更新行，并以数据库唯一约束处理并发重名。
 
     Remotion 片段引用的 Sprite 必须已发布，且画布尺寸与帧率一致（422）：叠加渲染要把它们叠成同一个视频，
@@ -204,8 +223,9 @@ def save_template(data: TemplateSave) -> Template:
         with initialize_schema().begin() as connection:
             now = datetime.now(UTC).replace(tzinfo=None)
             values = {"name": data.name, "configuration": configuration, "updated_at": now}
+            existing = None
             if data.template_id:
-                existing = connection.execute(select(templates.c.configuration).where(
+                existing = connection.execute(select(templates.c.configuration, templates.c.cover).where(
                     templates.c.template_id == template_id,
                 ).with_for_update()).first()
                 if existing is None:
@@ -224,13 +244,15 @@ def save_template(data: TemplateSave) -> Template:
                             configuration["frame_mask"][edge]["gradient"] = old_bar["gradient"]
                         if "image_id" not in getattr(data.frame_mask, edge).model_fields_set and "imageId" in old_bar:
                             configuration["frame_mask"][edge]["imageId"] = old_bar["imageId"]
-                connection.execute(templates.update().where(
-                    templates.c.template_id == template_id,
-                ).values(**values))
+            if cover_source is not None or (existing and any(
+                existing.configuration.get(key) != value for key, value in configuration.items() if key != "description"
+            )):
+                previous = (existing.cover if existing else None) or {}
+                values["cover"] = {**previous, "revision": str(uuid4()), "source": cover_source or previous.get("source", "builtin")}
+            if existing:
+                connection.execute(templates.update().where(templates.c.template_id == template_id).values(**values))
             else:
-                connection.execute(templates.insert().values(
-                    template_id=template_id, created_at=now, **values,
-                ))
+                connection.execute(templates.insert().values(template_id=template_id, created_at=now, **values))
             row = connection.execute(select(templates).where(
                 templates.c.template_id == template_id,
             )).one()
@@ -258,8 +280,41 @@ def templates_using(sprite_id: str) -> list[str]:
 def delete_template(template_id: UUID) -> None:
     """事务删除指定模板；重复删除返回 404，不删除任何其他记录。"""
     with initialize_schema().begin() as connection:
-        result = connection.execute(delete(templates).where(
-            templates.c.template_id == str(template_id),
-        ))
-        if result.rowcount == 0:
+        target = templates.c.template_id == str(template_id)
+        row = connection.execute(select(templates.c.cover).where(target).with_for_update()).first()
+        if row is None:
             raise HTTPException(404, "模板不存在")
+        if row.cover and row.cover.get("published_revision"):
+            delete_cover(str(template_id))
+        connection.execute(delete(templates).where(target))
+
+
+def published_revision(template_id: UUID) -> str:
+    """固定地址的条件 GET 只读模板的封面列。"""
+    with initialize_schema().connect() as connection:
+        cover = connection.execute(select(templates.c.cover).where(templates.c.template_id == str(template_id))).scalar()
+    if not cover or not cover.get("published_revision"):
+        raise HTTPException(404, "暂无封面")
+    return cover["published_revision"]
+
+
+def publish_cover(template_id: UUID, revision: UUID, content: bytes, refresh: bool = False) -> TemplateCover:
+    """按取帧前的版本覆盖图片。手动刷新推进封面版本，同一刷新请求重传保持幂等。"""
+
+    payload = encode_cover(content)
+    key = str(template_id)
+    with initialize_schema().begin() as connection:
+        target = templates.c.template_id == key
+        row = connection.execute(select(templates.c.cover).where(target).with_for_update()).first()
+        if row is None:
+            raise HTTPException(404, "模板不存在")
+        current = TemplateCover.model_validate(row.cover) if row.cover else TemplateCover(revision=key)
+        published = str(uuid5(revision, "refresh-cover")) if refresh else str(revision)
+        if current.published_revision == current.revision == published:
+            return current
+        if current.revision != str(revision):
+            raise HTTPException(409, "模板画面已更新，请刷新后重试")
+        current.url = upload_cover(key, payload)
+        current.revision = current.published_revision = published
+        connection.execute(templates.update().where(target).values(cover=current.model_dump()))
+        return current

@@ -4,7 +4,8 @@ import { Captions, Circle, Heading1, Layers, MessageCircle, Shuffle, SlidersHori
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { defaultEditor, textRoles, type Category, type Draft, type Editor, type EffectAsset, type EffectTrack, type TextRole } from "./model";
+import type { SpriteAsset } from "@/features/sprites/model";
+import { boundText, defaultEditor, textRoles, type Category, type Draft, type Editor, type EffectAsset, type EffectTrack, type TextRole } from "./model";
 import { assetCategories, assetField, isSelectableAsset, type EffectTarget } from "./effects";
 import { trackLabel, trackLayers } from "./tracks";
 import { FRAME_MASK_OBJECT_ID } from "./frameMask";
@@ -88,24 +89,28 @@ export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTe
 }
 
 /** 从保存字段派生对象列表；蒙版也作为画面对象展示，继续使用模板级配置保存。 */
-export function AppliedEffects({ draft, catalog, resolved, selected, onSelect }: {
-  draft: Draft; catalog: EffectAsset[]; resolved?: import("./tracks").ResolvedTimeline; selected: string | null; onSelect: (target: string) => void;
+export function AppliedEffects({ draft, catalog, sprites, resolved, selected, onSelect }: {
+  draft: Draft; catalog: EffectAsset[]; sprites?: SpriteAsset[] | null; resolved?: import("./tracks").ResolvedTimeline; selected: string | null; onSelect: (target: string) => void;
 }) {
   const objects: { id: string; target: keyof typeof objectIcons; label: string; detail: string }[] = [...draft.tracks]
     .sort((a, b) => trackLayers[a.target] - trackLayers[b.target] || (a.target === "transition" && b.target === "transition" ? a.transition_boundary! - b.transition_boundary! : 0))
     .map((track) => {
       const effectId = { title: track.editor.titleFlower, subtitle: track.editor.subtitleFlower, bubble: track.editor.bubble, filter: track.editor.filter, vfx: track.editor.vfx, transition: track.editor.transition }[track.target];
       const effect = catalog.find((item) => item.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : "未设置效果");
+      const clip = draft.clips.find((clip) => boundText(draft.tracks, clip)?.id === track.id);
+      const asset = clip && sprites?.find((asset) => asset.id === clip.sprite_id);
+      const style = clip ? asset ? `AI 字效 · ${asset.name}` : sprites ? "AI 字效已不可用，请移除" : "正在读取 AI 字效…" : effect;
+      const edited = clip && (Object.keys(clip.parameters).length + Object.keys(clip.transform).length > 0);
       const timing = resolved?.tracks[track.id];
       const interval = timing ? timing.end > timing.start ? `${Number(timing.start.toFixed(1))}～${Number(timing.end.toFixed(1))} 秒` : "当前视频未应用" : resolved ? "当前视频未应用" : "等待预览时间";
-      return { id: track.id, target: track.target, label: trackLabel(track, draft.tracks), detail: `${effect} · ${interval}` };
+      return { id: track.id, target: track.target, label: trackLabel(track, draft.tracks), detail: `${style} · ${interval}${edited ? " · 已调整参数" : ""}` };
     });
   if (draft.frame_mask) objects.push({ id: FRAME_MASK_OBJECT_ID, target: "frame-mask", label: "上下蒙版", detail: "上下背景栏 · 贯穿全片" });
   if (draft.avatar_effects?.openingEnabled) objects.push({ id: "avatar-mask", target: "avatar-mask", label: "圆形蒙版", detail: `开场显示 · ${draft.avatar_effects.openingDuration} 秒` });
   return <section aria-label="已添加特效" className="space-y-3 border-b p-4">
     <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">画面对象</h2><span className="text-[11px] tabular-nums text-muted-foreground">{objects.length}</span></div>
     <div className="space-y-0.5">{objects.map((object) => <Button key={object.id} type="button" variant="ghost" data-object={object.target} className="template-object-row h-auto w-full min-w-0 justify-start gap-2.5 rounded-md px-2 py-2 text-left" aria-pressed={selected === object.id} aria-label={object.target === "frame-mask" ? "编辑上下蒙版对象" : `编辑${object.label}`} onClick={() => onSelect(object.id)}>
-      <ObjectIcon target={object.target} /><span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium leading-5">{object.label}</span><span className="block truncate text-[11px] leading-4 tabular-nums text-muted-foreground">{object.detail}</span></span>
+      <ObjectIcon target={object.target} /><span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium leading-5">{object.label}</span><span title={object.detail} className="block truncate text-[11px] leading-4 tabular-nums text-muted-foreground">{object.detail}</span></span>
     </Button>)}</div>
     {!objects.length && <Empty className="border p-5 md:p-5"><EmptyHeader><EmptyMedia variant="icon"><Layers className="size-5" aria-hidden="true" /></EmptyMedia><EmptyTitle className="text-sm">还没有画面对象</EmptyTitle><EmptyDescription className="text-xs">从左侧特效资产选择并添加效果。</EmptyDescription></EmptyHeader></Empty>}
   </section>;

@@ -38,6 +38,9 @@ def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, request: pyt
             continue
         if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_", "ZOS_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
+    # 普通 API 测试不启动真实补图进程，也不读取部署数据。
+    monkeypatch.setattr("server.template.backfill.RENDER_SCRIPT", tmp_path / "backfill.mjs")
+    monkeypatch.setattr("server.template.backfill.PACKAGE_ARCHIVE", tmp_path / "package-covers.zip")
     # 常规 API 测试不下载/加载模型；启动顺序与失败场景在标点模块测试中显式覆盖。
     monkeypatch.setattr("server.app.initialize_punctuation", lambda: None)
     # 预装字体默认会在后台复制进对象存储（约 100 MB）；测试一律关闭，安装行为的用例自行显式开启并替换字体包。

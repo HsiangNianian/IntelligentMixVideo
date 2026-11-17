@@ -30,6 +30,7 @@ function toTemplate(record: TemplateRecord): Template {
   if (record.transitionMode !== undefined && !["sequence", "random"].includes(record.transitionMode))
     throw new Error("转场设置方式无效");
   return {
+    ...(record.cover ? { cover: record.cover } : {}),
     name: record.name,
     description: record.description,
     effect_ids: record.effectIds,
@@ -139,8 +140,11 @@ async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: Abor
   }
 }
 
+/** ZOS 确认已发布的 PNG 缺失时，主页可按原素材重新发布。 */
+class MissingCoverObject extends Error {}
+
 /** 在现有模板路由发送请求，并将 HTTP 错误转换为编辑器可显示的消息。 */
-async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE", signal: AbortSignal, body?: Uint8Array | FormData): Promise<Response> {
+async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE" | "PUT", signal: AbortSignal, body?: Uint8Array | FormData): Promise<Response> {
   const response = await fetch(`${apiBase()}${path}`, {
     method,
     headers: {
@@ -152,6 +156,8 @@ async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE", sig
   });
   if (!response.ok) {
     const { detail } = await response.json().catch(() => ({})) as { detail?: unknown };
+    if (response.status === 404 && detail && typeof detail === "object" && "code" in detail && detail.code === "cover_object_missing")
+      throw new MissingCoverObject("封面图片已丢失");
     const message = typeof detail === "string" ? detail : Array.isArray(detail)
       ? detail.map((error: { loc?: unknown[]; msg?: string }) => `${error.loc?.slice(1).join(".")}：${error.msg}`).join("；")
       : `HTTP ${response.status}`;
@@ -176,7 +182,7 @@ export function listTemplates(signal?: AbortSignal): Promise<TemplateSummary[]> 
       return (await readTemplateResponse(ListTemplatesResponseSchema, response))
         .templates.map((record) => {
           if (!record.createdAt || !record.updatedAt) throw new Error("模板摘要缺少时间");
-          return { template_id: record.templateId, name: record.name, description: record.description,
+          return { ...(record.cover ? { cover: record.cover } : {}), template_id: record.templateId, name: record.name, description: record.description,
             created_at: timestampDate(record.createdAt).toISOString(), updated_at: timestampDate(record.updatedAt).toISOString(),
             title: record.title, subtitle: record.subtitle, track_count: record.trackCount, validation_error: record.validationError };
         });
@@ -214,7 +220,7 @@ function clipEditor(clip: RemotionClip) {
  * 保存要求标题和底部字幕各一个，基础文字允许不选择效果。
  * 片段在线路上是 `remotion` 轨道，排在 IMS 对象之后，与模板在同一次请求里原子保存。
  */
-export async function saveTemplate(draft: Draft, id?: string, baselineHadMask = false): Promise<Template> {
+export async function saveTemplate(draft: Draft, id?: string, baselineHadMask = false, coverSource?: string): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
   validateTemplateTracks(draft.tracks);
   validateClipSlots(draft);
@@ -270,6 +276,7 @@ export async function saveTemplate(draft: Draft, id?: string, baselineHadMask = 
       ],
     },
     templateId: id,
+    coverSource,
   });
   const payload = toBinary(SaveTemplateRequestSchema, message);
   return cloud(async (requestSignal) => {
@@ -284,6 +291,8 @@ export async function saveTemplate(draft: Draft, id?: string, baselineHadMask = 
 export function deleteTemplate(id: string): Promise<void> {
   return cloud(async (requestSignal) => {
     await cloudRequest(`/template/${encodeURIComponent(id)}`, "DELETE", requestSignal);
+    coverBlobs.delete(apiBase() + "/" + id);
+    publishedCovers.delete(apiBase() + "/" + id);
   });
 }
 
@@ -307,4 +316,89 @@ export function frameMaskImageUrl(imageId: string): string {
 /** 有界、可取消地读取图片；blob 由预览组件负责解码及释放。 */
 export function readFrameMaskImage(imageId: string, signal: AbortSignal): Promise<Blob> {
   return cloud(async (requestSignal) => (await cloudRequest(`/template/frame-mask-images/${encodeURIComponent(imageId)}`, "GET", requestSignal)).blob(), signal, "蒙版图片读取超时，请刷新预览重试。");
+}
+
+/** 画廊、列表和操练场共享进行中的读取及已发布的 PNG；内存最多保留最近两页（每页 15 项）。 */
+const publishedCovers = new Map<string, { revision: string; image: Promise<Blob> }>();
+
+/** 按已发布版本复用，在固定 URL 读取新版。单张卡片卸载不会中止其他视图仍在等待的请求。 */
+export function readTemplateCover(id: string, revision: string): Promise<Blob> {
+  const key = apiBase() + "/" + id;
+  const cached = publishedCovers.get(key);
+  if (cached?.revision === revision) {
+    publishedCovers.delete(key);
+    publishedCovers.set(key, cached);
+    return cached.image;
+  }
+  const image = cloud(async (signal) => (await cloudRequest(`/template/${encodeURIComponent(id)}/cover`, "GET", signal)).blob())
+    .catch((error) => {
+      if (publishedCovers.get(key)?.image === image) publishedCovers.delete(key);
+      throw error;
+    });
+  publishedCovers.set(key, { revision, image });
+  if (publishedCovers.size > 30) publishedCovers.delete(publishedCovers.keys().next().value!);
+  return image;
+}
+
+/** 只保留仍挂载且上次下载失败的卡片；手动同步时与最新列表核对后重试。 */
+const failedCoverReads = new Set<(items: TemplateSummary[], missing: Set<string>) => Promise<void> | undefined>();
+
+/** 将共享下载结果交给卡片；卸载或更换版本即取消该卡片的回调和重试。 */
+export function watchTemplateCover(id: string, revision: string, show: (image: Blob | null) => void) {
+  const address = apiBase();
+  let active = true;
+  // 版本变化由卡片按新版本加载；只在同一服务、同一发布版本下重试原请求。
+  const retry = (items: TemplateSummary[], missing: Set<string>) => address === apiBase() && items.some(item =>
+    item.template_id === id && item.cover?.url && item.cover.publishedRevision === revision) ? load(missing) : undefined;
+  /** 同一张封面在多个陈列区失败时，readTemplateCover 会合并它们的请求。 */
+  function load(missing?: Set<string>) {
+    return readTemplateCover(id, revision).then(image => {
+      if (active) { failedCoverReads.delete(retry); show(image); }
+    }, error => {
+      if (error instanceof MissingCoverObject) missing?.add(id);
+      if (active) { failedCoverReads.add(retry); show(null); }
+    });
+  }
+  void load();
+  return () => { active = false; failedCoverReads.delete(retry); };
+}
+
+/** 手动同步等待当前封面下载及失败卡片的重读；只将存储确认缺失的对象交给补图流程。 */
+export async function syncLoadedCovers(items: TemplateSummary[]) {
+  const missing = new Set<string>();
+  const reads = items.flatMap(item => {
+    const cached = publishedCovers.get(apiBase() + "/" + item.template_id);
+    if (!cached || !item.cover?.url) return [];
+    const image = cached.revision === item.cover.publishedRevision ? cached.image : readTemplateCover(item.template_id, item.cover.publishedRevision);
+    return [image.catch(error => { if (error instanceof MissingCoverObject) missing.add(item.template_id); })];
+  });
+  await Promise.all([...reads, ...Array.from(failedCoverReads, retry => retry(items, missing))]);
+  return missing;
+}
+
+/** 上传失败只暂存该修订的截图；同一模板只保留最新一次，应用重启后由真实预览重新截取。 */
+const coverBlobs = new Map<string, { revision: string; blob: Blob; refresh: boolean }>();
+
+/** 上传或单独重试封面；版本匹配时复用之前的截图，不重发模板保存。 */
+export async function publishCover(id: string, revision: string, capture: () => Promise<Blob>, refresh = false, signal?: AbortSignal) {
+  const key = apiBase() + "/" + id;
+  const cached = coverBlobs.get(key);
+  if (cached && cached.revision !== revision) coverBlobs.delete(key);
+  const item = cached?.revision === revision ? cached : { revision, blob: await capture(), refresh };
+  if (refresh) item.refresh = true;
+  signal?.throwIfAborted();
+  coverBlobs.set(key, item);
+  const body = new FormData();
+  body.set("file", item.blob, "cover.png");
+  if (item.refresh) body.set("refresh", "true");
+  const response = await cloud((signal) => cloudRequest(`/template/${id}/cover/${revision}`, "PUT", signal, body), signal);
+  const result = await response.json() as { url: string; revision: string };
+  if (item.refresh && result.revision === revision) throw new Error("请更新本地服务后再刷新封面");
+  if (coverBlobs.get(key) === item) coverBlobs.delete(key);
+  return result;
+}
+
+/** 可在主页直接重传的内存图片；其余重试须回到对应模板的预览。 */
+export function hasCoverBlob(id: string, revision: string) {
+  return coverBlobs.get(apiBase() + "/" + id)?.revision === revision;
 }

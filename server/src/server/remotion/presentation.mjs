@@ -101,9 +101,9 @@ export default function ${prefix}(props: Partial<${prefix}React.ComponentProps<t
 }
 
 // The host messaging protocol this bundle speaks (1: frame sync, injected defaults, placement overrides; 2: fonts
-// handed over by the host page). It is the first line of the bundle, where generated code cannot reach;
+// handed over by the host page; 3: cover seek acknowledgement after paint). It is the first line of the bundle, where generated code cannot reach;
 // `publication.PREVIEW_PROTOCOL` must match it.
-export const PREVIEW_PROTOCOL = "/* imv-preview-protocol 2 */";
+export const PREVIEW_PROTOCOL = "/* imv-preview-protocol 3 */";
 
 /** Bundle trusted Player hosting code plus accepted TSX into one sealed script, with no runtime compiler. */
 export async function buildPresentation(root, config, composition, keywords = []) {

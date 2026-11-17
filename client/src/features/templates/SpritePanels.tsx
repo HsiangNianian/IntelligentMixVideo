@@ -159,6 +159,7 @@ export function SpriteClips({ clips, catalog, duration, hidden, selected, onSele
   selected: string | null; onSelect: (id: string) => void; onRemove: (id: string) => void;
 }) {
   const { assets } = catalog;
+  if (!clips.length && !catalog.error) return null;
   return (
     <section aria-label="已添加 AI 资产" className="space-y-2 border-b p-4">
       <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">AI 资产</h2><span className="text-[11px] tabular-nums text-muted-foreground">{clips.length}</span></div>
