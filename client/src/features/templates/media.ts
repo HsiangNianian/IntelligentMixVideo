@@ -139,8 +139,14 @@ const coverUrls = new Map<string, string[]>();
 export async function coverSource(media?: PreviewMedia): Promise<string> {
   if (!media) return "unavailable";
   const urls = media.map(item => sourceUrl(item.url));
-  if (urls.every((url, i) => url === bundledUrls()[i])) return "builtin";
-  const ids = urls.map(url => isLocalMediaUrl(url) ? new URL(url).pathname : url);
+  const samples = bundledUrls();
+  if (urls.every((url, i) => url === samples[i])) return "builtin";
+  const ids = urls.map(url => {
+    // 本机播放地址含启动令牌，样片资源地址可含随机窗口端口；摘要只保留持久文件名或样片编号。
+    if (isLocalMediaUrl(url)) return "local/" + url.slice(url.lastIndexOf("/") + 1);
+    const index = samples.indexOf(url);
+    return index < 0 ? url : "sample/" + (index + 1);
+  });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(ids)));
   const source = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
   coverUrls.set(source, urls);

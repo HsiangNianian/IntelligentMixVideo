@@ -1,6 +1,7 @@
 /** 验证三个默认视频的环境配置、资源路径、内置示例读取、本地视频优先级及截取规则；每例结束恢复环境；bun run test。 */
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import { defaultPreviewUrls, previewVideos } from "@/features/templates/media";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { bundledUrls, coverSource, defaultPreviewUrls, previewVideos } from "@/features/templates/media";
+import * as mediaServer from "@/features/templates/mediaServer";
 import { fetchMock } from "./setup";
 import { newDraft } from "@/features/templates/model";
 import { previewContext, resolveTemplate } from "@/features/templates/tracks";
@@ -89,6 +90,29 @@ test("内置示例读成 blob URL，只读取一次并可在失败后重试", as
   } finally {
     Object.defineProperty(HTMLMediaElement.prototype, "src", source);
   }
+});
+
+// 模拟两次启动时媒体服务和窗口各自分配地址。替换数据文件或对调样片仍应识别为不同来源。
+test("封面素材摘要跨启动识别同一组本地文件和内置样片", async () => {
+  let base = "http://127.0.0.1:9123/first-token";
+  spyOn(mediaServer, "isLocalMediaUrl").mockImplementation(url => url.startsWith(base + "/local/"));
+  const video = (url: string) => ({ url, width: 1080, height: 1920, duration: 10 });
+  const local = (file: string) => video(mediaServer.localMediaUrl(base, file));
+  const mixed = () => [local("video-1-data"), video(bundledUrls()[1]), video(bundledUrls()[2])] as const;
+  const files = () => [local("video-1-data"), local("video-2-data"), local("video-3-data")] as const;
+  const original = await coverSource(files()), combined = await coverSource(mixed());
+  base = "http://127.0.0.1:9234/second-token";
+  expect(await coverSource(files())).toBe(original);
+  expect(await coverSource(mixed())).toBe(combined);
+  const page = Reflect.get(window, "happyDOM");
+  const previousUrl = window.location.href;
+  try {
+    page.setURL("http://localhost:9235/");
+    expect(await coverSource(mixed())).toBe(combined);
+  } finally { page.setURL(previousUrl); }
+  const [first, second, third] = mixed();
+  expect(await coverSource([local("video-1-replaced"), second, third])).not.toBe(combined);
+  expect(await coverSource([first, third, second])).not.toBe(combined);
 });
 
 // 回归：本地文件（blob URL）按完整时长排列，24、12、24 秒共 60 秒；默认与 URL 来源仍各取前十秒。
