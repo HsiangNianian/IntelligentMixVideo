@@ -8,6 +8,8 @@ import json
 import math
 from ..remotion_templates.categories import BILINGUAL_PROP, LINE_STARTS_PROP, TEXT_MAX_LENGTH, content_line_count, content_line_starts, line_count
 from ..remotion_templates.fonts import open_font_schema
+from ..remotion_templates.retiming import dynamic_duration as adaptive_duration
+from ..remotion_templates.retiming import duration_paths, inject_duration
 from ..remotion_templates.tools.schema import validate_parameters
 
 
@@ -46,10 +48,8 @@ def roles(schema: dict) -> dict[str, list[str]]:
 
 def dynamic_duration(schema: dict) -> bool:
     """只有明确声明的资产直接读取业务时长；上游固定资产走宿主时钟适配。"""
-    mapping = roles(schema)
-    return schema.get("x-imv-dynamic-duration") is not False and (
-        schema.get("x-imv-dynamic-duration") is True or bool(mapping["duration"])
-    )
+    roles(schema)
+    return adaptive_duration(schema)
 
 
 def set_path(config: dict, path: str, value) -> None:
@@ -112,9 +112,8 @@ def resolve_config(sprite, text: str, keyword: str | list[str], frames: int,
         if definitions.get(BILINGUAL_PROP, {}).get("type") != "string":
             raise ContentError("资产尚未适配双语文字：" + BILINGUAL_PROP)
         set_path(config, BILINGUAL_PROP, english)
-    for path in mapping["duration"]:
-        set_path(config, path, frames)
     try:
+        inject_duration(config, duration_paths(schema), frames)
         # 摆放的字体已按实时字体库校验（`placement.resolve`），较早发布里冻结的字体枚举不再限制它。
         validate_parameters(open_font_schema(schema), config)
     except Exception as exc:

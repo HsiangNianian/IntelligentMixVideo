@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import shutil
+from uuid import UUID
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -306,11 +307,11 @@ def free_session(tmp_path, intent=None, spec=None, base=None, report=None):
 @needs_bundler
 @pytest.mark.parametrize("duration", [149, 150])
 def test_save_runs_the_whole_gate_and_attaches_the_acceptance_sheet(tmp_path, duration):
-    """保存走完整门禁，奇偶预览长度的观察图都取总线实际定格帧；通过后记下候选与等待下一轮看过的联系表。"""
+    """保存走含单帧字效边界的完整门禁，奇偶预览长度都取中间帧；通过后记下候选与待回看的联系表。"""
     current = free_session(tmp_path, intent={"original_request": {"description": "demo", "composition": {"duration_in_frames": duration}}})
     saved = asyncio.run(current.execute("effect.save", {}, available()))
     options = current.calls[-1]
-    assert options["transparency"] is True and options["text_fit"] is True and options["lengths"] == [45, 3600]
+    assert options["transparency"] is True and options["text_fit"] is True and options["lengths"] == [1, 3600]
     assert options["text_fit_parameters"] == {} and options["effect_contract"]["keyword"] == "示例"
     assert current.latest_sprite_id == saved["sprite_id"] and current.pending_sheet == saved["sprite_id"]
     # By default only the middle frame is looked at; motion comes from measurements, which the stub does not write.
@@ -388,19 +389,6 @@ def test_workspace_reads_report_eof_and_refuse_out_of_range_offsets(tmp_path):
     assert caught.value.error.field == "/offset" and current.files[CODE] == content
 
 
-@needs_bundler
-def test_an_accepted_free_effect_joins_the_library_once(tmp_path, template_db):
-    """采纳的自由组件整份存进 Preset 库（没有角色、按清单描述检索），同样的效果再次采纳不重复存；之后的作品用 library.search 能找到它。"""
-    from server.remotion_templates.tools.catalog_store import CatalogStore
-
-    draft, _ = build(starter_files("text", set(), "Noto Sans CJK SC"), description="金色描边标题，逐字上浮入场")
-    first, again = CatalogStore().solidify(draft), CatalogStore().solidify(draft)
-    assert len(first) == 1 and again == first
-    current = free_session(tmp_path)
-    found = asyncio.run(current.execute("library.search", {"query": "描边 上浮"}, available()))
-    assert [item["preset_id"] for item in found["presets"]] == first
-    record = asyncio.run(current.execute("library.search", {"preset_id": first[0]}, available()))
-    assert "useTextContent" in record["preset"]["code"]
 
 
 @needs_bundler
@@ -1007,28 +995,12 @@ def test_images_of_earlier_messages_are_sent_again_newest_first():
     """多轮：之前几条消息附的参考图在后续任务里继续发送（新的在前），标明来自之前的指令；总数受上限约束，原图与本条消息的图不重复。"""
     context = Conversation()
     for index in range(MAX_REFERENCE_IMAGES + 2):
-        context.append([intent_message(f"第{index}次", [f"image-{index}", "work-image"])])
-    found = earlier_images(context, [{"asset_id": "work-image", "source": "work_original"}])
-    assert [item["asset_id"] for item in found][:2] == [f"image-{MAX_REFERENCE_IMAGES + 1}", f"image-{MAX_REFERENCE_IMAGES}"]
+        context.append([intent_message(f"第{index}次", [str(UUID(int=index + 1)), str(UUID(int=99))])])
+    found = earlier_images(context, [{"asset_id": str(UUID(int=99)), "source": "work_original"}])
+    assert [item["asset_id"] for item in found][:2] == [str(UUID(int=MAX_REFERENCE_IMAGES + 2)), str(UUID(int=MAX_REFERENCE_IMAGES + 1))]
     assert len(found) == MAX_REFERENCE_IMAGES - 1 and {item["source"] for item in found} == {"earlier_message"}
 
 
-def test_an_earlier_image_that_can_no_longer_be_read_is_left_out(tmp_path):
-    """之前消息的参考图只是上下文：读不到的那张跳过，不让整个任务失败。"""
-    from server.remotion_templates.runtime import Runtime
-    from server.remotion_templates.store import NotFound
-
-    kept = tmp_path / "kept.png"
-
-    def asset_path(identifier):
-        """Only the first image is still stored."""
-        if str(identifier).endswith("1"):
-            return kept
-        raise NotFound("asset not found")
-
-    entries = [{"asset_id": "00000000-0000-4000-8000-000000000001"}, {"asset_id": "00000000-0000-4000-8000-000000000002"}]
-    found = Runtime._earlier_paths(SimpleNamespace(store=SimpleNamespace(asset_path=asset_path)), entries)
-    assert found == [(entries[0], kept)]
 
 
 @needs_bundler

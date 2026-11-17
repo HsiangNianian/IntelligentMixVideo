@@ -1,4 +1,4 @@
-"""Task-local effect workspace, immutable library reads and isolated validation."""
+"""Task-local effect workspace, isolated validation."""
 
 from __future__ import annotations
 
@@ -6,40 +6,16 @@ import asyncio
 import difflib
 import hashlib
 import json
-import logging
-from datetime import UTC, datetime
-
-import jieba
 
 from .contracts import (
-    CodeValidationReport, ComponentDefinition, PresetRecord, PresetSearchInput, PresetSearchOutput,
-    PresetSummary, RenderValidationInput, RenderValidationReport, SpriteDraft, SpriteRecord,
+    CodeValidationReport, ComponentDefinition,
+    RenderValidationInput, RenderValidationReport, SpriteDraft, SpriteRecord,
 )
 from ..fonts import DEFAULT_FAMILY, FontStore
-from .catalog_store import CatalogStore
 from .registry import ToolFault
 from .schema import merge_parameters, validate_component_contract, validate_parameters
 from .effect_tools import PREVIEW_RENDERS, EffectTools
 from .workspace import restore_version_files, starter_files
-
-
-# 四个搜索回执需共享 240 KB 会话交换，留出调用参数与消息封装的空间。
-_SEARCH_BYTE_BUDGET = 40_000
-# 分词的词典只在第一次检索时载入，日志里不留它的启动信息。
-jieba.setLogLevel(logging.WARNING)
-
-
-def _terms(text: str) -> set[str]:
-    """The search terms of ``text``: its words (lower case, jieba's search segmentation) of two or more characters, or
-    its single characters when it has no longer word, so a Chinese query needs no spaces between its words."""
-    words = {word.strip().lower() for word in jieba.cut_for_search(text)}
-    words = {word for word in words if any(char.isalnum() for char in word)}
-    return {word for word in words if len(word) > 1} or words
-
-
-def _parameter_names(schema: dict) -> list[str]:
-    """List the top-level parameters a parameter schema declares, for code-free summaries."""
-    return list(schema.get("properties", {}))
 
 
 def _apply_edits(code: str, edits: list[dict]) -> str:
@@ -97,7 +73,6 @@ class ToolSession(EffectTools):
         # The new-chat switches the user turned on (双栏, keyword effect, 双语字幕) bind a new work; edits follow the accepted base.
         self.requested = set() if spec else {name for name in ("two_tier", "keyword_effect", "bilingual") if request.get(name) is True}
         self.kind = spec.sprite_kind if spec else request.get("sprite_kind")
-        self.catalog = CatalogStore()
         self.latest_sprite_id: str | None = None
         self.saved_sprites: dict[str, SpriteRecord] = {}
         self.validation_reports: dict[str, RenderValidationReport] = {}
@@ -209,30 +184,6 @@ class ToolSession(EffectTools):
         }
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
-    def _recent_presets(self) -> list[PresetRecord]:
-        """Order the merged catalog by creation time for listing and missing-ID hints."""
-        def created_at(record):
-            """旧无时区值按 UTC 处理；不可解析值放末尾，不使整个目录不可读。"""
-            try:
-                value = datetime.fromisoformat(record.created_at)
-                return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-            except (ValueError, OverflowError):
-                return datetime.min.replace(tzinfo=UTC)
-
-        return sorted(
-            self.catalog.read_presets(),
-            key=lambda item: (created_at(item), item.preset_id),
-            reverse=True,
-        )
-
-    def _find_preset(self, preset_id: str) -> PresetRecord:
-        """Resolve a Preset ID from the immutable catalog; unknown IDs fail loudly."""
-        record = self.catalog.find_preset(preset_id)
-        if record is None:
-            known = [item.preset_id for item in self._recent_presets()[:10]]
-            raise ToolFault("PRESET_NOT_FOUND", f"Unknown library entry: {preset_id}; recent preset_ids: {known}")
-        return record
-
     async def validate_code(self, component: ComponentDefinition) -> CodeValidationReport:
         """Run the isolated PR76 code validator and preserve real diagnostics."""
         diagnostics = validate_component_contract(component)
@@ -280,61 +231,6 @@ class ToolSession(EffectTools):
             pass
         self.validation_reports[self._component_validation_key(request.component, request.duration_frames, parameters)] = report
         return report
-
-
-    def search_presets(self, request: PresetSearchInput) -> PresetSearchOutput:
-        """List summaries of the Presets matching the query, best first, and, when asked, only those of one role or
-        effect slot. A Preset's score is the number of the query's terms (`_terms`) its description or usage title
-        contains, and one without any is left out; among equal scores the ones accepted versions used and the asset
-        library published come first (`CatalogStore.use_counts`), then the newest. An empty query lists everything in
-        that order.
-
-        With ``preset_id`` the matching full record (including code) is returned as well, so
-        reading a Preset never requires a write-shaped tool.
-        """
-        full = self._find_preset(request.preset_id) if request.preset_id is not None else None
-        terms = _terms(request.query) if request.query.strip() else set()
-        output = PresetSearchOutput(**({"preset": full} if full else {}), presets=[], has_more=False)
-
-        def fits_reply():
-            """计入 ToolResult 及保存 content 字符串时的二次转义，不截断完整源码。"""
-            content = json.dumps({"ok": True, "data": output.model_dump(mode="json", exclude_unset=True)}, ensure_ascii=False)
-            return len(json.dumps(content, ensure_ascii=False).encode("utf-8")) <= _SEARCH_BYTE_BUDGET
-
-        if not fits_reply():
-            raise ToolFault("RESOURCE_LIMIT_EXCEEDED", "The full Preset exceeds the tool reply size limit.")
-        presets = self._recent_presets()
-        counts = self.catalog.use_counts() if presets else {}
-        ranked = []
-        for item in presets:
-            if (request.role is not None and item.role != request.role) or (request.slot is not None and (item.usage is None or item.usage.slot != request.slot)):
-                continue
-            text = f"{item.description} {item.usage.title if item.usage else ''}".lower()
-            score = sum(term in text for term in terms)
-            if terms and not score:
-                continue
-            accepted, published = counts.get(item.preset_id, (0, 0))
-            ranked.append((score, published, accepted, item))
-        # A stable sort keeps the newest first among equals.
-        ranked.sort(key=lambda entry: (-entry[0], -entry[1], -entry[2]))
-        for _score, published, accepted, item in ranked:
-            if len(output.presets) >= request.limit:
-                output.has_more = True
-                break
-            output.presets.append(PresetSummary(
-                preset_id=item.preset_id,
-                description=item.description,
-                parameter_names=_parameter_names(item.parameter_schema),
-                **({"role": item.role} if item.role else {}), **({"usage": item.usage} if item.usage else {}),
-                accepted_uses=accepted, published_uses=published,
-            ))
-            if not fits_reply():
-                output.presets.pop()
-                if not output.presets and full is None:
-                    raise ToolFault("RESOURCE_LIMIT_EXCEEDED", "A Preset summary exceeds the tool reply size limit.")
-                output.has_more = True
-                break
-        return output
 
 
     async def execute(self, name, args, catalog):

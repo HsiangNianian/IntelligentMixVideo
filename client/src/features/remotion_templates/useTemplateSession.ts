@@ -577,7 +577,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     void execute("chat", async () => {
       let assets: string[];
       try {
-        // 已上传的部分在整条失败后无人引用，由服务端过期回收。
+        // 规范化后先保存本机二进制，再把所需图片随任务发送；未关联图片由本地存储过期回收。
         assets = (await Promise.all(images.map((image) => api.upload(image)))).map(
           (asset) => asset.id,
         );
@@ -743,7 +743,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       s.workId
     )
       void attach(s.workId, s.key);
-    else if (s.job) void execute("chat", () => api.retry(s.job!.id));
+    else if (s.job) void execute("chat", () => api.retry(s.job!.id, s.job!.project_id));
   }
   /** 较早消息分页只合并消息，不用旧分页响应覆盖正在推进的任务或版本。 */
   async function older() {

@@ -699,6 +699,7 @@ test("纯图片生成使用上传 ID，背景链接留在客户端", async () =>
   expect(uploaded).toBe(true);
   expect(created).toEqual({
     images: [{ asset_id: "image-1" }],
+    assets: ["image-1"].map((id) => ({ id, data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==" })),
     composition: {
       width: 1080,
       height: 1920,
@@ -794,7 +795,9 @@ test("开始对话后可粘贴参考图提交，任务进行中说明锁定原�
   expect(uploads).toBe(1);
   expect(body).toEqual({
     images: [{ asset_id: "image-2" }],
+    assets: ["image-2"].map((id) => ({ id, data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==" })),
     base_version_id: "version-1",
+    context: { work_id: "work-1", job_id: "job-1", state: "[]" },
   });
   await screen.findByText("当前任务完成或停止后，可继续发送消息和上传图片。");
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "图片" }).disabled).toBe(true);
@@ -845,7 +848,9 @@ test("一条消息附多张参考图并按顺序提交", async () => {
   expect(body).toEqual({
     instruction: "参考这几张",
     images: [{ asset_id: "image-1" }, { asset_id: "image-2" }, { asset_id: "image-3" }],
+    assets: ["image-1", "image-2", "image-3"].map((id) => ({ id, data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==" })),
     base_version_id: "version-1",
+    context: { work_id: "work-1", job_id: "job-1", state: "[]" },
   });
 });
 
@@ -910,7 +915,9 @@ test("澄清回答可只附参考图", async () => {
   await waitFor(() =>
     expect(body).toEqual({
       images: [{ asset_id: "image-3" }],
+    assets: ["image-3"].map((id) => ({ id, data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==" })),
       reply_to_job_id: "job-1",
+      context: { work_id: "work-1", job_id: "job-1", state: "[]" },
     }),
   );
 });

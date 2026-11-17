@@ -24,8 +24,9 @@ from .contracts import (
     WorkspaceWriteInput,
     WorkspaceWriteOutput,
     JsonObject,
-    PresetSearchInput,
-    PresetSearchOutput,
+    SourceSearchInput,
+    SourceSearchOutput,
+    SourceReadInput,
     ToolDescriptor,
     ToolInspectInput,
     ToolResult,
@@ -149,7 +150,7 @@ async def preview_render(owner, request: PreviewRenderInput) -> ToolResult[Previ
     examples=[{"input": {}, "output": {"ok": True, "data": {"passed": False, "problems": [{"check": "text_fit", "message": "example"}], "notes": []}}}],
 )
 async def validate_check(owner, request: EffectCheckInput) -> ToolResult[EffectCheckOutput]:
-    """Check the workspace without saving: TypeScript, required parameters, a see-through canvas, 1.5 s and 120 s renders, 100-character text fit, injected text and keywords, whole lines on the middle frame and fontSize scaling. Parameter samples without visible changes produce advisory notes, not failures."""
+    """Check the workspace without saving: TypeScript, required parameters, a see-through canvas, the shortest and longest render lengths, 100-character text fit, injected text and keywords, whole lines on the middle frame and fontSize scaling. Parameter samples without visible changes produce advisory notes, not failures."""
     try:
         return _success(await owner.check_effect(request))
     except Exception as exc:
@@ -177,17 +178,34 @@ async def effect_save(owner, request: EffectSaveInput) -> ToolResult[EffectSaveO
 
 @tool(
     "library.search",
-    constraints=["Read-only access to the code earlier works built (the Preset library), ranked by matching words and accepted uses; give preset_id to read one record's full code. Reuse means copying what helps into Effect.tsx."],
-    side_effects=["read-only catalog listing"],
-    error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "PRESET_STORE_FAILED", "RESOURCE_LIMIT_EXCEEDED"],
-    examples=[{"input": {"query": "裂开 揭示"}, "output": {"ok": True, "data": {"presets": []}}}],
+    constraints=["Search shared complete components accepted from successful generations, whether published as assets or not."],
+    side_effects=["read-only shared source search"],
+    error_codes=["INVALID_ARGUMENT", "SOURCE_STORE_FAILED"],
+    examples=[{"input": {"query": "描边"}, "output": {"ok": True, "data": {"sources": [], "has_more": False}}}],
 )
-async def library_search(owner, request: PresetSearchInput) -> ToolResult[PresetSearchOutput]:
-    """Search code earlier works built, by Chinese words naming a look or motion (or read one by preset_id), to borrow techniques for Effect.tsx."""
+async def library_search(owner, request: SourceSearchInput) -> ToolResult[SourceSearchOutput]:
+    """Find reusable accepted Effect.tsx components by appearance or motion; read their files with library_read."""
+    from ..source_library import search
     try:
-        return _success(await asyncio.to_thread(owner.search_presets, request))
+        return _success(await asyncio.to_thread(search, request))
     except Exception as exc:
-        return _failure(exc, "PRESET_STORE_FAILED")
+        return _failure(exc, "SOURCE_STORE_FAILED")
+
+
+@tool(
+    "library.read",
+    constraints=["Immutable source, read in bounded pages; next_offset continues the same file. Copy into the workspace before editing and validate again."],
+    side_effects=["read-only shared source read"],
+    error_codes=["INVALID_ARGUMENT", "SOURCE_NOT_FOUND", "SOURCE_STORE_FAILED"],
+    examples=[{"input": {"source_id": "a" * 64, "path": "Effect.tsx"}, "output": {"ok": False, "error": {"code": "SOURCE_NOT_FOUND", "message": "source not found"}}}],
+)
+async def library_read(owner, request: SourceReadInput) -> ToolResult[WorkspaceFile]:
+    """Read one shared component's Effect.tsx or effect.json without changing its original or publishing an asset."""
+    from ..source_library import read
+    try:
+        return _success(await asyncio.to_thread(read, request))
+    except Exception as exc:
+        return _failure(exc, "SOURCE_STORE_FAILED")
 
 
 @tool(
