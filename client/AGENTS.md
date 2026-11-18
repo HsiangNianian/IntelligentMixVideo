@@ -11,6 +11,7 @@
 - 版本号只取自 `client/package.json`（发版脚本同步它），由 `vite.config.ts` 注入 `import.meta.env.IMV_VERSION`，`lib/version.ts` 提供 `APP_VERSION`。窗口标题「IntelligentMixVideo - v版本号」经 `lib/window-title.ts` 同时设置网页标题与 Tauri 原生标题栏（需要能力 `core:window:allow-set-title`）。
 - 设置对话框左下角显示同一版本号与构建校验码 `APP_COMMIT`：构建时读取 git 的 7 位短提交哈希，有未提交改动时带 `-dirty`；可用 `IMV_COMMIT` 指定，没有 .git 时取 CI 的 `GITHUB_SHA`，都没有为 unknown。界面其他地方不另写版本。
 - API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置时默认 `http://localhost:20070`；修改后重启 Vite，生产需重新构建，注意 `.env.local` 的同名配置会覆盖它。
+- 可更新的正式客户端用表单控件的 `data-update-draft` 标记未保存项，清单据此定位原输入；异步写入沿用更新门禁，更新器不代替表单提交。
 - 预览需要联网获取 SDK、字体和媒体，但不发起云端合成；浏览器验证不等于桌面安装包验证。
 - 调试日志窗口、预览媒体服务与 Windows localhost 页面服务的约定见 `client/src-tauri/AGENTS.md`。
 
