@@ -71,9 +71,11 @@ def _pci_name(value: str) -> str:
 
 
 def _encoder_owners(cards: list[GPU]) -> None:
-    """Read exact per-session PIDs, including two sessions owned by the same FFmpeg; failures keep reservations intact."""
-    busy = [card for card in cards if card.sessions]
-    if not busy:
+    """Refresh counts and per-session PIDs together; failed queries cannot authorize NVENC from stale SMI counts."""
+    for card in cards:
+        card.sessions = None
+        card.encoder_pids.clear()
+    if not cards:
         return
     # nvmlEncoderSessionInfo_t contains eight 32-bit fields; the second is the host PID.
     session = ctypes.c_uint * 8
@@ -85,14 +87,15 @@ def _encoder_owners(cards: list[GPU]) -> None:
     except (OSError, AttributeError):
         return
     try:
-        for card in busy:
+        for card in cards:
             handle = ctypes.c_void_p()
             if nvml.nvmlDeviceGetHandleByUUID(card.uuid.encode("ascii"), ctypes.byref(handle)):
                 continue
-            size = ctypes.c_uint(card.sessions)
+            size = ctypes.c_uint(NVENC_SESSION_LIMIT)
             rows = (session * size.value)()
-            # A concurrent change in session count may require another buffer. Keep unmatched leases conservative.
+            # More sessions than this buffer already exhaust the host budget; do not retry a growing list.
             if get_sessions(handle, ctypes.byref(size), rows) == 0:
+                card.sessions = size.value
                 card.encoder_pids.update(row[1] for row in rows[:size.value])
     finally:
         nvml.nvmlShutdown()
@@ -176,11 +179,12 @@ def _inventory() -> tuple[list[GPU], bool]:
     xml = _smi("-q", "-x", timeout=8)
     cards = _read_cards(xml, indexes)
     found = {card.uuid for card in cards if card.total > 0}
+    required = {uuid for uuid, index in indexes.items() if index != 4}
+    counted = [card for card in cards if card.index != 4]
     consecutive = set(indexes.values()) == set(range(len(indexes)))
     attached = re.search(r"<attached_gpus>\s*(\d+)\s*</attached_gpus>", xml)
-    if (attached and int(attached[1]) == len(cards) == len(indexes) and found == indexes.keys() and
-            consecutive and all(card.sessions is not None for card in cards)):
-        _encoder_owners(cards)
+    if (attached and int(attached[1]) == len(indexes) and len(counted) == len(required) and required <= found and
+            consecutive and all(card.sessions is not None for card in counted)):
         return cards, True
     if not tried_list:
         merge_listed_indexes()
@@ -222,10 +226,14 @@ def _nvenc_unavailable_reason(ffmpeg: str | None) -> str | None:
 def _probe_host() -> tuple[list[GPU], bool, str | None]:
     """Probe hardware and FFmpeg together before locking leases. A failed command can be retried on the next claim."""
     cards, complete = _inventory()
+    # Deployment policy: physical GPU 4 runs no workloads, including external encoders.
+    cards = [card for card in cards if card.index != 4]
     try:
         reason = _nvenc_unavailable_reason(shutil.which("ffmpeg")) if cards and complete else None
     except (OSError, subprocess.SubprocessError):
         reason = "nvenc_pipeline_unavailable"
+    if cards and complete and reason is None:
+        _encoder_owners(cards)
     return cards, complete, reason
 
 

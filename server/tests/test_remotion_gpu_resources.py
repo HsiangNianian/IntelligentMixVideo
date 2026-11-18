@@ -45,13 +45,114 @@ def machine(tmp_path, monkeypatch):
     filters = ("format", "split", "scale", "alphaextract", "setparams")
     (tmp_path / "ffmpeg-filters").write_text("".join(f" ... {name} V->V\n" for name in filters))
     monkeypatch.setattr(gpu, "_inventory", lambda: (cards, True))
+    monkeypatch.setattr(gpu, "_encoder_owners", lambda cards: None)
     monkeypatch.setattr(gpu.shutil, "which", lambda name: str(tmp_path / name))
     return cards, settings
 
 
+@pytest.fixture
+def nvml_machine(tmp_path, monkeypatch):
+    """Keep real probe ordering and admission, with mutable NVML sessions independent of the old SMI snapshot."""
+    cards = [device(), device(1), device(4)]
+    settings = Settings(_env_file=None, overlay_gpu_lease_dir=tmp_path / "leases")
+    driver = SimpleNamespace(pids={card.uuid: [] for card in cards}, queried=[], shutdowns=0)
+
+    def handle(uuid, output):
+        """Map physical UUIDs to nonzero opaque test handles."""
+        output._obj.value = list(driver.pids).index(uuid.decode()) + 1
+        return 0
+
+    def sessions(handle, size, rows):
+        """Match NVML's updated count and insufficient-buffer contract without real GPU access."""
+        uuid = list(driver.pids)[handle.value - 1]
+        driver.queried.append(uuid)
+        pids, capacity = driver.pids[uuid], size._obj.value
+        size._obj.value = len(pids)
+        if len(pids) > capacity:
+            return 7
+        for row, pid in zip(rows, pids):
+            row[1] = pid
+        return 0
+
+    def shutdown():
+        """Record that each successful initialization is released even when a device query fails."""
+        driver.shutdowns += 1
+        return 0
+
+    driver.library = SimpleNamespace(nvmlInit_v2=lambda: 0, nvmlShutdown=shutdown,
+                                    nvmlDeviceGetHandleByUUID=handle, nvmlDeviceGetEncoderSessions=sessions)
+    monkeypatch.setattr(gpu.ctypes, "CDLL", lambda name: driver.library)
+    monkeypatch.setattr(gpu, "_inventory", lambda: (cards, True))
+    monkeypatch.setattr(gpu, "_nvenc_unavailable_reason", lambda binary: None)
+    return cards, settings, driver
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("changed_index", [0, 1])
+async def test_refreshes_sessions_after_ffmpeg_probe(nvml_machine, monkeypatch, changed_index):
+    """A new external session on a busy or idle card during probing must prevent admitting an eleventh session."""
+    cards, settings, driver = nvml_machine
+    cards[0].sessions = 8
+    driver.pids[cards[0].uuid] = [50000] * 8
+
+    def ffmpeg_probe(binary):
+        """An external encoder starts after SMI sampling but before the final admission snapshot."""
+        driver.pids[cards[changed_index].uuid].append(50001)
+        return None
+
+    monkeypatch.setattr(gpu, "_nvenc_unavailable_reason", ffmpeg_probe)
+    async with claim(gpu.GPUPool(settings)) as grant:
+        assert (grant.route, grant.reason) == ("gpu-webm", "nvenc_sessions_unavailable")
+    assert sum(card.sessions for card in cards[:2]) == 9
+    assert cards[changed_index].encoder_pids[50001] == 1
+    assert cards[0].encoder_pids[50000] == 8
+    assert driver.queried == [card.uuid for card in cards[:2]]
+
+
+@pytest.mark.anyio
+async def test_gpu4_is_omitted_from_nvenc_accounting(nvml_machine):
+    """The deployment-disabled GPU 4 is neither queried for encoder sessions nor allowed to block healthy NVENC."""
+    cards, settings, driver = nvml_machine
+    cards[0].sessions, cards[2].sessions, cards[2].total = 8, None, 0
+    driver.pids[cards[0].uuid] = [50000] * 8
+    async with claim(gpu.GPUPool(settings)) as grant:
+        assert (grant.route, grant.uuid, grant.chunks) == ("h264-pair", cards[1].uuid, 1)
+    assert driver.queried == [card.uuid for card in cards[:2]]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", ["library", "init", "handle", "sessions", "buffer"])
+async def test_session_refresh_failure_uses_webm_and_recovers(nvml_machine, monkeypatch, failure):
+    """An unconfirmed fresh session count cannot reuse old NVENC capacity; the next healthy probe can recover."""
+    cards, settings, driver = nvml_machine
+    pool = gpu.GPUPool(settings)
+
+    def missing_library(name):
+        """Model a host where the NVML library cannot be loaded."""
+        raise OSError("NVML unavailable")
+
+    with monkeypatch.context() as failing:
+        if failure == "library":
+            failing.setattr(gpu.ctypes, "CDLL", missing_library)
+        elif failure == "init":
+            failing.setattr(driver.library, "nvmlInit_v2", lambda: 9)
+        elif failure == "handle":
+            failing.setattr(driver.library, "nvmlDeviceGetHandleByUUID", lambda *args: 15)
+        elif failure == "sessions":
+            failing.setattr(driver.library, "nvmlDeviceGetEncoderSessions", lambda *args: 15)
+        else:
+            failing.setitem(driver.pids, cards[0].uuid, [50000] * (gpu.NVENC_SESSION_LIMIT + 1))
+        async with claim(pool) as grant:
+            assert (grant.route, grant.reason) == ("gpu-webm", "nvenc_sessions_unknown")
+    assert driver.shutdowns == (0 if failure in ("library", "init") else 1)
+    async with claim(pool) as recovered:
+        assert recovered.route == "h264-pair"
+    assert not list(settings.overlay_gpu_lease_dir.glob("*.encoder"))
+
+
 @pytest.mark.anyio
 async def test_host_sessions_excluded_cards_and_partial_chunks(machine, monkeypatch):
-    """GPU 4 and excluded UUIDs consume real host slots; one eligible dual-stream chunk wins over GPU WebM."""
+    """GPU 4 is omitted; other excluded UUIDs still consume slots, and dual-stream chunks win over GPU WebM."""
     cards, settings = machine
     excluded = device(2, sessions=4)
     monkeypatch.setattr(gpu, "EXCLUDED_GPU_UUIDS", (excluded.uuid.upper(),))
@@ -59,7 +160,7 @@ async def test_host_sessions_excluded_cards_and_partial_chunks(machine, monkeypa
     cards[:] = [excluded, device(4, sessions=3), active, low]
     pool = gpu.GPUPool(settings)
     async with claim(pool, 5) as first:
-        assert (first.route, first.uuid, first.chunks) == ("h264-pair", low.uuid, 1)
+        assert (first.route, first.uuid, first.chunks) == ("h264-pair", low.uuid, 2)
         async with claim(pool, 5) as second:
             assert (second.route, second.uuid, second.chunks) == ("gpu-webm", active.uuid, 2)
     cards[:] = [device(4), excluded]
@@ -84,13 +185,12 @@ async def test_ten_host_sessions_and_gpu_exclusions_are_code_policy(machine, mon
 async def test_realized_memory_and_two_sessions_not_counted_twice(machine, monkeypatch):
     """A second renderer can use the exact 85% limit while an already-visible Chrome/FFmpeg is still reserved."""
     cards, settings = machine
-    cards.append(device(4, sessions=6))
-    card = cards[0] = device(total=2000, used=164)
+    card = cards[0] = device(total=2000, used=164, sessions=6)
     first, second = gpu.GPUPool(settings), gpu.GPUPool(settings)
     monkeypatch.setattr(gpu, "_process", lambda pid: {811: (1, 30), 812: (811, 31), 813: (811, 32)}.get(pid))
     async with claim(first) as running:
         running.attach_worker(811)
-        card.used, card.sessions = 864, 2
+        card.used, card.sessions = 864, 8
         card.memory_by_pid, card.encoder_pids = {812: 170, 813: 530}, Counter({813: 2})
         async with claim(second) as next_job:
             assert (next_job.route, next_job.chunks) == ("h264-pair", 1)
@@ -248,7 +348,6 @@ def test_inventory_keeps_driver_index_and_external_sessions(monkeypatch):
     <process_info><pid>8</pid><used_memory>40 MiB</used_memory></process_info></processes></gpu></nvidia_smi_log>"""
     monkeypatch.setattr(gpu, "_smi", lambda *args, **kw: xml if "-x" in args else f"4, {card.uuid}")
     monkeypatch.setattr(gpu.shutil, "which", lambda name: "/usr/bin/" + name)
-    monkeypatch.setattr(gpu, "_encoder_owners", lambda cards: None)
     (actual,), _ = gpu._inventory()
     assert (actual.index, actual.minor, actual.pci, actual.sessions, actual.used, actual.memory_by_pid) == (4, 9, card.pci, 2, 100, {8: 40})
     monkeypatch.setattr(gpu, "_smi", lambda *args, **kw: "")
@@ -256,13 +355,17 @@ def test_inventory_keeps_driver_index_and_external_sessions(monkeypatch):
 
 
 @pytest.mark.parametrize("elapsed,complete", [(3.65, True), (7.9, True), (8.1, False)])
-def test_slow_multigpu_snapshot_preserves_session_visibility(monkeypatch, elapsed, complete):
-    """A multi-GPU snapshot may exceed two seconds; a real timeout still falls back to healthy cards."""
+@pytest.mark.parametrize("gpu4_metrics", ["valid", "unreadable", "absent"])
+def test_slow_multigpu_snapshot_preserves_session_visibility(monkeypatch, elapsed, complete, gpu4_metrics):
+    """Slow snapshots tolerate GPU 4's missing metrics/node; a real timeout still falls back to healthy cards."""
     cards = [device(i, sessions=3 if i == 4 else 0) for i in range(8)]
+    if gpu4_metrics != "valid":
+        cards[4].total, cards[4].sessions = 0, None
     nodes = {card.uuid: f"""<gpu id="{card.pci}"><uuid>{card.uuid}</uuid><minor_number>{card.minor}</minor_number>
         <fb_memory_usage><total>{card.total} MiB</total><free>{card.total} MiB</free></fb_memory_usage>
         <encoder_stats><session_count>{card.sessions}</session_count></encoder_stats></gpu>""" for card in cards}
-    snapshot = "<nvidia_smi_log><attached_gpus>8</attached_gpus>" + "".join(nodes.values()) + "</nvidia_smi_log>"
+    snapshot = "<nvidia_smi_log><attached_gpus>8</attached_gpus>" + "".join(
+        node for uuid, node in nodes.items() if gpu4_metrics != "absent" or uuid != cards[4].uuid) + "</nvidia_smi_log>"
     probes = []
 
     def smi(*args, timeout=2):
@@ -271,18 +374,17 @@ def test_slow_multigpu_snapshot_preserves_session_visibility(monkeypatch, elapse
         if args[0].startswith("--query"):
             return "\n".join(f"{card.index}, {card.uuid}" for card in cards)
         if args == ("-q", "-x"):
-            return snapshot if elapsed <= timeout else snapshot[:snapshot.index(nodes[cards[4].uuid])]
+            return snapshot if elapsed <= timeout else snapshot[:snapshot.index(nodes[cards[3].uuid])]
         if args[0] == "-i":
             return "<nvidia_smi_log>" + nodes[args[1]] + "</nvidia_smi_log>"
         return ""
 
     monkeypatch.setattr(gpu, "_smi", smi)
     monkeypatch.setattr(gpu.shutil, "which", lambda name: "/usr/bin/" + name)
-    monkeypatch.setattr(gpu, "_encoder_owners", lambda cards: None)
     actual, known = gpu._inventory()
     assert known is complete
     assert {card.index: card.sessions for card in actual} == {
-        card.index: card.sessions for card in cards if complete or card.index != 4}
+        card.index: card.sessions for card in cards if card.index != 4 or (complete and gpu4_metrics != "absent")}
     assert [timeout for args, timeout in probes if args == ("-q", "-x")] == [8]
     assert all(0 < timeout <= 2 for args, timeout in probes if args[0] == "-i")
 
