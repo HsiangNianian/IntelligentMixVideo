@@ -904,6 +904,8 @@ The backend first tries GPU drawing and two H.264 NVENC outputs when the host FF
 
 Admission consults live device memory, external processes and the outstanding part of existing reservations. After adding the candidate's peak estimate, usage must remain at or below 85% of physical VRAM. There is no per-card task count. One 1080p, four-page chunk initially reserves `IMV_OVERLAY_GPU_PAIR_MB=768` or `IMV_OVERLAY_GPU_WEBM_MB=256` MiB. Each double-stream chunk needs two of the host's ten NVENC sessions. GPU selection skips physical index 4. The host budget (`NVENC_SESSION_LIMIT`) and additional exclusions (`EXCLUDED_GPU_UUIDS`) live in `gpu_resources.py`. Adding a board's full UUID there keeps it excluded across index changes. All processes serving the same machine share a local lease directory (`IMV_OVERLAY_GPU_LEASE_DIR`, default under the service account's temporary directory).
 
+The full-host `nvidia-smi -q -x` snapshot has an eight-second timeout to allow multi-GPU hosts to return all encoder session counts. An incomplete snapshot triggers the existing per-card recovery with a shared two-second deadline. Recovered healthy cards can draw WebM, while NVENC requires a complete host session count.
+
 Routes run on the machine that accepted the task. Each sandbox receives only its selected card. A confirmed graphics failure excludes that card for both GPU routes, while an encoder failure still permits GPU WebM. The private `remotion_video` step records `route_selected` with the GPU, route, chunk count and reason. A confirmed failure records `route_retry` before the next selection. The CPU/RAM admission timeout still applies independently. Local media validation, uploads and IMS submission retain their existing error handling.
 
 ## Code diagnostics
