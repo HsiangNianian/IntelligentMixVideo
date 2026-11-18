@@ -1,9 +1,10 @@
 /** 主页云端模板列表、摘要与删除确认测试；真实组件调用存储边界，隔离 HTTP 与桌面 IPC。 */
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Tooltip } from "radix-ui";
 import { TemplateCollection, TemplateHome, type TemplateSelection } from "@/features/templates/TemplateHome";
 import { jsonListResponse, savedTemplate, templateSummary } from "./fixtures";
+import * as homeCapture from "@/features/templates/homeCoverCapture";
 import { fetchMock, mockDesktop } from "./setup";
 
 // 场景：拖动后的合成点击不干扰当前位置；随后点侧面封面时只居中。
@@ -161,7 +162,8 @@ test("模板确认删除且失败保留重试入口", async () => {
 test("主页只提供云端模板", async () => {
   const ipc: string[] = [];
   mockDesktop(async (command) => { ipc.push(command); throw new Error("意外 IPC 请求"); });
-  fetchMock.mockImplementation((async (_url, _init) => jsonListResponse([{ ...savedTemplate(), name: "共享模板" }])) as typeof fetch);
+  const template = { ...savedTemplate(), name: "共享模板", cover: { url: "cached.png", source: "builtin", revision: "ready", publishedRevision: "ready" } };
+  fetchMock.mockImplementation((async url => String(url).endsWith("/cover") ? new Response("PNG") : jsonListResponse([template])) as typeof fetch);
   const selections: TemplateSelection[] = [];
   render(<Tooltip.Provider><TemplateHome onSelect={(value) => selections.push(value)} onOpenRemotion={() => {}} /></Tooltip.Provider>);
   await screen.findByRole("region", { name: "全部模板" });
@@ -174,7 +176,7 @@ test("主页只提供云端模板", async () => {
   fireEvent.change(within(dialog).getByRole("textbox", { name: "模板名称" }), { target: { value: "  新模板  " } });
   fireEvent.click(within(dialog).getByRole("button", { name: "进入编辑" }));
   expect(selections).toEqual([{ templateId: null, name: "新模板", description: "" }]);
-  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/template"))).toHaveLength(1);
   expect(ipc).toHaveLength(0);
 });
 
@@ -190,6 +192,42 @@ test("云端读取失败可重试", async () => {
   await screen.findByRole("region", { name: "全部模板" });
   expect(screen.getByLabelText("模板数量").textContent).toBe("1");
   expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+// 中断首批的第二张后返回，只续补这一张。编辑器保存的版本和已发布的新版不使用内置样片重截。
+test("客户端续补初版内置封面，复用列表并跳过编辑版本", async () => {
+  mockDesktop(async () => {});
+  const old = { ...savedTemplate(), template_id: "first-cover" };
+  const cover = { source: "builtin", url: "old.png", revision: "early-cover", publishedRevision: "early-cover" };
+  const early = { ...old, template_id: cover.revision, cover };
+  const items = [old, early, { ...early, template_id: "already-updated" },
+    { ...early, template_id: "custom-media", cover: { ...cover, source: "a".repeat(64), url: "", publishedRevision: "" } }];
+  const captures: string[] = [], writes: string[] = [];
+  let lists = 0;
+  spyOn(homeCapture, "captureHomeCover").mockImplementation(async (item, signal) => {
+    captures.push(item.template_id);
+    if (captures.length === 2) await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    return new Blob(["frame"], {type: "image/png"});
+  });
+  fetchMock.mockImplementation((async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/template") { lists++; return jsonListResponse(items); }
+    if (init?.method === "PUT") {
+      expect((init.body as FormData).get("refresh")).toBe("true");
+      writes.push(path.split("/")[2]);
+      return Response.json({ revision: "published", url: "new.png" });
+    }
+    return new Response("PNG");
+  }) as typeof fetch);
+  const home = (active: boolean) => <Tooltip.Provider><TemplateHome active={active} onSelect={() => {}} onOpenRemotion={() => {}} /></Tooltip.Provider>;
+  const view = render(home(true));
+  await waitFor(() => expect(captures).toEqual(["first-cover", "early-cover"]));
+  view.rerender(home(false));
+  expect(writes).toEqual(["first-cover"]);
+  view.rerender(home(true));
+  await waitFor(() => expect(writes).toEqual(["first-cover", "early-cover"]));
+  expect(captures).toEqual(["first-cover", "early-cover", "early-cover"]);
+  expect(lists).toBe(1);
 });
 
 // 手动同步保留当前网格与选中的封面；缺图只重传已有截图，健康且版本未变化的封面不再请求。

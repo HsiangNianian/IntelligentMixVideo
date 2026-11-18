@@ -25,7 +25,12 @@ interface Props {
   onDelete?: (selection: TemplateSelection) => void;
 }
 
-/** 列表只读取一次。手动刷新再串行修复未发布的封面，每张成功后直接替换两个陈列区的摘要。 */
+/** 旧库无封面记录，或仍以模板 ID 标记首版内置样片；编辑器保存后的版本由原素材重试。 */
+function needsInitialCover(item: TemplateSummary) {
+  return !item.cover || (item.cover.source === "builtin" && item.cover.revision === item.template_id);
+}
+
+/** 首次读取后在主页逐张补旧封面；切页暂停，回来复用剩余列表，手动刷新同时修复未发布版本。 */
 function useTemplateCollection(revision: number, active: boolean) {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -33,7 +38,7 @@ function useTemplateCollection(revision: number, active: boolean) {
   const [error, setError] = useState("");
   const [authorize, setAuthorize] = useState<(() => void) | null>(null);
   const running = useRef<AbortController | null>(null);
-  const repairController = useRef<AbortController | null>(null);
+  const [batch, setBatch] = useState<{ pending: Set<TemplateSummary>; missing: Set<string>; address: string } | null>(null);
   const address = apiBase();
   const previousAddress = useRef(address);
 
@@ -42,36 +47,49 @@ function useTemplateCollection(revision: number, active: boolean) {
     const controller = new AbortController();
     const { signal } = controller;
     running.current = controller;
-    repairController.current = manual ? controller : null;
+    setBatch(null);
     setAuthorize(null);
     setRefreshing(manual);
     setError("");
-    let items: TemplateSummary[];
-    let missing = new Set<string>();
     try {
-      items = await listTemplates(signal);
+      const items = await listTemplates(signal);
       if (signal.aborted) return;
-      const images = manual ? syncLoadedCovers(items) : undefined;
       setTemplates(items);
-      if (images) missing = await images;
+      const missing = manual ? await syncLoadedCovers(items) : new Set<string>();
       if (signal.aborted) return;
+      const pending = items.filter(item => !item.validation_error && (needsInitialCover(item) || (manual
+        && (missing.has(item.template_id) || !item.cover?.url || item.cover.revision !== item.cover.publishedRevision))));
+      setBatch({ pending: new Set(pending), missing, address });
+      if (!pending.length) setRefreshing(false);
     } catch (reason) {
       if (!signal.aborted) {
         setError(reason instanceof Error ? reason.message : "模板列表加载失败");
         setRefreshing(false);
       }
-      return;
     } finally {
       if (!signal.aborted) setLoading(false);
     }
-    if (!manual) return;
-    const pending = items.filter(item => !item.validation_error && (missing.has(item.template_id) || !item.cover?.url || item.cover.revision !== item.cover.publishedRevision));
+  }, [address]);
+
+  // 列表只随保存、刷新或服务地址变更而重读；离开主页只取消取图。
+  useEffect(() => {
+    if (!active) {
+      setAuthorize(null); setRefreshing(false);
+      return;
+    }
+    if (!batch || batch.address !== address || !batch.pending.size) return;
+    const { pending, missing } = batch;
+    const controller = new AbortController();
+    const { signal } = controller;
+    setRefreshing(true);
     const reupload: TemplateSummary[] = [], capture: TemplateSummary[] = [];
     const failures: string[] = [];
     for (const item of pending) {
       if (hasCoverBlob(item.template_id, item.cover?.revision ?? item.template_id)) reupload.push(item);
-      else if (item.cover?.source === "unavailable") failures.push(item.name + "：请在编辑器选择原视频并保存");
-      else capture.push(item);
+      else if (item.cover?.source === "unavailable") {
+        failures.push(item.name + "：请在编辑器选择原视频并保存");
+        pending.delete(item);
+      } else capture.push(item);
     }
     /** 每项成功即发布到两个陈列区，单项失败继续下一项。 */
     async function repair(rows: TemplateSummary[], stream?: MediaStream) {
@@ -82,19 +100,21 @@ function useTemplateCollection(revision: number, active: boolean) {
           const published = await publishCover(item.template_id, version, async () => {
             const { captureHomeCover } = await import("./homeCoverCapture");
             return captureHomeCover(item, signal, stream);
-          }, missing.has(item.template_id) && version === item.cover?.publishedRevision, signal);
+          }, needsInitialCover(item) || (missing.has(item.template_id) && version === item.cover?.publishedRevision), signal);
           if (signal.aborted) return;
           setTemplates(current => current.map(row => row.template_id === item.template_id ? { ...row, cover: {
             source: item.cover?.source ?? "builtin", revision: published.revision, publishedRevision: published.revision, url: published.url,
           } } : row));
+          pending.delete(item);
           await readTemplateCover(item.template_id, published.revision);
         } catch (reason) {
-          if (!signal.aborted) failures.push(item.name + "：" + (reason instanceof Error ? reason.message : "封面更新失败"));
+          if (!signal.aborted) {
+            pending.delete(item);
+            failures.push(item.name + "：" + (reason instanceof Error ? reason.message : "封面更新失败"));
+          }
         }
       }
     }
-    await repair(reupload);
-    if (signal.aborted) return;
     /** 已缓存的图先重传，只有剩余工作确实需要重新取帧时才向浏览器申请授权。 */
     async function finish() {
       setAuthorize(null);
@@ -115,11 +135,15 @@ function useTemplateCollection(revision: number, active: boolean) {
         }
       }
     }
-    if (!isTauri() && capture.length) {
-      setRefreshing(false);
-      setAuthorize(() => finish);
-    } else await finish();
-  }, [address]);
+    void repair(reupload).then(() => {
+      if (signal.aborted) return;
+      if (!isTauri() && capture.length) {
+        setRefreshing(false);
+        setAuthorize(() => finish);
+      } else void finish();
+    });
+    return () => controller.abort();
+  }, [active, batch, address]);
 
   useEffect(() => {
     if (previousAddress.current !== address) {
@@ -131,12 +155,6 @@ function useTemplateCollection(revision: number, active: boolean) {
     queueMicrotask(() => { if (mounted) void load(); });
     return () => { mounted = false; running.current?.abort(); };
   }, [revision, load]);
-  useEffect(() => {
-    if (!active) {
-      repairController.current?.abort();
-      setAuthorize(null); setRefreshing(false);
-    }
-  }, [active]);
   return { templates, loading, error, refreshing, authorize, refresh: (): void => { void load(); }, sync: () => { void load(true); } };
 }
 
