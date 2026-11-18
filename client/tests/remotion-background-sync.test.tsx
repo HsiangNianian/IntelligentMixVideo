@@ -9,7 +9,9 @@ import * as local from "@/features/remotion_templates/localSessions";
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
 import { remotionJob } from "./remotion-fixtures";
 import { remotionServer, seed } from "./remotion-server";
-import { fetchMock } from "./setup";
+import { fetchMock, mockDesktop } from "./setup";
+import { checkUpdate, downloadUpdate, initializeUpdates, resetUpdates } from "@/features/updates/store";
+import { updateBlockers } from "@/lib/update-guard";
 
 /** 协议替身：新作品的任务停在运行中，之后由测试推进。 */
 function runningServer(overrides: Parameters<typeof remotionServer>[0] = () => undefined) {
@@ -138,4 +140,58 @@ test("只有挂载后的第一轮同步读取任务状态", async () => {
   await syncBackground(() => false, signal);
   await syncBackground(() => false, signal);
   expect(fetchMock.mock.calls.some((call) => /\/jobs\/[^/]+$/.test(String(call[0])))).toBe(false);
+});
+
+// 控制首次落盘的时机，分别保留和关闭聊天；同一任务在重启期间完成，回来接收同一结果。
+test.each(["保持打开", "关闭"])("聊天%s后任务已登记，自动整包更新并恢复原任务", async (chat) => {
+  const fake = runningServer();
+  const memory = local.memoryStorage();
+  const saving = Promise.withResolvers<void>();
+  let savingStarted = false;
+  local.setStorage({ ...memory, async save(server, change) {
+    savingStarted = true;
+    await saving.promise;
+    return memory.save(server, change);
+  } });
+  let applied = 0;
+  let pendingReads = 0;
+  mockDesktop(async (command, args) => {
+    if (command === "local_settings") return {};
+    if (command === "remotion_sessions") { pendingReads++; throw new Error("旧版无法打开新版会话库"); }
+    if (command !== "client_update") return null;
+    if (args.operation === "status") return { enabled: true };
+    if (args.operation === "check") return { version: "2.0.0", mode: "native" };
+    if (args.operation === "apply") applied++;
+    return null;
+  });
+  await initializeUpdates(); await checkUpdate();
+  const view = render(<RemotionWorkspace />);
+  fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "保留这条聊天" } });
+  fireEvent.submit(screen.getByRole("button", { name: "发送" }).closest("form")!);
+  await waitFor(() => expect(savingStarted).toBe(true));
+  await act(async () => { await downloadUpdate(); });
+  expect(updateBlockers()).toContain("正在完成保存、上传或读取请求");
+  expect(applied).toBe(0);
+  await act(async () => { saving.resolve(); });
+  await waitFor(() => expect(fake.streams.size).toBe(1));
+  expect(updateBlockers()).toEqual([]);
+  const before = await local.snapshot("work-1");
+  if (chat === "关闭") {
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    await waitFor(() => expect(fake.streams.size).toBe(0));
+  }
+  await waitFor(() => expect(applied).toBe(1), { timeout: 3000 });
+  expect(pendingReads).toBe(0);
+  view.unmount();
+  // 新进程重新挂载，服务端在客户端离线期间完成，消息与任务均从已有记录续接。
+  fake.advance(remotionJob("succeeded", "version-1"));
+  resetUpdates();
+  render(<RemotionWorkspace />);
+  await waitFor(() => expect(screen.getByRole("button", { name: /保留这条聊天/ }).textContent).toContain("已完成"));
+  const after = await local.snapshot("work-1");
+  expect(after.job.id).toBe(before.job.id);
+  expect(after.work.current_version_id).toBe("version-1");
+  expect(after.cursor).toBeGreaterThan(before.cursor);
+  expect(fetchMock.mock.calls.filter(([url, options]) => String(url).endsWith("/works") && options?.method === "POST")).toHaveLength(1);
+  expect(fetchMock.mock.calls.some(([url, options]) => String(url).endsWith("/cancel") || options?.method === "DELETE")).toBe(false);
 });

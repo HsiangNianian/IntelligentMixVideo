@@ -136,7 +136,7 @@ export function RemotionWorkspace() {
     !!session.busy ||
     unresolved ||
     session.retryMode === "read";
-  useUpdateBlocker("字效参数尚未保存或会话正在处理", pending || session.dirty);
+  useUpdateBlocker("字效参数尚未保存", session.dirty && !(unresolved && session.busy === "parameters"));
   const locked = pending || previewBusy || session.previewLoading;
   /**
    * 顶栏保存当前预览版本：默认覆盖本会话上次保存的资产，切换为另存时再新建。

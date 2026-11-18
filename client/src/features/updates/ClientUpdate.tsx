@@ -45,7 +45,7 @@ export function UpdateLifecycle() {
       <DialogContent data-update-safe showCloseButton={!downloading} onEscapeKeyDown={e => { if (downloading) e.preventDefault(); }} onPointerDownOutside={e => { if (downloading) e.preventDefault(); }}>
         <DialogHeader>
           <DialogTitle>发现新版本 v{reminder?.version}</DialogTitle>
-          <DialogDescription>当前界面 v{APP_VERSION}{state.phase === 'manual' ? '，请手动安装下载的安装包。' : '，更新前会先等待未保存内容和后台任务结束。'}</DialogDescription>
+          <DialogDescription>当前界面 v{APP_VERSION}{state.phase === 'manual' ? '，请手动安装下载的安装包。' : reminder?.mode === 'hot' ? '，更新前会等待草稿保存和后台任务结束。' : '，保存草稿后将重新启动，已提交的后台任务会继续。'}</DialogDescription>
         </DialogHeader>
         <p role="status" className="text-sm text-muted-foreground">{state.message}{state.progress !== undefined && ` ${state.progress}%`}</p>
         {state.links && <ManualLinks links={state.links} sha256={state.sha256} />}

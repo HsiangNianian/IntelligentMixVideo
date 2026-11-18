@@ -2,6 +2,7 @@
  * 会话协调器：从本地数据库恢复会话、把 SSE 事件写入本地后确认送达、提交用户操作；只接受成功版本，切换不取消后台任务。
  * 实时连接的建立与中断原因、本地库失败，以及连接期间看到的任务失败写进调试日志。
  */
+import { updateTask } from "@/lib/update-guard";
 import { recovery, restored } from "@/features/updates/recovery";
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
@@ -510,9 +511,13 @@ export function useTemplateSession(onHistoryChange: () => void) {
     publish({ busy: kind, error: "", retryMode: null });
     let queued = false;
     try {
-      const job = await start();
-      queued = true;
-      await local.track(job);
+      // 整个提交到落盘算作一次操作，即使切换或关闭聊天也必须等它完成。
+      const job = await updateTask(async () => {
+        const accepted = await start();
+        queued = true;
+        await local.track(accepted);
+        return accepted;
+      });
       if (!current(key)) {
         if (alive.current) changed.current();
         return;
