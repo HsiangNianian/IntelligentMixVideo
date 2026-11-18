@@ -10,7 +10,7 @@ import { recovery, restoreRecovery, type Recovery } from './recovery';
 export type Candidate = { version: string; mode: 'hot' | 'native' | 'manual' };
 /** 阻止应用更新的本地会话：所属服务地址、侧栏标题与是否等待重试删除。 */
 type PendingWork = { server: string; title: string; deleting: boolean };
-type Phase = 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'waiting' | 'applying' | 'error' | 'manual';
+type Phase = 'disabled' | 'idle' | 'checking' | 'available' | 'preparing' | 'downloading' | 'waiting' | 'applying' | 'error' | 'manual';
 type State = { phase: Phase; candidate?: Candidate; reminder?: Candidate; message: string; progress?: number; links?: string[]; sha256?: string };
 let state: State = { phase: 'disabled', message: '此构建不支持客户端更新' };
 const listeners = new Set<() => void>();
@@ -79,7 +79,7 @@ export async function updaterReady() {
  * 仅启动后的自动检查传入 `remind`，设置中的手动检查不弹窗。
  */
 export async function checkUpdate(remind = false) {
-  if (['disabled', 'checking', 'downloading', 'waiting', 'applying'].includes(state.phase)) return;
+  if (['disabled', 'checking', 'preparing', 'downloading', 'waiting', 'applying'].includes(state.phase)) return;
   // 手动检查只有在结果没有候选、或用户已经关闭提醒时才清除提醒；自动检查负责重建提醒。
   publish({ phase: 'checking', message: '正在检查更新…', progress: undefined, links: undefined, reminder: remind ? undefined : state.reminder });
   try {
@@ -102,12 +102,17 @@ function describePending(works: PendingWork[]) {
 }
 /** 整包只等待页面草稿和在途操作；热更新额外核查本机后台任务。 */
 export async function tryApplyUpdate() {
+  if (state.phase === 'preparing') return prepareDownload();
   if (state.phase !== 'waiting' || applying) return;
   applying = true;
   const request = generation;
   try {
     const blocked = updateBlockers();
-    if (blocked.length) { publish({ message: `等待处理：${blocked.join('；')}` }); return; }
+    if (blocked.length) {
+      lockForUpdate(false);
+      publish({ message: `等待处理：${blocked.join('；')}` });
+      return;
+    }
     const hot = state.candidate?.mode === 'hot';
     const pending = hot ? await pendingTasks() : [];
     if (request !== generation || state.phase !== 'waiting') return;
@@ -125,14 +130,32 @@ export async function tryApplyUpdate() {
     if (request === generation) publish({ phase: (state as State).phase === 'applying' ? 'error' : 'waiting', message: String(e) });
   } finally { applying = false; }
 }
-/** 下载并校验候选版本，随后进入等待：每秒核查草稿、请求与后台会话，全部就绪才应用。deb 只返回手动下载链接。 */
+/** 用户只发起一次更新。先让各表单处理草稿，最后一个阻塞解除后自动下载。 */
 export async function downloadUpdate() {
   if (!state.candidate || !['available', 'error', 'manual'].includes(state.phase)) return;
-  const request = ++generation;
-  publish({ phase: 'downloading', message: '正在下载并校验更新…', progress: 0, links: undefined });
+  ++generation;
+  publish({ phase: 'preparing', message: '正在检查未保存的内容…', links: undefined });
+  await prepareDownload();
+}
+/** 手动 deb 只取下载链接。可自动安装的更新先核查并锁定编辑，下载失败即解锁。 */
+async function prepareDownload() {
+  const manual = state.candidate?.mode === 'manual';
+  const blocked = manual ? [] : updateBlockers();
+  if (blocked.length) {
+    publish({ message: `等待处理：${blocked.join('；')}` });
+    timer ??= setInterval(() => { void tryApplyUpdate(); }, 1000);
+    return;
+  }
+  stopWaiting();
+  const request = generation;
+  if (!manual) lockForUpdate(true);
+  publish({ phase: 'downloading', message: '正在下载并校验更新…', progress: 0, reminder: state.candidate });
   try {
     const result = await call<{ links?: string[]; sha256?: string } | null>('download');
+    if (request !== generation) return;
     if (result?.links) { publish({ phase: 'manual', links: result.links, sha256: result.sha256, progress: undefined, message: '此版本需要完整升级，请按顺序选择下载源安装 deb 包' }); return; }
+    // 热更新可能还要同步服务端状态，等待期间允许处理或取消。
+    if (state.candidate?.mode === 'hot') lockForUpdate(false);
     publish({ phase: 'waiting', message: '下载完成，等待安全应用更新', progress: undefined, reminder: undefined });
     stopWaiting();
     const controller = new AbortController();
@@ -153,14 +176,18 @@ export async function downloadUpdate() {
       void tryApplyUpdate();
     }, 1000);
     void tryApplyUpdate();
-  } catch (e) { publish({ phase: 'error', message: String(e), progress: undefined }); }
+  } catch (e) {
+    if (request !== generation) return;
+    lockForUpdate(false);
+    publish({ phase: 'error', message: String(e), progress: undefined });
+  }
 }
-/** 取消等待中的这次应用：保留已下载结果可再次点击，不影响业务任务。 */
+/** 取消本次更新等待，原表单和已登记的业务任务继续使用。 */
 export function cancelUpdate() {
-  if (state.phase !== 'waiting') return;
+  if (state.phase !== 'preparing' && state.phase !== 'waiting') return;
   generation++; stopWaiting();
   lockForUpdate(false);
-  publish({ phase: 'available', message: '已取消此次应用，当前版本保持不变' });
+  publish({ phase: 'available', reminder: undefined, message: '已取消此次应用，当前版本保持不变' });
 }
 /** 测试销毁单例，避免模拟桌面状态跨用例残留。 */
 export function resetUpdates() {

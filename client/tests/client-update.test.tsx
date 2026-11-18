@@ -36,8 +36,8 @@ function desktop({ pending = [], fail = false, downloadFail = false, downloadGat
   mockDesktop(calls);
   return calls;
 }
-// 场景：隐藏工作区仍有草稿，下载完成后保持等待，处理完草稿才应用，并传递已保存位置。
-test('下载不丢失草稿，安全后应用一次并恢复位置', async () => {
+// 场景：隐藏工作区的草稿处理完后才下载，自动应用并传递已保存位置。
+test('处理草稿后自动下载、应用一次并恢复位置', async () => {
   const calls = desktop();
   await initializeUpdates();
   const blocker = renderHook(({ dirty }) => useUpdateBlocker('模板尚未保存', dirty), { initialProps: { dirty: true } });
@@ -49,11 +49,10 @@ test('下载不丢失草稿，安全后应用一次并恢复位置', async () =>
   expect(calls.mock.calls.filter(([, args]) => args.operation === 'check')).toHaveLength(1);
   await act(async () => { await downloadUpdate(); });
   await waitFor(() => expect(screen.getByText(/等待处理/)).toBeTruthy());
-  expect(calls.mock.calls.some(([, args]) => args.operation === 'apply')).toBe(false);
+  expect(calls.mock.calls.some(([, args]) => args.operation === 'download')).toBe(false);
   recovery.workspace = 'library'; recovery.template = { templateId: 'saved' };
   blocker.rerender({ dirty: false });
-  await act(async () => { await tryApplyUpdate(); });
-  expect(calls.mock.calls.filter(([, args]) => args.operation === 'apply')).toHaveLength(1);
+  await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args.operation === 'apply')).toHaveLength(1), { timeout: 3000 });
   expect(calls.mock.calls.find(([, args]) => args.operation === 'apply')?.[1].payload).toMatchObject({ workspace: 'library', template: { templateId: 'saved' } });
 });
 // 场景：当前页没有任务，但另一服务地址下的本机记录仍在运行；等待说明指出是哪个会话，取消等待不会安装或取消业务任务。
@@ -124,9 +123,7 @@ test('工作区挂载时更新等待不重复同步后台会话', async () => {
   const storage = memoryStorage();
   let reads = 0;
   setStorage({ ...storage, works: async (server) => { reads++; return storage.works(server); } });
-  desktop(); await initializeUpdates(); await checkUpdate();
-  // 保留草稿让更新停在等待阶段。
-  renderHook(() => useUpdateBlocker('模板尚未保存', true));
+  desktop({ pending: OTHER_SERVER }); await initializeUpdates(); await checkUpdate();
   const workspace = renderHook(() => useBackgroundSync(() => null, () => {}));
   await waitFor(() => expect(reads).toBe(1));
   await act(async () => { await downloadUpdate(); });

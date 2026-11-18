@@ -24,9 +24,9 @@ export function ClientUpdate() {
     <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium">客户端更新</h3><span>版本：v{APP_VERSION}</span></div>
     <p role="status" className="text-xs text-muted-foreground">{state.message}{state.progress !== undefined && ` ${state.progress}%`}</p>
     <div className="flex flex-wrap gap-2">
-      <Button type="button" variant="outline" size="sm" disabled={['disabled', 'checking', 'downloading', 'waiting', 'applying'].includes(state.phase)} onClick={() => void checkUpdate()}>检查更新</Button>
+      <Button type="button" variant="outline" size="sm" disabled={['disabled', 'checking', 'preparing', 'downloading', 'waiting', 'applying'].includes(state.phase)} onClick={() => void checkUpdate()}>检查更新</Button>
       {state.candidate && ['available', 'error', 'manual'].includes(state.phase) && <Button type="button" size="sm" onClick={() => void downloadUpdate()}>{state.candidate.mode === 'manual' ? '获取安装包' : '一键更新'}</Button>}
-      {state.phase === 'waiting' && <Button type="button" variant="outline" size="sm" onClick={cancelUpdate}>取消此次更新</Button>}
+      {(state.phase === 'preparing' || state.phase === 'waiting') && <Button type="button" variant="outline" size="sm" onClick={cancelUpdate}>取消此次更新</Button>}
     </div>
     {state.links && <ManualLinks links={state.links} sha256={state.sha256} />}
     {state.candidate && <p className="text-xs text-muted-foreground">{modeHint(state.candidate.mode)}</p>}
@@ -40,7 +40,7 @@ export function UpdateLifecycle() {
   const reminderOpen = Boolean(reminder) && ['checking', 'available', 'error', 'downloading', 'manual'].includes(state.phase);
   const downloading = state.phase === 'downloading';
   return <>
-    {state.phase === 'waiting' && <aside className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border bg-background p-4 shadow-lg" aria-label="等待客户端更新"><p className="mb-2 text-sm" role="status">{state.message}</p><Button size="sm" variant="outline" onClick={cancelUpdate}>取消此次更新</Button></aside>}
+    {(state.phase === 'preparing' || state.phase === 'waiting') && <aside className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border bg-background p-4 shadow-lg" aria-label="等待客户端更新"><p className="mb-2 text-sm" role="status">{state.message}</p><Button size="sm" variant="outline" onClick={cancelUpdate}>取消此次更新</Button></aside>}
     <Dialog open={reminderOpen} onOpenChange={(open) => { if (!open && !downloading) dismissUpdateReminder(); }}>
       <DialogContent data-update-safe showCloseButton={!downloading} onEscapeKeyDown={e => { if (downloading) e.preventDefault(); }} onPointerDownOutside={e => { if (downloading) e.preventDefault(); }}>
         <DialogHeader>
