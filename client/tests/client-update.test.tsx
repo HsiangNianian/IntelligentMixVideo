@@ -15,7 +15,10 @@ const OTHER_SERVER: Pending = [{ server: 'http://old.test', title: '旧服务会
 function desktop({ pending = [], fail = false, downloadFail = false, downloadGate, mode = 'hot', readyFailures = 0, status = { enabled: true, notice: '' } }: { pending?: Pending | Promise<Pending>; fail?: boolean; downloadFail?: boolean; downloadGate?: Promise<void>; mode?: string; readyFailures?: number; status?: { enabled: boolean; notice: string } } = {}) {
   const calls = mock(async (command: string, args: Record<string, unknown>) => {
     if (command === 'plugin:event|listen') return 1;
-    if (command === 'remotion_sessions') return pending;
+    if (command === 'remotion_sessions') {
+      if (mode === 'native') throw new Error('本地会话库来自更新版本的客户端');
+      return pending;
+    }
     if (command !== 'client_update') return null;
     if (args.operation === 'status') return { ...status, nativeVersion: '1.2.0', resume: null };
     if (args.operation === 'ready' && readyFailures-- > 0) throw new Error('另一个更新操作正在进行');
@@ -71,12 +74,14 @@ test('验证失败显示失败并允许重试', async () => {
 });
 // 场景：整包更新在安装前显示自动重启说明，无第二轮确认。
 test('整包更新显示重启状态对话框', async () => {
-  desktop({ mode: 'native' }); await initializeUpdates();
+  const calls = desktop({ mode: 'native' }); await initializeUpdates();
   render(<UpdateLifecycle />);
   await act(async () => { await checkUpdate(); });
   await act(async () => { await downloadUpdate(); });
   await act(async () => { await tryApplyUpdate(); });
   await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain('正在重新启动客户端'));
+  await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args.operation === 'apply')).toHaveLength(1));
+  expect(calls.mock.calls.some(([cmd]) => cmd === 'remotion_sessions')).toBe(false);
 });
 // 场景：正在上传时阻止刷新；进入应用阶段后新请求不开始，应用失败解锁后照常执行而不是报错（避免 SSE 落库失败停掉订阅）。
 test('进行中请求参与门禁，锁定期间的新请求等到解锁再执行', async () => {

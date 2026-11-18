@@ -695,11 +695,23 @@ pub async fn client_update(
         if serde_json::to_vec(&payload).map_err(error)?.len() > 16 * 1024 {
             return Err("恢复信息过大".into());
         }
-        let pending =
-            crate::remotion_sessions::remotion_sessions(app.clone(), "pending".into(), json!({}))
-                .await?;
-        if !pending.as_array().is_some_and(Vec::is_empty) {
-            return Err("仍有后台任务或状态不明的会话，请稍后应用".into());
+        // 整包升级可修复旧壳打不开新版会话库的情况。仅热更新沿用后台会话检查。
+        let hot = state
+            .staged
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|(_, _, mode)| mode == "hot");
+        if hot {
+            let pending = crate::remotion_sessions::remotion_sessions(
+                app.clone(),
+                "pending".into(),
+                json!({}),
+            )
+            .await?;
+            if !pending.as_array().is_some_and(Vec::is_empty) {
+                return Err("仍有后台任务或状态不明的会话，请稍后应用".into());
+            }
         }
         state.exclusive()?;
         let staged = state.staged.lock().unwrap().take();

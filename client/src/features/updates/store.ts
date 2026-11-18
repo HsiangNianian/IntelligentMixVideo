@@ -100,7 +100,7 @@ function describePending(works: PendingWork[]) {
   const names = works.slice(0, 3).map(work => `「${work.title || '未命名会话'}」（${work.server}${work.deleting ? '，待重试删除' : ''}）`);
   return `等待后台会话结束：${names.join('、')}${works.length > 3 ? ` 等 ${works.length} 个` : ''}。其他服务地址下的会话需切换回该地址才能同步，也可以取消此次更新`;
 }
-/** 定时只读取本机任务状态；后台事件使用已有同步器，不新增任务状态轮询。 */
+/** 整包只等待页面草稿和在途操作；热更新额外核查本机后台任务。 */
 export async function tryApplyUpdate() {
   if (state.phase !== 'waiting' || applying) return;
   applying = true;
@@ -108,12 +108,13 @@ export async function tryApplyUpdate() {
   try {
     const blocked = updateBlockers();
     if (blocked.length) { publish({ message: `等待处理：${blocked.join('；')}` }); return; }
-    const pending = await pendingTasks();
+    const hot = state.candidate?.mode === 'hot';
+    const pending = hot ? await pendingTasks() : [];
     if (request !== generation || state.phase !== 'waiting') return;
     if (pending.length) { publish({ message: describePending(pending) }); return; }
     lockForUpdate(true);
     // 锁住新操作后重新核对，防止前一次异步读取期间用户又修改草稿或提交任务。
-    if (updateBlockers().length || (await pendingTasks()).length) { lockForUpdate(false); return; }
+    if (updateBlockers().length || (hot && (await pendingTasks()).length)) { lockForUpdate(false); return; }
     if (request !== generation || state.phase !== 'waiting') { lockForUpdate(false); return; }
     publish({ phase: 'applying', message: state.candidate?.mode === 'hot' ? '正在应用界面更新…' : '正在重新启动客户端…' });
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -140,7 +141,7 @@ export async function downloadUpdate() {
     // 只覆盖没有打开字效工作区的情况：工作区挂载后由它同步并跳过 SSE 会话，这里不重复拉取或确认。
     // 复用串行事件合并，网络失败不把任务当作完成。
     const sync = async (settle = false) => {
-      if (syncing || backgroundSyncActive()) return;
+      if (state.candidate?.mode !== 'hot' || syncing || backgroundSyncActive()) return;
       syncing = true;
       try { await syncBackground(() => false, controller.signal, settle); } catch {} finally { syncing = false; }
     };
