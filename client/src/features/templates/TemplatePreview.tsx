@@ -4,7 +4,7 @@
  * 播放按钮、进度条、时间轴、文字选择框与 AI 资产都只跟随这个位置，不等 IMS。卸载时清理订阅、异步任务和生成图片的 Blob URL。
  */
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref, type CSSProperties } from "react";
-import { captureFrame, prepareCoverFrame } from "./coverCapture";
+import { captureCoverFrame, captureFrame } from "./coverCapture";
 import { frameMaskImage, frameMaskRects } from "./frameMask";
 import { useFrameMaskImages } from "./useFrameMaskImages";
 import { Maximize2, Pause, Play, RotateCw } from "lucide-react";
@@ -674,16 +674,17 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
       // 立即提交尚在 250ms 防抖窗口内的改动，再等新时间线可播放。
       apply.current?.();
       await new Promise<void>(done => requestAnimationFrame(() => done()));
-      await prepareCoverFrame(frame, seconds => {
+      return await captureCoverFrame(frame, seconds => {
         const player = ims.current;
         if (!player) throw new Error("预览播放器不可用");
         previous.player = player;
         player.seek(seconds);
+      }, async () => {
+        if (Math.abs(clockTime.current - 1) >= 0.017) throw new Error("预览已变化");
+        element.dataset.snapshot = "";
+        await new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done())));
+        return captureFrame(frame, stream);
       });
-      if (Math.abs(clockTime.current - 1) >= 0.017) throw new Error("预览已变化");
-      element.dataset.snapshot = "";
-      await new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done())));
-      return await captureFrame(frame, stream);
     } finally {
       delete element.dataset.snapshot;
       delete element.dataset.capturing;
