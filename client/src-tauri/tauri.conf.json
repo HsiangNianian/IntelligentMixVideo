@@ -24,6 +24,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "windows": {
+      "nsis": { "installerHooks": "installer/desktop-name.nsh" },
+      "wix": { "fragmentPaths": ["installer/desktop-name.wxs"], "componentRefs": ["DesktopDisplayName"] }
+    },
     "linux": {
       "appimage": {
         "bundleMediaFramework": true

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- MSI 管理桌面图标的显示名；快捷方式的文件名保持稳定，支持升级、修复和卸载。 -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="DesktopDisplayName" Guid="E1D30014-733B-4A78-98B0-D36DF8812403">
+        <IniFile Id="DesktopName" Action="addLine" Name="desktop.ini"
+                 Section="LocalizedFileNames" Key="IntelligentMixVideo.lnk"
+                 Value="@[#Path],-26001;v[ProductVersion]" />
+        <RegistryValue Root="HKCU" Key="Software\com.intelligentmixvideo.client" Name="DesktopDisplayName"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>
