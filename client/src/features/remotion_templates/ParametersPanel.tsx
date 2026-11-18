@@ -221,7 +221,7 @@ export function ParametersPanel({
   return (
     <section
       aria-label="模板参数"
-      className="@container min-h-0 overflow-y-auto rounded-xl border bg-card p-4"
+      className="@container h-full min-h-0 overflow-y-auto bg-card p-4"
     >
       <div className="sticky -top-4 z-10 -mx-4 -mt-4 mb-2 space-y-3 border-b bg-card px-4 py-3">
         <div className="flex items-center gap-2 text-sm font-medium">

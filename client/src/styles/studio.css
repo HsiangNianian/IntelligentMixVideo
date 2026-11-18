@@ -1,15 +1,24 @@
-/* 工作室视觉令牌与动画：默认亮色，.dark 覆盖暗色配色。 */
+/* 纸面工作室：自托管中文手写界面字体与中性主题；真实字体样张、播放器及代码各自指定字体。 */
+@font-face {
+  font-family: "IMV Hand";
+  src: url("/fonts/imv-hand.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  /* 手写字形整体放大；独立加载的样张字体、视频和等宽代码不受影响。 */
+  size-adjust: 118%;
+}
 @theme {
   --color-white: #fff;
   --color-black: #000;
 
-  --color-rail: oklch(1 0 0);
-  --color-sunken: oklch(0.99 0.001 265);
-  --color-canvas: oklch(0.973 0.002 265);
-  --color-surface: oklch(1 0 0);
-  --color-overlay: oklch(1 0 0);
-  --color-raised: oklch(0.955 0.003 265);
-  --color-hover: oklch(0.925 0.004 265);
+  --color-rail: oklch(0.955 0.009 85);
+  --color-sunken: oklch(0.95 0.009 85);
+  --color-canvas: oklch(0.97 0.008 85);
+  --color-surface: oklch(0.975 0.007 85);
+  --color-overlay: oklch(0.985 0.006 85);
+  --color-raised: oklch(0.935 0.009 85);
+  --color-hover: oklch(0.91 0.01 85);
   --color-line: oklch(0.2 0.01 265 / 0.09);
   --color-line-strong: oklch(0.2 0.01 265 / 0.16);
 
@@ -22,10 +31,10 @@
   --color-ink-hover: oklch(0.3 0.01 265);
   --color-on-ink: oklch(0.99 0 0);
 
-  /* 靛蓝强调色及其上的文字：只用于选中、进度、链接与 AI 发送。 */
-  --color-brand: oklch(0.55 0.2 275);
-  --color-brand-hover: oklch(0.5 0.21 275);
-  --color-brand-ink: oklch(1 0 0);
+  /* 石墨色统一选中、进度和主操作；状态色仍用于实际状态。 */
+  --color-brand: oklch(0.34 0.009 85);
+  --color-brand-hover: oklch(0.24 0.008 85);
+  --color-brand-ink: oklch(0.98 0.006 85);
 
   --color-danger: oklch(0.58 0.21 25);
   --color-success: oklch(0.62 0.15 155);
@@ -33,17 +42,17 @@
 
   --color-scrim: oklch(0.2 0.01 265 / 0.32);
   --color-shimmer: oklch(1 0 0 / 0.75);
-  --color-splash: oklch(1 0 0);
-  --color-brand-from: oklch(0.68 0.17 262);
-  --color-brand-to: oklch(0.5 0.22 288);
-  --color-spectrum-1: oklch(0.62 0.17 245);
-  --color-spectrum-2: oklch(0.55 0.2 275);
-  --color-spectrum-3: oklch(0.6 0.2 312);
+  --color-splash: var(--color-canvas);
+  --color-brand-from: oklch(0.52 0.015 85);
+  --color-brand-to: oklch(0.27 0.008 85);
+  --color-spectrum-1: var(--color-fg-muted);
+  --color-spectrum-2: var(--color-fg);
+  --color-spectrum-3: var(--color-fg-subtle);
 
-  /* Geist 只覆盖拉丁字母与数字，中文按系统依次回落到苹方、鸿蒙、MiSans、微软雅黑、思源黑体。 */
-  --font-sans: "Geist Variable", "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif;
+  /* 中西文界面共用手写字形；等宽代码保持 Geist Mono，媒体与字样显式使用自己的字体。 */
+  --font-sans: "IMV Hand", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
-  --font-serif: "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "STSong", serif;
+  --font-serif: var(--font-sans);
 
   --shadow-pop: 0 1px 2px oklch(0.2 0.01 265 / 0.06), 0 20px 48px -16px oklch(0.2 0.01 265 / 0.22);
   --shadow-lift: 0 14px 32px -14px oklch(0.2 0.01 265 / 0.32);
@@ -156,26 +165,26 @@
   }
 }
 
-/* 暗色保留靛蓝强调色，以深灰层级区分工作区、面板和浮层；视频画面不随主题变色。 */
+/* 黑纸主题：用中性炭灰区分面板，文字为浅石墨色；媒体和字样不叠加纸纹。 */
 .dark {
-  --color-rail: oklch(0.205 0.012 265);
-  --color-sunken: oklch(0.19 0.01 265);
-  --color-canvas: oklch(0.17 0.01 265);
-  --color-surface: oklch(0.225 0.012 265);
-  --color-overlay: oklch(0.26 0.014 265);
-  --color-raised: oklch(0.285 0.014 265);
-  --color-hover: oklch(0.335 0.016 265);
+  --color-rail: oklch(0.19 0.004 85);
+  --color-sunken: oklch(0.175 0.004 85);
+  --color-canvas: oklch(0.195 0.004 85);
+  --color-surface: oklch(0.21 0.004 85);
+  --color-overlay: oklch(0.25 0.004 85);
+  --color-raised: oklch(0.275 0.005 85);
+  --color-hover: oklch(0.32 0.005 85);
   --color-line: oklch(1 0 0 / 0.1);
   --color-line-strong: oklch(1 0 0 / 0.18);
-  --color-fg: oklch(0.93 0.004 265);
-  --color-fg-muted: oklch(0.76 0.012 265);
-  --color-fg-subtle: oklch(0.65 0.012 265);
+  --color-fg: oklch(0.9 0.015 85);
+  --color-fg-muted: oklch(0.74 0.012 85);
+  --color-fg-subtle: oklch(0.64 0.009 85);
   --color-ink: oklch(0.9 0.008 265);
   --color-ink-hover: oklch(0.98 0.004 265);
   --color-on-ink: oklch(0.19 0.01 265);
-  --color-brand: oklch(0.74 0.14 275);
-  --color-brand-hover: oklch(0.8 0.12 275);
-  --color-brand-ink: oklch(0.17 0.02 275);
+  --color-brand: oklch(0.86 0.014 85);
+  --color-brand-hover: oklch(0.95 0.01 85);
+  --color-brand-ink: oklch(0.2 0.004 85);
   --color-danger: oklch(0.7 0.18 25);
   --color-scrim: oklch(0 0 0 / 0.65);
   --color-shimmer: oklch(1 0 0 / 0.08);
@@ -183,6 +192,21 @@
   --shadow-pop: 0 1px 2px oklch(0 0 0 / 0.2), 0 20px 48px -16px oklch(0 0 0 / 0.65);
   --shadow-lift: 0 14px 32px -14px oklch(0 0 0 / 0.65);
 }
+
+/* 标题沿用真实手写轮廓，以字距和留白强调；不再叠排线、描边或重复文字。 */
+@layer components {
+  .sketch-text {
+    font-family: var(--font-sans);
+    font-weight: 400;
+    letter-spacing: .035em;
+  }
+}
+/* 纸纹只画在容器背景上，不用覆盖层或滤镜污染媒体、字体预览和输入控件。 */
+.paper-surface {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='linear' slope='.045'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' opacity='.6' filter='url(%23p)'/%3E%3C/svg%3E");
+}
+.studio-logo .logo-tile { display: none; }
+.studio-logo path { fill: currentColor; stroke: currentColor; }
 
 /* 空会话将标题与输入框放在中间；消息出现后输入框自然回到底部。 */
 .studio-chat-empty .studio-chat-log { flex: 0 1 auto; margin-top: auto; }

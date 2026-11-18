@@ -24,7 +24,7 @@ export function buildTestTimeline(draft: Draft, assets: EffectAsset[], media = s
 
 /** 从有效模板提取协议规定的列表摘要。 */
 export function templateSummary(template: Template): TemplateSummary {
-  return { template_id: template.template_id, name: template.name, description: template.description,
+  return { cover: template.cover, template_id: template.template_id, name: template.name, description: template.description,
     created_at: template.created_at, updated_at: template.updated_at,
     title: template.tracks.find((track) => track.target === "title")?.editor.title ?? "",
     subtitle: template.tracks.find((track) => track.target === "subtitle")?.editor.subtitle ?? "",
@@ -73,6 +73,7 @@ function templateRecord(template: Template): TemplateRecord {
   return create(TemplateRecordSchema, {
     name: template.name,
     description: template.description,
+    cover: template.cover,
     effectIds: template.effect_ids,
     transitionDurationSeconds: template.transition_duration_seconds,
     transitionMode: template.transition_mode,
@@ -114,7 +115,7 @@ function templateRecord(template: Template): TemplateRecord {
 export function jsonListResponse(templates: Template[]): Response {
   const message = create(ListTemplatesResponseSchema, { templates: templates.map((template) => {
     const summary = templateSummary(template);
-    return { templateId: summary.template_id, name: summary.name, description: summary.description,
+    return { cover: summary.cover, templateId: summary.template_id, name: summary.name, description: summary.description,
       createdAt: timestampFromDate(new Date(summary.created_at)), updatedAt: timestampFromDate(new Date(summary.updated_at)),
       title: summary.title, subtitle: summary.subtitle, trackCount: summary.track_count, validationError: summary.validation_error };
   }) });

@@ -11,10 +11,17 @@ const VIDEO_ENVIRONMENT: [(&str, &str); 2] = [
     ("WEBKIT_GST_USE_PLAYBIN3", "1"),
 ];
 
+/// NVIDIA EGL 在 AppImage 的 WebKit DMA-BUF 渲染路径上可能以 SIGFPE 终止网页进程。
+#[cfg(target_os = "linux")]
+const DMABUF_RENDERER: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+
 /// 写入上述默认值，保留显式环境配置；必须在 Tauri 初始化及创建线程之前调用。
 #[cfg(target_os = "linux")]
-fn configure_video_environment() {
-    for (key, value) in VIDEO_ENVIRONMENT {
+fn configure_video_environment(nvidia_appimage: bool) {
+    for (key, value) in VIDEO_ENVIRONMENT
+        .into_iter()
+        .chain(nvidia_appimage.then_some((DMABUF_RENDERER, "1")))
+    {
         if std::env::var_os(key).is_none() {
             std::env::set_var(key, value);
         }
@@ -31,14 +38,17 @@ fn main() {
         }
     }
     #[cfg(target_os = "linux")]
-    configure_video_environment();
+    configure_video_environment(
+        std::env::var_os("APPIMAGE").is_some()
+            && std::path::Path::new("/sys/module/nvidia").is_dir(),
+    );
 
     client_lib::run()
 }
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::VIDEO_ENVIRONMENT;
+    use super::{DMABUF_RENDERER, VIDEO_ENVIRONMENT};
 
     /// 子进程隔离环境变量，验证默认启用兼容路径并保留用户配置，不启动 GUI。
     #[test]
@@ -46,10 +56,13 @@ mod tests {
         const TEST_KEY: &str = "IMV_TEST_VIDEO_KEY";
         const EXPECTED: &str = "IMV_TEST_VIDEO_EXPECTED";
         if let Some(expected) = std::env::var_os(EXPECTED) {
-            super::configure_video_environment();
+            let key = std::env::var(TEST_KEY).unwrap();
+            super::configure_video_environment(key == DMABUF_RENDERER);
+            if key != DMABUF_RENDERER {
+                assert_eq!(std::env::var_os(DMABUF_RENDERER), None);
+            }
             // 回归 v0.9.12：调试信息只在调试模式里收集，启动时不设置 GST_DEBUG。
             assert_eq!(std::env::var_os("GST_DEBUG"), None);
-            let key = std::env::var(TEST_KEY).unwrap();
             assert_eq!(std::env::var_os(&key), Some(expected));
             for (other, default) in VIDEO_ENVIRONMENT
                 .into_iter()
@@ -60,7 +73,10 @@ mod tests {
             return;
         }
 
-        for (key, default) in VIDEO_ENVIRONMENT {
+        for (key, default) in VIDEO_ENVIRONMENT
+            .into_iter()
+            .chain([(DMABUF_RENDERER, "1")])
+        {
             for value in [None, Some("0"), Some("1"), Some("")] {
                 let mut child = std::process::Command::new(std::env::current_exe().unwrap());
                 child.args(["--exact", "tests::linux_video_environment"]);
@@ -68,6 +84,7 @@ mod tests {
                     child.env_remove(other);
                 }
                 child.env_remove("GST_DEBUG");
+                child.env_remove(DMABUF_RENDERER);
                 child.env(TEST_KEY, key);
                 child.env(EXPECTED, value.unwrap_or(default));
                 match value {

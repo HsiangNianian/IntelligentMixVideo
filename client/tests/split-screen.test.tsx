@@ -1,19 +1,20 @@
 /** 同屏核心回归：协议保存、示例角色、SDK 几何与基础预览；执行 bun run test。 */
 import { expect, test } from "bun:test";
 import { createRef, useState } from "react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { fromBinary, toJson } from "@bufbuild/protobuf";
 import { SaveTemplateRequestSchema, SplitScreenSchema } from "@/generated/imv/template/v1/template_pb";
 import { saveTemplate, getTemplate } from "@/features/templates/api";
 import { newDraft, toDraft, type Draft } from "@/features/templates/model";
 import { defaultSplitScreen, screenRect, type SplitScreen } from "@/features/templates/splitScreen";
+import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { SplitScreenEditor } from "@/features/templates/SplitScreenEditor";
 import { buildTimeline, buildPreviewRows, playerTimeline } from "@/features/templates/timeline";
 import { previewContext, resolveTemplate } from "@/features/templates/tracks";
 import { previewTransitions } from "@/features/templates/transitions";
 import { BasicVideoPreview } from "@/features/templates/BasicVideoPreview";
 import type { PlaybackHandle } from "@/features/templates/previewClock";
-import { sampleMedia, savedTemplate, jsonTemplateResponse } from "./fixtures";
+import { sampleMedia, savedTemplate, jsonTemplateResponse, emptySpriteCatalog } from "./fixtures";
 import { fetchMock } from "./setup";
 
 // 保存用真实 Protobuf 编解码，验证零值和关闭参数完整往返，避免只测试 JS 内存副本。
@@ -126,4 +127,34 @@ test.each(["overlay", "circle"] as const)("%s 的 SDK 与基础预览一致使�
   expect(screen.getByLabelText<HTMLVideoElement>("数字人同屏预览").currentTime).toBe(2);
   expect(document.querySelector<HTMLVideoElement>("video.blur-xl")?.currentTime).toBe(2);
   if (mode === "circle") expect(screen.getByLabelText("数字人同屏预览").parentElement!.style.borderRadius).toBe("50%");
+});
+
+// 场景：同屏参数只在布局页可见，切页保留编辑值；无效参数即使藏在另一页仍阻止保存，修正后按原协议提交。
+test("画面布局独立切页并保留参数与保存校验", async () => {
+  const saved: ReturnType<typeof fromBinary<typeof SaveTemplateRequestSchema>>[] = [];
+  fetchMock.mockImplementation((async (url, init) => {
+    if (new URL(String(url)).pathname === "/api/sprites") return emptySpriteCatalog();
+    if (init?.method === "POST") saved.push(fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as ArrayBuffer)));
+    return jsonTemplateResponse(savedTemplate(), init?.method === "POST" ? "save" : "get");
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={{ templateId: null, name: "布局回归", description: "" }} onHome={() => {}} />);
+  expect(screen.queryByRole("checkbox", { name: "启用同屏" })).toBeNull();
+  fireEvent.click(screen.getByRole("tab", { name: "画面布局" }));
+  expect(screen.queryByRole("region", { name: "已添加特效" })).toBeNull();
+  fireEvent.click(screen.getByRole("checkbox", { name: "启用同屏" }));
+  fireEvent.change(screen.getByRole("spinbutton", { name: "素材圆角 px" }), { target: { value: "20" } });
+  fireEvent.change(screen.getByRole("spinbutton", { name: "素材宽度 %" }), { target: { value: "" } });
+  fireEvent.click(screen.getByRole("tab", { name: "画面对象" }));
+  expect(screen.queryByRole("checkbox", { name: "启用同屏" })).toBeNull();
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await screen.findByRole("button", { name: "保存模板" });
+  expect(saved).toHaveLength(0);
+  fireEvent.click(screen.getByRole("tab", { name: "画面布局" }));
+  expect(screen.getByRole<HTMLInputElement>("spinbutton", { name: "素材圆角 px" }).value).toBe("20");
+  expect(screen.getByRole<HTMLInputElement>("spinbutton", { name: "素材宽度 %" }).value).toBe("");
+  fireEvent.change(screen.getByRole("spinbutton", { name: "素材宽度 %" }), { target: { value: "90" } });
+  fireEvent.click(screen.getByRole("tab", { name: "画面对象" }));
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(saved[0].splitScreen).toMatchObject({ enabled: true, material: { width: 90, radius: 20 } });
 });

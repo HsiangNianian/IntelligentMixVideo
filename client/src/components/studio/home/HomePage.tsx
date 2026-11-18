@@ -1,5 +1,5 @@
 /**
- * 主页：页头、创作入口与云端模板网格。
+ * 主页：页头、创作入口与云端模板空间陈列。
  * 页面只负责排版与把用户操作交给上层；数据、加载状态与对话框由业务容器持有。
  */
 import { cn } from "@/lib/utils";
@@ -7,6 +7,7 @@ import { CreateCards } from "./CreateCards";
 import { type SectionState } from "./TemplateSection";
 import { IconButton } from "../ui";
 import { Icon } from "../icons";
+import { Input } from "@/components/ui/input";
 
 interface HomePageProps {
   cloudState: SectionState;
@@ -16,17 +17,19 @@ interface HomePageProps {
   count: number;
   refreshing: boolean;
   onRefresh: () => void;
+  query: string;
+  onSearch: (value: string) => void;
   children: React.ReactNode;
 }
 
-/** 主页内容最宽 1400px，居中；窄窗口时边距收窄。 */
+/** 主页内容最宽 1600px，搜索与刷新相邻；窄窗口时工具栏换行。 */
 export function HomePage(props: HomePageProps) {
   const { cloudState, onCreate, onOpenEffects, onOpenSettings, children } = props;
   return (
-    <div className="mx-auto w-full max-w-[1400px] px-6 pb-20 pt-9 sm:px-10">
+    <div className="paper-surface mx-auto min-h-full w-full max-w-[1600px] px-6 pb-20 pt-9 sm:px-10">
       <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
         <div>
-          <h1 className="text-[26px] font-semibold leading-tight tracking-tight">开始创作</h1>
+          <h1 className="sketch-text text-[36px] leading-tight">开始创作</h1>
           <p className="mt-1.5 text-sm text-fg-muted">从模板开始设计视频的样子，或者让 AI 帮你做一段字效。</p>
         </div>
         <ServiceChip state={cloudState} onClick={onOpenSettings} />
@@ -36,12 +39,13 @@ export function HomePage(props: HomePageProps) {
         <CreateCards onCreateCloud={onCreate} onOpenEffects={onOpenEffects} />
       </div>
 
-      <div className="mt-14 flex items-center gap-2 border-b border-line">
+      <div className="mt-9 flex flex-wrap items-center gap-2 border-b border-line">
         <div className="flex items-center gap-2 py-3">
-          <h2 className="text-lg font-semibold tracking-tight">我的模板</h2>
+          <h2 className="sketch-text text-2xl">我的模板</h2>
           <span aria-label="模板数量" className="rounded-full bg-raised px-2 py-px font-mono text-[11px] tabular-nums text-fg-muted">{props.count}</span>
         </div>
-        <IconButton label="刷新模板" className="ml-auto" disabled={props.refreshing} onClick={props.onRefresh}>
+        <Input type="search" aria-label="搜索模板名称" placeholder="搜索模板名称" value={props.query} onChange={(event) => props.onSearch(event.target.value)} className="ml-auto h-9 w-48 sm:w-64" />
+        <IconButton label="刷新模板及封面" disabled={props.refreshing} onClick={props.onRefresh}>
           <Icon name="restart" className={cn(props.refreshing && "animate-spin")} />
         </IconButton>
       </div>

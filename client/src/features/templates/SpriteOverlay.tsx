@@ -3,7 +3,7 @@
  * 只为当前时间附近的片段挂载播放器，离开后卸载；播放器的字体由本页读取一次后转交，不各自下载。
  * 支持参数覆盖的播放器同时收到这次摆放的参数与宿主变换；选中的可移动资产在画面上显示一个可拖动的位置框。
  * 播放器是跨源沙箱页面，无法监听其内部错误：挂载后迟迟不就绪、能力不足或预览页回报错误时写调试日志；
- * 调试模式下另记录偏慢的就绪与参数更新。预览协议没有逐帧回执，定位是否跟得上无法测量。
+ * 调试模式下另记录偏慢的就绪与参数更新。只有封面取帧请求需要定位绘制回执。
  */
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type Ref } from "react";
 import { apiBase } from "@/lib/api-base";
@@ -92,6 +92,8 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     if (sent.current.get(clip.id) === key) return;
     sent.current.set(clip.id, key);
     requests.current += 1;
+    frame.dataset.coverRequest = String(requests.current);
+    delete frame.dataset.coverPainted;
     if (diagnosticsEnabled()) {
       const now = performance.now();
       for (const [requestId, update] of updates.current)
@@ -148,7 +150,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     sent.current.delete(id);
     for (const [requestId, request] of updates.current) if (request.id === id) updates.current.delete(requestId);
     const frame = frames.current.get(id);
-    if (frame) frame.style.visibility = "hidden";
+    if (frame) { frame.style.visibility = "hidden"; delete frame.dataset.coverPainted; delete frame.dataset.coverSeekSupported; }
     setUnsupported((items) => items.includes(id) ? items.filter((item) => item !== id) : items);
     setFixed((items) => items.includes(id) ? items.filter((item) => item !== id) : items);
     startReadyTimer(id);
@@ -205,11 +207,20 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
       const label = `「${clip?.name ?? id}」（资产 ${clip?.spriteId ?? "未知"}）`;
       // 预览页自己发现的问题（如背景或字体加载失败）原来被忽略，现在写进日志。
       if (event.data?.type === "imv-preview-error") {
+        const frame = frames.current.get(id);
+        if (frame) delete frame.dataset.coverPainted;
         if (typeof event.data.requestId === "number") updates.current.delete(event.data.requestId);
         debugLog("AI 资产预览", `${label}的预览页报错：${oneLine(String(event.data.message ?? "未知错误"), 200)}`);
         return;
       }
+      if (event.data?.type === "imv-preview-frame-rendered") {
+        const data = entry[1].dataset;
+        if (data.coverSeek && event.data.captureId === data.coverSeek) data.coverSeekPainted = data.coverSeek;
+        return;
+      }
       if (event.data?.type === "imv-preview-rendered") {
+        const frame = frames.current.get(id);
+        if (frame && frame.dataset.coverRequest === String(event.data.requestId)) frame.dataset.coverPainted = "true";
         const request = updates.current.get(event.data.requestId);
         if (!request) return;
         updates.current.delete(event.data.requestId);
@@ -218,6 +229,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
         return;
       }
       if (event.data?.type !== "imv-preview-ready") return;
+      entry[1].dataset.coverSeekSupported = String(event.data.captureSeek === true);
       clearTimeout(readiness.current.get(id) ?? undefined);
       if (readiness.current.has(id)) readiness.current.set(id, null);
       const since = mountedAt.current.get(id);
@@ -261,6 +273,8 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
           ref={(element) => { if (element) frames.current.set(clip.id, element); else frames.current.delete(clip.id); }}
           title={`AI 资产预览：${clip.name}`}
           sandbox="allow-scripts"
+          data-cover-at={clip.start <= 1 && clip.end > 1 ? 1 - clip.start : undefined}
+          data-cover-duration={clip.length}
           onLoad={() => loaded.current.add(clip.id)}
           src={`${apiBase()}/api/sprites/${encodeURIComponent(clip.spriteId)}/preview?overlay=true&sync=1&${HOST_FONTS}${clip.sourceVersionId ? `&version=${encodeURIComponent(clip.sourceVersionId)}` : ""}#${channels.current.get(clip.id)?.channel}`}
           className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 border-0"

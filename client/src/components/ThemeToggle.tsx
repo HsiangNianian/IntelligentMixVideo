@@ -15,10 +15,10 @@ export function ThemeToggle() {
     setDark(next);
   }
 
-  return <button type="button" aria-label="主题" aria-pressed={dark} title={label} onClick={toggle} className="group flex w-full flex-col items-center gap-1 rounded-xl py-1.5">
-    <span className="flex h-8 w-12 items-center justify-center rounded-full text-fg-subtle transition-colors group-hover:bg-raised group-hover:text-fg">
+  return <button type="button" aria-label="主题" aria-pressed={dark} title={label} onClick={toggle} className="group flex w-full flex-col items-center justify-center gap-1 py-1.5 xl:flex-row xl:justify-start xl:gap-3 xl:px-3">
+    <span className="flex h-8 items-center justify-center text-fg-muted transition-colors group-hover:text-fg">
       <Icon className="size-[21px]" strokeWidth={1.75} aria-hidden="true" />
     </span>
-    <span className="text-[11px] leading-none text-fg-subtle group-hover:text-fg-muted">主题</span>
+    <span className="text-[10px] leading-none text-fg-muted group-hover:text-fg xl:font-serif xl:text-base">主题</span>
   </button>;
 }

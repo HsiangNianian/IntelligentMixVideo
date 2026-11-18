@@ -115,18 +115,35 @@
 .template-workspace .template-preview-timeline { background: var(--color-surface); }
 .template-workspace .template-timeline-mark { color: var(--primary); background: color-mix(in oklch, var(--primary) 14%, transparent); }
 
-/* 来源页签与工作台点阵背景；实际 SDK 画布和时间轴仍由业务组件驱动。 */
-.studio-source-tab { padding: 8px 12px; border-radius: 8px; font-size: 13px; color: var(--color-fg-muted); }
-.studio-source-tab[aria-selected="true"] { background: var(--color-raised); color: var(--color-fg); font-weight: 600; }
-.template-workspace .template-preview-stage { background-color: var(--color-canvas); background-image: radial-gradient(var(--color-line-strong) 1px, transparent 1px); background-size: 18px 18px; }
-.template-workspace .template-preview-controls { margin-top: 16px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--color-surface); }
+/* 来源页签与纸面工作台；实际 SDK 画布和时间轴仍由业务组件驱动，不加装饰纹理。 */
+.studio-source-tab { padding: 8px 12px; border-bottom: 1px solid transparent; font-size: 13px; color: var(--color-fg-muted); }
+.studio-source-tab[aria-selected="true"] { border-bottom-color: var(--color-fg); color: var(--color-fg); }
+.template-workspace .template-preview-stage { background: var(--color-canvas); }
+.template-workspace .template-preview-controls { margin-top: 16px; padding: 10px; border-top: 1px solid var(--border); border-radius: 0; background: transparent; }
 .template-workspace .template-category-pill { height: 32px; border-radius: 8px; font-size: 12px; }
 .template-workspace .template-category-pill[data-state="on"] { color: var(--color-brand); border-color: color-mix(in oklch, var(--color-brand) 25%, transparent); background: color-mix(in oklch, var(--color-brand) 8%, transparent); }
 .template-workspace .template-asset-card { border: 1px solid var(--border); border-radius: 10px; padding: 6px; background: var(--color-surface); }
 .template-workspace .template-asset-card.is-selected { color: var(--color-brand); border-color: var(--color-brand); background: color-mix(in oklch, var(--color-brand) 6%, var(--color-surface)); }
 .template-workspace .template-object-row[aria-pressed="true"] { background: color-mix(in oklch, var(--color-brand) 8%, transparent); }
-.template-workspace .template-workspace-header { padding: 10px 16px; min-height: 64px; }
-.template-workspace .template-workspace-header dl { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; }
+.template-workspace .template-workspace-header { padding: 12px 20px; min-height: 80px; }
+.template-workspace .template-workspace-header dl { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .template-workspace .template-workspace-header dl > div { margin: 0; }
-.template-workspace .template-workspace-header dl > div:last-child { max-width: 320px; }
 .template-workspace .template-workspace-handle > div { display: none; }
+
+/* 截图时只把合成画布放入视口，工具和拖动边框排除在图片之外。 */
+.template-workspace fieldset:disabled:has([data-capturing]) { opacity: 1; }
+.template-preview-canvas[data-capturing] {
+  position: fixed; inset: 0; z-index: 100; margin: auto;
+  width: min(432px, 90vw, 50dvh); height: min(768px, 160vw, 88.88889dvh); max-width: none !important;
+  max-height: none; border-radius: 0; border: 0;
+}
+.template-preview-canvas[data-capturing] :is(button, [role="button"], [role="slider"], [role="status"]) { visibility: hidden; }
+
+/* 主页补图只初始化一块独立画布。字体、媒体和字效加载时保持主页可见；系统采样时仅画布参与合成。 */
+.home-cover-capture { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
+.home-cover-capture:has([data-snapshot]) { z-index: 40; }
+.home-cover-capture [data-snapshot] { pointer-events: auto; }
+/* 支持整页快照的平台在视口右侧采样，主页和焦点始终留在原位。 */
+html:has(.home-cover-capture[data-offscreen]) { overflow: hidden; }
+.home-cover-capture[data-offscreen]:has([data-snapshot]) { position: absolute; inset: 0 auto auto 100vw; width: 432px; height: 768px; }
+.home-cover-capture[data-offscreen] [data-snapshot] { position: absolute; inset: 0; width: 432px; height: 768px; }

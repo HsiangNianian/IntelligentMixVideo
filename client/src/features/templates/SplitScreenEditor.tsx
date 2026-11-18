@@ -24,7 +24,7 @@ export function SplitScreenEditor({ value, removeBackground = false, onChange, o
       {layout.layout === "split" && <label className="space-y-1 text-xs">显示方式<select aria-label={`${label}显示方式`} className="h-8 w-full rounded-md border bg-background px-2" value={w.fit} onChange={(event) => update({ fit: event.target.value as ScreenWindow["fit"] })}><option value="Contain">完整显示</option><option value="Cover">裁剪填满</option></select></label>}
     </div></fieldset>;
   };
-  return <details className="border-b p-4"><summary className="cursor-pointer text-sm font-semibold">素材与数字人同屏{layout.enabled ? " · 已开启" : ""}</summary><div className="mt-3 space-y-4">
+  return <section aria-label="素材与数字人同屏" className="p-4"><h2 className="text-sm font-semibold">素材与数字人同屏{layout.enabled ? " · 已开启" : ""}</h2><div className="mt-3 space-y-4">
     <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={layout.enabled} onChange={(event) => onChange({ ...layout, enabled: event.target.checked })} />启用同屏</label>
     <fieldset disabled={!layout.enabled} className="space-y-4 disabled:opacity-50">
       <label className="block space-y-1 text-xs">同屏布局<select aria-label="同屏布局" className="h-8 w-full rounded-md border bg-background px-2" value={layout.layout} onChange={(event) => onChange({ ...layout, layout: event.target.value as SplitScreen["layout"] })}>
@@ -48,5 +48,5 @@ export function SplitScreenEditor({ value, removeBackground = false, onChange, o
       <p className="text-xs text-muted-foreground">Remotion 字效按内容框中心定位，与普通字效的位置设置一致；普通字幕的 Y 仍表示文字顶部。</p>
     </fieldset>
     <p className="text-xs leading-relaxed text-muted-foreground">仅命中素材时同屏；没有素材时显示完整数字人，不抠像。有效圆形开场优先。纯素材合成忽略此设置；同屏不使用转场，数字人在上。</p>
-  </div></details>;
+  </div></section>;
 }

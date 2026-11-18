@@ -31,7 +31,7 @@ export function previewVideoUrl(index: 0 | 1 | 2 = 0): string {
 }
 
 /** 内置示例的完整地址；与 previewVideoUrl 使用相同的解析方式，供识别和反查。 */
-function bundledUrls(): string[] {
+export function bundledUrls(): string[] {
   return bundledVideos.map((path) => new URL(path, window.location.href).href);
 }
 
@@ -130,4 +130,34 @@ export function readMasterVideo(url: string, signal: AbortSignal): Promise<Maste
     signal.addEventListener("abort", aborted, { once: true });
     if (signal.aborted) aborted(); else video.src = parsed.href;
   });
+}
+
+/** 本次运行保存过的预览来源，支持回主页重试手动输入的 URL；只存地址，不复制视频。 */
+const coverUrls = new Map<string, string[]>();
+
+/** 来源摘要用于跨重试核对同一素材；不发送本机路径、临时端口或签名 URL。 */
+export async function coverSource(media?: PreviewMedia): Promise<string> {
+  if (!media) return "unavailable";
+  const urls = media.map(item => sourceUrl(item.url));
+  const samples = bundledUrls();
+  if (urls.every((url, i) => url === samples[i])) return "builtin";
+  const ids = urls.map(url => {
+    // 本机播放地址含启动令牌，样片资源地址可含随机窗口端口；摘要只保留持久文件名或样片编号。
+    if (isLocalMediaUrl(url)) return "local/" + url.slice(url.lastIndexOf("/") + 1);
+    const index = samples.indexOf(url);
+    return index < 0 ? url : "sample/" + (index + 1);
+  });
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(ids)));
+  const source = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+  coverUrls.set(source, urls);
+  return source;
+}
+
+/** 优先恢复保存时的三个来源；跨会话使用本机槽位，摘要不匹配时由用户重新选择。 */
+export async function readCoverMedia(source: string, signal: AbortSignal): Promise<PreviewMedia> {
+  if (source === "unavailable") throw new Error("请在编辑器选择原视频并保存");
+  const urls = source === "builtin" ? bundledUrls() : coverUrls.get(source) ?? await defaultPreviewUrls();
+  const media = await readPreviewVideos(urls, signal);
+  if (source !== "builtin" && source !== await coverSource(media)) throw new Error("本机缺少原视频，请重新选择原视频并保存");
+  return media;
 }
