@@ -19,14 +19,16 @@ export function useUpdateBlocker(reason: string, blocked: boolean) {
 }
 /** 表单在自己的输入控件上标出未保存项，隐藏的工作区仍挂载，清单可直接定位原控件。 */
 export function updateDrafts() {
-  return Array.from(document.querySelectorAll<HTMLElement>('[data-update-draft]'));
+  return Array.from(document.querySelectorAll<HTMLElement>('[data-update-draft]')).filter(field =>
+    // 模板数字输入允许暂存无效文本，此时已解析的模板值可能与保存时完全一致。
+    !field.hasAttribute('data-update-invalid-only') || Array.from(field.closest('form')?.querySelectorAll('input') ?? []).some(input => input.willValidate && !input.validity.valid)
+  );
 }
 /** 登记的在途操作自动等待，只有实际存在的草稿需要用户处理。 */
 export function updateBlockers(): string[] {
   return [...new Set([
     ...blockers.values(),
     ...(requests.size ? ['正在完成保存、上传或读取请求'] : []),
-    ...(document.querySelector('[data-slot="dialog-content"][data-state="open"]:not([data-update-safe])') ? ['请先完成或关闭其他对话框'] : []),
     ...updateDrafts().map(field => field.dataset.updateDraft!),
   ])];
 }

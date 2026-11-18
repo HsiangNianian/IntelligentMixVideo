@@ -39,7 +39,7 @@ export function NewTemplateDialog({ open, existingNames, onClose, onCreate }: Ne
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
       <DialogContent>
-        <form onSubmit={submit} noValidate>
+        <form data-update-draft={open && (name || description) ? "新建云端模板" : undefined} tabIndex={-1} onSubmit={submit} noValidate>
           <DialogHeader
             tone="brand"
             icon={<Icon name="cloud" variant="duotone" />}

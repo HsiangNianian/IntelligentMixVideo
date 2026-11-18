@@ -30,6 +30,7 @@ function currentSources(media?: PreviewMedia): VideoSource[] {
 export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; onChange: (media: PreviewMedia) => void }) {
   const id = useId();
   const [sources, setSources] = useState(() => currentSources(media));
+  const originalSources = useRef(sources);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -61,7 +62,10 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
     release();
     setLoading(false);
     setError("");
-    if (value) setSources(currentSources(media));
+    if (value) {
+      originalSources.current = currentSources(media);
+      setSources(originalSources.current);
+    }
     setOpen(value);
   }
 
@@ -114,7 +118,7 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
   }
   return <Dialog open={open} onOpenChange={changeOpen}>
     <DialogTrigger asChild><Button type="button" variant="ghost" size="sm" disabled={restoring} className="template-master-video-trigger ml-auto h-8 gap-1.5 px-2 text-[11px]"><Upload className="size-3.5" aria-hidden="true" />加载预览视频</Button></DialogTrigger>
-    <DialogContent onKeyDown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type !== "file") { event.preventDefault(); if (!loading) void load(); } }}>
+    <DialogContent data-update-draft={sources.some((source, i) => source.url !== originalSources.current[i].url || source.kind !== originalSources.current[i].kind) ? "模板 · 预览视频来源" : undefined} onKeyDown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type !== "file") { event.preventDefault(); if (!loading) void load(); } }}>
       <DialogHeader><DialogTitle>加载预览视频</DialogTitle><DialogDescription>设置三个视频的 URL 或选择本地文件，URL 视频各使用前 10 秒（不足 10 秒时使用完整视频），本地文件使用完整时长。本地文件只保存在本机、不上传服务器：桌面客户端重启后保留，浏览器刷新后恢复默认。</DialogDescription></DialogHeader>
       <div className="space-y-4">{sources.map((source, index) => <div key={index} className="space-y-2">
         <Label htmlFor={`${id}-${index}`}>{source.kind === "url" ? `视频 ${index + 1} URL` : `视频 ${index + 1} 本地文件`}</Label>

@@ -126,7 +126,7 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
           <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void rename(); }}>
             <div className="space-y-2">
               <Label htmlFor={`${renameId}-name`}>资产名称</Label>
-              <Input id={`${renameId}-name`} required maxLength={100} value={newName} disabled={saving} onChange={(event) => { setNewName(event.target.value); setRenameError(""); }} />
+              <Input data-update-draft={renaming && (newName !== renaming.name || newTextCategory !== textCategoryOf(renaming)) ? `AI 资产 · ${renaming.name}` : undefined} id={`${renameId}-name`} required maxLength={100} value={newName} disabled={saving} onChange={(event) => { setNewName(event.target.value); setRenameError(""); }} />
             </div>
             {renaming?.bilingual && <p className="text-sm text-muted-foreground">字效分类：双语字效，由资产的中英双语内容自动识别。</p>}
             {renaming?.kind === SpriteKind.TEXT && !renaming.bilingual && <div className="space-y-2">
