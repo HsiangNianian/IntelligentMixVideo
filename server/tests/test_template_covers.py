@@ -142,70 +142,37 @@ def test_single_column_migrates_previous_cover_metadata(client, template_db, tem
         assert connection.scalar(select(store.templates.c.cover))["revision"] == changed["cover"]["revision"]
 
 
-def test_source_backfills_legacy_only_and_resumes(client, template_payload, tmp_path, monkeypatch):
-    """启动只登记旧模板，可重试缺图，发布后重启不会启动浏览器，客户端待发布版本始终跳过。"""
-    from threading import Event
-    from server.template import backfill
+def test_startup_skips_template_backfill(template_db, monkeypatch):
+    """API 启动和关闭均不扫描模板库，封面渲染不依赖服务进程的 PATH。"""
+    from fastapi.testclient import TestClient
+    from server.app import app
 
-    legacy = post_template(client, template_payload).json()["template"]["templateId"]
-    for name, source in (("新版内置样片", "builtin"), ("新版自选视频", "a" * 64)):
-        post_template(client, {**template_payload, "name": name, "cover_source": source})
-    script = tmp_path / "backfill.mjs"
-    script.touch()
-    launch = MagicMock()
-    launch.return_value.__enter__.return_value.poll.return_value = 0
-    launch.return_value.__enter__.return_value.returncode = 0
-    monkeypatch.setattr(backfill, "RENDER_SCRIPT", script)
-    monkeypatch.setattr(backfill.subprocess, "Popen", launch)
-    backfill.import_covers(Event())
-    pending = client.get(f"/template/{legacy}").json()["template"]["cover"]
-    assert pending["revision"] == legacy and not pending["publishedRevision"]
-    backfill.import_covers(Event())
-    assert launch.call_count == 2 and "--startup" in launch.call_args.args[0]
-    monkeypatch.setattr("server.template.store.upload_cover", lambda key, content: f"https://images.test/{key}.png")
-    assert client.put(f"/template/{legacy}/cover/{legacy}", files={"file": ("cover.png", png("green"), "image/png")}).is_success
-    backfill.import_covers(Event())
-    assert launch.call_count == 3  # 初版已发布的旧图也要补齐文字。
-    put = f"/template/{legacy}/cover/{legacy}"
-    image = {"file": ("cover.png", png("blue"), "image/png")}
-    upload = MagicMock(return_value=f"https://images.test/{legacy}.png")
-    monkeypatch.setattr("server.template.store.upload_cover", upload)
-    refreshed = client.put(put, files=image, data={"refresh": "true"})
-    assert refreshed.status_code == 200 and refreshed.json()["revision"] != legacy
-    assert client.put(put, files=image, data={"refresh": "true"}).json() == refreshed.json()
-    assert upload.call_count == 1
-    assert client.put(put, files=image).status_code == 409
-    backfill.import_covers(Event())
-    assert launch.call_count == 3
+    scan = MagicMock(return_value=[])
+    monkeypatch.setattr("server.template.store.list_templates", scan)
+    monkeypatch.setenv("PATH", "")
+    with TestClient(app) as service:
+        assert service.get("/").status_code == 200
+    scan.assert_not_called()
 
 
-def test_packaged_import_respects_saved_template_revision(client, template_payload, tmp_path, monkeypatch):
-    """随包归档按更新时间认领历史记录；不会覆盖已进入编辑器新版本的模板。"""
-    import json
-    from threading import Event
-    from zipfile import ZipFile
-    from fastapi import HTTPException
-    from server.template import backfill
-
+def test_clients_backfill_legacy_once(client, template_payload, monkeypatch):
+    """两台客户端首批补同一旧模板时，只发布一次，目标版本推进且不改变排序。"""
     old = post_template(client, template_payload).json()["template"]
-    edited = post_template(client, {**template_payload, "name": "已换视频", "cover_source": "b" * 64}).json()["template"]
-    archive = tmp_path / "covers.zip"
-    with ZipFile(archive, "w") as bundle:
-        entries = {row["templateId"]: row["updatedAt"] for row in (old, edited)}
-        bundle.writestr("template-covers-1s-png/manifest.json", json.dumps(entries))
-        for key in entries:
-            bundle.writestr(f"template-covers-1s-png/{key}.png", png("green"))
-    monkeypatch.setattr(backfill, "PACKAGE_ARCHIVE", archive)
-    expected_url = "https://images.test/legacy.png"
-    upload = MagicMock(side_effect=[HTTPException(503, "上传失败"), expected_url])
+    key = old["templateId"]
+    upload = MagicMock(return_value=f"https://images.test/{key}.png")
     monkeypatch.setattr("server.template.store.upload_cover", upload)
-    backfill.import_covers(Event())
-    assert not client.get("/template/" + old["templateId"]).json()["template"]["cover"]["publishedRevision"]
-    backfill.import_covers(Event())
-    backfill.import_covers(Event())
-    assert upload.call_count == 2
-    assert client.get("/template/" + old["templateId"]).json()["template"]["cover"]["url"] == expected_url
-    assert client.get("/template/" + edited["templateId"]).json()["template"]["cover"] == edited["cover"]
+    put = f"/template/{key}/cover/{key}"
+    files = {"file": ("cover.png", png("green"), "image/png")}
+    published = client.put(put, files=files, data={"refresh": "true"})
+    assert published.status_code == 200
+    cover = published.json()
+    assert cover["revision"] == cover["published_revision"] != key
+    assert client.put(put, files=files, data={"refresh": "true"}).json() == cover
+    assert upload.call_count == 1
+    row = client.get("/template").json()["templates"][0]
+    assert row["cover"] == {"source": "builtin", "url": cover["url"], "revision": cover["revision"],
+                            "publishedRevision": cover["revision"]}
+    assert row["updatedAt"] == old["updatedAt"]
 
 
 def test_desktop_can_preflight_cover_put(client):
