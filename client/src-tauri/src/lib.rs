@@ -3,6 +3,8 @@
 #[cfg(windows)]
 mod localhost;
 
+#[cfg(target_os = "linux")]
+mod appimage;
 mod backend;
 mod diagnostics;
 mod file_lock;

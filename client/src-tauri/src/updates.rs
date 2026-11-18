@@ -803,6 +803,15 @@ pub async fn client_update(
                 state.shared();
                 return Err(e);
             }
+            #[cfg(target_os = "linux")]
+            if let Some(path) = &app.env().appimage {
+                if let Err(e) = crate::appimage::launch(Path::new(path), &app.env().args_os) {
+                    state.shared();
+                    return Err(format!("新版已安装，启动失败：{e}。请重新打开客户端。"));
+                }
+                app.exit(0);
+                return Ok(Value::Null);
+            }
             app.restart();
         }
         return Ok(Value::Null);
