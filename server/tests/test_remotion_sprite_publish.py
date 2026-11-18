@@ -628,7 +628,7 @@ def test_published_sprite_keeps_editable_snapshot_on_overwrite_and_delete(client
 def test_published_sprite_imports_verified_source_without_executor(client: TestClient, published, tmp_path) -> None:
     """A search hit copies verified source artifacts into a new job without calling Executor."""
     summary = published_sprite(client, published.version.id)
-    match = remotion_runtime.SpriteMatch(summary.sprite_id, summary.name, "description", 0.01)
+    match = remotion_runtime.SpriteMatch(summary.sprite_id, summary.name, "description", 0.01, 0.95)
     candidate, spec, report, directory = asyncio.run(
         remotion_runtime.import_published_sprite(match, published.store, tmp_path)
     )
@@ -641,7 +641,7 @@ def test_published_sprite_imports_verified_source_without_executor(client: TestC
 def test_reused_sprite_version_records_source_and_id(client: TestClient, published, tmp_path) -> None:
     """A copied publication becomes a new editable version with its source Sprite recorded."""
     summary = published_sprite(client, published.version.id)
-    match = remotion_runtime.SpriteMatch(summary.sprite_id, summary.name, "description", 0.01)
+    match = remotion_runtime.SpriteMatch(summary.sprite_id, summary.name, "description", 0.01, 0.95)
     candidate, spec, report, directory = asyncio.run(
         remotion_runtime.import_published_sprite(match, published.store, tmp_path)
     )
@@ -661,7 +661,7 @@ def test_published_sprite_without_source_falls_back_to_generation(client: TestCl
     summary = published_sprite(client, published.version.id)
     with published.store.transaction() as db:
         db.execute(versions.delete())
-    match = remotion_runtime.SpriteMatch(summary.sprite_id, summary.name, "description", 0.01)
+    match = remotion_runtime.SpriteMatch(summary.sprite_id, summary.name, "description", 0.01, 0.95)
     with pytest.raises(NotFound):
         asyncio.run(remotion_runtime.import_published_sprite(match, published.store, tmp_path))
 

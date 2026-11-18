@@ -9,6 +9,7 @@ import json
 import pytest
 
 from server.remotion_templates.agent import Layer
+from server.remotion_templates.sprite_search import SpriteMatch
 from server.remotion_templates.context import AssistantMessage
 from server.remotion_templates.planning import PlanAction, default_plan
 from server.remotion_templates.provider import ExecutionFailure
@@ -20,6 +21,67 @@ from .test_remotion_free_effects import ScriptEnd, call, free_run, needs_bundler
 def delegate():
     """Start the host's single workspace step."""
     return call("outer", "tools_plan_execute", {"action": "delegate", "reason": "做出字效"})
+
+
+def test_outer_can_choose_one_of_multiple_retrieved_sprites(monkeypatch, tmp_path):
+    """检索返回多条后，Outer 明确选择其中一个 ID 才直接复用。"""
+    candidates = [SpriteMatch("sprite-1", "暖色标题", "橙色发光标题", 0.1, 0.91),
+                  SpriteMatch("sprite-2", "冷色标题", "蓝色发光标题", 0.2, 0.82)]
+    run, harness, budget = free_run(monkeypatch, tmp_path, [
+        call("search", "sprite_search", {"query": "蓝色发光标题"}),
+        call("choose", "tools_plan_execute", {"action": "reuse", "sprite_id": "sprite-2"}),
+    ])
+    rounds = []
+    budget.on_round = rounds.append
+    monkeypatch.setattr(type(run.sprite_search), "enabled", property(lambda self: True))
+    monkeypatch.setattr(run.sprite_search, "search", lambda _: candidates)
+    result = asyncio.run(run.plan_execute())
+    assert result.sprite_id == "sprite-2"
+    assert harness.roles == ["outer", "outer"]
+    assert harness.published == []
+    assert [item["sprite_id"] for item in run._sprite_candidates()] == ["sprite-1", "sprite-2"]
+    assert any('"sprite_id": "sprite-2"' in item["arguments"] for item in rounds[0]["calls"])
+
+
+def test_outer_can_answer_about_published_effects_after_search(monkeypatch, tmp_path):
+    """用户只询问现有特效时，Outer 能读取检索结果并直接回答。"""
+    candidates = [SpriteMatch("sprite-1", "暖色标题", "橙色发光标题", 0.1, 0.91)]
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("search", "sprite_search", {"query": "有哪些暖色标题"}),
+        call("answer", "tools_plan_execute", {"action": "answer", "answer": "有暖色标题。"}),
+    ])
+    monkeypatch.setattr(type(run.sprite_search), "enabled", property(lambda self: True))
+    monkeypatch.setattr(run.sprite_search, "search", lambda _: candidates)
+    assert asyncio.run(run.plan_execute()).answer == "有暖色标题。"
+    assert harness.roles == ["outer", "outer"] and not harness.published
+
+
+def test_outer_can_delegate_after_retrieving_candidates(monkeypatch, tmp_path):
+    """候选只是参考时进入原生成流程，Executor 能看到受限的候选摘要。"""
+    candidates = [SpriteMatch("sprite-1", "暖色标题", "橙色发光标题", 0.1, 0.91)]
+    run, harness, _ = free_run(monkeypatch, tmp_path, [
+        call("search", "sprite_search", {"query": "蓝色发光标题"}), delegate(),
+    ])
+    monkeypatch.setattr(type(run.sprite_search), "enabled", property(lambda self: True))
+    monkeypatch.setattr(run.sprite_search, "search", lambda _: candidates)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert harness.roles == ["outer", "outer", "executor"]
+    assert run.layer is Layer.EXECUTOR
+    assert run.snapshot()[0]["sprite_candidates"][0]["sprite_id"] == "sprite-1"
+
+
+def test_host_lookup_requires_outer_to_review_candidates(monkeypatch, tmp_path):
+    """Outer 略过搜索时，宿主召回候选后重新交给 Outer 而不自动复用。"""
+    candidates = [SpriteMatch("sprite-1", "暖色标题", "橙色发光标题", 0.1, 0.91)]
+    run, harness, _ = free_run(monkeypatch, tmp_path, [delegate(),
+        call("choose", "tools_plan_execute", {"action": "reuse", "sprite_id": "sprite-1"})])
+    monkeypatch.setattr(type(run.sprite_search), "enabled", property(lambda self: True))
+    monkeypatch.setattr(run.sprite_search, "search", lambda _: candidates)
+    result = asyncio.run(run.plan_execute())
+    assert result.sprite_id == "sprite-1"
+    assert harness.roles == ["outer", "outer"]
+    assert run.sprite_searched
 
 
 @needs_bundler

@@ -559,8 +559,9 @@ its request failed (`error_detail`, the already sanitized `ModelFailure` text); 
 that accompanies calls is not published. Everything is cut with `…`, so a cut `arguments`
 is no longer valid JSON. Tool results, host steer text and the full payloads stay in the
 private audit. The host's automatic lookup before delegation appears as `sprite.search`
-before `tools.plan_execute`, with `source=host` and `result=matched`, `miss` or `unavailable`;
-only a match includes its Sprite ID. A terminal job accepts no further rounds. Unknown tool
+before `tools.plan_execute`, with `source=host` and `result=candidates`, `miss` or `unavailable`;
+an explicit Outer search also records a host summary. Both summaries show candidate IDs, names and scores; descriptions
+stay in the private tool receipt and model snapshot. A terminal job accepts no further rounds. Unknown tool
 names become `unknown` with the name the model asked for in `requested_tool`; model
 protocol failures are explicitly marked. Each `job.round` event carries one
 round, `job.updated` omits that history, and the client keeps the rounds it has stored locally.
@@ -623,13 +624,17 @@ It asks the configured Agent chat API to describe the published TSX and paramete
 together with the asset name and kind through the configured embedding API, and stores the vector under `sprite_id`.
 The index is rebuilt from MySQL; an unavailable Chroma or embedding API does not block publication. For a new effect,
 the host searches before Outer delegates even if Outer skipped its optional `sprite.search` call; edits with an accepted
-base or reference images still skip reuse search. It accepts a candidate only below `IMV_SPRITE_MAX_DISTANCE` after a second model check and
-after checking that its indexed revision still matches MySQL. A match copies the retained source version's verified
-artifacts into a new editable version in the current work without entering Executor; a miss, stale index or failed import
-follows normal generation. Publications also retain an editable composition snapshot in `remotion_sprite_editable`;
+base or reference images still skip search. Chroma recalls up to ten assets, whose indexed revisions and code hashes
+must match MySQL. The configured rerank API scores the current descriptions, names and kinds. Only scores above
+`IMV_SPRITE_MIN_RERANK_SCORE` and within `IMV_SPRITE_RERANK_SCORE_GAP` of the best score reach Outer. The score is
+relative to that request and does not itself authorize reuse. Outer may choose `reuse` with one returned Sprite ID only
+when the existing effect satisfies the entire request unchanged; otherwise it delegates generation with the descriptions
+as references. A selected reuse copies the retained source version's verified artifacts into a new editable version
+without entering Executor; a miss, stale index or failed import follows normal generation. Publications also retain an editable composition snapshot in `remotion_sprite_editable`;
 reuse currently needs the source version and its sealed artifacts, so deletion of that source falls back to generation.
-The index and description model treat published code and names as
-data, not instructions. Set the embedding model and collection together when rebuilding an index after model changes.
+The index and description model treat published code and names as data, not instructions. The rerank URL uses a Bailian
+workspace ID; `IMV_SPRITE_RERANK_API_KEY` may be empty to reuse the embedding key. Set the embedding model and
+collection together when rebuilding an index after model changes.
 Publishing re-verifies the sealed version files (409 when changed) and only accepts versions composed
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
 422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be
