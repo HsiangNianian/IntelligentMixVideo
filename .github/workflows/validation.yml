@@ -41,6 +41,7 @@ jobs:
       server: ${{ steps.plan.outputs.server }}
       integration: ${{ steps.plan.outputs.integration }}
       tooling: ${{ steps.plan.outputs.tooling }}
+      tutorial: ${{ steps.plan.outputs.tutorial }}
       mode: ${{ steps.plan.outputs.mode }}
     steps:
       - uses: actions/checkout@v6
@@ -163,9 +164,15 @@ jobs:
     if: needs.scope.outputs.integration == 'true'
     uses: ./.github/workflows/backend-integration.yml
 
+  tutorial:
+    name: Tutorial
+    needs: scope
+    if: needs.scope.outputs.tutorial == 'true'
+    uses: ./.github/workflows/tutorial.yml
+
   result:
     name: ${{ github.event_name == 'pull_request' && 'CI result' || 'Push result' }}
-    needs: [scope, hygiene, tooling, client, server, desktop, integration]
+    needs: [scope, hygiene, tooling, client, server, desktop, integration, tutorial]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
