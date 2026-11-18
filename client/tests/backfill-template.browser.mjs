@@ -22,7 +22,7 @@ const sdk = `window.AliyunTimelinePlayer = class {
   set currentTime(t) {
     this.time = t; this.emit("playerSeeked");
     this.canvas.style.background = "rgb(" + Math.round(t * 30) + ",0,0)";
-    if (t !== 1) return;
+    if (t !== 1 || parent.holdText) return;
     setTimeout(() => {
       const ctx = this.canvas.getContext("2d"), mark = document.createElement("canvas");
       mark.width = 60; mark.height = 30;
@@ -53,6 +53,11 @@ try {
   });
   await page.addInitScript(() => {
     window.isTauri = true;
+    window.testFocus = value => {
+      Object.defineProperty(document, "hasFocus", { configurable: true, value: () => value });
+      window.dispatchEvent(new Event(value ? "focus" : "blur"));
+    };
+    window.testFocus(false);
     window.__TAURI_INTERNALS__ = { invoke: async (cmd, args) => {
       if (cmd === "preview_media_base") return location.origin;
       if (cmd === "preview_snapshot") return Uint8Array.from(atob(await window.snapshot(args.documentSize ?? null)), ch => ch.charCodeAt(0)).buffer;
@@ -89,6 +94,16 @@ try {
   await page.route(base + "/backfill.html*", async route => route.fulfill({contentType: "text/html", body: await server.transformIndexHtml("/backfill.html", html)}));
   const address = base + "/backfill.html";
   await page.goto(address);
+  // Wayland 最小化可仍报告 visible。测试先恢复窗口，再在 IMS 位图返回前失焦。
+  const host = page.locator(".home-cover-capture");
+  await host.waitFor({ state:"attached" });
+  assert.equal(await host.locator(".template-preview-frame").count(), 0);
+  await page.evaluate(() => { window.holdText = true; window.testFocus(true); });
+  await page.waitForFunction(() => document.querySelector("[data-cover-time='1']"));
+  await page.evaluate(() => window.testFocus(false));
+  await host.locator(".template-preview-frame").waitFor({state:"detached"});
+  assert.equal(captures, 0);
+  await page.evaluate(() => { window.holdText = false; window.testFocus(true); });
   for (let visit = 0; visit < 2; visit++) {
     if (visit) await page.goto(address);
     await page.locator("article img[src^='blob:']").first().waitFor({timeout:20000});

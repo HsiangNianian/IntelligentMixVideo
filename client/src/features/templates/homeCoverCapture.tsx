@@ -1,6 +1,6 @@
 /** 主页按需挂载一个独立预览，复用编辑器的一秒画面和原视频来源，取图后释放播放器。 */
 import { useEffect, useRef } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { Tooltip } from "radix-ui";
 import { listSprites } from "@/features/sprites/api";
 import type { SpriteAsset } from "@/features/sprites/model";
@@ -50,17 +50,34 @@ export async function captureHomeCover(summary: TemplateSummary, signal: AbortSi
   if (!stream && /Linux|Windows/.test(navigator.userAgent)) host.dataset.offscreen = "";
   host.setAttribute("aria-hidden", "true");
   document.body.append(host);
-  const root = createRoot(host);
-  let cancel: () => void;
+  let root: Root | undefined;
+  const listeners = new AbortController();
   try {
     return await new Promise<Blob>((resolve, reject) => {
-      cancel = () => reject(signal.reason);
-      signal.addEventListener("abort", cancel, { once: true });
-      root.render(<Tooltip.Provider><CoverPreview draft={toDraft(template)} media={media} assets={assets} stream={stream} resolve={resolve} reject={reject} /></Tooltip.Provider>);
+      const options = { signal: listeners.signal };
+      // 最小化的 WebView 仍可能报告 visible，却不再绘制。恢复窗口时用同一份模板重新挂载播放器。
+      const sync = () => {
+        if (!stream && (document.hidden || !document.hasFocus())) {
+          root?.unmount();
+          root = undefined;
+        } else if (!root) {
+          const current = root = createRoot(host);
+          current.render(<Tooltip.Provider><CoverPreview draft={toDraft(template)} media={media} assets={assets} stream={stream}
+            resolve={image => { if (root === current) resolve(image); }}
+            reject={error => { if (root === current) reject(error); }} /></Tooltip.Provider>);
+        }
+      };
+      if (!stream) {
+        window.addEventListener("focus", sync, options);
+        window.addEventListener("blur", sync, options);
+        document.addEventListener("visibilitychange", sync, options);
+      }
+      signal.addEventListener("abort", () => reject(signal.reason), options);
+      sync();
     });
   } finally {
-    signal.removeEventListener("abort", cancel!);
-    root.unmount();
+    listeners.abort();
+    root?.unmount();
     host.remove();
   }
 }
