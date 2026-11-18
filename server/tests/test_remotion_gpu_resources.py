@@ -255,6 +255,38 @@ def test_inventory_keeps_driver_index_and_external_sessions(monkeypatch):
     assert gpu._inventory() == ([], False)
 
 
+@pytest.mark.parametrize("elapsed,complete", [(3.65, True), (7.9, True), (8.1, False)])
+def test_slow_multigpu_snapshot_preserves_session_visibility(monkeypatch, elapsed, complete):
+    """A multi-GPU snapshot may exceed two seconds; a real timeout still falls back to healthy cards."""
+    cards = [device(i, sessions=3 if i == 4 else 0) for i in range(8)]
+    nodes = {card.uuid: f"""<gpu id="{card.pci}"><uuid>{card.uuid}</uuid><minor_number>{card.minor}</minor_number>
+        <fb_memory_usage><total>{card.total} MiB</total><free>{card.total} MiB</free></fb_memory_usage>
+        <encoder_stats><session_count>{card.sessions}</session_count></encoder_stats></gpu>""" for card in cards}
+    snapshot = "<nvidia_smi_log><attached_gpus>8</attached_gpus>" + "".join(nodes.values()) + "</nvidia_smi_log>"
+    probes = []
+
+    def smi(*args, timeout=2):
+        """Model a slow full response and fast per-card recovery without sleeping or using the host driver."""
+        probes.append((args, timeout))
+        if args[0].startswith("--query"):
+            return "\n".join(f"{card.index}, {card.uuid}" for card in cards)
+        if args == ("-q", "-x"):
+            return snapshot if elapsed <= timeout else snapshot[:snapshot.index(nodes[cards[4].uuid])]
+        if args[0] == "-i":
+            return "<nvidia_smi_log>" + nodes[args[1]] + "</nvidia_smi_log>"
+        return ""
+
+    monkeypatch.setattr(gpu, "_smi", smi)
+    monkeypatch.setattr(gpu.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(gpu, "_encoder_owners", lambda cards: None)
+    actual, known = gpu._inventory()
+    assert known is complete
+    assert {card.index: card.sessions for card in actual} == {
+        card.index: card.sessions for card in cards if complete or card.index != 4}
+    assert [timeout for args, timeout in probes if args == ("-q", "-x")] == [8]
+    assert all(0 < timeout <= 2 for args, timeout in probes if args[0] == "-i")
+
+
 @pytest.mark.anyio
 async def test_broken_card_keeps_healthy_graphics_without_guessing_host_sessions(tmp_path, monkeypatch):
     """A hanging full-card query and partial index CSV recover GPU 0/5 in parallel; GPU 4 and the excluded UUID stay untouched."""

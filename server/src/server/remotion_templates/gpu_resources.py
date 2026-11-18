@@ -173,7 +173,7 @@ def _inventory() -> tuple[list[GPU], bool]:
         merge_listed_indexes()
     if not indexes:
         return [], False
-    xml = _smi("-q", "-x")
+    xml = _smi("-q", "-x", timeout=8)
     cards = _read_cards(xml, indexes)
     found = {card.uuid for card in cards if card.total > 0}
     consecutive = set(indexes.values()) == set(range(len(indexes)))
