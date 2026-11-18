@@ -49,6 +49,16 @@ fn main() {
     if let Ok(path) = std::env::var("IMV_UPDATE_METADATA_PATH") {
         std::fs::write(path, native_id.trim()).unwrap();
     }
+    // deb 的 .desktop 模板只接收名称、启动命令等字段，版本取同一份 Cargo 发布版本。
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        std::fs::create_dir_all("target").unwrap();
+        std::fs::write(
+            "target/imv.desktop.hbs",
+            include_str!("installer/linux.desktop.in")
+                .replace("@VERSION@", env!("CARGO_PKG_VERSION")),
+        )
+        .unwrap();
+    }
     let mut attributes = tauri_build::Attributes::new();
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         // tauri-build 默认只向主程序链接清单，mock 测试会在加载时缺少 v6 入口。

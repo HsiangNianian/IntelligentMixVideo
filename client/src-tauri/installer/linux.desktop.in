@@ -1,0 +1,12 @@
+# Tauri renders the desktop entry fields; build.rs fills in the installed package version.
+[Desktop Entry]
+Type=Application
+Name={{name}} v@VERSION@
+Exec={{exec}}
+StartupWMClass={{exec}}
+Icon={{icon}}
+Terminal=false
+Categories={{categories}}
+{{#if comment}}Comment={{comment}}
+{{/if}}{{#if mime_type}}MimeType={{mime_type}}
+{{/if}}
