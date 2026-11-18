@@ -624,16 +624,21 @@ It asks the configured Agent chat API to describe the published TSX and paramete
 together with the asset name and kind through the configured embedding API, and stores the vector under `sprite_id`.
 The index is rebuilt from MySQL; an unavailable Chroma or embedding API does not block publication. For a new effect,
 the host searches before Outer delegates even if Outer skipped its optional `sprite.search` call; edits with an accepted
-base or reference images still skip search. Chroma recalls up to ten assets, whose indexed revisions and code hashes
-must match MySQL. The configured rerank API scores the current descriptions, names and kinds. Only scores above
-`IMV_SPRITE_MIN_RERANK_SCORE` and within `IMV_SPRITE_RERANK_SCORE_GAP` of the best score reach Outer. The score is
-relative to that request and does not itself authorize reuse. Outer may choose `reuse` with one returned Sprite ID only
-when the existing effect satisfies the entire request unchanged; otherwise it delegates generation with the descriptions
-as references. A selected reuse copies the retained source version's verified artifacts into a new editable version
+base do not search automatically, but questions about published assets may search explicitly. Requests with reference
+images skip search. Chroma recalls up to ten assets by cosine distance; their indexed revisions and code hashes
+must match MySQL. Similarity is `1 - cosine_distance`. Only current assets with similarity at least
+`IMV_SPRITE_MIN_SIMILARITY_SCORE` (default 0.7) and no more than `IMV_SPRITE_SIMILARITY_SCORE_GAP`
+(default 0.1) below the best current match reach Outer. Similarity does not itself authorize reuse.
+For questions about published assets, Outer summarizes
+relevant candidates from their descriptions. For a new effect, Outer presents matching candidates with their IDs,
+names and described looks, then asks which one to import or whether to generate a new effect from their descriptions.
+Only a later user reply can authorize `reuse` of a returned Sprite ID; the host rechecks the candidates when that reply
+first selects an ID. A request to generate a new effect instead delegates to Plan or Executor with the candidates as
+references; it does not ask the same choice again. A selected import copies the
+retained source version's verified artifacts into a new editable version
 without entering Executor; a miss, stale index or failed import follows normal generation. Publications also retain an editable composition snapshot in `remotion_sprite_editable`;
 reuse currently needs the source version and its sealed artifacts, so deletion of that source falls back to generation.
-The index and description model treat published code and names as data, not instructions. The rerank URL uses a Bailian
-workspace ID; `IMV_SPRITE_RERANK_API_KEY` may be empty to reuse the embedding key. Set the embedding model and
+The index and description model treat published code and names as data, not instructions. Set the embedding model and
 collection together when rebuilding an index after model changes.
 Publishing re-verifies the sealed version files (409 when changed) and only accepts versions composed
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a

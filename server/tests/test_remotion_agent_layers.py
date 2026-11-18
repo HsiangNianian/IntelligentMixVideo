@@ -24,13 +24,14 @@ def delegate():
 
 
 def test_outer_can_choose_one_of_multiple_retrieved_sprites(monkeypatch, tmp_path):
-    """检索返回多条后，Outer 明确选择其中一个 ID 才直接复用。"""
+    """用户看过多条候选并回复选择后，Outer 才能导入指定 ID。"""
     candidates = [SpriteMatch("sprite-1", "暖色标题", "橙色发光标题", 0.1, 0.91),
                   SpriteMatch("sprite-2", "冷色标题", "蓝色发光标题", 0.2, 0.82)]
+    consent = json.dumps({"questions": ["可用 sprite-1 暖色标题或 sprite-2 冷色标题，选哪条？"], "answer": "用第二条"})
     run, harness, budget = free_run(monkeypatch, tmp_path, [
         call("search", "sprite_search", {"query": "蓝色发光标题"}),
         call("choose", "tools_plan_execute", {"action": "reuse", "sprite_id": "sprite-2"}),
-    ])
+    ], intent={"original_request": {"description": "蓝色发光标题"}, "clarifications": [consent]})
     rounds = []
     budget.on_round = rounds.append
     monkeypatch.setattr(type(run.sprite_search), "enabled", property(lambda self: True))
@@ -41,6 +42,24 @@ def test_outer_can_choose_one_of_multiple_retrieved_sprites(monkeypatch, tmp_pat
     assert harness.published == []
     assert [item["sprite_id"] for item in run._sprite_candidates()] == ["sprite-1", "sprite-2"]
     assert any('"sprite_id": "sprite-2"' in item["arguments"] for item in rounds[0]["calls"])
+
+
+def test_confirmed_sprite_is_rechecked_before_first_outer_reuse(monkeypatch, tmp_path):
+    """回复上一任务的候选选择后，首次 reuse 先核对当前资产，无需模型先撞参数错误。"""
+    consent = json.dumps({"questions": ["Sprite ID: sprite-1，是否导入？"], "answer": "导入它"})
+    run, harness, budget = free_run(monkeypatch, tmp_path, [
+        call("choose", "tools_plan_execute", {"action": "reuse", "sprite_id": "sprite-1"}),
+    ], intent={"original_request": {"description": "霓虹标题"}, "clarifications": [consent]})
+    matches = [SpriteMatch("sprite-1", "霓虹标题", "蓝紫发光", 0.1, 0.93)]
+    queries = []
+    rounds = []
+    budget.on_round = rounds.append
+    monkeypatch.setattr(type(run.sprite_search), "enabled", property(lambda self: True))
+    monkeypatch.setattr(run.sprite_search, "search", lambda query: queries.append(query) or matches)
+    assert asyncio.run(run.plan_execute()).sprite_id == "sprite-1"
+    assert queries == ["霓虹标题"] and harness.roles == ["outer"]
+    assert any(item["tool"] == "sprite.search" and '"source": "host"' in item["arguments"]
+               for item in rounds[0]["calls"])
 
 
 def test_outer_can_answer_about_published_effects_after_search(monkeypatch, tmp_path):
@@ -57,31 +76,52 @@ def test_outer_can_answer_about_published_effects_after_search(monkeypatch, tmp_
 
 
 def test_outer_can_delegate_after_retrieving_candidates(monkeypatch, tmp_path):
-    """候选只是参考时进入原生成流程，Executor 能看到受限的候选摘要。"""
-    candidates = [SpriteMatch("sprite-1", "暖色标题", "橙色发光标题", 0.1, 0.91)]
+    """用户选择参考多条候选生成新效果时，Executor 能收到候选描述。"""
+    candidates = [SpriteMatch("sprite-1", "暖色标题", "橙色发光标题", 0.1, 0.91),
+                  SpriteMatch("sprite-2", "冷色标题", "蓝色发光标题", 0.15, 0.86)]
     run, harness, _ = free_run(monkeypatch, tmp_path, [
-        call("search", "sprite_search", {"query": "蓝色发光标题"}), delegate(),
-    ])
+        call("search", "sprite_search", {"query": "蓝色发光标题"}),
+        call("generate", "tools_plan_execute", {"action": "delegate", "reason": "参考 sprite-1 和 sprite-2 生成新的发光标题"}),
+    ], intent={"original_request": {"description": "蓝色发光标题"},
+               "clarifications": [json.dumps({"questions": ["导入哪条，或参考它们生成新效果？"],
+                                               "answer": "参考这两条生成新的"})]})
     monkeypatch.setattr(type(run.sprite_search), "enabled", property(lambda self: True))
     monkeypatch.setattr(run.sprite_search, "search", lambda _: candidates)
     with pytest.raises(ScriptEnd):
         asyncio.run(run.plan_execute())
     assert harness.roles == ["outer", "outer", "executor"]
     assert run.layer is Layer.EXECUTOR
-    assert run.snapshot()[0]["sprite_candidates"][0]["sprite_id"] == "sprite-1"
+    assert [item["sprite_id"] for item in run.snapshot()[0]["sprite_candidates"]] == ["sprite-1", "sprite-2"]
 
 
 def test_host_lookup_requires_outer_to_review_candidates(monkeypatch, tmp_path):
-    """Outer 略过搜索时，宿主召回候选后重新交给 Outer 而不自动复用。"""
+    """Outer 略过搜索时，宿主召回候选后由 Outer 展示并询问选择。"""
     candidates = [SpriteMatch("sprite-1", "暖色标题", "橙色发光标题", 0.1, 0.91)]
     run, harness, _ = free_run(monkeypatch, tmp_path, [delegate(),
-        call("choose", "tools_plan_execute", {"action": "reuse", "sprite_id": "sprite-1"})])
+        call("offer", "tools_plan_execute", {"action": "ask", "questions": ["找到 sprite-1 暖色标题：橙色发光标题。要用它吗？"]})])
     monkeypatch.setattr(type(run.sprite_search), "enabled", property(lambda self: True))
     monkeypatch.setattr(run.sprite_search, "search", lambda _: candidates)
     result = asyncio.run(run.plan_execute())
-    assert result.sprite_id == "sprite-1"
+    assert "sprite-1" in result.questions[0]
     assert harness.roles == ["outer", "outer"]
     assert run.sprite_searched
+
+
+def test_outer_cannot_import_unconfirmed_search_result(monkeypatch, tmp_path):
+    """同一轮检索命中也不能绕过用户选择直接导入。"""
+    run, _, _ = free_run(monkeypatch, tmp_path, [], intent={"original_request": {"description": "暖色标题"}})
+    run.sprite_matches = [SpriteMatch("sprite-1", "暖色标题", "橙色发光标题", 0.1, 0.91)]
+    with pytest.raises(ValueError, match="ask the user"):
+        run._outer_control(PlanAction(action="reuse", sprite_id="sprite-1"))
+
+
+def test_asset_search_is_available_while_editing_a_work(monkeypatch, tmp_path):
+    """当前作品已有版本时，资产查询仍能由 Outer 主动检索。"""
+    run, _, _ = free_run(monkeypatch, tmp_path, [], intent={
+        "original_request": {"description": "标题"}, "accepted_base": {"kind": "text"},
+    })
+    monkeypatch.setattr(type(run.sprite_search), "enabled", property(lambda self: True))
+    assert any(tool.name == "sprite.search" for tool in run._tools_for_layer())
 
 
 @needs_bundler

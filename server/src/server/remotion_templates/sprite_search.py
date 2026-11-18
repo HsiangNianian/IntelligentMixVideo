@@ -1,4 +1,4 @@
-"""Index published Sprite descriptions and rerank current publications for Outer.
+"""Index published Sprite descriptions and retrieve matching publications for Outer.
 
 MySQL remains authoritative. A periodic reconciliation rebuilds the Chroma index after missed writes;
 search results are checked against the current publication before they can be imported.
@@ -45,15 +45,12 @@ class SpriteSearchSettings(CommonSettings):
     description_base_url: str = ""
     description_model: str = ""
     description_api_key: SecretStr = SecretStr("")
-    rerank_url: str = ""
-    rerank_model: str = "qwen3.7-text-rerank"
-    rerank_api_key: SecretStr = SecretStr("")
-    min_rerank_score: float = Field(default=0.6, ge=0, le=1)
-    rerank_score_gap: float = Field(default=0.2, ge=0, le=1)
+    min_similarity_score: float = Field(default=0.7, ge=0, le=1)
+    similarity_score_gap: float = Field(default=0.1, ge=0, le=1)
 
 @dataclass(frozen=True)
 class SpriteMatch:
-    """A current published Sprite selected by reranking for Outer to inspect."""
+    """A current published Sprite selected by vector similarity for Outer to inspect."""
 
     sprite_id: str
     name: str
@@ -74,22 +71,17 @@ class SpriteSearch:
         self.description_api_key = self.settings.description_api_key
         if not self.description_api_key.get_secret_value() and actor:
             self.description_api_key = actor.actor_api_key
-        self.rerank_api_key = self.settings.rerank_api_key
-        if not self.rerank_api_key.get_secret_value():
-            self.rerank_api_key = self.settings.embedding_api_key
 
     @property
     def index_enabled(self) -> bool:
-        """Index independently of the optional rerank service configuration."""
+        """Index when description and embedding models are configured."""
         return bool(self.settings.embedding_api_key.get_secret_value() and self.description_api_key.get_secret_value()
                     and self.description_model and self.description_base_url)
 
     @property
     def enabled(self) -> bool:
-        """Offer retrieval only when indexing and reranking are both configured."""
-        return bool(self.index_enabled and self.rerank_api_key.get_secret_value()
-                    and self.settings.rerank_url and "{WorkspaceId}" not in self.settings.rerank_url
-                    and self.settings.rerank_model)
+        """Offer retrieval whenever indexing is configured."""
+        return self.index_enabled
 
     def _collection(self):
         """Resolve one cosine-distance collection from the configured Chroma server."""
@@ -184,43 +176,31 @@ class SpriteSearch:
             collection.delete(ids=list(deleted))
 
     def search(self, query: str, kind: str | None = None) -> list[SpriteMatch]:
-        """Recall ten current Sprites, rerank them and retain scores near the best."""
+        """Keep current top-ten Sprites above the cosine threshold and near the best match."""
         if not self.enabled or not query.strip():
             return []
         collection = self._collection()
         result = collection.query(query_embeddings=[self._embed(query)], n_results=10,
                                   where={"kind": kind} if kind else None,
                                   include=["metadatas", "distances"])
-        candidates = []
+        matches = []
         for sprite_id, metadata, distance in zip(result["ids"][0], result["metadatas"][0], result["distances"][0]):
+            distance = float(distance)
+            if not math.isfinite(distance) or not 0 <= distance <= 2:
+                raise ValueError("Chroma returned an invalid cosine distance")
+            score = 1 - distance
+            if score < self.settings.min_similarity_score:
+                continue
             data = sprite_store.get(sprite_id)
             if (not data or self._revision(data) != metadata.get("revision")
                     or metadata.get("embedding_model") != self.settings.embedding_model
                     or hashlib.sha256(str(data.get("tsx_code", "")).encode()).hexdigest() != data.get("code_sha256")):
                 continue
-            document = (f"名称：{data.get('name', '')}；类型：{KIND_LABELS.get(self._kind(data), '')}；"
-                        f"分类：{data.get('text_category', '')}；效果：{metadata.get('description', '')}")
-            candidates.append((sprite_id, data, metadata, float(distance), document))
-        if not candidates:
+            matches.append(SpriteMatch(sprite_id, str(data.get("name", "")),
+                                       str(metadata.get("description", "")), distance, score))
+        matches.sort(key=lambda item: item.score, reverse=True)
+        if not matches:
             return []
-        response = self._api(self.settings.rerank_url, self.rerank_api_key, "",
-                             {"model": self.settings.rerank_model,
-                              "input": {"query": query, "documents": [row[4] for row in candidates]},
-                              "parameters": {"top_n": len(candidates),
-                                             "instruct": "Retrieve published visual effects matching the requested appearance and motion."}})
-        ranked = []
-        seen = set()
-        for item in response["output"]["results"]:
-            index, score = item["index"], float(item["relevance_score"])
-            if not isinstance(index, int) or index in seen or not 0 <= index < len(candidates) or not math.isfinite(score) or not 0 <= score <= 1:
-                raise ValueError("Rerank API returned invalid scores or indices")
-            seen.add(index)
-            if score > self.settings.min_rerank_score:
-                sprite_id, data, metadata, distance, _document = candidates[index]
-                ranked.append(SpriteMatch(sprite_id, str(data.get("name", "")),
-                                          str(metadata.get("description", "")), distance, score))
-        ranked.sort(key=lambda item: item.score, reverse=True)
-        if not ranked:
-            return []
-        best, gap = Decimal(str(ranked[0].score)), Decimal(str(self.settings.rerank_score_gap))
-        return [item for item in ranked if best - Decimal(str(item.score)) < gap]
+        best = Decimal(str(matches[0].score))
+        gap = Decimal(str(self.settings.similarity_score_gap))
+        return [item for item in matches if best - Decimal(str(item.score)) <= gap]
