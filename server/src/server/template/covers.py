@@ -34,7 +34,15 @@ def object_key(template_id: str) -> str:
     return f"imv/template-covers/{template_id}.png"
 
 
-def upload_cover(template_id: str, content: bytes) -> str:
+def cover_url(template_id: str) -> str:
+    """在事务内预写公开地址，确认数据库接受更新后才覆盖对象。"""
+    try:
+        return f"{ZosSettings().zos_web_url.rstrip('/')}/{object_key(template_id)}"
+    except ValueError as exc:
+        raise HTTPException(503, "封面更新失败，请重试") from exc
+
+
+def upload_cover(template_id: str, content: bytes) -> None:
     """单次 PUT 覆盖小对象；只有存储确认写入成功才发布新版本。"""
     key = object_key(template_id)
     try:
@@ -42,13 +50,12 @@ def upload_cover(template_id: str, content: bytes) -> str:
         with closing(storage_client(settings, 10)) as storage:
             storage.put_object(Bucket=settings.zos_bucket, Key=key, Body=content, ACL="public-read",
                                ContentType="image/png", CacheControl="no-cache")
-        return f"{settings.zos_web_url.rstrip('/')}/{key}"
     except (ValueError, BotoCoreError, ClientError) as exc:
         raise HTTPException(503, "封面更新失败，请重试") from exc
 
 
-def read_cover(template_id: str) -> bytes:
-    """通过固定对象名取当前图片，客户端无需访问跨域对象存储的像素。"""
+def stored_cover(template_id: str) -> bytes | None:
+    """读取固定对象的字节；仅对象缺失返回 None，存储故障仍可重试。"""
     try:
         settings = ZosSettings()
         with closing(storage_client(settings, 10)) as storage:
@@ -57,17 +64,26 @@ def read_cover(template_id: str) -> bytes:
                 return body.read()
     except (ValueError, BotoCoreError, ClientError) as exc:
         if isinstance(exc, ClientError) and exc.response["Error"]["Code"] in {"NoSuchKey", "NotFound", "404"}:
-            raise HTTPException(404, detail={"code": "cover_object_missing"}) from exc
+            return None
         raise HTTPException(503, "封面读取失败，请重试") from exc
 
 
-def delete_cover(template_id: str) -> None:
-    """删除模板时一并释放该模板已发布的图片。"""
+def read_cover(template_id: str) -> bytes:
+    """把已发布对象的缺失告知客户端，以便单独补图。"""
+    content = stored_cover(template_id)
+    if content is None:
+        raise HTTPException(404, detail={"code": "cover_object_missing"})
+    return content
+
+
+def delete_cover(template_id: str, *, undo_upload: bool = False) -> None:
+    """撤销未提交的新增对象；删除模板时则按存储清理配置处理。"""
     try:
         settings = ZosSettings()
-        if not settings.zos_delete_objects:
+        if not undo_upload and not settings.zos_delete_objects:
             return
         with closing(storage_client(settings, 10)) as storage:
             storage.delete_object(Bucket=settings.zos_bucket, Key=object_key(template_id))
     except (ValueError, BotoCoreError, ClientError) as exc:
-        raise HTTPException(503, "删除封面失败，请重试删除模板") from exc
+        message = "封面更新失败，请重试" if undo_upload else "删除封面失败，请重试删除模板"
+        raise HTTPException(503, message) from exc

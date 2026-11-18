@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from google.protobuf.json_format import ParseError
 from sqlalchemy import JSON, Column, MetaData, String, Table, delete, inspect, select
 from sqlalchemy.dialects.mysql import DATETIME
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
 
@@ -18,9 +18,8 @@ from ..database import get_engine
 from ..remotion_templates import placement, sprite_store, sprites
 from ..remotion_templates.categories import BILINGUAL_PROP, bilingual as is_bilingual
 from ..remotion_templates.store import Conflict
-from .covers import delete_cover, encode_cover, upload_cover
+from . import covers, images
 from .schema import EffectTrack, Template, TemplateCover, TemplateSave, TemplateSummary, completeness_error, effect_catalog
-from . import images
 
 # 模板元数据用于查询和约束，配置 JSON 保留完整编辑字段与可信效果快照。
 metadata = MetaData()
@@ -285,7 +284,7 @@ def delete_template(template_id: UUID) -> None:
         if row is None:
             raise HTTPException(404, "模板不存在")
         if row.cover and row.cover.get("published_revision"):
-            delete_cover(str(template_id))
+            covers.delete_cover(str(template_id))
         connection.execute(delete(templates).where(target))
 
 
@@ -301,11 +300,13 @@ def published_revision(template_id: UUID) -> str:
 def publish_cover(template_id: UUID, revision: UUID, content: bytes, refresh: bool = False) -> TemplateCover:
     """按取帧前的版本覆盖图片。手动刷新推进封面版本，同一刷新请求重传保持幂等。"""
 
-    payload = encode_cover(content)
+    payload = covers.encode_cover(content)
     key = str(template_id)
-    with initialize_schema().begin() as connection:
-        target = templates.c.template_id == key
-        row = connection.execute(select(templates.c.cover).where(target).with_for_update()).first()
+    engine = initialize_schema()
+    target = templates.c.template_id == key
+    locked = select(templates.c.cover).where(target).with_for_update()
+    with engine.connect() as connection:
+        row = connection.execute(locked).first()
         if row is None:
             raise HTTPException(404, "模板不存在")
         current = TemplateCover.model_validate(row.cover) if row.cover else TemplateCover(revision=key)
@@ -314,7 +315,28 @@ def publish_cover(template_id: UUID, revision: UUID, content: bytes, refresh: bo
             return current
         if current.revision != str(revision):
             raise HTTPException(409, "模板画面已更新，请刷新后重试")
-        current.url = upload_cover(key, payload)
-        current.revision = current.published_revision = published
-        connection.execute(templates.update().where(target).values(cover=current.model_dump()))
-        return current
+        result = TemplateCover(revision=published, published_revision=published,
+                               source=current.source, url=covers.cover_url(key))
+        connection.execute(templates.update().where(target).values(cover=result.model_dump()))
+        previous = covers.stored_cover(key) if current.published_revision else None
+        covers.upload_cover(key, payload)
+        try:
+            connection.commit()
+            return result
+        except SQLAlchemyError as exc:
+            commit_error = exc
+
+    # COMMIT 回执丢失也会抛错。重新锁行核对，避免把已经发布的封面或其他请求的图片回滚。
+    with engine.connect() as connection:
+        row = connection.execute(locked).first()
+        if row is None:
+            raise commit_error
+        last_published = (row.cover or {}).get("published_revision", "")
+        if last_published == published:
+            return result
+        if last_published == current.published_revision and previous != payload and covers.stored_cover(key) == payload:
+            if previous is None:
+                covers.delete_cover(key, undo_upload=True)
+            else:
+                covers.upload_cover(key, previous)
+    raise commit_error

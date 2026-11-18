@@ -66,6 +66,8 @@ PORT=8010 uv run --locked server
 
 封面 API 仅接收、校验和读写图片。ZOS 固定覆盖 `imv/template-covers/{模板ID}.png`，公开地址、目标版本、已发布版本、素材来源保存在 `templates.cover`。查询地址可用 `SELECT template_id, cover->>'$.url' AS cover_url FROM templates`。
 
+替换已发布封面时，服务端在本次请求的内存里保留旧 PNG。数据库提交回执丢失时，服务端核对已发布版本，确认回滚后恢复旧图。若对象原先缺失，撤销本次写入需要该键的删除权限。服务进程在写对象后异常退出，或恢复期间数据库或 ZOS 仍不可用时，可能需要重新发布封面。
+
 模板列表、详情与保存的成功响应默认使用 `application/json`，采用 Protobuf JSON 映射：字段为 camelCase（如 `templateId`、`createdAt`、`effectIds`），时间为 UTC RFC 3339 字符串；列表为 `{"templates":[...]}`，空库为 `{"templates":[]}`，详情和保存为 `{"template":{...}}`，轨道保留 `template.tracks.tracks` 结构。空数组、空映射和非 optional 标量默认值保留，未设置的 optional 字段省略。POST 请求仍使用 `application/x-protobuf`，JSON 请求返回 415，损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422；错误响应使用 JSON，删除成功仍为 204 空响应。为兼容旧客户端，单一 `Accept: application/x-protobuf` 仍返回 Protobuf 二进制；其他请求（含省略 Accept、`*/*` 或 `application/json`）默认返回 JSON，成功响应带 `Vary: Accept`。新客户端按响应 `Content-Type` 解析 JSON 或旧服务端的 Protobuf 二进制，JSON 解析忽略未知字段；仅响应格式迁移不要求两端同时升级。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
 

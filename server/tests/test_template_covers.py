@@ -1,13 +1,13 @@
 """在临时数据库与内存对象存储中验证模板 PNG 发布与恢复，运行 pytest server/tests/test_template_covers.py。"""
 
+import sqlite3
 from io import BytesIO
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 from PIL import Image
 
-from server.template import covers
 from .template_wire import post_template
 
 
@@ -18,11 +18,9 @@ def png(color: str) -> bytes:
     return image.getvalue()
 
 
-def test_publish_retry_replace_and_revalidate(client, template_payload, monkeypatch):
+def test_publish_retry_replace_and_revalidate(client, template_payload, cover_storage):
     """上传失败保留模板，重试和换视频复用对象名；改元数据、过期请求和条件 GET 不触碰图片。"""
-    storage = MagicMock()
-    monkeypatch.setattr(covers, "storage_client", lambda *_: storage)
-    monkeypatch.setattr(covers, "ZosSettings", lambda: SimpleNamespace(zos_bucket="test", zos_delete_objects=True, zos_web_url="https://images.test"))
+    storage = cover_storage
     created = post_template(client, {**template_payload, "cover_source": "builtin"})
     assert created.status_code == 201
     record = created.json()["template"]
@@ -31,11 +29,12 @@ def test_publish_retry_replace_and_revalidate(client, template_payload, monkeypa
     revision = record["cover"]["revision"]
     red = {"file": ("cover.png", png("red"), "image/png")}
     put = f"{base}/{revision}"
+    write = storage.put_object.side_effect
     storage.put_object.side_effect = EndpointConnectionError(endpoint_url="test")
     assert client.put(put, files=red).status_code == 503
     assert client.get("/template").json()["templates"][0]["cover"]["publishedRevision"] == ""
     assert client.get(base).status_code == 404
-    storage.put_object.side_effect = None
+    storage.put_object.side_effect = write
     assert client.put(put, files={"file": ("fake.png", b"fake", "image/png")}).status_code == 422
     assert client.put(put, files=red).status_code == 200
     saved = client.get(f"/template/{template_id}").json()["template"]
@@ -47,7 +46,6 @@ def test_publish_retry_replace_and_revalidate(client, template_payload, monkeypa
     assert uploaded["CacheControl"] == "no-cache"
     with Image.open(BytesIO(uploaded["Body"])) as image:
         assert image.format == "PNG" and image.getpixel((10, 10)) == (255, 0, 0)
-    storage.get_object.return_value = {"Body": BytesIO(uploaded["Body"])}
     cached = client.get(base)
     assert cached.status_code == 200 and cached.content == uploaded["Body"]
     assert cached.headers["content-type"] == "image/png"
@@ -64,7 +62,6 @@ def test_publish_retry_replace_and_revalidate(client, template_payload, monkeypa
     assert latest.status_code == 200 and latest.json()["url"] == saved["cover"]["url"]
     uploaded = storage.put_object.call_args.kwargs
     assert uploaded["Key"] == key
-    storage.get_object.return_value = {"Body": BytesIO(uploaded["Body"])}
     refreshed = client.get(base, headers={"If-None-Match": cached.headers["etag"]})
     assert refreshed.status_code == 200 and refreshed.headers["etag"] != cached.headers["etag"]
     with Image.open(BytesIO(refreshed.content)) as image:
@@ -73,11 +70,10 @@ def test_publish_retry_replace_and_revalidate(client, template_payload, monkeypa
     storage.delete_object.assert_called_once_with(Bucket="test", Key=key)
 
 
-def test_missing_published_object_can_be_repaired(client, template_payload, monkeypatch):
+def test_missing_published_object_can_be_repaired(client, template_payload, cover_storage):
     """数据库保留发布记录时，只有对象缺失允许补图；强制写回同一键后可读取新的 PNG。"""
-    storage = MagicMock()
-    monkeypatch.setattr(covers, "storage_client", lambda *_: storage)
-    monkeypatch.setattr(covers, "ZosSettings", lambda: SimpleNamespace(zos_bucket="test", zos_web_url="https://images.test"))
+    storage = cover_storage
+    read = storage.get_object.side_effect
     row = post_template(client, {**template_payload, "cover_source": "builtin"}).json()["template"]
     base = f"/template/{row['templateId']}/cover"
     put = f"{base}/{row['cover']['revision']}"
@@ -94,19 +90,73 @@ def test_missing_published_object_can_be_repaired(client, template_payload, monk
     assert repaired.status_code == 200 and repaired.json()["revision"] != published["revision"]
     assert repaired.json()["url"] == published["url"] and storage.put_object.call_count == 2
     uploaded = storage.put_object.call_args.kwargs
-    storage.get_object.side_effect = None
-    storage.get_object.return_value = {"Body": BytesIO(uploaded["Body"])}
+    storage.get_object.side_effect = read
     restored = client.get(base)
     assert restored.status_code == 200 and restored.content == uploaded["Body"]
     assert storage.get_object.call_args.kwargs["Key"] == uploaded["Key"]
 
 
-def test_backfill_keeps_template_order_and_marks_visual_edits(client, template_payload, monkeypatch):
+@pytest.mark.parametrize("failure", ["update", "commit_rolled_back", "commit_ack_lost", "rollback_missing_object", "newer_publish"])
+def test_failed_publication_keeps_bytes_and_etag_together(client, template_db, template_payload, cover_storage, monkeypatch, failure):
+    """数据库拒绝更新或提交回滚时保留旧图；已提交但回执丢失时确认新图，对象原先缺失则恢复缺失状态。"""
+    record = post_template(client, {**template_payload, "cover_source": "builtin"}).json()["template"]
+    base = f"/template/{record['templateId']}/cover"
+    old_revision = record["cover"]["revision"]
+    put = f"{base}/{old_revision}"
+    assert client.put(put, files={"file": ("old.png", png("red"), "image/png")}).status_code == 200
+    before = client.get(base)
+    if failure == "rollback_missing_object":
+        cover_storage.delete_object(Key=cover_storage.put_object.call_args.kwargs["Key"])
+    if failure == "update":
+        with template_db.begin() as connection:
+            connection.exec_driver_sql("CREATE TRIGGER reject_cover BEFORE UPDATE ON templates "
+                                       "BEGIN SELECT RAISE(ABORT, 'test update rejected'); END")
+    else:
+        commit = template_db.dialect.do_commit
+
+        def fail_commit(connection):
+            """分别模拟数据库已接受提交和明确回滚，两种情况客户端都收不到提交回执。"""
+            if failure == "commit_ack_lost":
+                commit(connection)
+            else:
+                connection.rollback()
+            if failure == "newer_publish":
+                # 在失败请求重新锁行之前，另一客户端保存并成功发布了一张绿图。
+                monkeypatch.setattr(template_db.dialect, "do_commit", commit)
+                edit = post_template(client, {**template_payload, "template_id": record["templateId"], "cover_source": "a" * 64})
+                revision = edit.json()["template"]["cover"]["revision"]
+                assert client.put(f"{base}/{revision}", files={"file": ("later.png", png("green"), "image/png")}).status_code == 200
+            raise sqlite3.OperationalError("test commit acknowledgement lost")
+
+        monkeypatch.setattr(template_db.dialect, "do_commit", fail_commit)
+    response = client.put(put, files={"file": ("new.png", png("blue"), "image/png")}, data={"refresh": "true"})
+    cover = client.get(f"/template/{record['templateId']}").json()["template"]["cover"]
+    served = client.get(base)
+    cached = client.get(base, headers={"If-None-Match": before.headers["etag"]})
+    if failure == "commit_ack_lost":
+        assert response.status_code == 200 and response.json()["revision"] == cover["publishedRevision"] != old_revision
+        assert cached.status_code == 200 and served.headers["etag"] != before.headers["etag"]
+        assert Image.open(BytesIO(served.content)).getpixel((1, 1)) == (0, 0, 255)
+    elif failure == "newer_publish":
+        assert response.status_code == 503 and cached.status_code == 200
+        assert served.headers["etag"] == f'"{cover["publishedRevision"]}"' != before.headers["etag"]
+        assert Image.open(BytesIO(served.content)).getpixel((1, 1)) == (0, 128, 0)
+    else:
+        assert response.status_code == 503 and cover["publishedRevision"] == old_revision
+        assert cached.status_code == 304
+        if failure == "rollback_missing_object":
+            assert served.status_code == 404 and served.json()["detail"]["code"] == "cover_object_missing"
+        else:
+            assert served.headers["etag"] == before.headers["etag"] and served.content == before.content
+        if failure == "update":
+            assert cover_storage.put_object.call_count == 1
+
+
+def test_backfill_keeps_template_order_and_marks_visual_edits(client, template_payload, cover_storage):
     """旧模板按 ID 补图，保留更新时间；以后改画面即使旧客户端未传额外字段也生成新版本。"""
     record = post_template(client, template_payload).json()["template"]
     template_id = record["templateId"]
     assert "cover" not in record
-    monkeypatch.setattr("server.template.store.upload_cover", lambda key, content: f"https://images.test/{key}.png")
     response = client.put(f"/template/{template_id}/cover/{template_id}", files={"file": ("old.png", png("red"), "image/png")})
     assert response.status_code == 200
     updated = client.get("/template").json()["templates"][0]
@@ -155,12 +205,10 @@ def test_startup_skips_template_backfill(template_db, monkeypatch):
     scan.assert_not_called()
 
 
-def test_clients_backfill_legacy_once(client, template_payload, monkeypatch):
+def test_clients_backfill_legacy_once(client, template_payload, cover_storage):
     """两台客户端首批补同一旧模板时，只发布一次，目标版本推进且不改变排序。"""
     old = post_template(client, template_payload).json()["template"]
     key = old["templateId"]
-    upload = MagicMock(return_value=f"https://images.test/{key}.png")
-    monkeypatch.setattr("server.template.store.upload_cover", upload)
     put = f"/template/{key}/cover/{key}"
     files = {"file": ("cover.png", png("green"), "image/png")}
     published = client.put(put, files=files, data={"refresh": "true"})
@@ -168,7 +216,7 @@ def test_clients_backfill_legacy_once(client, template_payload, monkeypatch):
     cover = published.json()
     assert cover["revision"] == cover["published_revision"] != key
     assert client.put(put, files=files, data={"refresh": "true"}).json() == cover
-    assert upload.call_count == 1
+    assert cover_storage.put_object.call_count == 1
     row = client.get("/template").json()["templates"][0]
     assert row["cover"] == {"source": "builtin", "url": cover["url"], "revision": cover["revision"],
                             "publishedRevision": cover["revision"]}
