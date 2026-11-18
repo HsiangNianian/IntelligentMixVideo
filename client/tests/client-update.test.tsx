@@ -44,6 +44,8 @@ test('下载不丢失草稿，安全后应用一次并恢复位置', async () =>
   // 挂载会自动检查；在 act 内等其状态提交，不让 DOM 重试抢占异步检查的完成。
   await act(async () => { render(<ClientUpdate />); });
   expect(screen.getByRole('button', { name: '一键更新' })).toBeTruthy();
+  expect(screen.getByText('版本：v1.2.3')).toBeTruthy();
+  expect(screen.queryByText(/原生 v/)).toBeNull();
   expect(calls.mock.calls.filter(([, args]) => args.operation === 'check')).toHaveLength(1);
   await act(async () => { await downloadUpdate(); });
   await waitFor(() => expect(screen.getByText(/等待处理/)).toBeTruthy());

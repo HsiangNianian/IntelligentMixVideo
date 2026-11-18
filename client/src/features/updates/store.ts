@@ -11,8 +11,8 @@ export type Candidate = { version: string; mode: 'hot' | 'native' | 'manual' };
 /** 阻止应用更新的本地会话：所属服务地址、侧栏标题与是否等待重试删除。 */
 type PendingWork = { server: string; title: string; deleting: boolean };
 type Phase = 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'waiting' | 'applying' | 'error' | 'manual';
-type State = { phase: Phase; nativeVersion: string; candidate?: Candidate; reminder?: Candidate; message: string; progress?: number; links?: string[]; sha256?: string };
-let state: State = { phase: 'disabled', nativeVersion: APP_VERSION, message: '此构建不支持客户端更新' };
+type State = { phase: Phase; candidate?: Candidate; reminder?: Candidate; message: string; progress?: number; links?: string[]; sha256?: string };
+let state: State = { phase: 'disabled', message: '此构建不支持客户端更新' };
 const listeners = new Set<() => void>();
 let initialization: Promise<void> | undefined;
 let ready = false;
@@ -39,7 +39,7 @@ export async function initializeUpdates() {
   if (!isTauri() || import.meta.env.IMV_DEBUG === 'true') return;
   initialization ??= (async () => {
     try {
-      const info = await call<{ enabled: boolean; nativeVersion: string; notice: string; resume: Recovery | null }>('status');
+      const info = await call<{ enabled: boolean; notice: string; resume: Recovery | null }>('status');
       if (!info?.enabled) {
         // 更新存储不可用时客户端照常启动，只说明本次无法更新。
         if (info?.notice) { toast.warning(info.notice); publish({ message: info.notice }); }
@@ -47,7 +47,7 @@ export async function initializeUpdates() {
       }
       restoreRecovery(info.resume);
       if (info.notice) toast.info(info.notice);
-      publish({ phase: 'idle', nativeVersion: info.nativeVersion, message: info.notice || '尚未检查更新' });
+      publish({ phase: 'idle', message: info.notice || '尚未检查更新' });
       unlisten = await listen<{ received: number; total: number }>('client-update-progress', ({ payload }) => {
         if (state.phase === 'downloading') publish({ progress: Math.min(100, Math.round(payload.received / payload.total * 100)) });
       });
@@ -166,5 +166,5 @@ export function cancelUpdate() {
 export function resetUpdates() {
   generation++; stopWaiting(); unlisten?.(); unlisten = undefined;
   initialization = undefined; ready = false; readyRun = undefined; applying = false; resetUpdateGuard(); restoreRecovery(null);
-  publish({ phase: 'disabled', nativeVersion: APP_VERSION, message: '此构建不支持客户端更新', candidate: undefined, reminder: undefined, progress: undefined, links: undefined });
+  publish({ phase: 'disabled', message: '此构建不支持客户端更新', candidate: undefined, reminder: undefined, progress: undefined, links: undefined });
 }
