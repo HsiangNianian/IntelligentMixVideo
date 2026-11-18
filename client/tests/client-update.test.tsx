@@ -1,6 +1,8 @@
 /** 客户端更新流程测试：隔离 IPC 和网络，验证草稿、后台任务、重复点击、启动提醒及等待取消；不代替真实桌面安装测试。 */
 import { expect, mock, test } from 'bun:test';
-import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
+import HomePage from '@/pages/HomePage';
+import { apiBase, setApiBase } from '@/lib/api-base';
 import { mockDesktop } from './setup';
 import { ClientUpdate, UpdateLifecycle } from '@/features/updates/ClientUpdate';
 import { checkUpdate, downloadUpdate, initializeUpdates, cancelUpdate, tryApplyUpdate } from '@/features/updates/store';
@@ -12,8 +14,12 @@ import { memoryStorage, setStorage } from '@/features/remotion_templates/localSe
 type Pending = { server: string; title: string; deleting: boolean }[];
 const OTHER_SERVER: Pending = [{ server: 'http://old.test', title: '旧服务会话', deleting: false }];
 
-function desktop({ pending = [], fail = false, downloadFail = false, downloadGate, mode = 'hot', readyFailures = 0, status = { enabled: true, notice: '' } }: { pending?: Pending | Promise<Pending>; fail?: boolean; downloadFail?: boolean; downloadGate?: Promise<void>; mode?: string; readyFailures?: number; status?: { enabled: boolean; notice: string } } = {}) {
+function desktop({ pending = [], fail = false, downloadFail = false, downloadGate, saveFailures = 0, mode = 'hot', readyFailures = 0, status = { enabled: true, notice: '' } }: { pending?: Pending | Promise<Pending>; fail?: boolean; downloadFail?: boolean; downloadGate?: Promise<void>; mode?: string; saveFailures?: number; readyFailures?: number; status?: { enabled: boolean; notice: string } } = {}) {
   const calls = mock(async (command: string, args: Record<string, unknown>) => {
+    if (command === 'local_settings') {
+      if (args?.id && saveFailures-- > 0) throw new Error('设置文件写入失败');
+      return {};
+    }
     if (command === 'plugin:event|listen') return 1;
     if (command === 'remotion_sessions') {
       if (mode === 'native') throw new Error('本地会话库来自更新版本的客户端');
@@ -55,6 +61,45 @@ test('处理草稿后自动下载、应用一次并恢复位置', async () => {
   await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args.operation === 'apply')).toHaveLength(1), { timeout: 3000 });
   expect(calls.mock.calls.find(([, args]) => args.operation === 'apply')?.[1].payload).toMatchObject({ workspace: 'library', template: { templateId: 'saved' } });
 });
+// 在真实设置和聊天表单间处理多项草稿，写盘失败保持原输入，最后一项清空后只安装一次。
+test('去处理保留失败的设置和隐藏聊天，最后一项完成自动整包升级', async () => {
+  const calls = desktop({ mode: 'native', saveFailures: 1 });
+  const original = apiBase();
+  try {
+    await initializeUpdates(); render(<HomePage />);
+    fireEvent.click(await screen.findByRole('button', { name: '稍后提醒' }));
+    fireEvent.click(screen.getByRole('button', { name: 'AI 字效' }));
+    fireEvent.change(screen.getByLabelText('字效描述'), { target: { value: '待发送的字幕' } });
+    fireEvent.click(screen.getByRole('button', { name: '主页' }));
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    const url = screen.getByLabelText<HTMLInputElement>('后端服务地址');
+    fireEvent.change(url, { target: { value: 'https://saved.test' } });
+    fireEvent.click(await screen.findByRole('button', { name: '一键更新' }));
+    const list = await screen.findByRole('dialog', { name: '更新前还有未保存的内容' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(list).getByText('聊天 · 新会话（未发送）')).toBeTruthy();
+    const settings = within(list).getByText('通用设置 · 后端服务地址').closest('li')!;
+    fireEvent.click(within(settings).getByRole('button', { name: '去处理' }));
+    await waitFor(() => expect(document.activeElement === url).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByText('保存地址失败，请重试');
+    expect(url.value).toBe('https://saved.test');
+    expect(apiBase()).toBe(original);
+    expect(calls.mock.calls.some(([, args]) => args?.operation === 'download')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    const remaining = await screen.findByRole('dialog', { name: '更新前还有未保存的内容' }, { timeout: 3000 });
+    expect(within(remaining).getAllByRole('listitem')).toHaveLength(1);
+    fireEvent.click(within(remaining).getByRole('button', { name: '去处理' }));
+    const chat = screen.getByLabelText<HTMLTextAreaElement>('字效描述');
+    await waitFor(() => expect(document.activeElement === chat).toBe(true));
+    expect(chat.value).toBe('待发送的字幕');
+    expect(screen.getByRole('button', { name: 'AI 字效' }).getAttribute('aria-current')).toBe('page');
+    fireEvent.change(chat, { target: { value: '' } });
+    await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args?.operation === 'apply')).toHaveLength(1), { timeout: 3000 });
+    expect(calls.mock.calls.filter(([, args]) => args?.operation === 'download')).toHaveLength(1);
+    expect(calls.mock.calls.some(([command]) => command === 'remotion_sessions')).toBe(false);
+  } finally { setApiBase(original); }
+}, 12000);
 // 从清单选择稍后更新会撤销本次请求，原有草稿仍可编辑，随后清空也不会启动更新。
 test('稍后更新保留草稿并取消自动续接', async () => {
   const calls = desktop({ mode: 'native' });

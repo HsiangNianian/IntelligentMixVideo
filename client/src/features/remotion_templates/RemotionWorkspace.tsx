@@ -1,5 +1,4 @@
 /** Remotion 工作区组合聊天、代码、预览和参数；服务状态与当前会话独立，后台会话定时同步，页面卸载时清理。 */
-import { useUpdateBlocker } from "@/lib/update-guard";
 import { useEffect, useRef, useState } from "react";
 import { Wand2 } from "lucide-react";
 import { toast } from "sonner";
@@ -40,7 +39,7 @@ const KEYWORD_DEFAULTS_ERROR = "关键词参数的默认值必须是关闭状态
 const KEYWORD_REPAIR = "这个版本的关键词参数默认值不是关闭状态，无法保存到资产。请保持现有外观，重新生成一个版本，并把七个关键词参数的默认值恢复为关闭（关键词为空、加粗/斜体/下划线/删除线关闭、关键词颜色为空、关键词字号为 0）。";
 
 /** 宽屏左右分栏，小屏切换聊天和预览但保留会话与播放器实例。 */
-export function RemotionWorkspace() {
+export function RemotionWorkspace({ review }: { review?: { panel?: string } } = {}) {
   const history = useWorkHistory();
   const session = useTemplateSession(history.refresh);
   useBackgroundSync(session.openWork, history.refresh);
@@ -49,6 +48,7 @@ export function RemotionWorkspace() {
   const historical = !!session.previewVersion;
   const [previewBusy, setPreviewBusy] = useState(false);
   const [mobile, setMobile] = useState("chat");
+  useEffect(() => { if (review?.panel) setMobile(review.panel === "chat" ? "chat" : "preview"); }, [review]);
   const [serviceError, setServiceError] = useState("");
   const [check, setCheck] = useState(0);
   const [publishing, setPublishing] = useState(false);
@@ -136,7 +136,6 @@ export function RemotionWorkspace() {
     !!session.busy ||
     unresolved ||
     session.retryMode === "read";
-  useUpdateBlocker("字效参数尚未保存", session.dirty && !(unresolved && session.busy === "parameters"));
   const locked = pending || previewBusy || session.previewLoading;
   /**
    * 顶栏保存当前预览版本：默认覆盖本会话上次保存的资产，切换为另存时再新建。
@@ -251,7 +250,7 @@ export function RemotionWorkspace() {
       <WorkspacePanels
         action={
           <div className="flex max-w-[calc(100vw-6rem)] items-center gap-1.5">
-            <Input aria-label="资产名称" value={assetName} onChange={(event) => setAssetName(event.target.value)}
+            <Input data-update-draft={assetName ? "AI 字效 · 资产名称" : undefined} aria-label="资产名称" value={assetName} onChange={(event) => setAssetName(event.target.value)}
               placeholder={overwriting ? overwriteTarget.name : "资产名称（选填）"} maxLength={100}
               title={overwriting ? `留空保留「${overwriteTarget.name}」` : `留空使用 AI 名称「${viewed?.spec.name ?? ""}」`}
               disabled={!viewed || locked || publishing} className="h-8 w-40 max-w-[30vw] text-xs" />
@@ -273,6 +272,7 @@ export function RemotionWorkspace() {
           </div>
         }
         mobile={mobile}
+        reviewParameters={review?.panel === "parameters" ? review : undefined}
         status={
           <span role="status">
             {session.connection === "reconnecting"
@@ -301,6 +301,7 @@ export function RemotionWorkspace() {
         chat={
           <ChatPanel
             key={`chat-${session.key}`}
+            workTitle={history.items.find(item => item.id === session.workId)?.title}
             messages={session.messages}
             job={session.job}
             jobs={session.jobs}
@@ -407,6 +408,7 @@ export function RemotionWorkspace() {
                 dirty={!historical && session.dirty}
                 readOnly={historical}
                 saving={session.busy === "parameters"}
+                submitted={unresolved && session.busy === "parameters"}
                 onSave={() => {
                   if (!locked) session.saveParameters();
                 }}

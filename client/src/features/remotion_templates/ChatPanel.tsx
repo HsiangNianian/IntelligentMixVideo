@@ -1,5 +1,4 @@
 /** 当前会话的聊天展示与输入；每条消息最多附 4 张参考图（点击选择、拖入或粘贴），只作为生成参考，预览 URL 随组件卸载释放。 */
-import { useUpdateBlocker } from "@/lib/update-guard";
 import { cn } from "@/lib/utils";
 import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, ImagePlus, Square, Sparkles, X } from "lucide-react";
@@ -67,6 +66,7 @@ interface Props {
   onSend: (text: string, images: File[], start?: NewWork) => void;
   onStop: () => void;
   draft?: Draft | null;
+  workTitle?: string;
   job?: Job | SessionJob | null;
   jobs?: Record<string, SessionJob>;
   hasOlder?: boolean;
@@ -96,6 +96,7 @@ export function ChatPanel({
   onSend,
   onStop,
   draft,
+  workTitle = "新会话",
   job,
   jobs = {},
   hasOlder,
@@ -121,7 +122,6 @@ export function ChatPanel({
   const [twoTier, setTwoTier] = useState(false);
   const [bilingual, setBilingual] = useState(false);
   const switchId = useId();
-  useUpdateBlocker("聊天中还有未发送的内容或参考图", !!text || images.length > 0);
   const [dragging, setDragging] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -415,6 +415,8 @@ export function ChatPanel({
           </div>
         )}
         <Textarea
+          data-update-draft={text || images.length ? `聊天 · ${workTitle}（未发送）` : undefined}
+          data-update-panel="chat"
           aria-label="字效描述"
           placeholder="描述你想要的字效，或继续提出修改要求…"
           value={text}

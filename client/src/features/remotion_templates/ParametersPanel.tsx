@@ -198,6 +198,7 @@ export function ParametersPanel({
   pending,
   dirty,
   saving,
+  submitted = false,
   readOnly = false,
   onChange,
   onSave,
@@ -209,6 +210,7 @@ export function ParametersPanel({
   pending: boolean;
   dirty: boolean;
   saving: boolean;
+  submitted?: boolean;
   readOnly?: boolean;
   onChange: (key: string, value: JsonValue) => void;
   onSave: () => void;
@@ -220,6 +222,8 @@ export function ParametersPanel({
   const keywordProblem = version?.spec.sprite?.kind === "text" ? keywordDefaultProblem(values) : null;
   return (
     <section
+      data-update-draft={!readOnly && !submitted && (dirty || Object.values(invalid).some(Boolean)) ? "AI 字效 · 未保存参数" : undefined}
+      data-update-panel="parameters" tabIndex={-1}
       aria-label="模板参数"
       className="@container h-full min-h-0 overflow-y-auto bg-card p-4"
     >

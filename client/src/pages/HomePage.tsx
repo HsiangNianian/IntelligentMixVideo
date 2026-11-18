@@ -20,6 +20,7 @@ export default function HomePage({ logoHidden = false }: { logoHidden?: boolean 
   const [deletedTemplate, setDeletedTemplate] = useState<TemplateSelection | null>(null);
   const [editing, setEditing] = useState<EditingState | null>(null);
   const [templateRevision, setTemplateRevision] = useState(0);
+  const [review, setReview] = useState<{ panel?: string }>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [playgroundOpened, setPlaygroundOpened] = useState(restored.workspace === "playground");
   // 沿用已发布更新快照的工作区标识，重启后恢复模板与会话位置。
@@ -35,7 +36,7 @@ export default function HomePage({ logoHidden = false }: { logoHidden?: boolean 
       <main className="min-w-0 flex-1 overflow-auto">
         <div hidden={page !== "home"} className="h-full">{opened.home && <TemplateHome active={page === "home" && !settingsOpen} revision={templateRevision} onDelete={setDeletedTemplate} editing={editing} onOpenSettings={() => setSettingsOpen(true)} onSelect={(next) => { setSelection(next); navigate("editor"); }} onOpenRemotion={() => navigate("effects")} />}</div>
         <div data-update-workspace="editor" hidden={page !== "editor"} className="h-full">{opened.editor && <TemplateWorkspace selection={selection} deletedTemplate={deletedTemplate} onHome={() => navigate("home")} onOpenRemotion={() => navigate("effects")} onEditingState={setEditing} onSaved={() => setTemplateRevision((value) => value + 1)} active={page === "editor" && !settingsOpen} />}</div>
-        <div data-update-workspace="effects" hidden={page !== "effects"} className="h-full">{opened.effects && <RemotionWorkspace />}</div>
+        <div data-update-workspace="effects" hidden={page !== "effects"} className="h-full">{opened.effects && <RemotionWorkspace review={review} />}</div>
         <div hidden={page !== "playground"} className="h-full">{playgroundOpened && <PlaygroundWorkspace active={page === "playground"} />}</div>
         {page === "fonts" && <FontLibrary />}
       </main>
@@ -44,6 +45,7 @@ export default function HomePage({ logoHidden = false }: { logoHidden?: boolean 
         setSettingsOpen(false);
         const workspace = field.closest<HTMLElement>('[data-update-workspace]')?.dataset.updateWorkspace;
         if (workspace === "editor" || workspace === "effects") navigate(workspace);
+        if (workspace === "effects") setReview({ panel: field.dataset.updatePanel });
       }} />
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
