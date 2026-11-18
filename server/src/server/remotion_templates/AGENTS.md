@@ -17,6 +17,7 @@
 | `effect.save` 的透明度检查、`text_fit`、回看帧、多行字效 | README「Creating a Sprite」 |
 | 三层 ReAct、空转判断、步骤产出、调用参数解析、公开的轮次记录 | README「Loop rounds」 |
 | 资产发布、覆盖、删除、改名、目录 SSE、边界样本、单 Sprite 渲染、叠加预览协议 | README「Sprite assets」 |
+| 已发布 Sprite 的语义索引、Outer 复用判断与当前作品版本导入 | README「Sprite assets」 |
 | 总线叠加渲染：时长、排版预检、准入、执行、性能 | README「Overlay renders for the bus」 |
 | 成功版本诊断接口 | README「Code diagnostics」 |
 | 工具入参、绑定规则、分类必备参数与回执的完整契约 | `docs/remotion-agent-tool-contracts.md` |
@@ -70,6 +71,7 @@
 - 工具调用与检查共用 `registry.get_tool`，执行时只在当前层可用的工具中解析。
 - 生成任务默认先按合理的选择做出 Sprite，用户之后再改；真正的歧义允许提问：Outer 的 `ask`、Executor 的 `needs_input` 与 Plan 的 `ask` 都以 `needs_input` 结束任务并保留问题，用户答复后续做同一作品。已委派（或已保存）的任务仍不能以普通回答结束。字效的文字与关键词由模板每次渲染时传入，生成只需要预览用的示例文字，不为这些文案、关键词或其语言追问。
 - Outer 可用 `plan` 动作把任务交给 Plan ReAct 自行设计步骤（宿主不建默认计划）；Plan 在被交付设计、步骤受阻或整批无新观察时唤醒。
+- 新特效可在 Outer 委派前检索已发布 Sprite；严格命中时复用仍存在的来源版本及封存产物，直接保存为当前作品的可编辑版本。索引不可用、未命中、来源版本已删除或产物缺失时继续原生成流程；编辑已有作品和带参考图的请求跳过检索。
 - Executor 窗口开头的交接消息带上用户需求 `user_intent` 与基线（含源码，`session.task_facts`）；Outer、Plan 的快照把需求放在最前。
 - 缓存命中靠前缀不变：固定系统规则与工具列表，Executor 窗口只追加，变化快照放窗口之后；超过字节或图片预算才整体压缩，保留需求、当前文件与最新交换。参考图与字体库只在窗口开头读取一次，观察图按路径追加一次。
 - 编辑任务只改用户要求的部分：用 `workspace.edit` 精确替换相关代码或清单，不重排其余源码。历史组合版本先由 `restore_version_files` 静默转为完整组件和 `contract`，保留 Schema、当前默认值、嵌套参数、示例关键词与内容边界，不重跑旧组合器、不改写历史。

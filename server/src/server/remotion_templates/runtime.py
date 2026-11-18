@@ -19,8 +19,8 @@ from .deletion import finish as finish_deletion
 from .context import Conversation, outcome_record
 from .fonts import DEFAULT_FAMILY, FontStore
 from .settings import ClientSettings, Settings
-from .sprite_search import SpriteSearch
-from . import sprite_events
+from .sprite_search import SpriteMatch, SpriteSearch
+from . import sprite_events, sprites
 from .harness import Harness
 from .overlay_service import FINISHED_RETENTION, OverlayRenders, prune_finished
 from .models import ClientContext, DialogueOutput, EditTemplateRequest, GenerationJob, JobError, JobInput, MessageImage, TaskMessage
@@ -36,6 +36,21 @@ logger = logging.getLogger("uvicorn.error")
 
 
 from .references import MAX_REFERENCE_IMAGES, earlier_images, reference_images
+
+
+async def import_published_sprite(match: SpriteMatch, store: Store, directory: Path):
+    """Copy a publication's verified source version into this job without running Executor.
+
+    Publications whose source version has expired fall back to normal generation.
+    """
+    publication = await asyncio.to_thread(sprites.get, match.sprite_id)
+    source = await asyncio.to_thread(store.version, UUID(publication.source_version_id))
+    accepted = await asyncio.to_thread(store.accepted, source)
+    target = directory / ("reuse-" + uuid4().hex)
+    target.mkdir(parents=True, exist_ok=True)
+    for name in source.validation.artifacts:
+        await asyncio.to_thread(shutil.copy2, accepted / name, target / name)
+    return source.candidate, source.spec, source.validation, target
 
 
 class Runtime:
@@ -552,6 +567,7 @@ class Runtime:
                         job_id, stage=name, attempts=attempt, usage=budget.summary()
                     )
 
+                reused_sprite_id = None
                 result = await harness.generate(
                     spec,
                     budget,
@@ -567,6 +583,18 @@ class Runtime:
                     **({"checkpoint": inputs.checkpoint,
                         "on_checkpoint": lambda value: self.store.save_checkpoint(job_id, value)} if patch is None else {}),
                 )
+                if isinstance(result, SpriteMatch):
+                    try:
+                        matched_sprite_id = result.sprite_id
+                        result = await import_published_sprite(result, self.store, directory)
+                        reused_sprite_id = matched_sprite_id
+                    except Exception:
+                        # Old publications may lack a snapshot, or fresh validation may reject a stale effect.
+                        logger.warning("Sprite %s is not importable; generating instead", result.sprite_id, exc_info=True)
+                        intent["skip_sprite_search"] = True
+                        result = await harness.generate(spec, budget, directory, images, stage,
+                                                        base=base.candidate if base else None,
+                                                        parameter_patch=patch, context=context, intent=intent)
                 if isinstance(result, DialogueOutput):
                     self.store.update(
                         job_id,
@@ -582,7 +610,8 @@ class Runtime:
                 candidate, spec, report, attempt_dir = result
                 self.store.update(job_id, usage=budget.summary(), **({"reply": budget.reply} if budget.reply else {}))
                 budget.progress("preparing")
-                await asyncio.to_thread(self.store.publish, job_id, candidate, spec, report, attempt_dir)
+                await asyncio.to_thread(self.store.publish, job_id, candidate, spec, report, attempt_dir,
+                                        reused_sprite_id=reused_sprite_id)
         except asyncio.CancelledError:
             self.store.update(
                 job_id, status="interrupted", stage="finished", usage=budget.summary()

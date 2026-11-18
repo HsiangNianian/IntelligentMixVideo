@@ -182,7 +182,7 @@ export function VersionCard({
             )}
           </span>
           <span className="mt-1 block text-xs text-muted-foreground">
-            {version.source === "user_parameters" ? "参数调整" : "智能体生成"} ·{" "}
+            {version.source === "user_parameters" ? "参数调整" : version.source === "sprite_reuse" ? "资产复用" : "智能体生成"} ·{" "}
             {new Date(version.created_at).toLocaleString("zh-CN", {
               month: "numeric",
               day: "numeric",

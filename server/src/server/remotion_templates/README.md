@@ -551,14 +551,16 @@ Every Outer → Plan → Executor turn appends one public round record through t
 carries the layer, the turn and the tools the host handled in that turn — the
 canonical dotted tool ID, whether it passed, and on failure a whitelisted error
 code plus a fixed host-authored message. So the chat can show what the model actually
-sent, each call also carries the raw `arguments` (4000 characters) and, on failure, the
+sent, each model call carries the raw `arguments` (4000 characters) and, on failure, the
 tool's real error `detail` (2000). This is published on purpose: `arguments` can hold plan
 step goals (`tools.plan_execute`) and candidate source (`workspace.write`, `workspace.edit`), and `detail` is the tool's own error text, which can name server paths or
 compiler output. A turn without calls carries the model's reply (`message`) or the reason
 its request failed (`error_detail`, the already sanitized `ModelFailure` text); narration
 that accompanies calls is not published. Everything is cut with `…`, so a cut `arguments`
 is no longer valid JSON. Tool results, host steer text and the full payloads stay in the
-private audit. A terminal job accepts no further rounds. Unknown tool
+private audit. The host's automatic lookup before delegation appears as `sprite.search`
+before `tools.plan_execute`, with `source=host` and `result=matched`, `miss` or `unavailable`;
+only a match includes its Sprite ID. A terminal job accepts no further rounds. Unknown tool
 names become `unknown` with the name the model asked for in `requested_tool`; model
 protocol failures are explicitly marked. Each `job.round` event carries one
 round, `job.updated` omits that history, and the client keeps the rounds it has stored locally.
@@ -613,6 +615,21 @@ template bindings. Overwrites preserve the latest manual category, including edi
 The catalog presents five peer categories: title text effects, subtitle text effects, filters, transitions and
 video effects. For text assets with no manual category, the client matches `字幕` first, then `标题`, and defaults
 to subtitle effects if neither appears. Legacy unspecified kinds remain in video effects.
+
+Published Sprite reuse search uses a server-side Chroma HTTP collection. Once both the Agent model and the
+`IMV_SPRITE_EMBEDDING_API_KEY` are configured, a background task indexes existing assets at startup and reconciles
+new, overwritten, renamed and deleted assets after catalog changes (and every 60 seconds after missed notifications).
+It asks the configured Agent chat API to describe the published TSX and parameters in Chinese, embeds that description
+together with the asset name and kind through the configured embedding API, and stores the vector under `sprite_id`.
+The index is rebuilt from MySQL; an unavailable Chroma or embedding API does not block publication. For a new effect,
+the host searches before Outer delegates even if Outer skipped its optional `sprite.search` call; edits with an accepted
+base or reference images still skip reuse search. It accepts a candidate only below `IMV_SPRITE_MAX_DISTANCE` after a second model check and
+after checking that its indexed revision still matches MySQL. A match copies the retained source version's verified
+artifacts into a new editable version in the current work without entering Executor; a miss, stale index or failed import
+follows normal generation. Publications also retain an editable composition snapshot in `remotion_sprite_editable`;
+reuse currently needs the source version and its sealed artifacts, so deletion of that source falls back to generation.
+The index and description model treat published code and names as
+data, not instructions. Set the embedding model and collection together when rebuilding an index after model changes.
 Publishing re-verifies the sealed version files (409 when changed) and only accepts versions composed
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
 422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be
