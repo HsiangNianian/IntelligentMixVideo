@@ -6,7 +6,10 @@
 
 import asyncio
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from threading import Event
+from time import monotonic, sleep
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,8 +20,9 @@ from sqlalchemy.exc import IntegrityError
 from server import database
 from server.app import app
 from server.remotion_templates import sprite_store
-from server.template import store
+from server.template import covers, store
 from .conftest import SPRITE_ID, remotion_track, seed_sprite
+from .test_template_covers import png
 from .template_wire import detail_template, listed_templates, post_template, saved_template
 
 
@@ -95,6 +99,47 @@ def test_mysql_bootstrap_unicode_and_persistence(mysql_database, template_payloa
         response = client.get(f"/template/{saved['template_id']}")
         assert response.status_code == 200 and detail_template(response) == saved
         assert summary(listed_templates(client.get("/template"))) == [summary_of(saved)]
+
+
+def test_mysql_concurrent_legacy_cover_backfill(mysql_database, template_payload, cover_storage):
+    """第二个 PUT 等待同一模板的行锁；两个客户端得到同一版本，固定键只写入第一张 PNG。"""
+    uploading, release = Event(), Event()
+    write = cover_storage.put_object.side_effect
+
+    def pause_upload(**kwargs):
+        """保留第一个请求的事务，直到 MySQL 报告另一个请求已在等待。"""
+        uploading.set()
+        assert release.wait(10)
+        return write(**kwargs)
+
+    cover_storage.put_object.side_effect = pause_upload
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        key = post_template(client, template_payload).json()["template"]["templateId"]
+        base = f"/template/{key}/cover"
+
+        def backfill(color):
+            """模拟持有同一份旧模板列表、截到不同画面的客户端。"""
+            return client.put(f"{base}/{key}", files={"file": ("cover.png", png(color), "image/png")}, data={"refresh": "true"})
+
+        first = pool.submit(backfill, "red")
+        try:
+            assert uploading.wait(5)
+            second = pool.submit(backfill, "blue")
+            deadline = monotonic() + 5
+            with database.get_engine().connect() as observer:
+                while not observer.exec_driver_sql(
+                    "SELECT 1 FROM performance_schema.data_locks WHERE OBJECT_SCHEMA = %s "
+                    "AND OBJECT_NAME = 'templates' AND LOCK_STATUS = 'WAITING' LIMIT 1", (mysql_database,),
+                ).scalar():
+                    assert monotonic() < deadline, "第二个请求未进入模板行锁等待"
+                    sleep(0.02)
+        finally:
+            release.set()
+        a, b = first.result(timeout=5), second.result(timeout=5)
+        assert a.status_code == b.status_code == 200
+        assert a.json() == b.json() and a.json()["published_revision"] == a.json()["revision"] != key
+        assert cover_storage.put_object.call_count == 1
+        assert client.get(base).content == covers.encode_cover(png("red"))
 
 
 def test_mysql_stores_remotion_tracks_as_references(mysql_database, template_payload):

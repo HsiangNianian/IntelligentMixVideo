@@ -205,8 +205,8 @@ def test_startup_skips_template_backfill(template_db, monkeypatch):
     scan.assert_not_called()
 
 
-def test_clients_backfill_legacy_once(client, template_payload, cover_storage):
-    """两台客户端首批补同一旧模板时，只发布一次，目标版本推进且不改变排序。"""
+def test_replay_legacy_backfill(client, template_payload, cover_storage):
+    """重放已成功的补图请求时复用发布版本，模板排序保持不变。"""
     old = post_template(client, template_payload).json()["template"]
     key = old["templateId"]
     put = f"/template/{key}/cover/{key}"
