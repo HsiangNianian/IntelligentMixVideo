@@ -1,0 +1,20 @@
+/* 空间陈列只变换封面外框；中间最大，两侧后退。真实模板的操作与内容不参与装饰变换。 */
+.template-gallery { container-type: inline-size; }
+.template-gallery-stage { --cover-width: min(22cqw, 285px); position: relative; height: calc(var(--cover-width) * 16 / 9 + 80px); overflow: hidden; touch-action: pan-y; user-select: none; cursor: grab; }
+.template-gallery-stage button { cursor: inherit; }
+.template-gallery-stage[data-dragging="true"] { cursor: grabbing; }
+.template-gallery-stage[data-dragging="true"] .template-gallery-item { transition: none; }
+.template-gallery-item {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  width: var(--cover-width);
+  transform-origin: center;
+  transform: translateX(calc(-50% + var(--offset) * 83%)) translateY(calc(var(--distance) * 27px)) perspective(1000px) rotateY(calc(var(--offset) * -12deg)) scale(calc(1 - var(--distance) * .1));
+  transition: transform 380ms ease;
+}
+/* 按画廊实际宽度展示五张或三张完整封面，为边缘与阴影留出空间。 */
+@container (max-width: 640px) {
+  .template-gallery-stage { --cover-width: min(36cqw, 185px); }
+  .template-gallery-item[data-distant="true"] { visibility: hidden; pointer-events: none; }
+}

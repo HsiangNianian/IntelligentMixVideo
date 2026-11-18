@@ -1,9 +1,4 @@
-/**
- * 左侧导航栏：72px 宽的竖向导航，图标下方始终显示文字，给编辑页留出最多的横向空间。
- * 图标默认线性，选中时换成双色并染上强调色，强调色底在项目之间滑动；
- * 正在编辑的模板有未保存修改时，「模板编辑」图标上显示呼吸圆点。底部是主题切换、设置入口与客户端版本号。
- */
-import { motion } from "motion/react";
+/** 纸面工作室侧栏：宽屏显示图标与文字，窄屏收紧；保留草稿提示、主题、设置及开场标志锚点。 */
 import { cn } from "@/lib/utils";
 import { Icon, type IconName } from "./icons";
 import { LogoMark } from "./Logo";
@@ -25,62 +20,45 @@ interface RailProps {
   page: Page;
   onNavigate: (page: Page) => void;
   onSettings: () => void;
-  /** 当前打开的模板名称；没有打开时为 null。 */
   editing: string | null;
   dirty: boolean;
   version: string;
-  /** 开场播放期间隐藏标志，开场结束时由开场里的标志飞到这里交接。 */
+  /** 开场播放期间隐藏标志，结束后由开场标志飞到此锚点。 */
   logoHidden?: boolean;
 }
 
-/** 导航栏本体；选中项用 aria-current 标记，「模板编辑」的悬停提示补充当前模板与保存状态。 */
+/** aria-current 标记当前位置；只隐藏未访问的工作区，不在导航中修改业务状态。 */
 export function Rail({ page, onNavigate, onSettings, editing, dirty, version, logoHidden }: RailProps) {
   return (
-    <nav aria-label="主导航" className="flex h-dvh w-[72px] shrink-0 flex-col items-center border-r border-line bg-rail pb-3 pt-4">
-      <Tooltip label="IntelligentMixVideo" side="right">
-        <span data-splash-target className={cn("mb-6 flex size-10 items-center justify-center", logoHidden && "opacity-0")}>
-          <LogoMark className="size-8 drop-shadow-[0_2px_6px_color-mix(in_oklch,var(--color-brand-to)_35%,transparent)]" />
+    <nav aria-label="主导航" className="paper-surface flex h-dvh w-[76px] shrink-0 flex-col border-r border-line bg-rail px-2 py-5 xl:w-52 xl:px-5">
+      <div className="mb-8 flex h-16 items-start justify-center gap-2 border-b border-line xl:justify-start">
+        <span data-splash-target className={cn("flex size-9 shrink-0 items-center justify-center", logoHidden && "opacity-0")}>
+          <LogoMark className="studio-logo size-9 text-fg" />
         </span>
-      </Tooltip>
-      <ul className="flex w-full flex-col gap-2 px-2">
+        <span aria-label="IMV" className="sketch-text hidden text-[28px] leading-9 xl:inline-block">IMV</span>
+      </div>
+      <ul className="flex flex-col gap-3">
         {items.map(({ page: target, label, icon }) => {
           const active = page === target;
-          const showDot = target === "editor" && editing !== null && dirty;
           const item = (
-            <button
-              type="button"
-              aria-current={active ? "page" : undefined}
-              onClick={() => onNavigate(target)}
-              className="group flex w-full flex-col items-center gap-1 rounded-xl py-1.5 focus-visible:outline-offset-0"
-            >
-              <span className={cn("relative flex h-8 w-12 items-center justify-center rounded-full transition-colors duration-150", active ? "text-brand" : "text-fg-subtle group-hover:bg-raised group-hover:text-fg")}>
-                {active && <motion.span layoutId="rail-pill" transition={{ type: "spring", stiffness: 500, damping: 38 }} className="absolute inset-0 rounded-full bg-brand/12" />}
-                <Icon name={icon} variant={active ? "duotone" : "linear"} className="relative size-[21px]" />
-                {showDot && <PulseDot className="absolute right-2 top-0.5 text-warning ring-2 ring-rail" />}
+            <button type="button" aria-label={label} aria-current={active ? "page" : undefined} onClick={() => onNavigate(target)}
+              className={cn("group relative flex min-h-12 w-full flex-col items-center justify-center gap-1 border-l-2 py-2 transition-colors xl:flex-row xl:justify-start xl:gap-3 xl:px-3", active ? "border-fg bg-fg/5 text-fg" : "border-transparent text-fg-muted hover:bg-fg/5 hover:text-fg")}>
+              <span className="relative shrink-0">
+                <Icon name={icon} className="size-5" />
+                {target === "editor" && editing !== null && dirty && <PulseDot className="absolute -right-1 -top-1 text-warning ring-2 ring-rail" />}
               </span>
-              <span className={cn("text-[11px] leading-none transition-colors", active ? "font-medium text-fg" : "text-fg-subtle group-hover:text-fg-muted")}>{label}</span>
+              <span className="font-serif text-[10px] xl:text-[16px]">{label}</span>
             </button>
           );
-          return (
-            <li key={target}>
-              {target === "editor" ? (
-                <Tooltip side="right" label={editing ? `正在编辑「${editing}」${dirty ? " · 有未保存的修改" : ""}` : "还没有打开模板"}>
-                  {item}
-                </Tooltip>
-              ) : item}
-            </li>
-          );
+          return <li key={target}>{target === "editor" ? <Tooltip side="right" label={editing ? `正在编辑「${editing}」${dirty ? " · 有未保存的修改" : ""}` : "还没有打开模板"}>{item}</Tooltip> : item}</li>;
         })}
       </ul>
-      <div className="mt-auto flex w-full flex-col items-center gap-2 px-2">
+      <div className="mt-auto flex flex-col items-center gap-3 border-t border-line pt-4">
         <ThemeToggle />
-        <button type="button" aria-haspopup="dialog" onClick={onSettings} className="group flex w-full flex-col items-center gap-1 rounded-xl py-1.5">
-          <span className="flex h-8 w-12 items-center justify-center rounded-full text-fg-subtle transition-colors group-hover:bg-raised group-hover:text-fg">
-            <Icon name="settings" className="size-[21px]" />
-          </span>
-          <span className="text-[11px] leading-none text-fg-subtle group-hover:text-fg-muted">设置</span>
+        <button type="button" aria-haspopup="dialog" onClick={onSettings} className="flex w-full flex-col items-center justify-center gap-1 py-2 text-fg-muted hover:text-fg xl:flex-row xl:justify-start xl:gap-3 xl:px-3">
+          <Icon name="settings" className="size-5" /><span className="text-[10px] xl:font-serif xl:text-base">设置</span>
         </button>
-        <span className="font-mono text-[10px] text-fg-subtle/70">v{version}</span>
+        <span className="font-mono text-[10px] text-fg-subtle">v{version}</span>
       </div>
     </nav>
   );

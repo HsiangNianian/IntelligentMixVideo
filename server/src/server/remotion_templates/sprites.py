@@ -29,13 +29,12 @@ from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
 from . import boundary, sprite_store
-from .categories import FONT_PARAMETERS, HEX_COLOR, LINE_STARTS_PROP, category_problems, line_count, operator_message
+from .categories import FONT_PARAMETERS, HEX_COLOR, LINE_STARTS_PROP, PARAMETER_GROUP, category_problems, line_count, operator_message
 from .fonts import open_font_schema
 from .publication import current_bundle
 from .models import TemplateVersion
 from .object_store import PREFIX, ObjectStoreError
 from .store import Conflict, NotFound, Store
-from .tools.catalog_store import CatalogStore
 
 PREVIEW_BUNDLE = "interactive.js"
 
@@ -137,6 +136,9 @@ def _parameter(key: str, definition: dict, default) -> pb.SpriteParameter | None
             setattr(parameter, field, lengths[bound])
     if kind == "array" and isinstance(definition.get("maxItems"), int):
         parameter.max_items = definition["maxItems"]
+    if isinstance(definition.get(PARAMETER_GROUP), str):
+        # A free-form effect's style parameter: templates show its group as one card and adjust it per placement.
+        parameter.group = definition[PARAMETER_GROUP][:16]
     if definition.get("pattern") == HEX_COLOR:
         parameter.format = pb.SPRITE_PARAMETER_FORMAT_COLOR
     elif kind == "integer":
@@ -163,6 +165,12 @@ def _content_box(version: TemplateVersion) -> pb.SpriteBox:
     """The union of the instances' layout boxes clipped to the canvas; the whole canvas when nothing is visible."""
     composition = version.spec.composition
     layouts = [item.layout for item in version.spec.sprite.instances]
+    # A converted component already includes its canvas placement in source. Its original content region is
+    # separate from the single full-canvas workspace instance, so template transforms keep the same pivot.
+    preserved = ((version.spec.sprite.effect or {}).get("contract") or {}).get("content_box")
+    if preserved is not None:
+        from .tools.contracts import EffectBounds
+        layouts = [EffectBounds.model_validate(preserved)]
     left = max(0.0, min(item.x for item in layouts))
     top = max(0.0, min(item.y for item in layouts))
     right = min(float(composition.width), max(item.x + item.width for item in layouts))
@@ -506,11 +514,11 @@ def _inspect(
 def _accepts_previous_parameter(previous: dict | None, current: dict | None) -> bool:
     """Conservatively compare the independent parameter schemas supported by published controls.
 
-    Labels/defaults may change, bounds and enums may widen, and integers may become numbers. Unknown constraints
+    Labels (including panel groups)/defaults may change, bounds and enums may widen, and integers may become numbers. Unknown constraints
     are not guessed at: their compatibility needs a new asset instead. Array items use the same comparison.
     """
     known = {"type", "title", "description", "default", "minimum", "maximum", "minLength", "maxLength",
-             "minItems", "maxItems", "enum", "pattern", "items"}
+             "minItems", "maxItems", "enum", "pattern", "items", PARAMETER_GROUP}
     if not isinstance(previous, dict) or not isinstance(current, dict) or (set(previous) | set(current)) - known:
         return False
     if previous.get("type") != current.get("type") and (previous.get("type"), current.get("type")) != ("integer", "number"):
@@ -808,14 +816,4 @@ async def publish(service, request: pb.PublishSpriteRequest, device: UUID) -> pb
                 summary = await run_in_threadpool(_create, store, request, version, fresh or bundle)
             else:
                 summary = await _resave(store, sprite, fresh, name)
-    await run_in_threadpool(_record_published, version)
     return summary
-
-
-def _record_published(version: TemplateVersion) -> None:
-    """Mark the Presets recorded when the published version was accepted as published, which ranks them first in Preset
-    searches; a database failure only loses that ranking signal, so it is logged instead of failing the publication."""
-    try:
-        CatalogStore().mark_published(str(version.id))
-    except Exception:
-        logging.getLogger(__name__).warning("Preset uses of published version %s were not recorded", version.id, exc_info=True)

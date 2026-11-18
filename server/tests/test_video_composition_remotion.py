@@ -15,7 +15,7 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.json_format import MessageToDict
 
 from server.video_composition.remotion_content import ContentError, dynamic_duration, resolve_config, roles
-from server.video_composition.remotion_timing import retime_source
+from server.remotion_templates.retiming import RetimingError, retime_source
 from server.remotion_templates.overlay_render import Overlay, OverlayError
 from server.remotion_templates.settings import Settings
 from server.remotion_templates import render_resources
@@ -249,6 +249,44 @@ def test_invalid_dynamic_declaration_is_still_rejected():
         dynamic_duration({"x-imv-dynamic-duration": "yes"})
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_dotted_duration_roles_keep_the_composition_clock(nested):
+    """字面键中的点不构成业务路径，时钟判定和实际参数注入保持同一规则。"""
+    sprite = asset()
+    schema = deepcopy(SCHEMA)
+    schema.pop("x-imv-dynamic-duration")
+    schema["properties"]["layer"]["properties"]["frames"].pop("x-imv-role")
+    field = {"type": "integer", "x-imv-role": "duration"}
+    schema["properties"]["timing.frames"] = {"type": "object", "properties": {"length": field}} if nested else field
+    value = {"length": 90} if nested else 90
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**DEFAULTS, "timing.frames": value})
+    assert roles(schema)["duration"] == []
+    assert not dynamic_duration(schema)
+    assert resolve_config(sprite, "新文案", "", 6)["timing.frames"] == value
+
+
+@pytest.mark.parametrize("present,required", [(False, False), (True, False), (False, True)])
+def test_composition_duration_roles_preserve_optional_objects(present, required):
+    """未启用的可选对象保持缺省，存在时注入；缺失必填对象仍拒绝，默认值不变。"""
+    sprite = asset()
+    schema = deepcopy(SCHEMA)
+    schema["properties"]["timing"] = {"type": "object", "properties": {
+        "frames": {"type": "integer", "x-imv-role": "duration", "minimum": 1}}}
+    if required:
+        schema["required"] = ["timing"]
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**DEFAULTS, **({"timing": {}} if present else {})})
+    original = sprite.SerializeToString()
+    if required and not present:
+        with pytest.raises(ContentError):
+            resolve_config(sprite, "新文案", "", 6)
+    else:
+        result = resolve_config(sprite, "新文案", "", 6)
+        assert result.get("timing") == ({"frames": 6} if present else None)
+    assert sprite.SerializeToString() == original
+
+
 def test_plan_uses_absolute_asr_gaps_and_full_audio(composition_case):
     """相同资产的多句字幕独立注入；片头、片中和片尾静音仍属于整段输出。"""
     data = case(composition_case)
@@ -419,21 +457,26 @@ def test_unclassified_or_text_decoration_refused(composition_case):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("duration, frames, cpus, pages", [(8, 240, 1, 1), (121, 3630, 3, 3), (300, 9000, 8, 4)])
+@pytest.mark.parametrize("duration, frames, cpus, pages, chunk_limit, paired", [
+    (8, 240, 1, 1, 6, False), (121, 3630, 3, 3, 6, False),
+    (300, 9000, 24, 4, 6, True), (32, 960, 16, 4, 1, True),
+])
 @pytest.mark.parametrize("playground", [False, True])
-async def test_render_uses_shared_slot_and_persists_public_video(composition_case, monkeypatch, tmp_path, caplog, duration, frames, cpus, pages, playground):
-    """默认支持短片、超过旧 120 秒限制及恰好 5 分钟的成片；完整渲染上传后返回并清理。"""
-    settings = Settings(_env_file=None)
+async def test_render_uses_shared_slot_and_persists_public_video(composition_case, monkeypatch, tmp_path, caplog, duration, frames, cpus, pages, chunk_limit, paired, playground):
+    """两类任务按 CPU 与配置申请至多两块，上传整段 WebM 或一对 MP4 后返回可恢复结果。"""
+    settings = Settings(_env_file=None, overlay_chunk_concurrency=chunk_limit)
     monkeypatch.setattr(render_resources, "renderer_cpus", lambda reserve: list(range(cpus)))
     slot = asyncio.Semaphore(1)
     runtime = SimpleNamespace(settings=settings, store=SimpleNamespace(root=tmp_path),
-                              overlays=SimpleNamespace(slot=slot, capacity=RenderCapacity(Settings(_env_file=None))), harness=SimpleNamespace(renderer="renderer"))
+                              overlays=SimpleNamespace(slot=slot, capacity=RenderCapacity(settings)), harness=SimpleNamespace(renderer="renderer"))
     # 名额已取得后模拟两秒资源等待，确保诊断不会把它再次算进 slot_wait_ms。
     from contextlib import asynccontextmanager
     clock = [0.0]
     claim = runtime.overlays.capacity.claim
     @asynccontextmanager
     async def delayed_claim(requested, configured_pages):
+        """按实际片长并遵守单视频配置，资源充足时 IMS 也只申请两块。"""
+        assert requested == min(2, chunk_limit, (frames + 449) // 450)
         async with claim(requested, configured_pages) as grant:
             clock[0] += 2
             yield render_resources.RenderGrant(grant.chunks, grant.pages, 2000, grant.reserved_memory_mb)
@@ -442,25 +485,30 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     async def get_runtime():
         """提供唯一运行时，与独立预览渲染共用名额。"""
         return runtime
-    async def render(renderer, overlay, work, *, chunk_concurrency, frame_concurrency):
+    async def render(renderer, overlay, work, *, chunk_concurrency, frame_concurrency, log):
         """捕获渲染时名额状态与音频全长。"""
         assert slot.locked() and overlay.frames == frames
         assert frame_concurrency == pages
-        assert chunk_concurrency == min(cpus // pages, (frames + 449) // 450)
+        assert chunk_concurrency == min(2, chunk_limit, cpus // pages, (frames + 449) // 450)
         assert runtime.overlays.capacity.chunks == chunk_concurrency
         work.mkdir(parents=True, exist_ok=True)
-        output = work / "overlay.webm"
+        output = work / ("color.mp4" if paired else "overlay.webm")
         output.write_bytes(b"video")
-        return output
+        if paired:
+            mask = work / "mask.mp4"
+            mask.write_bytes(b"alpha")
+            return output, mask
+        return output, None
     def upload(files, config, timeout):
         """只有实际输出文件进入公共存储，并使用任务固定对象 key。"""
-        path, key, mime = files[0]
         prefix = "imv/playground" if playground else "imv/video_composition"
-        assert path.read_bytes() == b"video" and key == f"{prefix}/task/overlay.webm" and mime == "video/webm"
-        return ["https://zos.test/overlay.webm"]
+        expected = [(b"video", "color.mp4", "video/mp4"), (b"alpha", "mask.mp4", "video/mp4")] if paired else [(b"video", "overlay.webm", "video/webm")]
+        assert [(path.read_bytes(), key, mime) for path, key, mime in files] == [(body, f"{prefix}/task/{name}", mime) for body, name, mime in expected]
+        assert not slot.locked()
+        return [f"https://zos.test/{name}" for _, name, _ in expected]
     monkeypatch.setattr(remotion, "sprite_runtime", get_runtime)
     monkeypatch.setattr(remotion, "environment_problem", lambda settings, *args, **kwargs: None)
-    monkeypatch.setattr(remotion, "render_overlay", render)
+    monkeypatch.setattr(remotion, "render_ims_overlay", render)
     monkeypatch.setattr(remotion, "upload_public", upload)
     monkeypatch.setattr(remotion, "ZosSettings", lambda: object())
     data = case(composition_case)
@@ -474,7 +522,8 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     with caplog.at_level("INFO", logger=remotion.logger.name):
         result = await remotion.render("task", data, 10, log=log)
     assert result["duration"] == duration and result["frames"] == frames
-    assert set(result) == {"video_url", "duration", "width", "height", "fps", "frames"}
+    keys = {"video_url", "duration", "width", "height", "fps", "frames"}
+    assert set(result) == (keys | {"mask_video_url"} if paired else keys)
     [entry] = [record for record in caplog.records if record.msg.startswith("Remotion performance task_id=")]
     performance = json.loads(entry.args[-1])
     assert all(performance[key] >= 0 for key in ("plan_ms", "slot_wait_ms", "text_fit_ms", "upload_ms", "total_ms"))
@@ -498,7 +547,45 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     expanded = execution_log.expand_columns(columns)["remotion"]
     assert all(item["data"]["sources"] == sources for item in expanded["input"] if "sources" in item["data"])
     uploaded = next(details["output"] for event, details in events if event == "step_finished" and details["step"] == "remotion_upload")
-    assert uploaded["video_url"] == result["video_url"] == "https://zos.test/overlay.webm"
+    assert uploaded["video_url"] == result["video_url"] == ("https://zos.test/color.mp4" if paired else "https://zos.test/overlay.webm")
+    if paired:
+        assert uploaded["mask_video_url"] == result["mask_video_url"] == "https://zos.test/mask.mp4"
+
+
+@pytest.mark.anyio
+async def test_unreadable_mask_does_not_save_partial_result_or_submit_ims(composition_case, composition_runtime, monkeypatch, tmp_path):
+    """彩色片已上传但遮罩不可读时停止组装，不保存半对地址或创建 IMS 请求。"""
+    settings = Settings(_env_file=None)
+    slot = asyncio.Semaphore(1)
+    async def runtime():
+        """只复用本地准入；渲染和上传使用测试文件。"""
+        return SimpleNamespace(settings=settings, store=SimpleNamespace(root=tmp_path), harness=SimpleNamespace(renderer=None),
+                               overlays=SimpleNamespace(slot=slot, capacity=RenderCapacity(settings)))
+    async def render(renderer, overlay, work, **kwargs):
+        """模拟已经通过媒体探测的同一对彩色片与遮罩。"""
+        color, mask = work / "color.mp4", work / "mask.mp4"
+        color.write_bytes(b"color")
+        mask.write_bytes(b"alpha")
+        return color, mask
+    def upload(files, config, timeout):
+        """模拟上传器完成第一个对象后，第二个对象的匿名 GET 失败。"""
+        assert [path.name for path, _, _ in files] == ["color.mp4", "mask.mp4"] and not slot.locked()
+        raise ValueError("mask is not publicly readable")
+    monkeypatch.setattr(remotion, "sprite_runtime", runtime)
+    monkeypatch.setattr(remotion, "environment_problem", lambda *_: None)
+    monkeypatch.setattr(remotion, "render_ims_overlay", render)
+    monkeypatch.setattr(remotion, "upload_public", upload)
+    monkeypatch.setattr(remotion, "ZosSettings", lambda: object())
+    data = case(composition_case)
+    store.initialize_schema()
+    record = store.create(data["request"], composition_runtime.settings.output())
+    record = store.advance(record, "assembling", template=composition_case["template"], matches=composition_case["matches"],
+                           duration_ms=8000, avatar_duration_ms=8000, segmentation=data["segmentation"], remotion=data["remotion"])
+    with pytest.raises(CompositionError) as failed:
+        await service.Job(composition_runtime, record, composition_runtime.settings).assemble()
+    assert failed.value.error["code"] == "remotion_render_failed" and "publicly readable" in str(failed.value.__cause__)
+    saved = store.get(record["task_id"])["data"]
+    assert "remotion_result" not in saved and "ims_request" not in saved
 
 
 def test_render_source_versions_are_preserved_without_per_instance_copies():
@@ -575,10 +662,11 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
     async def get_runtime():
         """使用隔离目录和独立名额，不访问实际渲染服务。"""
         return runtime
-    async def fail(renderer, overlay, work, *, chunk_concurrency, frame_concurrency):
+    async def fail(renderer, overlay, work, *, chunk_concurrency, frame_concurrency, log):
         """模拟 Chrome 连接失败，被 overlay 层包装为安全错误。"""
-        work.mkdir(parents=True, exist_ok=True)
-        (work / "worker.log").write_text(worker_output)
+        (work / "media").mkdir(parents=True)
+        (work / "worker.log").write_text("stale legacy worker output")
+        (work / "media" / "worker.log").write_text(worker_output)
         (work / "overlay.webm").write_bytes(b"partial-video")
         try:
             raise RuntimeError("private browser connection timeout")
@@ -589,7 +677,7 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
         raise OSError("disk unavailable")
     monkeypatch.setattr(remotion, "sprite_runtime", get_runtime)
     monkeypatch.setattr(remotion, "environment_problem", lambda settings, *args, **kwargs: None)
-    monkeypatch.setattr(remotion, "render_overlay", fail)
+    monkeypatch.setattr(remotion, "render_ims_overlay", fail)
     if not diagnostic_writable:
         monkeypatch.setattr(remotion, "preserve_failure", unwritable)
     legacy = tmp_path / "composition-overlay-failures" / "task" / "error.log"
@@ -688,12 +776,12 @@ async def test_composition_preflight_uses_actual_chunk_count(composition_case, m
         called.append(True)
         output = work / "overlay.webm"
         output.write_bytes(b"video")
-        return output
+        return output, None
     async def fit(*args):
         pass
     monkeypatch.setattr(remotion, "sprite_runtime", runtime)
     monkeypatch.setattr(overlay_render.shutil, "which", lambda tool: None if tool == "ffmpeg" else "/usr/bin/" + tool)
-    monkeypatch.setattr(remotion, "render_overlay", render)
+    monkeypatch.setattr(remotion, "render_ims_overlay", render)
     monkeypatch.setattr(remotion, "fit_texts", fit)
     monkeypatch.setattr(remotion, "upload_public", lambda *args: ["https://zos.example/video.webm"])
     monkeypatch.setattr(remotion, "ZosSettings", lambda: object())
@@ -750,11 +838,14 @@ async def test_environment_check_skips_bindings_without_content(composition_case
 
 
 @pytest.mark.anyio
-async def test_assemble_reuses_saved_overlay_and_keeps_ims_text(composition_case, composition_runtime, monkeypatch):
-    """恢复组装复用已上传地址与原时长，不再探测；叠加从 0 秒开始，IMS 字幕轨保留原位置。"""
+@pytest.mark.parametrize("paired", [False, True], ids=["historical-webm", "color-and-mask"])
+async def test_assemble_reuses_saved_overlay_and_keeps_ims_text(composition_case, composition_runtime, monkeypatch, paired):
+    """恢复直接复用单文件或成对结果；同一 IMS 提交保留完整遮罩、起止时钟与字幕轨。"""
     data = case(composition_case)
     data.update(template=composition_case["template"], matches=composition_case["matches"])
     result = {"video_url": "https://zos.test/overlay.webm", "duration": 8}
+    if paired:
+        result.update(video_url="https://zos.test/color.mp4", mask_video_url="https://zos.test/mask.mp4")
     store.initialize_schema()
     record = store.create(data["request"], {**data["output"], "region_id": "cn-shanghai"}, "https://app.test")
     record = store.advance(record, "assembling", **{key: value for key, value in data.items() if key not in ("request", "output")}, remotion_result=result)
@@ -773,7 +864,36 @@ async def test_assemble_reuses_saved_overlay_and_keeps_ims_text(composition_case
     assert len(timeline["SubtitleTracks"]) == 3
     overlay = timeline["VideoTracks"][-1]["VideoTrackClips"][0]
     assert (overlay["TimelineIn"], overlay["TimelineOut"], overlay["MediaURL"]) == (0, 8, result["video_url"])
+    if paired:
+        assert overlay["MaskVideoUrl"] == result["mask_video_url"]
+    else:
+        assert "MaskVideoUrl" not in overlay
+    frozen_request = job.record["data"]["ims_request"]
+    assert json.loads(frozen_request["timeline"]) == timeline and frozen_request["client_token"] == record["task_id"]
     assert job.record["stage"] == "submitting"
+    submits, polls = [], []
+    async def submit(self, payload):
+        """确认首单受理，以本次作业号恢复后续轮询。"""
+        submits.append(payload)
+        return {"JobId": "accepted-overlay"}
+    async def poll(self, job_id):
+        """第一次查询模拟重启，恢复后从同一云作业读取结果。"""
+        polls.append(job_id)
+        if len(polls) == 1:
+            raise asyncio.CancelledError
+        return {"MediaProducingJob": {"JobId": job_id, "Status": "Success", "MediaId": "video-id", "Duration": 8}}
+    async def result_ready(self, provider):
+        """成片转存另有覆盖，此处只检查真实的云结果已持久化。"""
+        assert self.record["data"]["result"]["mediaId"] == "video-id"
+    monkeypatch.setattr(service.ims.IMS, "submit", submit)
+    monkeypatch.setattr(service.ims.IMS, "get", poll)
+    monkeypatch.setattr(service.Job, "wait_for_result", result_ready)
+    with pytest.raises(asyncio.CancelledError):
+        await job.render()
+    restored = store.get(record["task_id"])
+    assert restored["data"]["ims_request"] == frozen_request and restored["stage"] == "rendering"
+    await service.Job(composition_runtime, restored, composition_runtime.settings).render()
+    assert submits == [frozen_request] and polls == ["accepted-overlay", "accepted-overlay"]
 
 
 # 捕获显式测试开关；测试夹具稍后清理进程配置，不影响本地集成选择。
@@ -926,20 +1046,22 @@ def test_fixed_asset_rejects_invalid_metadata_and_unsafe_imports():
     """固定时钟必须有合法时长；打包只解析源码，不能借资产导入读取本地文件。"""
     sprite = asset()
     sprite.canvas.preview_frames = 0
-    with pytest.raises(ContentError, match="发布时长"):
+    with pytest.raises(RetimingError, match="发布时长"):
         retime_source(sprite)
     sprite.canvas.preview_frames = 90
     sprite.tsx_code = 'import secret from "/etc/passwd"; export default secret;'
-    with pytest.raises(ContentError, match="打包失败") as rejected:
+    with pytest.raises(RetimingError, match="打包失败") as rejected:
         retime_source(sprite)
     assert "Unsupported Sprite import" in rejected.value.__cause__.stderr
 
 
 # 场景：业务区间与发布时长不成整数比时，映射到资产的帧号仍须是整数，按帧下标取值的资产不会取到 undefined。
-def test_fixed_clock_maps_to_whole_source_frames(tmp_path):
-    """用替身 React/Remotion 执行真实打包的时间宿主：每帧都是整数，首尾对齐发布首尾帧且单调不减。"""
+@pytest.mark.parametrize("length", [1, 2, 3, 18, 44, 45, 46, 60, 200, 301])
+@pytest.mark.parametrize("preview", [1, 6, 150])
+def test_fixed_clock_maps_to_whole_source_frames(tmp_path, length, preview):
+    """短/长区间和旧阈值两侧均遍历原时钟；减速产生重复源帧时后续行也不提前显示。"""
     sprite = asset()
-    sprite.canvas.preview_frames = 150
+    sprite.canvas.preview_frames = preview
     (tmp_path / "timed.mjs").write_text(retime_source(sprite))
     stubs = {
         "react/package.json": '{"name":"react","type":"module","exports":{".":"./index.js","./jsx-runtime":"./jsx-runtime.js"}}',
@@ -957,14 +1079,29 @@ export const Internals = {RemotionContextProvider: "provider",
         (tmp_path / "node_modules" / name).write_text(content)
     (tmp_path / "probe.mjs").write_text("""/** 逐帧读取宿主交给资产的发布帧号。 */
 import TimedSprite from "./timed.mjs";
-globalThis.length = 60;
-const frames = [];
-for (globalThis.frame = 0; globalThis.frame < 60; globalThis.frame++) frames.push(TimedSprite({}).props.contexts.timelineContext.frame.overlay);
-console.log(JSON.stringify(frames));
+globalThis.length = Number(process.argv[2]);
+const frames = [], visible = [];
+const starts = [0, Math.min(3, globalThis.length - 1), globalThis.length - 1];
+for (globalThis.frame = 0; globalThis.frame < globalThis.length; globalThis.frame++) {
+  const result = TimedSprite({lineStartFrames: starts});
+  const source = result.props.contexts.timelineContext.frame.overlay;
+  frames.push(source);
+  visible.push(result.props.children.props.lineStartFrames.map((start) => source >= start));
+}
+console.log(JSON.stringify({frames, visible, starts}));
 """)
-    frames = json.loads(subprocess.run(["node", "probe.mjs"], cwd=tmp_path, capture_output=True, text=True, check=True).stdout)
+    result = json.loads(subprocess.run(["node", "probe.mjs", str(length)], cwd=tmp_path, capture_output=True, text=True, check=True).stdout)
+    frames = result["frames"]
     assert all(isinstance(frame, int) for frame in frames)
-    assert frames[0] == 0 and frames[-1] == 149 and frames == sorted(frames)
+    starts = [0, min(3, length - 1), length - 1]
+    assert result["starts"] == starts
+    if length <= 2:
+        assert frames == [(preview - 1) // 2] * length
+        assert result["visible"] == [[True, True, True]] * length
+    else:
+        assert frames[0] == 0 and frames[-1] == preview - 1 and frames == sorted(frames)
+        assert len(set(frames)) == min(preview, length)
+        assert result["visible"] == [[frame >= start for start in starts] for frame in range(length)]
 
 
 @pytest.mark.skipif(not REAL_RENDER, reason="set IMV_TEST_RENDERER=1 for upstream clock regression")
@@ -1010,9 +1147,10 @@ export default function Text(p) {
     video = asyncio.run(render_overlay(Renderer(settings), remotion.plan(data, 120), tmp_path / "render"))
     pixels = subprocess.run(["ffmpeg", "-v", "error", "-c:v", "libvpx-vp9", "-i", str(video),
         "-f", "rawvideo", "-pix_fmt", "rgba", "-"], capture_output=True, check=True).stdout
-    # 短动画仍遍历首尾，长动画超过源 10 帧之后仍可见，一/二帧都保留可读画面。
-    for frame, color, alpha in [(0,None,0),(3,None,0),(5,"green",0.8),(6,"green",1),(7,"green",0.9),
-        (8,None,0),(15,None,0),(50,"red",0.525),(65,"red",1),(88,"red",0.076),(89,None,0),
+    # 短动画遍历整数发布帧：输出第 5/7 帧采样源第 4/7 帧，内层为第 2/5 帧，均完全可见。
+    # 长区间第 50/88 帧采样源第 3/9 帧，内层为第 1/7 帧，alpha 为 0.5/0；一/二帧保持可见。
+    for frame, color, alpha in [(0,None,0),(3,None,0),(5,"green",1),(6,"green",1),(7,"green",1),
+        (8,None,0),(15,None,0),(50,"red",0.5),(65,"red",1),(88,None,0),(89,None,0),
         (90,None,0),(96,"green",1),(97,None,0),(100,"red",1),(101,"red",1),(102,None,0)]:
         offset = (frame*180*320 + 100*180+100)*4
         pixel = pixels[offset:offset+4]
@@ -1105,7 +1243,7 @@ async def test_render_fits_texts_in_the_slot_and_reports_text_too_long(compositi
     monkeypatch.setattr(remotion, "sprite_runtime", get_runtime)
     monkeypatch.setattr(remotion, "environment_problem", lambda settings, *args, **kwargs: None)
     monkeypatch.setattr(remotion, "fit_texts", refuse)
-    monkeypatch.setattr(remotion, "render_overlay", render)
+    monkeypatch.setattr(remotion, "render_ims_overlay", render)
     with pytest.raises(CompositionError) as caught:
         await remotion.render("task", data, 10)
     assert calls == [(True, [sprite.sprite_id], "甲乙丙丁")]
@@ -1199,12 +1337,11 @@ def test_multi_line_text_slot_keeps_only_the_lines_inside_its_interval(compositi
 
 
 def test_fixed_clock_multi_line_starts_follow_the_preview_clock(composition_case, monkeypatch):
-    """固定时钟的资产读到预览时钟：行起点按宿主同样的线性映射换算到预览帧，排版预检仍按实际帧测量。"""
+    """固定时钟宿主接收真实行起点，随后在内部统一换算；排版预检同样保留真实帧。"""
     monkeypatch.setattr(remotion, "retime_source", lambda sprite: "timed source")
     result = remotion.plan(multi_line_case(composition_case, dynamic=False), 120)
     first = result.instances[0]
-    # 30 of 60 real frames is round(30 * 89 / 59) of the 90 preview frames.
-    assert first["config"]["lineStartFrames"] == [0, 45] and first["reveal_frame"] == 30 and first["code"] == "timed source"
+    assert first["config"]["lineStartFrames"] == [0, 30] and first["reveal_frame"] == 30 and first["code"] == "timed source"
 
 
 @pytest.mark.parametrize("title, expected", [

@@ -5,7 +5,7 @@
  * 颜色、速度与动画外观等资产内部参数不在这里调，说明原因并提供回字效工作区的入口；这些参数已有的覆盖仍生效，可在此恢复默认。
  * 修改只进入草稿，随模板保存时服务端再按发布契约检查。
  */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Bold, Italic, RotateCcw, Strikethrough, Trash2, Underline, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,7 @@ import { textKey, textRoles, singleRowText, type EffectTrack, type RemotionClip 
 import { BOUND_TEXT_PARAMETERS, type bindClip } from "./clips";
 import { TrackTiming } from "./TrackTiming";
 import { trackLabel, type ResolvedTrack } from "./tracks";
+import { ObjectIcon } from "./EffectAssets";
 
 /** 关键词页签里的参数：关键词与六个样式选项；字效自带的关键词效果参数属于资产本身，不在模板里修改。 */
 const isKeywordParameter = (key: string) => TEMPLATE_KEYWORD_PARAMETERS.includes(key);
@@ -40,8 +41,8 @@ const KEYWORD_STYLES = [
 /** 示例文字允许的最大长度，与 IMS 标题、字幕一致。 */
 const SAMPLE_MAX_LENGTH = { title: 60, subtitle: 100 } as const;
 
-/** 选中片段的右栏；资产已不在目录中时只允许移除。调用方按片段 ID 设 key，切换片段时页签回到「外观与位置」。 */
-export function SpriteClipInspector({ clip, asset, duration, textTrack, textTracks, textResolved, onSample, onEnglishSample, onTextTiming, onOpenRemotion, onParameter, onTransform, onStart, onBind, onRemove, onClose }: {
+/** 选中片段的右栏；资产已不在目录中时只允许移除。调用方按片段 ID 设 key，切换片段时页签回到「外观与效果」。 */
+export function SpriteClipInspector({ clip, asset, duration, textTrack, textTracks, textResolved, onSample, onEnglishSample, onTextTiming, onOpenRemotion, onParameter, onTransform, onStart, onBind, appearanceControls, onRemove, onClose }: {
   clip: RemotionClip;
   asset: SpriteAsset | undefined;
   duration: number | undefined;
@@ -59,6 +60,8 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   onTransform: (patch: Partial<Record<TransformField, number | undefined>>) => void;
   onStart: (start: number) => void;
   onBind: (binding: Parameters<typeof bindClip>[2]) => void;
+  /** 文字对象的双语选项，仅随外观页显示。 */
+  appearanceControls?: ReactNode;
   onRemove: () => void;
   onClose: () => void;
 }) {
@@ -82,11 +85,13 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   const fontSize = asset?.parameters.find(({ field }) => field.key === "fontSize");
   // 模板里只开放适用的参数；资产内部参数（颜色、速度、动画时间等）回字效工作区改，已有覆盖仍列出以便恢复默认。
   const others = asset?.parameters.filter((item) => !keywordParameters.includes(item) && shown(item.field.key)) ?? [];
-  const appearanceParameters = asset ? others.filter(({ field }) => isInstanceParameter(asset.kind, field.key)) : [];
-  // 字效特效的开关、位置与时长单列一组，排在排版与位置之后；同一个特效（effect{k}…）的参数放在一张卡片里。
-  const effectParameters = appearanceParameters.filter(({ field }) => EFFECT_PARAMETER.test(field.key));
-  const effectCards = [...new Set(effectParameters.map(({ field }) => field.key.match(/^effect\d+/)![0]))]
-    .map((name) => effectParameters.filter(({ field }) => field.key.match(/^effect\d+/)![0] === name));
+  const appearanceParameters = asset ? others.filter(({ field, group }) => isInstanceParameter(asset.kind, field.key, group)) : [];
+  // 字效特效的开关、位置与时长单列一组，排在排版与位置之后：同一个特效（effect{k}…）的参数放在一张卡片里，自由组件同一分组的样式参数
+  // 也是一张卡片（以分组名为标题）。
+  const cardName = ({ field, group }: NonNullable<typeof asset>["parameters"][number]) => group || field.key.match(/^effect\d+/)?.[0];
+  const effectParameters = appearanceParameters.filter((item) => item.group || EFFECT_PARAMETER.test(item.field.key));
+  const effectCards = [...new Set(effectParameters.map(cardName))]
+    .map((name) => ({ title: effectParameters.find((item) => item.group === name) ? name : undefined, rows: effectParameters.filter((item) => cardName(item) === name) }));
   const internalParameters = others.filter((item) => !appearanceParameters.includes(item));
   const exposedTransforms = asset ? instanceTransformFields(asset.kind) : [];
   const overriddenInternal = [
@@ -97,7 +102,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   ];
   // 字效的时间跟随所作用的文字对象：标题可在这里设置，字幕固定为整段视频。
   const timedText = isText && textTrack?.target === "title" && textTrack.language !== "en" ? textTrack : undefined;
-  const tabs = [["appearance", "外观与位置"], ...(timedText ? [["timing", "时间设置"] as const] : []), ["keyword", "关键词设置"]] as const;
+  const tabs = [["appearance", "外观与效果"], ...(timedText ? [["timing", "时间设置"] as const] : []), ["keyword", "关键词设置"]] as const;
   const activeTab = isText && (tab !== "timing" || timedText) ? tab : "appearance";
   // 字效可作用的文字对象；双语字效已显示中英两种语言，只列中文对象。
   const textOptions = textTracks
@@ -129,13 +134,19 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   const category = asset ? CATEGORIES.find((item) => item.id === categoryOf(asset))?.label : undefined;
   return <section aria-label="AI 资产设置" className="min-w-0">
     <div className="flex items-start justify-between gap-2 px-4 pb-2 pt-3">
-      <div className="min-w-0"><h2 className="truncate text-[13px] font-semibold leading-5">{asset?.name ?? "未找到的资产"}</h2><p className="mt-0.5 text-[11px] leading-3 text-muted-foreground">{category ?? "资产已不可用，保存前请移除"}</p></div>
+      <div className="flex min-w-0 items-center gap-2.5">
+        {textTrack && <ObjectIcon target={textTrack.target} />}
+        <div className="min-w-0"><h2 className="truncate text-[13px] font-semibold leading-5">{textTrack ? trackLabel(textTrack, textTracks ?? [textTrack]) : asset?.name ?? "未找到的资产"}</h2><p title={asset?.name} className="mt-0.5 line-clamp-2 text-[11px] leading-5 text-muted-foreground">{asset ? textTrack ? `AI 字效 · ${asset.name}` : category : "资产已不可用，保存前请移除"}</p></div>
+      </div>
       <Hint label="关闭资产设置"><Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label="关闭资产设置" onClick={onClose}><X className="size-3.5" aria-hidden="true" /></Button></Hint>
     </div>
     {asset && isText && <div role="tablist" aria-label="资产设置分类" className={`grid border-b px-4 ${tabs.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
       {tabs.map(([value, label]) =>
         <button key={value} type="button" role="tab" aria-selected={activeTab === value} onClick={() => setTab(value)} className="border-b-2 border-transparent px-1 py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring data-[selected=true]:border-primary data-[selected=true]:text-primary" data-selected={activeTab === value}>{label}</button>)}
     </div>}
+    <div hidden={activeTab !== "appearance"}>{appearanceControls}
+      {bilingual && <p className="px-4 py-3 text-[11px] text-muted-foreground">双语字效同时显示中英两种语言；中英文示例仅用于预览，合成时自动翻译实际文案。</p>}
+    </div>
     {asset && isText && <fieldset hidden={activeTab !== "keyword"} className="space-y-3 px-4 py-3">
       <legend className="sr-only">关键词设置</legend>
       {legacyText && <p className="text-[11px] text-muted-foreground">这个字效发布于关键词设置之前，缺少关键词样式参数。请在字效工作区让 Agent 改出新版本并重新保存到资产。</p>}
@@ -226,7 +237,10 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
         {exposedTransforms.includes("x") && <p className="text-[11px] text-muted-foreground">也可以在预览画面上拖动所选资产调整位置。</p>}
         {effectCards.length > 0 && <div className="space-y-2">
           <h3 className="text-xs font-medium">特效</h3>
-          {effectCards.map((rows) => <div key={rows[0].field.key} className="space-y-2 rounded-md border px-3 py-2">{rows.map(parameterRow)}</div>)}
+          {effectCards.map(({ title, rows }) => <section key={rows[0].field.key} aria-label={title} className="space-y-2 rounded-md border px-3 py-2">
+            {title && <h4 className="text-[11px] font-medium text-muted-foreground">{title}</h4>}
+            {rows.map(parameterRow)}
+          </section>)}
         </div>}
         {overriddenInternal.length > 0 && <div className="space-y-1.5 rounded-md border px-3 py-2">
           <p className="text-[11px] text-muted-foreground">下列设置不在模板里调整，但这次摆放仍带着覆盖值：</p>
@@ -244,14 +258,13 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
     </>}
     {timedText && <div hidden={activeTab !== "timing"} className="border-t"><TrackTiming track={timedText} duration={duration ?? 0} resolved={textResolved} onChange={onTextTiming} /></div>}
     <div className="space-y-3 border-t px-4 py-3">
-      {isText ? <div className="space-y-2">
+      {isText ? !clip.text_target && <div className="space-y-2">
         <h3 className="text-xs font-medium">作用对象</h3>
-        <ToggleGroup type="single" variant="outline" size="sm" className="w-full flex-wrap" aria-label="字效作用对象" value={clip.text_target ? textKey(clip.text_target, clip.language) : ""}
+        <ToggleGroup type="single" variant="outline" size="sm" className="w-full flex-wrap" aria-label="字效作用对象" value=""
           onValueChange={(value) => { const option = textOptions.find((item) => item.value === value); if (option) onBind({ text_target: option.target, ...(option.language ? { language: option.language } : {}) }); }}>
           {textOptions.map((option) => <ToggleGroupItem key={option.value} value={option.value} className="flex-1 text-xs">{option.label}</ToggleGroupItem>)}
         </ToggleGroup>
-        <p className="text-[11px] text-muted-foreground">{clip.text_target ? `由这个字效显示${textRoles[clip.text_target]}${bilingual ? sampleLines > 1 ? "的两组中英字幕" : "的中英两行（上栏中文、下栏英文）" : ""}：文字与关键词取自${textRoles[clip.text_target]}${bilingual ? "和它的英文译文" : ""}，时间跟随它。` : legacyTextTarget ? `当前与 IMS ${textRoles[legacyTextTarget]}同时显示。重新选择作用对象后，将改为仅显示 Remotion 字效。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
-        {bilingual && <p className="text-[11px] text-muted-foreground">双语字效同时显示中英两种语言，只能作用于中文对象。绑定后自动启用双语并在合成时翻译实际文案；中英文示例仅用于预览，无需另绑英文字效。</p>}
+        <p className="text-[11px] text-muted-foreground">{legacyTextTarget ? `当前与 IMS ${textRoles[legacyTextTarget]}同时显示。重新选择作用对象后，将改为仅显示 Remotion 字效。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
       </div> : isTransition ? <div className="space-y-2">
         <h3 className="text-xs font-medium">转场 {clip.transition_boundary}</h3>
         <p className="text-[11px] text-muted-foreground">使用资产自身持续时间，选择方式在「镜头转场」中设置。</p>

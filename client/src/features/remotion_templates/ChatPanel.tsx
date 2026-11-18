@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Hint } from "@/components/Hint";
 import { Textarea } from "@/components/ui/textarea";
-import { apiUrl } from "./api";
+import { image as localImage } from "./localSessions";
 import { FIXED_COMPOSITION } from "./composition";
 import { DurationPicker } from "./DurationPicker";
 import { LoopRounds } from "./LoopRounds";
@@ -35,6 +35,24 @@ function ReferenceImage({ file }: { file: File }) {
       className="max-h-32 max-w-full rounded-lg object-contain"
     />
   );
+}
+
+/** 历史图片读 SQLite/IndexedDB，兼容旧图片的一次迁移；取消和卸载释放 URL。 */
+function StoredReferenceImage({ id }: { id: string }) {
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    let value = "";
+    void localImage(id).then((bytes) => {
+      if (!active) return;
+      value = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/png" }));
+      setUrl(value);
+    }).catch((error: unknown) => { if (active) setError(error instanceof Error ? error.message : "图片读取失败"); });
+    return () => { active = false; if (value) URL.revokeObjectURL(value); };
+  }, [id]);
+  return error ? <span role="alert" className="text-xs text-destructive">{error}</span> :
+    <img src={url || undefined} alt="历史参考图片" className="max-h-32 max-w-full rounded-lg object-contain" />;
 }
 
 /** 发送、图片和停止操作由工作区的统一任务锁控制；disabledReason 说明锁定原因与恢复时机。 */
@@ -182,7 +200,7 @@ export function ChatPanel({
       className={cn("studio-chat flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-surface", !messages.length && "studio-chat-empty")}
     >
       <div className="flex h-14 shrink-0 items-center gap-2 border-b px-5 text-sm font-medium">
-        <Sparkles className="size-4 text-brand" /> AI 字效{" "}
+        <Sparkles className="size-4 text-brand" /> 创作对话{" "}
         <span className="ml-auto text-xs font-normal text-muted-foreground">
           当前会话
         </span>
@@ -214,7 +232,7 @@ export function ChatPanel({
         {!messages.length && (
           <div className="flex flex-col items-center justify-center gap-3 pt-4 text-center text-sm">
             <LogoMark className="mb-2 size-11" />
-            <h2 className="text-[23px] font-semibold tracking-tight">把想法，变成画面</h2>
+            <h2 aria-label="把想法，变成画面" className="sketch-text text-[28px]">把想法，变成画面</h2>
             <p className="max-w-72 leading-6 text-muted-foreground">
               描述文字、颜色、位置和出场方式，也可以上传、拖入或粘贴参考图片。
             </p>
@@ -256,12 +274,7 @@ export function ChatPanel({
                       <ReferenceImage key={index} file={file} />
                     ))}
                     {message.image_asset_ids?.map((id) => (
-                      <img
-                        key={id}
-                        src={apiUrl(`/assets/${encodeURIComponent(id)}`)}
-                        alt="历史参考图片"
-                        className="max-h-32 max-w-full rounded-lg object-contain"
-                      />
+                      <StoredReferenceImage key={id} id={id} />
                     ))}
                   </div>
                 )}
@@ -276,6 +289,17 @@ export function ChatPanel({
                 <p className="whitespace-pre-wrap break-words">
                   {message.text || "请参考这张图片制作字效。"}
                 </p>
+                {/* 最新回复里的建议方向：点选即作为下一条指令发送，与输入框发送同样受任务锁约束。 */}
+                {message.role === "assistant" && !!message.suggestions?.length && index === messages.length - 1 && (
+                  <div className="flex flex-wrap gap-2" aria-label="可选的修改方向">
+                    {message.suggestions.map((suggestion) => (
+                      <Button key={suggestion} type="button" variant="outline" size="sm" className="h-auto whitespace-normal py-1 text-left text-xs"
+                        disabled={disabled} onClick={() => onSend(suggestion, [])}>
+                        {suggestion}
+                      </Button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
             {message.job_id &&

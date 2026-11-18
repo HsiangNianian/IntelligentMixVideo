@@ -43,26 +43,27 @@ _RENDER_CHECKS = _CODE_CHECKS + ("default_render", "configured_render")
 _TRANSPARENCY_CHECKS = _RENDER_CHECKS + ("transparency",)
 # 字效另要求最长文字排版检查，位于其余可选阶段之后。
 _TEXT_FIT_CHECK = "text_fit"
+# 自由组件（Effect.tsx）的契约探针：注入内容、关键词选项、中间帧、字号与参数接线，位于排版检查之后。
+_EFFECT_CONTRACT_CHECK = "effect_contract"
 _FAILED_STATUSES = {"failed", "fail", "error"}
 
 # 总线渲染 Sprite 时传入的时长范围（秒）；Agent 生成时选的时长只用于预览，最终时长由合成决定。
 MIN_RENDER_SECONDS = 0.5
 MAX_RENDER_SECONDS = 120
-# 字效（标题、字幕）显示不足这个时长时不播出入场，定格在预览长度的中间帧（见 sprite_render）：出入场通常共需
-# 0.6～1.3 秒，更短的字幕几乎看不到完整画面，还会闪烁。所以字效从不按更短的长度播放。
-STATIC_TEXT_SECONDS = 1.5
 
 
 class FrameCapture(NamedTuple):
     """Still frames of a validated mount for the Agent to look at: the ``frames`` to capture, the canvas ``box`` to cut
     them to at ``scale``, and the ``directory`` that receives them as `frame-<n>.png` once every check has passed;
-    ``parameters`` are mounted over the configured values for them (such as sample keywords)."""
+    ``parameters`` are mounted over the configured values for them (such as sample keywords); ``trace`` lists the frames on which
+    the worker also measures each line and keyword from the running code, written to `motion.json` beside the frames."""
 
     frames: list[int]
     box: dict[str, float]
     scale: float
     directory: Path
     parameters: dict[str, Any] | None = None
+    trace: list[int] | None = None
 
 
 class FitSprite(NamedTuple):
@@ -77,10 +78,10 @@ class FitSprite(NamedTuple):
 def render_lengths(fps: int, *, text: bool = False) -> list[int]:
     """Sprite 可能按自身长度播放的最短与最长帧数，秒转帧与叠加渲染一致（半帧向后取整）；生成与发布在预览长度之外也挂载它们。
 
-    字效更短时会被定格，所以它的最短长度是 `STATIC_TEXT_SECONDS`，其他分类是 `MIN_RENDER_SECONDS`。
+    字幕切片可以只有一帧；能自行处理动态时长的字效必须在这一边界也不抛错。
     """
-    shortest = STATIC_TEXT_SECONDS if text else MIN_RENDER_SECONDS
-    return [max(1, math.floor(seconds * fps + 0.5)) for seconds in (shortest, MAX_RENDER_SECONDS)]
+    return [1 if text else max(1, math.floor(MIN_RENDER_SECONDS * fps + 0.5)),
+            max(1, math.floor(MAX_RENDER_SECONDS * fps + 0.5))]
 
 
 def _reported_stages(checks: list[Any], stages: tuple[str, ...]) -> tuple[str, ...] | None:
@@ -238,6 +239,7 @@ class ToolValidator:
     async def validate_render(
         self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
         capture: FrameCapture | None = None, text_fit_parameters: dict[str, bool] | None = None,
+        effect_contract: dict[str, Any] | None = None,
     ) -> RenderValidationReport:
         """Run fixed-canvas default/configured mounts and each independent behavior script.
 
@@ -250,6 +252,9 @@ class ToolValidator:
         by them. With ``capture`` the same mount also captures still frames into ``capture.directory`` when every
         check passes; a failed report captures none. ``text_fit_parameters`` marks host-composed still text and
         disables its cue wrappers for layout measurements; it never changes runtime or review frames.
+        ``effect_contract`` runs the contract probes of a free-form effect (`tools/workspace.contract_probes`) after the
+        other checks. Required content/layout violations and runtime errors fail ``effect_contract``; an unchanged
+        parameter sample is advisory, carried in the passed check's message and does not prevent frame capture.
         """
         if request.duration_frames > 216000:
             raise ValueError("duration_frames exceeds the validation resource limit")
@@ -295,8 +300,10 @@ class ToolValidator:
             payload_request["lengths"] = lengths
         if text_fit and text_fit_parameters is not None:
             payload_request["text_fit_parameters"] = text_fit_parameters
+        if effect_contract is not None:
+            payload_request["effect_contract"] = effect_contract
         if capture:
-            payload_request["capture"] = {"frames": capture.frames, "box": capture.box, "scale": capture.scale, "parameters": capture.parameters or {}}
+            payload_request["capture"] = {"frames": capture.frames, "box": capture.box, "scale": capture.scale, "parameters": capture.parameters or {}, **({"trace": capture.trace} if capture.trace else {})}
         (directory / "request.json").write_text(json.dumps(payload_request), encoding="utf-8")
         try:
             payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs")
@@ -304,7 +311,7 @@ class ToolValidator:
             raise ValidationUnavailable(str(exc)) from exc
         if capture and (directory / "frames").is_dir():
             capture.directory.mkdir(parents=True, exist_ok=True)
-            for frame in (directory / "frames").glob("frame-*.png"):
+            for frame in [*(directory / "frames").glob("frame-*.png"), *(directory / "frames").glob("motion.json")]:
                 shutil.move(frame, capture.directory / frame.name)
         raw_checks = payload.get("checks")
         if not isinstance(raw_checks, list):
@@ -315,6 +322,7 @@ class ToolValidator:
                 raise ValidationUnavailable(str(item.get("message") or "Render validation worker runtime error"))
         stages = (_TRANSPARENCY_CHECKS if transparency else _RENDER_CHECKS) + (("render_lengths",) if lengths else ())
         stages += (_TEXT_FIT_CHECK,) if text_fit else ()
+        stages += (_EFFECT_CONTRACT_CHECK,) if effect_contract is not None else ()
         if _reported_stages(raw_checks, stages) is None:
             raise ValidationUnavailable("Render validation worker returned an incomplete report")
         expected_tests = [test.name for test in request.tests]
@@ -448,7 +456,7 @@ class ToolValidator:
 
         ``composition`` is the version canvas (width, height, fps, duration_frames); each sample carries complete
         ``values`` and a host ``transform`` applied around ``box``, and is mounted at the preview length and at the
-        shortest and longest render length (a ``text`` effect's shortest is the static threshold, see `render_lengths`). A failed code stage is reported as that check alone; a report that
+        shortest and longest render length (a ``text`` effect's shortest is one frame, see `render_lengths`). A failed code stage is reported as that check alone; a report that
         cannot be read at all is an infrastructure failure.
         """
         try:

@@ -1,6 +1,6 @@
 /**
  * 主页「开始创作」的两张入口卡片：新建云端模板、AI 生成字效。
- * 两幅插图同一构图：右上一枚小标签，右下是主体画面，画面都用同一族靛蓝深色「视频画面」；悬停时标签上浮、画面有轻微动作。
+ * 两幅插图同一构图：右上一枚小标签，右下是主体画面，画面都用同一族石墨色「视频画面」；悬停时标签上浮、画面有轻微动作。
  * AI 卡片以淡淡的强调色底区分，插图是提示词标签与它生成的字效画面：悬停时提示词逐字重打、光泽扫过字效。
  */
 import type { ReactNode } from "react";
@@ -12,7 +12,7 @@ interface CreateCardsProps {
   onOpenEffects: () => void;
 }
 
-/** 两张卡片横排，窄于 960px 时纵向堆叠。 */
+/** 两张卡片横排，窄于 1024px 时纵向堆叠，小于 640px 隐藏插图以保留文字空间。 */
 export function CreateCards({ onCreateCloud, onOpenEffects }: CreateCardsProps) {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -52,7 +52,7 @@ function EntryCard({ icon, iconClassName, title, description, art, onClick, clas
         className,
       )}
     >
-      <span className="relative z-10 flex min-w-0 max-w-[62%] flex-1 flex-col">
+      <span className="relative z-10 flex min-w-0 max-w-[62%] flex-1 flex-col max-sm:max-w-full">
         <span className={cn("flex size-10 items-center justify-center rounded-xl bg-raised text-fg [&_svg]:size-[21px]", iconClassName)}>{icon}</span>
         <span className="mt-auto text-[15px] font-semibold tracking-tight">{title}</span>
         <span className="mt-1 flex items-center gap-1.5 text-[12.5px] text-fg-muted">
@@ -60,16 +60,16 @@ function EntryCard({ icon, iconClassName, title, description, art, onClick, clas
           <Icon name="arrow-right" className="size-3.5 shrink-0 text-fg-subtle transition-[transform,color] duration-200 group-hover:translate-x-1 group-hover:text-brand" />
         </span>
       </span>
-      <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-0 w-[46%]">{art}</span>
+      <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-0 w-[46%] max-sm:hidden">{art}</span>
     </button>
   );
 }
 
-/** 插图里的「视频画面」：同一族靛蓝深色渐变，tone 只微调色相与明暗，两张卡片的画面因此统一。 */
+/** 插图里的「视频画面」：同一族石墨色渐变，tone 只微调色相与明暗，两张卡片的画面因此统一。 */
 const footage = [
-  "radial-gradient(90% 60% at 25% 8%, oklch(0.62 0.11 268 / 0.55), transparent 65%), linear-gradient(160deg, oklch(0.4 0.07 266), oklch(0.19 0.035 280))",
-  "radial-gradient(90% 60% at 25% 8%, oklch(0.6 0.09 250 / 0.5), transparent 65%), linear-gradient(160deg, oklch(0.36 0.06 252), oklch(0.17 0.03 262))",
-  "radial-gradient(90% 60% at 25% 8%, oklch(0.62 0.1 292 / 0.5), transparent 65%), linear-gradient(160deg, oklch(0.38 0.07 290), oklch(0.18 0.035 300))",
+  "radial-gradient(90% 60% at 25% 8%, oklch(0.62 0.008 85 / 0.55), transparent 65%), linear-gradient(160deg, oklch(0.4 0.008 85), oklch(0.19 0.008 85))",
+  "radial-gradient(90% 60% at 25% 8%, oklch(0.6 0.008 85 / 0.5), transparent 65%), linear-gradient(160deg, oklch(0.36 0.008 85), oklch(0.17 0.008 85))",
+  "radial-gradient(90% 60% at 25% 8%, oklch(0.62 0.008 85 / 0.5), transparent 65%), linear-gradient(160deg, oklch(0.38 0.008 85), oklch(0.18 0.008 85))",
 ];
 
 /** 悬停动作共用的回弹曲线，带一点过冲。 */
@@ -91,21 +91,21 @@ function Frame({ tone = 0, className }: { tone?: number; className?: string }) {
  * 插图右上角的小标签：白底细边，与 AI 卡片的提示词气泡同一位置，悬停时一起上浮。
  * 窄窗口下卡片变矮变宽，标签改到主体画面左侧并垂直居中，避免被画面挡住。
  */
-const chipPlace = "right-5 top-6 max-lg:right-[184px] max-lg:top-[calc(50%-14px)]";
+const chipPlace = "right-5 top-6 max-lg:right-5 max-lg:top-3 max-sm:hidden";
 
 function Chip({ children }: { children: ReactNode }) {
   return (
-    <span className={cn(chipPlace, "absolute flex h-7 items-center gap-1.5 rounded-full bg-surface pl-1.5 pr-2.5 text-[11px] text-fg-muted shadow-lift ring-1 ring-line transition-transform duration-300 group-hover:-translate-y-1")}>
+    <span className={cn(chipPlace, "absolute flex h-7 items-center whitespace-nowrap gap-1.5 rounded-full bg-surface pl-1.5 pr-2.5 text-[11px] text-fg-muted shadow-lift ring-1 ring-line transition-transform duration-300 group-hover:-translate-y-1")}>
       {children}
     </span>
   );
 }
 
-/** 团队头像：三枚冷色渐变圆点，示意多人共用。 */
+/** 团队头像：三枚石墨色渐变圆点，示意多人共用。 */
 const avatars = [
-  "from-[oklch(0.8_0.09_225)] to-[oklch(0.6_0.15_258)]",
-  "from-[oklch(0.76_0.11_285)] to-[oklch(0.56_0.18_300)]",
-  "from-[oklch(0.84_0.07_195)] to-[oklch(0.62_0.12_232)]",
+  "from-[oklch(0.8_0.008_85)] to-[oklch(0.6_0.008_85)]",
+  "from-[oklch(0.76_0.008_85)] to-[oklch(0.56_0.008_85)]",
+  "from-[oklch(0.84_0.008_85)] to-[oklch(0.62_0.008_85)]",
 ];
 
 /** 云端插图：右上是团队头像与「团队共享」，下方三张竖屏画面扇形展开，悬停时展得更开。 */

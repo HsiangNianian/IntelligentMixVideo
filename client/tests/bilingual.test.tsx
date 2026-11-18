@@ -153,24 +153,25 @@ test("停用英文配置通过 Protobuf 请求和 JSON 响应往返", async () =
   expect(saved.clips).toEqual(draft.clips);
 });
 
-// 场景：实际工作区提供两个独立开关；英文可以单独编辑，关闭时从对象列表隐藏，重新开启恢复字体大小。
+// 场景：英文统一由画面对象进入编辑，不重复提供快捷按钮；关闭时隐藏对象，重新开启恢复字体大小。
 test("工作区双语开关保留英文设置", async () => {
   fetchMock.mockImplementation((async (_url) => jsonTemplateResponse(savedTemplate(), "get")) as typeof fetch);
   render(<TemplateWorkspace selection={{ templateId: savedTemplate().template_id }} onHome={() => {}} />);
-  fireEvent.click(await screen.findByRole("checkbox", { name: "中英双语" }));
-  fireEvent.click(screen.getAllByRole("button", { name: "编辑英文标题" })[0]);
+  fireEvent.click(await screen.findByRole("tab", { name: "外观与效果" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "中英双语" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑英文标题" }));
   fireEvent.click(screen.getByRole("tab", { name: "外观与效果" }));
   expect(screen.queryByRole("tab", { name: "时间设置" })).toBeNull();
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "55" } });
   fireEvent.click(screen.getByRole("checkbox", { name: "中英双语" }));
   expect(screen.queryByRole("button", { name: "编辑英文标题" })).toBeNull();
   fireEvent.click(screen.getByRole("checkbox", { name: "中英双语" }));
-  fireEvent.click(screen.getAllByRole("button", { name: "编辑英文标题" })[0]);
+  fireEvent.click(screen.getByRole("button", { name: "编辑英文标题" }));
   expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("55");
   fireEvent.click(screen.getByRole("button", { name: "编辑底部字幕" }));
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" }).checked).toBe(false);
   fireEvent.click(screen.getByRole("checkbox", { name: "中英双语" }));
-  expect(screen.getAllByRole("button", { name: "编辑英文字幕" }).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole("button", { name: "编辑英文字幕" })).toHaveLength(1);
 });
 
 // 场景：选中英文字幕后右栏直接提供「用 Remotion 字效显示」，不必先去左侧 AI 资产里找资产；绑定后右栏交给字效设置
@@ -200,7 +201,7 @@ test("右栏可直接把英文字幕改由 Remotion 字效显示", async () => {
   fireEvent.click(screen.getAllByRole("button", { name: "编辑英文字幕" })[0]);
   fireEvent.click(await screen.findByRole("combobox", { name: "用 Remotion 字效显示" }));
   fireEvent.click(await screen.findByRole("option", { name: /金色字幕/ }));
-  // 绑定后右栏改由字效设置接管，字效的字体在「外观与位置」里换。
+  // 绑定后右栏改由字效设置接管，字效的字体在「外观与效果」里换。
   expect(await screen.findByRole("region", { name: "AI 资产设置" })).toBeTruthy();
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await waitFor(() => expect(request).toBeDefined());

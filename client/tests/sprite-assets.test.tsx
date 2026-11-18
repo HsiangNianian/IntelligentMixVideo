@@ -338,21 +338,31 @@ test("添加画布不一致的资产时提示原因", async () => {
 });
 
 
-// 场景：字效作用于当前选择的文字对象（默认标题），不另开时间轴行：列表注明作用对象，设置里不再单独提供文字与关键词；改为作用于底部字幕后随模板保存。
-test("字效作用于文字对象并可改为字幕", async () => {
+// 场景：先选字幕再选字效即完成绑定；画面对象展示资产描述，不重复列 AI 资产，也不要求再次选择作用对象。
+test("字效归入所选字幕并随模板保存绑定", async () => {
   const { template, saved } = sprites({ catalog: [textAsset()] });
   render(<TemplateWorkspace selection={{ templateId: template.template_id }} onHome={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: "编辑底部字幕" }));
   const catalog = await openAssets();
   fireEvent.click(await within(catalog).findByRole("button", { name: "添加 AI 资产：金色标题" }));
-  const item = await screen.findByRole("listitem", { name: "AI 资产：金色标题" });
-  expect(item.textContent).toContain("顶部标题字效");
-  fireEvent.click(within(item).getByRole("button", { name: "设置 AI 资产：金色标题" }));
-  const inspector = await screen.findByRole("region", { name: "AI 资产设置" });
-  expect(within(inspector).queryByLabelText("标题文字")).toBeNull();
-  expect(within(inspector).queryByRole("combobox", { name: "Remotion 合成用途" })).toBeNull();
+  const object = screen.getByRole("button", { name: "编辑底部字幕", pressed: true });
+  expect(object.textContent).toContain("AI 字效 · 金色标题");
+  expect(object.textContent).not.toContain("未设置效果");
+  expect(screen.queryByRole("region", { name: "已添加 AI 资产" })).toBeNull();
+  fireEvent.click(object);
+  const inspector = screen.getByRole("region", { name: "AI 资产设置" });
+  expect(within(inspector).getByRole("heading", { name: "底部字幕" })).toBeTruthy();
+  expect(inspector.querySelector('[data-object="subtitle"]')).toBeTruthy();
+  expect(within(inspector).queryByRole("radiogroup", { name: "字效作用对象" })).toBeNull();
   expect(within(inspector).getByLabelText("字号")).toBeTruthy();
-  fireEvent.click(within(inspector).getByRole("radio", { name: "底部字幕" }));
-  await waitFor(() => expect(screen.getByRole("listitem", { name: "AI 资产：金色标题" }).textContent).toContain("底部字幕字效"));
+  fireEvent.click(screen.getByRole("tab", { name: "关键词设置" }));
+  expect(screen.queryByRole("checkbox", { name: "中英双语" })).toBeNull();
+  fireEvent.click(screen.getByRole("tab", { name: "外观与效果" }));
+  expect(screen.getByRole("checkbox", { name: "中英双语" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("checkbox", { name: "中英双语" }));
+  expect(within(inspector).queryByRole("button", { name: "编辑英文字幕" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "编辑英文字幕" }));
+  expect(screen.getByRole("region", { name: "画面对象设置" })).toBeTruthy();
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await waitFor(() => expect(saved).toHaveLength(1));
   expect(wireClips(saved[0]).map((clip) => [clip.textTarget, clip.transitionBoundary])).toEqual([["subtitle", undefined]]);
@@ -394,8 +404,8 @@ async function openTextClip(clip: Partial<RemotionClip> = {}, lineCount = 1, ext
   });
   const remotion = { opened: 0 };
   render(<><TemplateWorkspace selection={{ templateId: fixture.template.template_id }} onHome={() => {}} onOpenRemotion={() => { remotion.opened += 1; }} /><Toaster /></>);
-  const item = await screen.findByRole("listitem", { name: "AI 资产：金色标题" });
-  fireEvent.click(within(item).getByRole("button", { name: "设置 AI 资产：金色标题" }));
+  if (clip.text_target) fireEvent.click(await screen.findByRole("button", { name: clip.text_target === "title" ? "编辑顶部标题" : "编辑底部字幕" }));
+  else fireEvent.click(await screen.findByRole("button", { name: "设置 AI 资产：金色标题" }));
   const inspector = await screen.findByRole("region", { name: "AI 资产设置" });
   return { ...fixture, inspector, remotion };
 }
@@ -412,7 +422,7 @@ test("目录里的多行字效在模板中逐行填写字幕示例并调整行�
   expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.numberValue]))).toEqual([[["lineGap", 60]]]);
 });
 
-// 场景：双栏字效作用于标题时同样逐栏填写示例（合成按标题里的换行分栏）；逐栏字号比例和字效工作区的配置一样在「外观与位置」里按这次摆放调整，不列入资产默认参数，并随模板保存。
+// 场景：双栏字效作用于标题时同样逐栏填写示例（合成按标题里的换行分栏）；逐栏字号比例和字效工作区的配置一样在「外观与效果」里按这次摆放调整，不列入资产默认参数，并随模板保存。
 test("双栏字效作用于标题时逐栏填写示例并调整逐栏字号比例", async () => {
   const { inspector, saved } = await openTextClip({ text_target: "title" }, 2);
   fireEvent.change(within(inspector).getByLabelText("示例文字第 1 行"), { target: { value: "判断一个人" } });
@@ -427,7 +437,7 @@ test("双栏字效作用于标题时逐栏填写示例并调整逐栏字号比�
   expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.numberValue]))).toEqual([[["line1SizeRatio", 0.8]]]);
 });
 
-// 场景：字效特效的开关、作用位置与时长和字效工作区的「特效」一样在「外观与位置」里按这次摆放调整，位置显示中文名称；不列入资产默认参数，并随模板保存。
+// 场景：字效特效的开关、作用位置与时长和字效工作区的「特效」一样在「外观与效果」里按这次摆放调整，位置显示中文名称；不列入资产默认参数，并随模板保存。
 test("字效特效的开关、位置与时长在模板里按摆放调整", async () => {
   const { inspector, saved } = await openTextClip({ text_target: "title" }, 2, FADE_IN_PARAMETERS);
   const effects = within(inspector).getByRole("heading", { name: "特效" }).parentElement!;
@@ -438,6 +448,20 @@ test("字效特效的开关、位置与时长在模板里按摆放调整", async
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await waitFor(() => expect(saved).toHaveLength(1));
   expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.boolValue ?? item.numberValue]))).toEqual([[["effect1", false], ["effect1Seconds", 1.2]]]);
+});
+
+// 场景：自由组件的样式参数带分组（发布时的 group）：模板编辑按分组成卡片（以分组名为标题）并按这次摆放调整，不列入资产默认参数，随模板保存。
+test("自由组件按分组声明的样式参数在模板里成卡片并按摆放调整", async () => {
+  const grouped: MessageInitShape<typeof SpriteParameterSchema>[] = [
+    { key: "riseDistance", label: "上浮距离", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 0.6 } }, minimum: 0, maximum: 2, group: "入场·上浮" },
+  ];
+  const { inspector, saved } = await openTextClip({ text_target: "title" }, 1, grouped);
+  const card = within(inspector).getByRole("region", { name: "入场·上浮" });
+  expect(within(inspector).getByRole("heading", { name: "资产默认参数" }).closest("fieldset")!.textContent).not.toContain("上浮距离");
+  fireEvent.change(within(card).getByLabelText("上浮距离"), { target: { value: "1.5" } });
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.numberValue]))).toEqual([[["riseDistance", 1.5]]]);
 });
 
 // 场景：双语能力优先于手动分类和名称，单组/双组归同一独立分类；普通字效保留旧归类，搜索与分类共同筛选。
@@ -477,8 +501,8 @@ test("AI 资产目录按六类分栏，双语字效独立且兼容旧字效名�
   }
 });
 
-// 场景：两个添加入口与后续改绑均开启对应双语，英文对象也不能误关；保存协议携带启用状态。
-test.each(["资产目录", "右侧选择"])("双语字效从%s添加及改绑时自动开启翻译", async (entry) => {
+// 场景：两个添加入口都自动绑定字幕并开启双语，英文对象不能误关；不再显示改绑控件，保存协议携带原绑定。
+test.each(["资产目录", "右侧选择"])("双语字效从%s添加时自动绑定并开启翻译", async (entry) => {
   const { template, saved } = sprites({ catalog: [bilingualAsset()] });
   render(<TemplateWorkspace selection={{ templateId: template.template_id }} onHome={() => {}} />);
   fireEvent.click(await screen.findByRole("button", { name: "编辑底部字幕" }));
@@ -497,16 +521,16 @@ test.each(["资产目录", "右侧选择"])("双语字效从%s添加及改绑时
   fireEvent.click(screen.getAllByRole("button", { name: "编辑英文字幕" })[0]);
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" }).disabled).toBe(true);
   expect(screen.getByText("双语字效请绑定中文标题或字幕，它会同时显示对应英文。")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "设置 AI 资产：中英字幕" }));
-  fireEvent.click(screen.getByRole("radio", { name: "顶部标题" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑中文字幕" }));
+  expect(screen.queryByRole("radiogroup", { name: "字效作用对象" })).toBeNull();
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" }).checked).toBe(true);
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" }).disabled).toBe(true);
   expect(screen.getByRole<HTMLInputElement>("textbox", { name: "示例文字（英文）" }).disabled).toBe(false);
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await waitFor(() => expect(saved).toHaveLength(1));
   const tracks = saved[0].tracks!.tracks;
-  expect(tracks.filter((track) => track.language === "en").map((track) => [track.target, track.enabled !== false])).toEqual([["subtitle", true], ["title", true]]);
-  expect(tracks.find((track) => track.target === "remotion")?.textTarget).toBe("title");
+  expect(tracks.filter((track) => track.language === "en").map((track) => [track.target, track.enabled !== false])).toEqual([["subtitle", true]]);
+  expect(tracks.find((track) => track.target === "remotion")?.textTarget).toBe("subtitle");
 });
 
 // 场景：移除双语字效后不擅自删除英文设置，恢复手动开关后可关闭该对象的翻译。
@@ -516,8 +540,9 @@ test("移除双语字效后恢复手动控制翻译", async () => {
   const catalog = await openAssets();
   fireEvent.click(await within(catalog).findByRole("button", { name: "添加 AI 资产：中英字幕" }));
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" }).disabled).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "移除 AI 资产：中英字幕" }));
+  fireEvent.click(screen.getByRole("button", { name: "移除这个资产" }));
   fireEvent.click(screen.getByRole("button", { name: "编辑中文标题" }));
+  fireEvent.click(screen.getByRole("tab", { name: "外观与效果" }));
   const toggle = screen.getByRole<HTMLInputElement>("checkbox", { name: "中英双语" });
   expect(toggle.disabled).toBe(false);
   expect(toggle.checked).toBe(true);
@@ -541,7 +566,7 @@ test("字效在模板里只调示例文字、字号与位置，其余参数回�
   fireEvent.click(within(inspector).getByRole("button", { name: "恢复默认：字号" }));
   expect(within(inspector).queryByRole("button", { name: "恢复默认：字号" })).toBeNull();
   fireEvent.change(within(inspector).getByLabelText("水平位置 %"), { target: { value: "25" } });
-  expect(within(screen.getByRole("listitem", { name: "AI 资产：金色标题" })).getByText(/已调整参数/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "编辑顶部标题" }).textContent).toContain("已调整参数");
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await waitFor(() => expect(saved).toHaveLength(1));
   const [clip] = wireClips(saved[0]);
@@ -556,7 +581,7 @@ test("选中被接管的标题打开字效设置而不是 IMS 面板，时间在
   const inspector = await screen.findByRole("region", { name: "AI 资产设置" });
   expect(screen.queryByRole("region", { name: "画面对象设置" })).toBeNull();
   const tabs = within(inspector).getAllByRole("tab");
-  expect(tabs.map((tab) => tab.textContent)).toEqual(["外观与位置", "时间设置", "关键词设置"]);
+  expect(tabs.map((tab) => tab.textContent)).toEqual(["外观与效果", "时间设置", "关键词设置"]);
   fireEvent.click(tabs[1]);
   expect(within(inspector).getByLabelText("开始时间 / 秒")).toBeTruthy();
 });
@@ -565,7 +590,7 @@ test("选中被接管的标题打开字效设置而不是 IMS 面板，时间在
 test("关键词参数集中在「关键词设置」页签并随模板保存", async () => {
   const { saved, inspector } = await openTextClip();
   const tabs = within(inspector).getAllByRole("tab");
-  expect(tabs.map((tab) => tab.textContent)).toEqual(["外观与位置", "关键词设置"]);
+  expect(tabs.map((tab) => tab.textContent)).toEqual(["外观与效果", "关键词设置"]);
   expect(within(inspector).getByLabelText("关键词").closest("fieldset")!.hidden).toBe(true);
   fireEvent.click(tabs[1]);
   const panel = within(inspector).getByLabelText("关键词").closest("fieldset")!;
@@ -610,7 +635,7 @@ test("只有字效显示「关键词设置」页签，旧字效提示重新生�
   }
 });
 
-// 场景：切换到另一个字效片段时页签回到「外观与位置」；非字效资产以 keyword 开头的参数同样不在模板里调整。
+// 场景：切换到另一个字效片段时页签回到「外观与效果」；非字效资产以 keyword 开头的参数同样不在模板里调整。
 test("切换片段重置页签，非字效的 keyword 参数不进入关键词页签", async () => {
   const effect = summary("sprite-v", SpriteKind.VIDEO_OVERLAY, false, [
     { key: "keywordGlow", label: "关键光晕", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 0.5 } }, minimum: 0, maximum: 1 },
@@ -627,7 +652,7 @@ test("切换片段重置页签，非字效的 keyword 参数不进入关键词�
   expect(screen.getByRole("tab", { name: "关键词设置" }).getAttribute("aria-selected")).toBe("true");
   // 审计复现：右栏不随片段重建时，上一个片段选中的页签会带到下一个片段。
   fireEvent.click(second);
-  expect(screen.getByRole("tab", { name: "外观与位置" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("tab", { name: "外观与效果" }).getAttribute("aria-selected")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "设置 AI 资产：霓虹标题" }));
   const inspector = screen.getByRole("region", { name: "AI 资产设置" });
   expect(within(inspector).queryByRole("tab")).toBeNull();
@@ -649,7 +674,7 @@ test("关键词字效参数不在模板里调整，只列在资产默认参数",
   fireEvent.click(within(inspector).getByRole("tab", { name: "关键词设置" }));
   expect(within(inspector).getByLabelText("关键词")).toBeTruthy();
   expect(within(inspector).queryByLabelText("关键词弹跳幅度") === null).toBe(true);
-  fireEvent.click(within(inspector).getByRole("tab", { name: "外观与位置" }));
+  fireEvent.click(within(inspector).getByRole("tab", { name: "外观与效果" }));
   expect(within(inspector).getByRole("heading", { name: "资产默认参数" }).closest("fieldset")!.textContent).toContain("关键词弹跳幅度");
 });
 
@@ -1012,6 +1037,7 @@ test.each([
     // 断言工作区经真实叠加组件发出的摆放，而非复写坐标公式。
     const placement = () => post.mock.calls.map(([message]) => message).filter((message) => message.type === "imv-preview-update").at(-1)?.host.transform;
     await waitFor(() => expect(placement()).toEqual({ ...transform, x: 540, y: expect.closeTo(y, 4) }));
+    fireEvent.click(screen.getByRole("tab", { name: "画面布局" }));
     fireEvent.change(screen.getByLabelText(`${language === "en" ? "英文" : "中文"}字幕垂直位置 Y %`), { target: { value: "60" } });
     await waitFor(() => expect(placement()).toEqual({ ...transform, x: 540, y: 1152 }));
     fireEvent.click(screen.getByText("启用同屏"));
@@ -1221,4 +1247,30 @@ test("当前模板摆放的资产禁止删除", async () => {
   expect(document.getElementById("sprite-in-use-sprite-1")).toBeNull();
   fireEvent.click(remove("霓虹标题"));
   expect(await screen.findByRole("dialog", { name: "删除 AI 资产" })).toBeTruthy();
+});
+
+// 场景：尚无新绑定字段的旧字效继续独立显示；主动绑定后并入对象，保留原资产而不新建重复摆放。
+test("旧字效补绑定后并入画面对象", async () => {
+  const { saved, inspector } = await openTextClip();
+  expect(within(inspector).getByText(/请选择作用的标题或底部字幕/)).toBeTruthy();
+  fireEvent.click(within(inspector).getByRole("radio", { name: "底部字幕" }));
+  expect(screen.queryByRole("region", { name: "已添加 AI 资产" })).toBeNull();
+  expect(screen.queryByRole("radiogroup", { name: "字效作用对象" })).toBeNull();
+  expect(screen.getByRole("button", { name: "编辑底部字幕", pressed: true }).textContent).toContain("AI 字效 · 金色标题");
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(wireClips(saved[0]).map((clip) => [clip.id, clip.textTarget])).toEqual([["clip-t", "subtitle"]]);
+});
+
+// 场景：已绑定的资产不可用时仍能从对象进入并移除字效，字幕对象和原 IMS 设置保留。
+test("画面对象中的失效字效可以移除", async () => {
+  const { template } = sprites({ catalog: [], clips: [{ id: "lost", sprite_id: "gone", start: 0, duration: 3, parameters: {}, transform: {}, text_target: "subtitle" }] });
+  render(<TemplateWorkspace selection={{ templateId: template.template_id }} onHome={() => {}} />);
+  const object = await screen.findByRole("button", { name: "编辑底部字幕" });
+  await waitFor(() => expect(object.textContent).toContain("AI 字效已不可用"));
+  fireEvent.click(object);
+  fireEvent.click(screen.getByRole("button", { name: "移除这个资产" }));
+  expect(object.textContent).not.toContain("AI 字效");
+  fireEvent.click(object);
+  expect(screen.getByRole("region", { name: "画面对象设置" })).toBeTruthy();
 });

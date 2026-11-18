@@ -7,6 +7,7 @@ mod backend;
 mod diagnostics;
 mod file_lock;
 mod media_server;
+mod preview_snapshot;
 mod preview_videos;
 mod remotion_sessions;
 mod settings;
@@ -58,6 +59,7 @@ pub fn run() {
         .manage(remotion_sessions::Sessions::default())
         .invoke_handler(tauri::generate_handler![
             settings::local_settings,
+            preview_snapshot::preview_snapshot,
             preview_videos::preview_video_list,
             preview_videos::preview_video_write,
             media_server::preview_media_base,

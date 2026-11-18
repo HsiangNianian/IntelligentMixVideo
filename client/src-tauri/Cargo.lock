@@ -342,13 +342,18 @@ checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
 
 [[package]]
 name = "client"
-version = "0.9.21"
+version = "0.9.22"
 dependencies = [
  "base64 0.22.1",
+ "block2",
+ "cairo-rs",
  "chrono",
  "imv-update-build",
  "libc",
  "minisign-verify",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
  "prost",
  "reqwest",
  "rusqlite",
@@ -363,6 +368,7 @@ dependencies = [
  "tiny_http",
  "tokio",
  "uuid",
+ "webkit2gtk",
  "webview2-com",
  "windows-core",
 ]
@@ -2118,6 +2124,7 @@ dependencies = [
  "block2",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
  "objc2-quartz-core",
 ]

@@ -9,6 +9,25 @@ from server.video_composition.settings import Settings
 
 
 @pytest.mark.anyio
+async def test_dispatcher_scans_twelve_recovery_records_before_loading_credentials(monkeypatch):
+    """尚无凭据配置时也按十二个名额查询待恢复任务。"""
+    from server.video_composition import service
+
+    runtime = service.Runtime()
+    limits = []
+    async def scan(operation, active, limit):
+        """记录一次实际分发查询后退出循环，不创建业务任务。"""
+        assert operation is service.store.pending and not active
+        limits.append(limit)
+        runtime.stopping = True
+        runtime.wake.set()
+        return []
+    monkeypatch.setattr(runtime, "sync", scan)
+    await runtime._dispatch()
+    assert limits == [12]
+
+
+@pytest.mark.anyio
 async def test_official_sdk_async_request_and_response(composition_settings, monkeypatch):
     """通过真实 SDK 模型核对 API 动作、token、Timeline、输出规格和实际返回层级。"""
     # SDK 毫秒换算使用显式输入，不依赖集成测试为慢 CI 配置的等待余量。
@@ -24,7 +43,8 @@ async def test_official_sdk_async_request_and_response(composition_settings, mon
                                                "MediaURL": "https://test-output.oss-cn-shanghai.aliyuncs.com/actual.mp4"}}, "statusCode": 200}
 
     monkeypatch.setattr(provider.client, "call_api_async", call)
-    timeline = {"VideoTracks": [{"VideoTrackClips": [{"MediaURL": "https://media.test/片.mp4?x=a%2Fb"}]}]}
+    timeline = {"VideoTracks": [{"VideoTrackClips": [{"MediaURL": "https://media.test/片.mp4?x=a%2Fb",
+                                                      "MaskVideoUrl": "https://media.test/mask.mp4"}]}]}
     payload = submission("stable-task-uuid", timeline, composition_settings.output(), "test-vod.oss-cn-shanghai.aliyuncs.com")
     assert await provider.submit(payload) == {"JobId": "ims-123"}
     result = await provider.get("ims-123")
@@ -95,7 +115,7 @@ def test_defaults_do_not_require_operational_environment(composition_settings, m
     settings = Settings()
     assert settings.output() == {"width": 1080, "height": 1920, "fps": 30, "region_id": "cn-shanghai"}
     assert (settings.composition_concurrency, settings.composition_http_timeout_seconds,
-            settings.composition_poll_seconds) == (6, 30, 2)
+            settings.composition_poll_seconds) == (12, 30, 2)
     assert (settings.composition_asr_wait_seconds, settings.composition_match_wait_seconds,
             settings.composition_render_wait_seconds) == (1800, 30, 3600)
 

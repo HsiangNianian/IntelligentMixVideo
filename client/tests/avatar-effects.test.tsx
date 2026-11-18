@@ -152,6 +152,7 @@ test("工作区保存新增配置，抠像预览不覆盖原窗口圆角和边�
   fireEvent.click(await screen.findByRole("tab", { name: "蒙版" }));
   fireEvent.click(screen.getByRole("button", { name: "添加圆形蒙版" }));
   fireEvent.change(screen.getByLabelText("开场时长（秒）"), { target: { value: "2.5" } });
+  fireEvent.click(screen.getByRole("tab", { name: "画面布局" }));
   fireEvent.click(screen.getByText("启用同屏"));
   fireEvent.click(screen.getByText("同屏时去除数字人背景"));
   expect(screen.getByLabelText("数字人显示方式")).toBeTruthy();
@@ -172,7 +173,8 @@ test.each(["overlay", "circle"] as const)("工作区选择 %s 后保存模式和
     return jsonTemplateResponse(savedTemplate(), "save");
   }) as typeof fetch);
   render(<TemplateWorkspace selection={{ templateId: null, name: "叠加布局", description: "" }} onHome={() => {}} />);
-  fireEvent.click(await screen.findByText("启用同屏"));
+  fireEvent.click(await screen.findByRole("tab", { name: "画面布局" }));
+  fireEvent.click(screen.getByText("启用同屏"));
   fireEvent.change(screen.getByLabelText("同屏布局"), { target: { value: mode } });
   fireEvent.change(screen.getByLabelText("数字人X %"), { target: { value: "0" } });
   fireEvent.change(screen.getByLabelText("数字人Y %"), { target: { value: "70" } });
@@ -188,7 +190,7 @@ test.each(["overlay", "circle"] as const)("工作区选择 %s 后保存模式和
   const checkbox = screen.getByLabelText<HTMLInputElement>("同屏时去除数字人背景");
   expect(checkbox.checked).toBe(mode === "overlay");
   expect(checkbox.disabled).toBe(mode === "circle");
-  if (mode === "circle") expect(screen.getByLabelText("头部圆形留量（倍）").closest("details")?.textContent).toContain("素材与数字人同屏");
+  if (mode === "circle") expect(screen.getByLabelText("头部圆形留量（倍）").closest('section[aria-label="素材与数字人同屏"]')?.textContent).toContain("素材与数字人同屏");
   else expect(screen.queryByLabelText("头部圆形留量（倍）")).toBeNull();
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await waitFor(() => expect(request).toBeDefined());
@@ -227,17 +229,20 @@ test("添加和移除圆形开场，保留上下蒙版、同屏头像、取景�
   fireEvent.click(card);
   expect(screen.getAllByRole("button", { name: "编辑圆形蒙版" })).toHaveLength(1);
   expect(screen.getByLabelText<HTMLInputElement>("开场时长（秒）").value).toBe("3.5");
+  fireEvent.click(screen.getByRole("tab", { name: "画面布局" }));
   fireEvent.click(screen.getByLabelText("启用同屏"));
   fireEvent.change(screen.getByLabelText("同屏布局"), { target: { value: "circle" } });
+  fireEvent.click(screen.getByRole("tab", { name: "画面对象" }));
   fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
   expect(screen.queryByRole("button", { name: "编辑圆形蒙版" })).toBeNull();
   expect(screen.queryByLabelText("圆形蒙版设置")).toBeNull();
   expect(screen.getByRole("button", { name: "编辑上下蒙版对象" })).toBeDefined();
+  fireEvent.click(screen.getByRole("tab", { name: "画面布局" }));
   expect(screen.getByLabelText<HTMLSelectElement>("同屏布局").value).toBe("circle");
   expect(screen.getByLabelText<HTMLInputElement>("启用同屏").checked).toBe(true);
   expect(screen.getByLabelText<HTMLInputElement>("头部圆形留量（倍）").value).toBe("2.1");
   expect(screen.getByLabelText<HTMLInputElement>("预览取景 X（%）").value).toBe("27");
-  expect(screen.getByLabelText("预览取景 X（%）").closest("details")?.textContent).toContain("素材与数字人同屏");
+  expect(screen.getByLabelText("预览取景 X（%）").closest('section[aria-label="素材与数字人同屏"]')?.textContent).toContain("素材与数字人同屏");
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await waitFor(() => expect(request).toBeDefined());
   expect(request!.avatarEffects).toMatchObject({ openingEnabled: false, openingDuration: 3.5, circleScale: 2.1 });

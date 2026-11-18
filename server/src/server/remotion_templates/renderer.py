@@ -14,6 +14,7 @@ from .settings import Settings
 from .render_resources import renderer_cpus
 from .evidence import digest
 from .fonts import CONFIG_NAME, SANDBOX_DIR, font_root
+from .gpu_resources import GPUGrant, GPUPool, GPUWorkerError, sandbox_gpu
 from .managed_fonts import managed_font, prepare_fonts, resource_fingerprints, selected_font
 from .image_comparison import consistency_checks
 from .models import (
@@ -64,6 +65,7 @@ class Renderer:
     def __init__(self, settings: Settings) -> None:
         """Use only server-owned executable and font paths."""
         self.settings = settings
+        self.gpu_pool = GPUPool(settings)
         if self.opted_out():
             logging.getLogger("uvicorn.error").warning(
                 "IMV_ALLOW_UNSANDBOXED_WORKER is on: generated code runs without isolation; for development only."
@@ -182,7 +184,8 @@ class Renderer:
             await process.wait()
 
     def command(
-        self, directory: Path, *, worker: str = "worker.mjs", cpu_seconds: int = CPU_SECONDS
+        self, directory: Path, *, worker: str = "worker.mjs", cpu_seconds: int = CPU_SECONDS,
+        gpu: GPUGrant | None = None,
     ) -> list[str]:
         """Expose system libraries, managed renderer and one writable attempt; hide home and secrets.
 
@@ -195,6 +198,8 @@ class Renderer:
             "overlay-worker.mjs",
         }:
             raise ValueError("Unknown isolated renderer worker")
+        if gpu is not None and (worker != "overlay-worker.mjs" or gpu.route not in ("h264-pair", "gpu-webm")):
+            raise ValueError("Only the isolated overlay worker can receive a GPU")
         settings = self.settings
         node = Path(shutil.which("node") or "/usr/bin/node").resolve()
         if self.unsandboxed(worker):
@@ -211,10 +216,29 @@ class Renderer:
             "--tmpfs",
             "/tmp",
         ]
+        gpu_environment = []
+        if gpu is not None:
+            try:
+                mounts, gpu_environment = sandbox_gpu(gpu)
+            except OSError as exc:
+                raise GPUWorkerError("graphics", "gpu_device_changed") from exc
+            command.extend(("--cap-drop", "ALL", *mounts))
         # 复用系统字体缓存，避免每个新 Chrome 都扫描全部字体并阻塞启动；缺失时仍可自行建缓存。
         for source in ("/usr", "/etc/fonts", "/etc/ld.so.cache", "/var/cache/fontconfig"):
             if Path(source).exists():
                 command.extend(("--ro-bind", source, source))
+        sandbox_path = "/usr/bin:/bin"
+        if gpu is not None and gpu.route == "h264-pair" and (ffmpeg := shutil.which("ffmpeg")):
+            # 硬编 worker 使用准入时探测的宿主 FFmpeg，WebM 使用 Remotion 内置编码器。
+            executable = Path(ffmpeg).resolve()
+            standard = Path("/usr/bin/ffmpeg")
+            if executable != standard:
+                target = str(standard)
+                if not standard.is_file() or not standard.resolve().is_relative_to("/usr"):
+                    # /usr 为只读，无法在那里创建缺失的挂载点或穿过指向 /opt 的符号链接。
+                    target = "/runtime-bin/ffmpeg"
+                    sandbox_path = "/runtime-bin:" + sandbox_path
+                command.extend(("--ro-bind", str(executable), target))
         # 已下载并校验的目录字体：只读挂载，并用生成的 fontconfig 让 Chrome 按字体名解析。
         font_folder = font_root(settings)
         fonts_ready = (font_folder / CONFIG_NAME).is_file()
@@ -244,9 +268,10 @@ class Renderer:
                 "--chdir",
                 "/work",
                 "--clearenv",
+                *gpu_environment,
                 "--setenv",
                 "PATH",
-                "/usr/bin:/bin",
+                sandbox_path,
                 "--setenv",
                 "HOME",
                 "/tmp",
@@ -284,6 +309,7 @@ class Renderer:
         worker: str = "worker.mjs",
         timeout_seconds: float | None = None,
         cpu_seconds: int = CPU_SECONDS,
+        gpu: GPUGrant | None = None,
     ) -> dict:
         """Run one approved Linux worker and return its JSON report after reaping its sandbox.
 
@@ -302,7 +328,7 @@ class Renderer:
         try:
             with log_path.open("wb") as log:
                 process = await asyncio.create_subprocess_exec(
-                    *self.command(directory, worker=worker, cpu_seconds=cpu_seconds),
+                    *self.command(directory, worker=worker, cpu_seconds=cpu_seconds, **({"gpu": gpu} if gpu else {})),
                     stdout=log,
                     stderr=log,
                     cwd=directory,
@@ -310,6 +336,8 @@ class Renderer:
                     env=self.worker_environment(directory, worker),
                 )
                 try:
+                    if gpu is not None:
+                        gpu.attach_worker(process.pid)
                     async with asyncio.timeout(timeout):
                         await process.wait()
                 except asyncio.CancelledError:
@@ -327,6 +355,16 @@ class Renderer:
                     detail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
                 except OSError:
                     pass
+                if gpu is not None:
+                    # bwrap writes its own setup error before Node/any user effect emits output.
+                    with log_path.open("rb") as log:
+                        first = log.readline(2048).decode(errors="replace")
+                    if first.startswith("bwrap: "):
+                        if "/dev/nvidia-uvm" in first or "/sys/module/nvidia_uvm" in first:
+                            raise GPUWorkerError("encoder" if gpu.route == "h264-pair" else "graphics", "gpu_cuda_mount_failed")
+                        if any(path in first for path in ("/dev/nvidia", "/dev/dri/", "/sys/class/drm/", "/sys/dev/char/",
+                                                          "/sys/bus/pci/", "/sys/devices/pci", "/sys/module/nvidia", "/run/udev/data/")):
+                            raise GPUWorkerError("graphics", "gpu_device_mount_failed")
                 raise RuntimeError(detail)
             report_path = directory / "renderer.json"
             if not report_path.exists():

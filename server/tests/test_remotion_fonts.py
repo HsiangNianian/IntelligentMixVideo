@@ -618,11 +618,12 @@ def test_an_upload_racing_another_host_is_renamed_or_refused(store) -> None:
 def test_the_agent_guide_is_the_font_library_as_an_enum(store) -> None:
     """Agent 拿到的是数据库里字体库的枚举：一开始只有默认字体（库不会是空的）；同步预装字体和上传后都出现在枚举里，并带风格与字重说明。"""
     guide = store.guide()
-    assert '"enum":["Noto Sans CJK SC"]' in guide and "fontFamily" in guide and "never others" in guide
+    assert '"Noto Sans CJK SC"' in guide and "fontFamily" in guide and "never others" in guide
+    assert "effect.json text.fonts" in guide and "text Preset" not in guide
     asyncio.run(store.sync())
     store.upload(minimal_font("Zed Display"), None, "", "device-1")
     guide = store.guide()
-    assert '"enum":["Noto Sans CJK SC", "Alpha Sans", "Beta Serif", "Zed Display"]' in guide
+    assert all(f'"{family}"' in guide for family in ("Noto Sans CJK SC", "Alpha Sans", "Beta Serif", "Zed Display"))
     assert '"Beta Serif" (Beta Serif; fixture style; styles regular 200 900)' in guide
 
 

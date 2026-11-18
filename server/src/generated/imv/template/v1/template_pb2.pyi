@@ -315,7 +315,7 @@ class AvatarPreview(_message.Message):
     def __init__(self, x: _Optional[float] = ..., y: _Optional[float] = ..., source: _Optional[int] = ...) -> None: ...
 
 class SaveTemplateRequest(_message.Message):
-    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "transition_mode", "transition_enabled", "split_screen", "avatar_effects", "frame_mask", "avatar_preview")
+    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "transition_mode", "transition_enabled", "split_screen", "avatar_effects", "frame_mask", "avatar_preview", "cover_source")
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     EFFECT_IDS_FIELD_NUMBER: _ClassVar[int]
@@ -328,6 +328,7 @@ class SaveTemplateRequest(_message.Message):
     AVATAR_EFFECTS_FIELD_NUMBER: _ClassVar[int]
     FRAME_MASK_FIELD_NUMBER: _ClassVar[int]
     AVATAR_PREVIEW_FIELD_NUMBER: _ClassVar[int]
+    COVER_SOURCE_FIELD_NUMBER: _ClassVar[int]
     name: str
     description: str
     effect_ids: _containers.RepeatedScalarFieldContainer[str]
@@ -340,10 +341,23 @@ class SaveTemplateRequest(_message.Message):
     avatar_effects: AvatarEffects
     frame_mask: FrameMask
     avatar_preview: AvatarPreview
-    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ..., frame_mask: _Optional[_Union[FrameMask, _Mapping]] = ..., avatar_preview: _Optional[_Union[AvatarPreview, _Mapping]] = ...) -> None: ...
+    cover_source: str
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ..., frame_mask: _Optional[_Union[FrameMask, _Mapping]] = ..., avatar_preview: _Optional[_Union[AvatarPreview, _Mapping]] = ..., cover_source: _Optional[str] = ...) -> None: ...
+
+class TemplateCover(_message.Message):
+    __slots__ = ("revision", "published_revision", "url", "source")
+    REVISION_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_REVISION_FIELD_NUMBER: _ClassVar[int]
+    URL_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    revision: str
+    published_revision: str
+    url: str
+    source: str
+    def __init__(self, revision: _Optional[str] = ..., published_revision: _Optional[str] = ..., url: _Optional[str] = ..., source: _Optional[str] = ...) -> None: ...
 
 class TemplateRecord(_message.Message):
-    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "effects", "created_at", "updated_at", "transition_mode", "transition_enabled", "split_screen", "avatar_effects", "frame_mask", "avatar_preview")
+    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "effects", "created_at", "updated_at", "transition_mode", "transition_enabled", "split_screen", "avatar_effects", "frame_mask", "avatar_preview", "cover")
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     EFFECT_IDS_FIELD_NUMBER: _ClassVar[int]
@@ -359,6 +373,7 @@ class TemplateRecord(_message.Message):
     AVATAR_EFFECTS_FIELD_NUMBER: _ClassVar[int]
     FRAME_MASK_FIELD_NUMBER: _ClassVar[int]
     AVATAR_PREVIEW_FIELD_NUMBER: _ClassVar[int]
+    COVER_FIELD_NUMBER: _ClassVar[int]
     name: str
     description: str
     effect_ids: _containers.RepeatedScalarFieldContainer[str]
@@ -374,10 +389,11 @@ class TemplateRecord(_message.Message):
     avatar_effects: AvatarEffects
     frame_mask: FrameMask
     avatar_preview: AvatarPreview
-    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., effects: _Optional[_Iterable[_Union[EffectAsset, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ..., frame_mask: _Optional[_Union[FrameMask, _Mapping]] = ..., avatar_preview: _Optional[_Union[AvatarPreview, _Mapping]] = ...) -> None: ...
+    cover: TemplateCover
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., effects: _Optional[_Iterable[_Union[EffectAsset, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ..., split_screen: _Optional[_Union[SplitScreen, _Mapping]] = ..., avatar_effects: _Optional[_Union[AvatarEffects, _Mapping]] = ..., frame_mask: _Optional[_Union[FrameMask, _Mapping]] = ..., avatar_preview: _Optional[_Union[AvatarPreview, _Mapping]] = ..., cover: _Optional[_Union[TemplateCover, _Mapping]] = ...) -> None: ...
 
 class TemplateSummary(_message.Message):
-    __slots__ = ("template_id", "name", "description", "created_at", "updated_at", "title", "subtitle", "track_count", "validation_error")
+    __slots__ = ("template_id", "name", "description", "created_at", "updated_at", "title", "subtitle", "track_count", "validation_error", "cover")
     TEMPLATE_ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
@@ -387,6 +403,7 @@ class TemplateSummary(_message.Message):
     SUBTITLE_FIELD_NUMBER: _ClassVar[int]
     TRACK_COUNT_FIELD_NUMBER: _ClassVar[int]
     VALIDATION_ERROR_FIELD_NUMBER: _ClassVar[int]
+    COVER_FIELD_NUMBER: _ClassVar[int]
     template_id: str
     name: str
     description: str
@@ -396,7 +413,8 @@ class TemplateSummary(_message.Message):
     subtitle: str
     track_count: int
     validation_error: str
-    def __init__(self, template_id: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., title: _Optional[str] = ..., subtitle: _Optional[str] = ..., track_count: _Optional[int] = ..., validation_error: _Optional[str] = ...) -> None: ...
+    cover: TemplateCover
+    def __init__(self, template_id: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., title: _Optional[str] = ..., subtitle: _Optional[str] = ..., track_count: _Optional[int] = ..., validation_error: _Optional[str] = ..., cover: _Optional[_Union[TemplateCover, _Mapping]] = ...) -> None: ...
 
 class ListTemplatesResponse(_message.Message):
     __slots__ = ("templates",)

@@ -29,7 +29,7 @@ uv run --locked server
 
 默认监听 `0.0.0.0:20070`（所有 IPv4 接口），本机交互文档为 `http://127.0.0.1:20070/docs`。
 远程访问使用 `http://<服务器 IP 或域名>:20070`，服务器防火墙或云安全组需允许对应端口；客户端 `VITE_API_URL` 配置为实际服务地址。
-仓库根目录可执行 `uv run --locked --project server server`。首次模板请求自动创建缺失的 `templates` 表，不执行旧数据迁移；Remotion 已发布 Sprite 的 `remotion_sprites` 表在首次访问资产目录、发布，或保存含 Remotion 片段的模板时创建；字效工作区的其余 `remotion_*` 表（作品、任务、版本、事件、设备、叠加渲染任务、Presets 等）在第一个 Remotion 请求时创建，要求 MySQL 8.0 及以上，且只部署一个后端实例。
+仓库根目录可执行 `uv run --locked --project server server`。源码启动补图或首次模板请求会自动创建缺失的 `templates` 表，已有库会补加可空 JSON 列 `cover`（首次升级需有 ALTER 权限）。曾使用独立封面表的库会将已有封面信息复制到这一列；Remotion 已发布 Sprite 的 `remotion_sprites` 表在首次访问资产目录、发布，或保存含 Remotion 片段的模板时创建；字效工作区的其余 `remotion_*` 表（作品、任务、版本、事件、设备、叠加渲染任务、Presets 等）在第一个 Remotion 请求时创建，要求 MySQL 8.0 及以上，且只部署一个后端实例。
 应用启动后数据库暂时不可用时，模板接口返回 503，恢复后可重试；首页和用户示例接口本身不查询数据库。
 
 `uv run server` 与 `uv run python -m server` 均读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先。未设置时默认 `20070`；端口须为 1～65535 的整数，空值、非整数或越界值会阻止启动。修改后重启服务。停止服务时最多等待 10 秒收尾，仍未结束的连接（如作品 SSE）随后被断开，旧进程退出后不再运行字效任务队列与清理，新进程可直接接管。
@@ -54,11 +54,19 @@ PORT=8010 uv run --locked server
 | GET | `/template` | 返回 `ListTemplatesResponse`，按更新时间倒序 |
 | POST | `/template` | 接收 `SaveTemplateRequest`；无 `template_id` 创建，携带 ID 完整更新，返回 `SaveTemplateResponse` |
 | GET | `/template/{template_id}` | 返回 `GetTemplateResponse` |
+| PUT | `/template/{template_id}/cover/{revision}` | multipart `file` 上传 9:16 静态 PNG。过期版本返回 409，成功覆盖固定 ZOS 对象 |
+| GET | `/template/{template_id}/cover` | 读取已发布 PNG。按 ETag 校验版本，未变化返回 304，暂无封面返回 404；ZOS 对象丢失时返回 404 及 `detail.code=cover_object_missing`，存储读取故障返回 503 |
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
 | GET | `/template/preview-mask` | 几何圆角蒙版 MP4，供 SDK 实时预览；不访问用户媒体或数据库 |
 | GET | `/template/preview-circle-mask` | 头部圆形与羽化蒙版 MP4，仅接收预览几何，不分析人脸 |
 | POST | `/template/frame-mask-images` | multipart `file` 上传静态蒙版图片，成功返回 201 与 `{ "imageId": "内容哈希" }` |
 | GET | `/template/frame-mask-images/{image_id}` | 按 64 位小写十六进制引用读取 PNG，不可变缓存；非法引用 422、缺失 404、存储故障 503 |
+
+源码部署时，API 启动后在后台扫描当前 MySQL 模板库。对缺图的有效旧模板，以及发布版本仍为模板 ID 的初版封面，无头 Chrome 打开真实编辑预览，用内置样片定位第 1 秒，等标题、字幕和可见字效绘制完成后上传 PNG 到 ZOS。成功后推进封面版本，后续启动跳过。新版客户端新建模板、修改画面或换视频并保存时，在本机预览取帧并上传；封面失败可单独重试。公开地址保存在 `templates.cover` 的 `url` 字段，同一列保存 `revision`、`published_revision` 和 `source`。查询地址可用 `SELECT template_id, cover->>'$.url' AS cover_url FROM templates`。
+
+源码部署须包含仓库的 `client/` 与内置样片，按锁文件在 `client/` 执行 `bun install --frozen-lockfile` 安装含开发依赖的渲染环境。服务进程需要能运行 Bun 和支持 H.264 的 Chrome/Chromium（可复用 `IMV_BROWSER_EXECUTABLE`），并能加载预览 SDK、字体。使用 `uv run --project server server` 时，补图会连接同一 `PORT` 的本机 API；若自行指定 Uvicorn 的监听端口，请同步设置 `PORT`。源码补图无需封面压缩包或额外的导入命令。独立 wheel 如自带预生成归档，仍按模板 ID 和更新时间导入。
+
+需要为其他模板库制作归档时，可在有 Bun、客户端依赖和 Chrome 的服务端机器上一次性补图。在仓库根目录运行 `bun client/scripts/backfill-template-covers.mjs --api "$IMV_API_URL"`，用三个内置样片渲染实际编辑预览的第 1 秒。加 `--output template-covers-1s-png` 可先导出 PNG 和清单。自动导入用的 ZIP 保留 `template-covers-1s-png/` 顶层目录。也可在接口部署后用 `--input 目录` 直接导入，模板已更新时会拒绝使用旧截图。两种模式均可指定 `--template-id ID`。已发布或已由新版编辑器保存的版本都会跳过。客户端和服务端封面协议须一起升级。
 
 模板列表、详情与保存的成功响应默认使用 `application/json`，采用 Protobuf JSON 映射：字段为 camelCase（如 `templateId`、`createdAt`、`effectIds`），时间为 UTC RFC 3339 字符串；列表为 `{"templates":[...]}`，空库为 `{"templates":[]}`，详情和保存为 `{"template":{...}}`，轨道保留 `template.tracks.tracks` 结构。空数组、空映射和非 optional 标量默认值保留，未设置的 optional 字段省略。POST 请求仍使用 `application/x-protobuf`，JSON 请求返回 415，损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422；错误响应使用 JSON，删除成功仍为 204 空响应。为兼容旧客户端，单一 `Accept: application/x-protobuf` 仍返回 Protobuf 二进制；其他请求（含省略 Accept、`*/*` 或 `application/json`）默认返回 JSON，成功响应带 `Vary: Accept`。新客户端按响应 `Content-Type` 解析 JSON 或旧服务端的 Protobuf 二进制，JSON 解析忽略未知字段；仅响应格式迁移不要求两端同时升级。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
@@ -138,7 +146,13 @@ standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素�
 
 `COMPOSITION_MATCH_WAIT_SECONDS` 默认 30 秒，匹配回调未到则只主动查询一次。修改配置后重启；已有任务保留其已保存的截止时间，失败历史通知不自动重新发送。
 
-合成调度 `COMPOSITION_CONCURRENCY` 和共用 Remotion 视频名额 `IMV_OVERLAY_TASK_CONCURRENCY` 默认均为 6。整段合成、模板叠加和单 Sprite 共用固定 15 秒分块，不超过 15 秒只用一块，末块保留剩余帧。每视频最多 6 块并发、每块默认最多 4 页，小核数按有效 CPU 自动减少页数，所有视频共用最多 36 个切片名额，资源充足时允许六视频各六块；CPU、内存不足时先降并发，再排队；容量等待默认最多 300 秒，超时返回 `resource_unavailable`（合成为 `remotion_resource_unavailable`），调用方可稍后重新提交，已失败任务不会自动重试。默认为有效 CPU/内存预留 25%，所有隔离 worker 通过 `taskset` 继承相同的核范围，配额读取支持祖先 cgroup v2（v1 回退到宿主亲和性和内存信息）；内存准入按每页 1 GiB 加每视频额外 1 GiB 估算，36 块×4 页与六视频额外预算共 150 GiB。全局预算默认再限 `IMV_RENDER_MAX_CPUS=144` 个逻辑 CPU、`IMV_RENDER_MAX_MEMORY_MB=153600` MiB，与整机/cgroup 预留后的余量取更严者；编码线程也在该 CPU 核范围内运行。128 个无其他配额限制的逻辑 CPU 预留 25% 后，默认最多运行 24 个四页切片。cgroup 有空闲不取消宿主总内存 25% 的保护线；内存准入估算不能替代部署层硬上限。Python 直接部署还应配置 systemd MemoryHigh/MemoryMax，限制整个服务及其子进程。Remotion 锁定 4.0.534，部署其配套 Headless Shell 可启用 CPU 共享内存和 VP9 编码流水线，系统 Chrome 不会自动替换。VP9 默认使用 `cpu-used=4`、`threads=2`。仅多块输出要求 FFmpeg；音频时长未知时在解析后、渲染前检查。诊断的 `slot_wait_ms` 与 `resource_wait_ms` 分别记录两段等待。渲染默认值集中在 `remotion_templates/settings.py`，合成调度默认值在 `video_composition/settings.py`；`.env.example` 仅保留渲染的 CPU/内存预留比例，其他调优项无需填写，按需仍可通过环境变量覆盖。
+整片合成 `COMPOSITION_CONCURRENCY` 和共用叠加名额 `IMV_OVERLAY_TASK_CONCURRENCY` 默认各为 12。分块固定 15 秒，每块默认 4 页，IMS 普通合成和操练场每任务同时最多 2 块。独立 WebM 接口仍可按配置同时运行最多 6 块，所有视频合计最多 36 块。调度保留有效 CPU 和内存各 25%，按每页 1 GiB 加每视频 1 GiB 估算内存，并遵守 `IMV_RENDER_MAX_CPUS=144` 和 `IMV_RENDER_MAX_MEMORY_MB=153600` 的上限。资源不足先减少块数与页数，仍不够时最多等待 300 秒。超时记录 `resource_unavailable`（合成为 `remotion_resource_unavailable`）。渲染进程继承同一组可用核心，生产部署仍应设置 systemd MemoryHigh/MemoryMax。
+
+普通 IMS 合成与操练场优先由同一张 GPU 绘制、NVENC 编出颜色与灰度遮罩。编码会话或双流显存不足时，再尝试 GPU 绘制、CPU 编码透明 WebM。各健康卡都放不下绘制任务时，直接使用纯 CPU 快速 WebM。任务只使用执行该任务的主机。服务端按物理显卡的实时占用、已有任务尚未兑现的显存预留和新任务预计峰值选卡，三者之和在总显存的 85% 以内即可接收。
+
+选卡始终跳过 `nvidia-smi` 的物理索引 4。如果需要在重启换号后继续识别同一张故障卡，把 `nvidia-smi -i 4 --query-gpu=uuid --format=csv,noheader` 查到的完整 UUID 加入 `gpu_resources.py` 的 `EXCLUDED_GPU_UUIDS`。同一宿主共用 10 个 NVENC 会话名额（`NVENC_SESSION_LIMIT`），每个双流分块需 2 个，其他进程已经占用的会话也计入预算。
+
+独立叠加与单 Sprite 接口继续返回一个透明 WebM。两种 WebM 路线都使用实时 VP9，默认 `cpu-used=7`、`threads=3`。单块可用 Remotion 自带 FFmpeg，多块拼接需要系统 FFmpeg，双 H.264 需要支持 `h264_nvenc` 的系统 FFmpeg。渲染器记录任务选择的路线、设备、分块数和回退原因。渲染参数和 CPU/内存等待指标详见 [Remotion 服务说明](src/server/remotion_templates/README.md#video-composition-and-playground-gpus)。
 
 新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`，并确保 `ffmpeg` 在服务端 PATH 中；缺少 FFmpeg 时受理返回 503。`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。`ZOS_DELETE_OBJECTS` 默认 false：删除 Remotion 资产、会话等记录时只删记录与本地缓存，不删 ZOS 上的文件（删除按请求收费，也不需要删除权限），设为 true 时一并删除。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。ZOS 上传与匿名读取遵循进程环境的 `HTTP_PROXY`／`HTTPS_PROXY`／`NO_PROXY`；未配置代理时直连，已有代理但 ZOS 需直连时，将 API 与公开访问域名加入 `NO_PROXY`（保留原有条目），在启动进程的环境中设置。串行分片与 TLS 校验保持开启。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
 

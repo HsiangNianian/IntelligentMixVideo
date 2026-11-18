@@ -7,16 +7,18 @@ backend serving the same database keeps its running jobs.
 
 import argparse
 import asyncio
+import base64
 import json
 from uuid import UUID, uuid4
 
 from .settings import load_settings
 from .harness import Harness
-from .media import save_image
+from .media import normalize_image
 from .models import (
     CompositionConfig,
     EditTemplateRequest,
     GenerateTemplateRequest,
+    ImagePayload,
     ImageReference,
 )
 from .provider import Provider
@@ -93,13 +95,13 @@ async def scenario(service: Runtime, settings, device: UUID, finish, created: li
     created.append(project.id)
     service.notify()
     original = await finish(job.id)
-    revised_job = service.edit(
+    revised_job = await service.edit(
         project.id, EditTemplateRequest(parameters={"0_text": "新的灵感"})
     )
     revised = await finish(revised_job.id)
     if revised.candidate.tsx_code != original.candidate.tsx_code:
         raise RuntimeError("Parameter edit changed TSX bytes.")
-    natural_job = service.edit(
+    natural_job = await service.edit(
         project.id,
         EditTemplateRequest(
             instruction="把文字颜色改成黄色 #FFFF00，其余全部保持不变。"
@@ -110,12 +112,12 @@ async def scenario(service: Runtime, settings, device: UUID, finish, created: li
         raise RuntimeError("Natural-language scalar edit did not preserve source.")
     # Job scratch is gone once a job ends; the sealed frame is read back through the verified cache.
     frame = await asyncio.to_thread(service.store.accepted, original) / "frame-0.png"
-    asset = save_image(frame.read_bytes(), service.store, settings, device)
+    asset = ImagePayload(id=uuid4(), data=base64.b64encode(normalize_image(frame.read_bytes(), settings)).decode())
     image_work, image_job = service.store.create(
         GenerateTemplateRequest(
             images=[ImageReference(asset_id=asset.id)], composition=composition
         ),
-        device,
+        device, [asset],
     )
     created.append(image_work.id)
     service.notify()

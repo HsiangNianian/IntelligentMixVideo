@@ -2,37 +2,35 @@
 import { SplitScreenEditor } from "./SplitScreenEditor";
 import { defaultAvatarEffects } from "./avatarEffects";
 import { AvatarCircleControls, AvatarEffectsEditor, AvatarMaskCard, AvatarPreviewControls } from "./AvatarEffectsEditor";
-import { defaultAvatarPreview, previewOpeningDuration } from "./avatarPreview";
-import { validateSplitScreen } from "./splitScreen";
+import { defaultAvatarPreview } from "./avatarPreview";
+import { useTemplatePreviewModel } from "./useTemplatePreviewModel";
 import { useUpdateBlocker } from "@/lib/update-guard";
 import { recovery } from "@/features/updates/recovery";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, CircleCheck, Pencil, SquarePen } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import * as api from "./api";
 import { readCatalog } from "./sdk";
-import { activeDraft, boundText, newDraft, singleRowText, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
+import { activeDraft, boundText, newDraft, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
-import { addTrack, previewContext, resolveTemplate, removeTrack, setBilingual, setTrackTiming, trackDraft, updateTrack } from "./tracks";
-import { defaultPreviewUrls, readPreviewVideos } from "./media";
-import { compactTransitions, previewTransitions, setTransitionDuration, transitionItems } from "./transitions";
+import { addTrack, removeTrack, setBilingual, setTrackTiming, trackDraft, updateTrack } from "./tracks";
+import { bundledUrls, coverSource, defaultPreviewUrls, readPreviewVideos } from "./media";
+import { compactTransitions, setTransitionDuration, transitionItems } from "./transitions";
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
-import { TemplatePreview } from "./TemplatePreview";
+import { releaseCoverTab, requestCoverTab } from "./coverCapture";
+import { TemplatePreview, type CaptureCover } from "./TemplatePreview";
 import { FrameMaskCard, FrameMaskPanel } from "./FrameMaskPanel";
 import { FRAME_MASK_OBJECT_ID, newFrameMask } from "./frameMask";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
-import { addClip, bindClip, clipSlot, hiddenTextClips, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
-import { exampleKeyword } from "./timeline";
-import { BILINGUAL_PROP, contentLines, transformFields } from "@/features/sprites/parameters";
+import { addClip, bindClip, clipSlot, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
 import { useSpriteCatalog } from "./useSpriteCatalog";
 import type { TemplateSelection } from "./TemplateHome";
 import "./template-workspace.css";
@@ -49,11 +47,11 @@ function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; ca
     return () => window.removeEventListener("resize", update);
   }, []);
   return <ResizablePanelGroup orientation="horizontal" disabled={!desktop} data-layout={desktop ? "desktop" : "narrow"} className="template-workspace-columns" style={{ height: desktop ? "100%" : "auto", minHeight: desktop ? 0 : undefined }}>
-    <ResizablePanel id="assets" data-workspace-panel="assets" defaultSize={284} minSize={240} maxSize="28%" className="min-w-0">{assets}</ResizablePanel>
+    <ResizablePanel id="assets" data-workspace-panel="assets" defaultSize="20%" minSize={240} maxSize="38%" className="min-w-0">{assets}</ResizablePanel>
     <ResizableHandle withHandle aria-label="调整资产与画布宽度" className="template-workspace-handle" />
-    <ResizablePanel id="canvas" data-workspace-panel="canvas" minSize={420} className="min-w-0">{canvas}</ResizablePanel>
+    <ResizablePanel id="canvas" data-workspace-panel="canvas" defaultSize="58%" minSize={340} className="min-w-0">{canvas}</ResizablePanel>
     <ResizableHandle withHandle aria-label="调整画布与参数宽度" className="template-workspace-handle" />
-    <ResizablePanel id="inspector" data-workspace-panel="inspector" defaultSize={300} minSize={260} maxSize="32%" className="min-w-0">{inspector}</ResizablePanel>
+    <ResizablePanel id="inspector" data-workspace-panel="inspector" defaultSize="22%" minSize={280} maxSize="42%" className="min-w-0">{inspector}</ResizablePanel>
   </ResizablePanelGroup>;
 }
 
@@ -61,9 +59,11 @@ function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; ca
 export interface EditingState { id: string | null; name: string; dirty: boolean }
 
 /** 只有成功读取或明确放弃时才替换草稿；保存始终使用当前模板的 ID。 */
-export function TemplateWorkspace({ selection = null, deletedTemplate = null, onHome, onOpenRemotion, onEditingState, active = true }: {
+export function TemplateWorkspace({ selection = null, deletedTemplate = null, onHome, onOpenRemotion, onEditingState, onSaved, active = true }: {
   active?: boolean;
   onEditingState?: (state: EditingState | null) => void;
+  /** 仅成功写入模板后通知主页刷新列表。 */
+  onSaved?: () => void;
   selection?: TemplateSelection | null;
   deletedTemplate?: TemplateSelection | null;
   onHome: () => void;
@@ -74,6 +74,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const [draft, setDraft] = useState<Draft | null>(null);
   const [editing, setEditing] = useState<{ field: "name" | "description"; value: string } | null>(null);
   const [media, setMedia] = useState<PreviewMedia>();
+  const [mediaChanged, setMediaChanged] = useState(false);
+  const [coverError, setCoverError] = useState("");
+  const capture = useRef<CaptureCover>(null);
   const [mediaError, setMediaError] = useState("");
   const [mediaAttempt, setMediaAttempt] = useState(0);
   const [baseline, setBaseline] = useState("");
@@ -88,6 +91,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const [attempt, setAttempt] = useState(0);
   const [assetSource, setAssetSource] = useState("effects");
   const [target, setTarget] = useState<string | null>("title");
+  const inspectorId = useId();
+  const [inspectorPage, setInspectorPage] = useState<"objects" | "layout">("objects");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("timing");
   const [textTarget, setTextTarget] = useState<TextRole>("title");
   const lastTextTrack = useRef<string | null>("title");
@@ -96,66 +101,15 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const mounted = useRef(false);
   const handledSelection = useRef<TemplateSelection | null>(null);
   const spriteCatalog = useSpriteCatalog((draft?.clips.length ?? 0) > 0, active);
-  const [transitionRandom, setTransitionRandom] = useState<readonly [number, number]>(() => [Math.random(), Math.random()]);
-  const visibleDraft = useMemo(() => draft ? activeDraft(draft) : null, [draft]);
-  const previewSelection = useMemo(() => visibleDraft ? previewTransitions(visibleDraft, transitionRandom, spriteCatalog.assets ?? []) : null, [visibleDraft, transitionRandom, spriteCatalog.assets]);
-  const previewDraft = previewSelection?.draft;
+  const { hiddenClips, visibleDraft, previewSelection, previewDraft, preview, previewLength, spriteClips, coverAssetsReady, setTransitionRandom } = useTemplatePreviewModel(draft, media, spriteCatalog.assets);
   const circleAvatar = !!draft?.split_screen?.enabled && draft.split_screen.layout === "circle";
   const avatarPreview = draft?.avatar_preview ?? defaultAvatarPreview;
   const avatarPreviewControls = <AvatarPreviewControls source={avatarPreview.source} center={target === "avatar-mask" || circleAvatar ? avatarPreview : undefined}
     onSourceChange={(source) => { if (draft) editTrack(() => ({ ...draft, avatar_preview: { ...defaultAvatarPreview, source } })); }}
     onCenterChange={(point) => { if (draft) editTrack(() => ({ ...draft, avatar_preview: { ...avatarPreview, ...point } })); }} />;
-  const preview = useMemo(() => {
-    if (!previewDraft || !media) return { timeline: undefined, error: "" };
-    try {
-      if (previewDraft.split_screen?.enabled) validateSplitScreen(previewDraft.split_screen);
-      return { timeline: resolveTemplate(previewDraft, previewContext(media)), error: "" };
-    }
-    catch (reason) { return { timeline: undefined, error: reason instanceof Error ? reason.message : "时间规则无法应用到当前视频" }; }
-  }, [previewDraft, media]);
-  const previewLength = preview.timeline?.duration ?? 0;
-  // 占用文字或交界处的片段按本次预览计算展示区间，不改变草稿。
   const timedDraft = useMemo(() => draft && preview.timeline ? timeClips(draft, preview.timeline) : draft, [draft, preview.timeline]);
   const timedClips = timedDraft ? activeDraft(timedDraft).clips : undefined;
-  const previewClips = useMemo(() => previewDraft && preview.timeline ? timeClips(previewDraft, preview.timeline).clips : [], [previewDraft, preview.timeline]);
-  // 所作用文字在当前预览中不显示时，字效也不显示，避免按原有时间出现在画面上。
-  const hiddenClips = useMemo(() => previewDraft && preview.timeline ? hiddenTextClips(previewDraft, preview.timeline) : new Set<string>(), [previewDraft, preview.timeline]);
-  const draftTracks = draft?.tracks;
-  const spriteClips = useMemo(() => previewClips.map((clip) => {
-    const asset = spriteCatalog.assets?.find((item) => item.id === clip.sprite_id);
-    // 作用于文字的字效显示该文字对象的示例文字与关键词，合成时由总线换成实际标题或切片；英文固定单行，双栏字效只用上栏。
-    const text = boundText(draftTracks ?? [], clip);
-    // 双语字效（双语字幕）的下栏是所作用对象英文文字对象的示例译文，与合成注入同一句译文一致。
-    const english = asset?.bilingual && clip.text_target ? draftTracks?.find((track) => track.target === clip.text_target && track.language === "en") : undefined;
-    const point = previewDraft?.split_screen?.enabled && clip.text_target === "subtitle" ? previewDraft.split_screen[text?.language === "en" ? "subtitleEn" : "subtitle"] : undefined;
-    // 同屏沿用普通字效的内容框中心，框高与缩放不参与位置换算。
-    const transform = point && asset ? { ...clip.transform, x: point.x * asset.width / 100, y: point.y * asset.height / 100 } : clip.transform;
-    return {
-      id: clip.id,
-      spriteId: clip.sprite_id,
-      sourceVersionId: asset?.sourceVersionId,
-      aspect: asset?.aspect ?? 9 / 16,
-      name: asset?.name ?? "AI 资产",
-      start: clip.start,
-      end: Math.min(previewLength, clip.start + (clip.duration ?? asset?.seconds ?? 0)),
-      length: clip.duration ?? asset?.seconds ?? 0,
-      slot: clipSlot(clip, asset),
-      textTrackId: text?.id,
-      boundary: clip.transition_boundary,
-      values: text && clip.text_target ? {
-        ...clip.parameters,
-        text: text.language === "en" ? singleRowText(text.editor[clip.text_target]) : text.editor[clip.text_target],
-        keywords: [exampleKeyword(text.editor, clip.text_target, text.language)].filter(Boolean),
-        ...(asset?.bilingual && clip.text_target ? { [BILINGUAL_PROP]: english ? contentLines(asset) > 1 ? english.editor[clip.text_target] : singleRowText(english.editor[clip.text_target]) : "",
-          lineStartFrames: Array(asset.lines ?? 2).fill(0) } : {}),
-      } : clip.parameters,
-      transform,
-      opening: point ? { end: previewOpeningDuration(previewDraft?.avatar_effects, previewLength), transform: clip.transform } : undefined,
-      bilingual: asset?.bilingual === true,
-      canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: !point && transformFields(asset.kind).includes("x") } : undefined,
-    };
-  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength, previewDraft?.split_screen, previewDraft?.avatar_effects]);
-  const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
+  const dirty = draft !== null && (current === null || mediaChanged || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
   useUpdateBlocker("模板尚未保存或正在处理", dirty || busy || loading || !!openRequest);
   useEffect(() => { recovery.template = current ? { templateId: current.template_id } : null; }, [current]);
   useEffect(() => { onEditingState?.(draft ? { id: current?.template_id ?? null, name: draft.name, dirty } : null); }, [draft?.name, !!draft, current?.template_id, dirty, onEditingState]);
@@ -248,11 +202,13 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
           description: openRequest.templateId === null ? openRequest.description : "",
         };
         setCurrent(template);
+        setCoverError(""); setMediaChanged(false);
         setDraft(next);
         setEditing(null);
         setMedia(undefined);
         setBaseline(JSON.stringify(next));
         setTarget(next.tracks[0]?.id ?? null);
+        setInspectorPage("objects");
         const initialText = next.tracks.find((track) => isTextTarget(track.target));
         lastTextTrack.current = initialText?.id ?? null;
         setTextTarget(initialText && isTextTarget(initialText.target) ? initialText.target : "title");
@@ -270,6 +226,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
 
   /** 资产和已添加对象共用选中状态，文字资产沿用最近选择的文字对象。 */
   function selectTarget(next: string) {
+    setInspectorPage("objects");
     setTarget(next);
     const clip = draft?.clips.find((item) => item.id === next);
     const selected = draft?.tracks.find((track) => track.id === next) ?? (draft && clip ? boundText(draft.tracks, clip) : undefined);
@@ -278,11 +235,60 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
 
   /** 添加资产失败时使用提示框；参数错误显示在工作区，失败时保留当前草稿。 */
   function editTrack(change: () => Draft, addingAsset = false) {
-    try { setDraft(change()); setError(""); }
+    try { setDraft(change()); setError(""); if (addingAsset) setInspectorPage("objects"); }
     catch (reason) {
       const message = reason instanceof Error ? reason.message : "轨道修改失败";
       if (addingAsset) setAssetError(message);
       else setError(message);
+    }
+  }
+
+  /** 先在点击事件中取得浏览器授权；桌面走原生截图，失败不影响模板写入。 */
+  function beginSnapshot() {
+    return requestCoverTab().then(stream => ({ stream, error: "" }), reason => ({ stream: undefined, error: String(reason) }));
+  }
+
+  /** 已保存模板的封面独立发布，失败的图片仅在内存中等待同一版本重传。 */
+  async function publish(saved: Template, tab?: ReturnType<typeof beginSnapshot>) {
+    if (!saved.cover) throw new Error("请升级模板服务并重试");
+    const { revision } = saved.cover;
+    const published = await api.publishCover(saved.template_id, revision, async () => {
+      const grant = await tab;
+      if (grant?.error) throw new Error(grant.error);
+      if (!capture.current) throw new Error("请先加载预览视频");
+      return capture.current(grant?.stream);
+    }, saved.cover.publishedRevision === revision);
+    return { ...saved, cover: { ...saved.cover, url: published.url, revision: published.revision, publishedRevision: published.revision } };
+  }
+
+  /** 取消确认后继续保留当前草稿。 */
+  function cancelOpening() {
+    setAction(null); setOpenRequest(null); setError("");
+  }
+
+  /** 单独重试已保存的画面；旧素材丢失时须重新选择并保存，避免将当前草稿发布到旧版本。 */
+  async function retryCover() {
+    if (!current || lock.current) return;
+    if (dirty) { setCoverError("请先保存当前修改"); return; }
+    const saved = current.cover ? current : { ...current, cover: { revision: current.template_id, source: "builtin", publishedRevision: "", url: "" } };
+    const cached = api.hasCoverBlob(saved.template_id, saved.cover!.revision);
+    const tab = cached ? undefined : beginSnapshot();
+    lock.current = true; setBusy(true);
+    try {
+      if (!cached && saved.cover!.source !== "unavailable" && await coverSource(media) !== saved.cover!.source) {
+        if (saved.cover!.source !== "builtin") throw new Error("原预览素材不可用，请重新选择视频并保存");
+        // 补图或重试内置样片时，不受本机上次为其他模板选择的素材影响。
+        const sources = await readPreviewVideos(bundledUrls(), new AbortController().signal);
+        if (!mounted.current) return;
+        setMediaError("");
+        setMedia(sources);
+        await new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done())));
+      }
+      setCurrent(await publish(saved, tab)); setCoverError(""); onSaved?.();
+    } catch (reason) { setCoverError(reason instanceof Error ? reason.message : "请重试"); }
+    finally {
+      if (tab) void tab.then(({ stream }) => releaseCoverTab(stream));
+      lock.current = false; setBusy(false);
     }
   }
 
@@ -298,25 +304,37 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     // 数字人输入有独立字符串草稿；按钮、快捷键和元数据自动保存都不能把未完成输入当成旧有效值保存。
     const avatarInput = [...(form.current?.querySelectorAll<HTMLInputElement>('input[data-avatar-effect]') ?? [])].find((input) => !input.checkValidity());
     if (avatarInput) { avatarInput.reportValidity(); return; }
+    const visual = !current || mediaChanged || JSON.stringify({ ...savingDraft, name: "", description: "" })
+      !== JSON.stringify({ ...toDraft(current), name: "", description: "" });
+    const tab = visual && media ? beginSnapshot() : undefined;
     lock.current = true;
     setBusy(true);
     setError("");
     try {
       // Remotion 字效保存文字区间，转场保留自身时长，与 IMS 对象在同一次请求里保存。
       const saveDraft = preview.timeline ? timeClips(savingDraft, preview.timeline, "save") : savingDraft;
-      const saved = await api.saveTemplate(
-        setTransitionDuration(saveDraft, savingDraft.transition_duration_seconds), current?.template_id, !!current?.frame_mask,
+      let saved = await api.saveTemplate(
+        setTransitionDuration(saveDraft, savingDraft.transition_duration_seconds), current?.template_id, !!current?.frame_mask, visual ? await coverSource(media).catch(() => "unavailable") : undefined,
       );
       if (!mounted.current) return;
+      if (nextSelection) setAction(null);
+      if (visual) {
+        try { saved = await publish(saved, tab); setCoverError(""); }
+        catch (reason) { setCoverError(reason instanceof Error ? reason.message : "请重试"); }
+      }
+      if (!mounted.current) return;
+      setMediaChanged(false);
       const next = toDraft(saved);
       setCurrent(saved);
       setDraft(next);
       setBaseline(JSON.stringify(next));
+      onSaved?.();
       toast.success(`模板「${saved.name}」已保存`);
       if (nextSelection) { setOpenRequest(nextSelection); setAttempt((value) => value + 1); }
     } catch (reason) {
       if (mounted.current) setError(reason instanceof Error ? reason.message : "保存失败，请重试");
     } finally {
+      if (tab) void tab.then(({ stream }) => releaseCoverTab(stream));
       lock.current = false;
       if (mounted.current) setBusy(false);
     }
@@ -334,12 +352,35 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     void persist(undefined, next);
   }
 
+  // 双语状态仍归文字对象所有，两种外观面板共用同一组控件。
+  const bilingualControls = draft && bilingualTarget && <div className="space-y-2 border-b px-4 py-3">
+    <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!english && english.enabled !== false} disabled={bilingualRequired && !!english && english.enabled !== false} onChange={(event) => {
+      const enabled = event.target.checked;
+      if (!enabled && bilingualRequired) return;
+      editTrack(() => {
+        const next = setBilingual(draft, bilingualTarget, enabled);
+        if (!enabled && selectedText?.language === "en") {
+          const chinese = next.tracks.find((track) => track.target === bilingualTarget && track.language !== "en")!;
+          setTarget(chinese.id); lastTextTrack.current = chinese.id;
+        }
+        return next;
+      });
+    }} />中英双语</label>
+    <p className="text-[11px] text-muted-foreground">{bilingualRequired
+      ? "双语字效已自动启用中英双语，合成时会翻译实际文案。若要关闭，请先移除该双语字效。"
+      : "开启后，合成时会翻译实际文案并显示英文；关闭时不翻译此对象，也不输出英文。"}</p>
+    {selectedText?.language === "en" && <p className="text-[11px] text-muted-foreground">时间跟随中文{bilingualTarget === "title" ? "标题" : "字幕"}，合成时自动翻译实际文案。</p>}
+  </div>;
+
   return (
     <div className={cn("@container min-w-0", draft ? "space-y-3" : "flex min-h-full flex-col gap-3")}>
+      {current && (coverError || (current.cover && current.cover.revision !== current.cover.publishedRevision)) && <div role="alert" className="flex items-center gap-2 text-sm text-warning">
+        <span>封面更新失败{coverError ? ` · ${coverError}` : ""}</span><Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void retryCover()}>重试</Button>
+      </div>}
       {error && !action && <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
       {openRequest && error && !action && <Button type="button" variant="outline" disabled={loading} onClick={() => setAttempt((value) => value + 1)}>重试打开模板</Button>}
       {loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />正在读取模板…</p>}
-      {!draft ? (
+      {!draft ? !openRequest && (
         <section aria-label="模板编辑入口" className="flex flex-1">
           <Empty>
             <EmptyHeader>
@@ -356,22 +397,21 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
         <form ref={form} noValidate className="template-workspace overflow-hidden bg-card" onSubmit={(event) => { event.preventDefault(); void persist(); }}>
           <fieldset disabled={busy || loading} className="min-w-0 disabled:opacity-60">
             <section aria-label="模板信息" className="template-workspace-header flex min-h-16 flex-wrap items-center justify-between gap-4 border-b px-5 py-3 lg:px-7">
-              <div className="flex min-w-0 items-center gap-4"><Button type="button" variant="ghost" size="icon-sm" aria-label="返回主页" onClick={onHome}><ArrowLeft className="size-4" /></Button>
-                <dl className="min-w-0 space-y-1">
+              <div className="flex min-w-0 flex-1 items-center gap-4"><Button type="button" variant="ghost" size="icon-sm" aria-label="返回主页" onClick={onHome}><ArrowLeft className="size-4" /></Button>
+                <dl className="min-w-0 flex-1 space-y-1">
                   {(["name", "description"] as const).map((field) => {
                     const label = field === "name" ? "模板名称" : "模板描述";
-                    const Control = field === "name" ? Input : Textarea;
-                    return <div key={field} className="flex min-w-0 items-center gap-2">
+                    return <div key={field} className="flex h-9 w-full min-w-0 items-center gap-2">
                       <dt className="sr-only">{label}</dt>
-                      <dd className="min-w-0">
-                        {editing?.field === field ? <Control autoFocus aria-label={label} value={editing.value}
-                          required={field === "name"} maxLength={field === "name" ? 100 : 1000} className="min-w-48" rows={2}
+                      <dd className={cn("min-w-0", editing?.field === field && (field === "description" ? "w-[max(25%,12rem)] max-w-full" : "flex-1"))}>
+                        {editing?.field === field ? <Input autoFocus aria-label={label} value={editing.value}
+                          required={field === "name"} maxLength={field === "name" ? 100 : 1000} className="h-8 w-full"
                           onChange={(event) => setEditing({ field, value: event.target.value })} onBlur={saveMetadata}
                           onKeyDown={(event) => {
                             if (event.key === "Escape") { event.preventDefault(); setEditing(null); setError(""); }
-                            if (event.key === "Enter" && field === "name" && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.blur(); }
+                            if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.blur(); }
                           }} />
-                          : <span aria-label={label} className={field === "name" ? "block truncate text-[17px] font-semibold tracking-tight" : "block truncate text-[11px] text-muted-foreground"}>{draft[field] || "暂无模板描述"}</span>}
+                          : <span aria-label={label} className={field === "name" ? "sketch-text block truncate text-[28px]" : "block truncate text-[11px] text-muted-foreground"}>{draft[field] || "暂无模板描述"}</span>}
                       </dd>
                       {editing?.field !== field && <Hint label={`编辑${label}`}><Button type="button" variant="ghost" size="icon-xs" aria-label={`编辑${label}`}
                         onClick={() => { setEditing({ field, value: draft[field] }); setError(""); }}><Pencil className="size-3" aria-hidden="true" /></Button></Hint>}
@@ -409,50 +449,30 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} /></div>
                 <div hidden={assetSource !== "masks"}><FrameMaskCard mask={draft.frame_mask} onSelect={() => {
                   if (!draft.frame_mask) editTrack(() => ({ ...draft, frame_mask: newFrameMask() }));
-                  setTarget(FRAME_MASK_OBJECT_ID);
+                  selectTarget(FRAME_MASK_OBJECT_ID);
                 }} /><AvatarMaskCard onSelect={() => {
                   if (!draft.avatar_effects?.openingEnabled) editTrack(() => ({ ...draft, avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, openingEnabled: true } }));
-                  setTarget("avatar-mask");
+                  selectTarget("avatar-mask");
                 }} /></div>
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <TemplatePreview draft={previewDraft!} media={media} avatarSource={avatarPreview.source} previewCenter={avatarPreview} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); if (draft.avatar_preview) editTrack(() => ({ ...draft, avatar_preview: { ...avatarPreview, x: 50, y: 50 } })); }} videoInputKey={current?.template_id ?? draft.name} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
+                <TemplatePreview captureRef={capture} coverAssetsReady={coverAssetsReady} draft={previewDraft!} media={media} avatarSource={avatarPreview.source} previewCenter={avatarPreview} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { if (media?.every((item, i) => item.url === next[i].url)) return; setMediaChanged(true); setMedia(next); setMediaError(""); if (draft.avatar_preview) editTrack(() => ({ ...draft, avatar_preview: { ...avatarPreview, x: 50, y: 50 } })); }} videoInputKey={current?.template_id ?? draft.name} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
                 />
               </main>}
-              inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={visibleDraft!} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
-                <SpriteClips clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
+              inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l">
+                <div role="tablist" aria-label="模板设置分类" className="grid grid-cols-2 border-b px-4">
+                  {([["objects", "画面对象"], ["layout", "画面布局"]] as const).map(([page, label]) => <button key={page} type="button" role="tab" id={`${inspectorId}-${page}`} aria-controls={`${inspectorId}-panel-${page}`} aria-selected={inspectorPage === page} onClick={() => setInspectorPage(page)} className="border-b-2 border-transparent px-1 py-3 text-xs text-muted-foreground data-[selected=true]:border-primary data-[selected=true]:text-primary" data-selected={inspectorPage === page}>{label}</button>)}
+                </div>
+                <div role="tabpanel" id={`${inspectorId}-panel-objects`} aria-labelledby={`${inspectorId}-objects`} hidden={inspectorPage !== "objects"}>
+                <AppliedEffects draft={visibleDraft!} catalog={catalog} sprites={spriteCatalog.assets} resolved={preview.timeline} selected={selectedText?.id ?? target} onSelect={selectTarget} />
+                <SpriteClips clips={(timedClips ?? []).filter((clip) => !boundText(draft.tracks, clip))} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
                 {target === FRAME_MASK_OBJECT_ID && draft.frame_mask && <FrameMaskPanel key={current?.template_id ?? "new"} mask={draft.frame_mask} onUploadingChange={setMaskUploading}
                   onChange={(frame_mask) => editTrack(() => ({ ...draft, frame_mask }))}
                   onRemove={() => editTrack(() => removeTrack(draft, FRAME_MASK_OBJECT_ID))} onClose={() => setTarget(null)} />}
                 {target === "avatar-mask" && draft.avatar_effects?.openingEnabled && <AvatarEffectsEditor value={draft.avatar_effects} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} onClose={() => setTarget(null)}
                   onRemove={() => editTrack(() => ({ ...draft, avatar_effects: { ...draft.avatar_effects!, openingEnabled: false } }))}>{avatarPreviewControls}</AvatarEffectsEditor>}
-                <SplitScreenEditor value={draft.split_screen} removeBackground={draft.avatar_effects?.removeBackground} onRemoveBackgroundChange={(removeBackground) => editTrack(() => ({ ...draft, avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground } }))} onChange={(split_screen) => editTrack(() => ({ ...draft, split_screen,
-                  ...(split_screen.layout !== (draft.split_screen?.layout ?? "split") ? { avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground: split_screen.layout === "overlay" } } : {}),
-                }))}>{target !== "avatar-mask" && draft.split_screen?.enabled && <>
-                  {circleAvatar && <AvatarCircleControls value={draft.avatar_effects} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} />}
-                  {avatarPreviewControls}
-                </>}</SplitScreenEditor>
-                {bilingualTarget && <div className="space-y-2 border-b px-4 py-3">
-                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!english && english.enabled !== false} disabled={bilingualRequired && !!english && english.enabled !== false} onChange={(event) => {
-                    const enabled = event.target.checked;
-                    if (!enabled && bilingualRequired) return;
-                    editTrack(() => {
-                      const next = setBilingual(draft, bilingualTarget, enabled);
-                      if (!enabled && selectedText?.language === "en") {
-                        const chinese = next.tracks.find((track) => track.target === bilingualTarget && track.language !== "en")!;
-                        setTarget(chinese.id); lastTextTrack.current = chinese.id;
-                      }
-                      return next;
-                    });
-                  }} />中英双语</label>
-                  <p className="text-[11px] text-muted-foreground">{bilingualRequired
-                    ? "双语字效已自动启用中英双语，合成时会翻译实际文案。若要关闭，请先移除该双语字效。"
-                    : "开启后，合成时会翻译实际文案并显示英文；关闭时不翻译此对象，也不输出英文。"}</p>
-                  {english?.enabled !== false && english && <Button type="button" variant="outline" size="sm" onClick={() => { selectTarget(english.id); setInspectorTab("appearance"); }}>编辑英文{bilingualTarget === "title" ? "标题" : "字幕"}</Button>}
-                  {selectedText?.language === "en" && <p className="text-[11px] text-muted-foreground">时间跟随中文{bilingualTarget === "title" ? "标题" : "字幕"}，合成时自动翻译实际文案。</p>}
-                </div>}
                 {selectedClip && <SpriteClipInspector key={selectedClip.id} clip={selectedClip} asset={spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id)} duration={preview.timeline?.duration}
-                  textTrack={clipText} textTracks={visibleDraft!.tracks} textResolved={clipText && preview.timeline?.tracks[clipText.id]} onOpenRemotion={onOpenRemotion}
+                  appearanceControls={bilingualControls} textTrack={clipText} textTracks={visibleDraft!.tracks} textResolved={clipText && preview.timeline?.tracks[clipText.id]} onOpenRemotion={onOpenRemotion}
                   onSample={(value) => clipText && editTrack(() => {
                     const role = clipText.target as "title" | "subtitle";
                     const edit = trackDraft(draft, clipText);
@@ -504,17 +524,26 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   onMode={(mode) => { setTransitionRandom([Math.random(), Math.random()]); editTrack(() => ({ ...draft, transition_mode: mode })); }}
                   onEnabled={(enabled) => editTrack(() => ({ ...draft, transition_enabled: enabled }))}
                   onSelect={selectTarget} />}
-                {selectedTrack && !selectedClip && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} sprites={spriteCatalog.assets} onNeedSprites={spriteCatalog.peek} onBindSprite={(spriteId) => editTrack(() => {
+                {selectedTrack && !selectedClip && selectedTrack.target !== "transition" && <TemplateInspector appearanceControls={bilingualControls} track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} sprites={spriteCatalog.assets} onNeedSprites={spriteCatalog.peek} onBindSprite={(spriteId) => editTrack(() => {
                   const asset = spriteCatalog.assets?.find((item) => item.id === spriteId);
                   if (!asset) return draft;
                   const role = selectedTrack.target === "title" ? "title" : "subtitle";
-                  // 绑定后右栏改由字效设置接管，用户随即在「外观与位置」里换字体。
+                  // 绑定后右栏改由字效设置接管，用户随即在「外观与效果」里换字体。
                   const next = addClip(draft, asset, spriteCatalog.assets ?? [], role, selectedTrack.language);
                   setTarget(next.clips.at(-1)!.id);
                   setTextTarget(role);
                   lastTextTrack.current = selectedTrack.id;
                   return next;
                 }, true)} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
+                </div>
+                <div role="tabpanel" id={`${inspectorId}-panel-layout`} aria-labelledby={`${inspectorId}-layout`} hidden={inspectorPage !== "layout"}>
+                <SplitScreenEditor value={draft.split_screen} removeBackground={draft.avatar_effects?.removeBackground} onRemoveBackgroundChange={(removeBackground) => editTrack(() => ({ ...draft, avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground } }))} onChange={(split_screen) => editTrack(() => ({ ...draft, split_screen,
+                  ...(split_screen.layout !== (draft.split_screen?.layout ?? "split") ? { avatar_effects: { ...defaultAvatarEffects(), ...draft.avatar_effects, removeBackground: split_screen.layout === "overlay" } } : {}),
+                }))}>{draft.split_screen?.enabled && <>
+                  {circleAvatar && <AvatarCircleControls value={draft.avatar_effects} onChange={(avatar_effects) => editTrack(() => ({ ...draft, avatar_effects }))} />}
+                  {avatarPreviewControls}
+                </>}</SplitScreenEditor>
+                </div>
               </aside>}
             />
           </fieldset>
@@ -526,12 +555,12 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
           <DialogFooter><Button type="button" onClick={() => setAssetError("")}>知道了</Button></DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={!!action} onOpenChange={(open) => { if (!open && !busy && !loading) { setAction(null); setOpenRequest(null); setError(""); } }}>
+      <Dialog open={!!action} onOpenChange={(open) => { if (!open && !busy && !loading) cancelOpening(); }}>
         <DialogContent showCloseButton={!busy && !loading}>
           <DialogHeader><DialogTitle>保存当前修改？</DialogTitle><DialogDescription>切换前可以保存当前配置、放弃修改，或取消切换。</DialogDescription></DialogHeader>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
-            <Button type="button" variant="outline" disabled={busy || loading} onClick={() => { setAction(null); setOpenRequest(null); setError(""); }}>取消</Button>
+            <Button type="button" variant="outline" disabled={busy || loading} onClick={cancelOpening}>取消</Button>
             <Button type="button" variant="outline" disabled={busy || loading} onClick={() => { setOpenRequest(action); setAttempt((value) => value + 1); }}>放弃修改</Button>
             <Button type="button" disabled={busy || loading || maskUploading} onClick={() => { if (action) void persist(action); }}>保存并切换</Button>
           </DialogFooter>

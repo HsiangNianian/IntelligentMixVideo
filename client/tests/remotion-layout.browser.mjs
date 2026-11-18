@@ -1,6 +1,6 @@
 /**
  * 浏览器布局回归：模拟 API（创建、SSE 事件与送达确认）和 iframe 协议，验证真实 CSS、指针/键盘分栏、持久化与窄屏交互；
- * 会话历史只在浏览器 IndexedDB 的本地库里，由 SSE 事件写入，刷新后仍在。执行 bun run test:remotion-browser。
+ * 会话历史与模型窗口在浏览器 IndexedDB 中，验证先落盘再 ACK、刷新后原样回传窗口与图片字节。执行 bun run test:remotion-browser。
  */
 import { chromium } from "playwright-core";
 import { remotionVersion } from "./remotion-fixtures.ts";
@@ -36,11 +36,17 @@ try {
   });
   const page = await context.newPage();
   // 主页读取也使用离线夹具，不连接用户真实后端。
+  await page.route("**/api/**", (route) => route.fulfill({ status: 404 }));
+  await page.route("**/api/sprites", (route) => route.fulfill({ contentType: "application/x-protobuf", body: Buffer.alloc(0) }));
+  await page.route("**/api/sprites/stream", (route) => route.fulfill({ contentType: "text/event-stream", body: "event: ping\ndata: {}\n\n" }));
   await page.route("**/template", (route) => route.fulfill({ status: 503 }));
   const errors = [];
   let deleted = false;
   let creates = 0;
   let diagnosticRequests = 0;
+  let imageFetches = 0;
+  const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==";
+  const imageBytes = Buffer.from(imageBase64, "base64");
   page.on("pageerror", (e) => errors.push(e.message));
   const loopRounds = [
     { layer: "outer", turn: 1, calls: [], error_code: "MODEL_CONTRACT_FAILED" },
@@ -57,17 +63,42 @@ try {
     created_at: "2026-09-17T06:00:00Z",
     updated_at: "2026-09-17T06:01:00Z",
   }));
+  const checkpoints = jobs.map((job, i) => ({
+    image_ids: ["image-1"], request: { description: "原始请求", images: [{ asset_id: "image-1" }] },
+    input: { mode: "edit", instruction: "调整", checkpoint: null },
+    work_id: job.project_id, job_id: job.id, state: `[[{"role": "user", "content": "保留  原文 ${i + 1}"}]]`,
+  }));
+  /** 直接读真实 IndexedDB 的会话行，确认 ACK 时窗口已提交，而不是只存在组件内存里。 */
+  const storedContext = () => page.evaluate(() => new Promise((resolve, reject) => {
+    const opening = indexedDB.open("imv-remotion-sessions");
+    opening.onerror = () => reject(opening.error);
+    opening.onsuccess = () => {
+      const db = opening.result;
+      const transaction = db.transaction("works", "readonly");
+      const request = transaction.objectStore("works").getAll();
+      transaction.oncomplete = () => {
+        db.close();
+        resolve(request.result.find((row) => row.id === "work-1")?.data.context);
+      };
+      transaction.onabort = () => { db.close(); reject(transaction.error); };
+    };
+  }));
+  /** 读取持久图片验证 ACK 和刷新后的实际字节，不依赖组件内存。 */
+  const storedImage = () => page.evaluate(async () => {
+    const local = await import("/src/features/remotion_templates/localSessions.ts");
+    return Array.from(await local.storage().image(local.server(), "image-1") ?? []);
+  });
   /** 一条用户或助手消息事件的载荷。 */
   const message = (n, job, role, text) => ({ id: `m${n}`, sequence: n, job_id: job.id, role, text, created_at: job.updated_at });
   // 会话历史只在客户端本地：浏览器版本地库在 IndexedDB 里，由创建作品后 SSE 送达的事件写入（两轮成功任务、四条消息与循环记录）。
   const history = [
-    ["message.created", message(1, jobs[0], "user", "做一个简洁的居中标题，淡入出现。")],
-    ["job.updated", jobs[0]],
+    ["message.created", { ...message(1, jobs[0], "user", "做一个简洁的居中标题，淡入出现。"), image_asset_ids: ["image-1"] }],
+    ["job.updated", { ...jobs[0], context: checkpoints[0] }],
     ...loopRounds.map((round) => ["job.round", { job_id: "job-1", round }]),
     ["version.ready", { version_id: "version-1", job_id: "job-1" }],
     ["message.created", message(2, jobs[0], "assistant", "标题已完成。可以预览效果，或者继续调整。")],
     ["message.created", message(3, jobs[1], "user", "改成「让灵感发光」，暖金色，加一条下划线。")],
-    ["job.updated", jobs[1]],
+    ["job.updated", { ...jobs[1], context: checkpoints[1] }],
     ...loopRounds.map((round) => ["job.round", { job_id: "job-2", round }]),
     ["version.ready", { version_id: "version-2", job_id: "job-2" }],
     ["message.created", message(4, jobs[1], "assistant", "已更新暖金色标题和下划线，保留淡入动画。")],
@@ -90,9 +121,23 @@ try {
         job: { ...jobs[0], status: "running", result_version_id: null },
       });
     }
-    if (req.method() === "POST" && path === "/works/work-1/ack")
+    if (req.method() === "POST" && path === "/works/work-1/ack") {
+      if (req.postDataJSON().cursor >= history.length) {
+        assert.deepEqual(await storedContext(), checkpoints[1]);
+        assert.deepEqual(await storedImage(), [...imageBytes]);
+      }
       return route.fulfill({ status: 204 });
+    }
+    if (req.method() === "POST" && path === "/works/work-1/messages") {
+      assert.deepEqual(req.postDataJSON(), { instruction: "缓存验证", context: checkpoints[1], assets: [{ id: "image-1", data: imageBase64 }] });
+      return json(jobs[1]);
+    }
     assert.equal(req.method(), "GET", `${req.method()} ${path}`);
+    if (path === "/assets/image-1") {
+      imageFetches++;
+      assert(req.headers()["x-imv-device"]);
+      return route.fulfill({ contentType: "image/png", body: imageBytes });
+    }
     if (path === "/capabilities") return json({ models_configured: true });
     // 新建后本地任务仍为 running，会话恢复会先核对一次任务；返回进行中，后续状态由 SSE 事件推进。
     if (path === "/jobs/job-1") return json({ ...jobs[0], status: "running", result_version_id: null });
@@ -130,7 +175,6 @@ try {
   async function createWork() {
     await page.getByLabel("字效描述").fill("做一个简洁的居中标题，淡入出现。");
     await page.getByRole("button", { name: "发送", exact: true }).click();
-    await page.getByRole("button", { name: /温暖的电影标题/ }).first().waitFor();
     await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
   }
   await page.goto(url);
@@ -180,11 +224,13 @@ try {
   await rounds.getByText(/COMPOSITION_FAILED：组合生成失败。：Sprite bundler unavailable/).waitFor();
   await page.screenshot({ path: join(screenshots, "imv-audit-rounds.png"), fullPage: true });
   await rounds.getByRole("button", { name: /循环记录 · 2 轮/ }).click();
-  // 桌面删除先确认，取消不影响当前播放器或历史选择。
+  // 桌面历史按需浮出；删除先确认，取消不影响当前播放器或历史选择。
+  await page.getByRole("button", { name: "历史会话", exact: true }).click();
   await page.getByRole("button", { name: "删除聊天", exact: true }).click();
   await page.getByRole("dialog").waitFor();
   await page.getByRole("button", { name: "取消", exact: true }).click();
   assert.equal(deleted, false);
+  await page.getByRole("button", { name: "历史会话", exact: true }).click();
   const frame = page.locator('iframe[title="Remotion 字效播放器"]');
   const rect = await frame.boundingBox();
   // iframe 与外框保持成功版本的真实画布比例；外框完整落在预览区内。
@@ -226,6 +272,19 @@ try {
   await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
   assert.equal(await page.getByText(/会话已删除或正在清理/).count(), 0);
   assert.equal(creates, 1);
+  assert.equal(imageFetches, 1);
+  assert.deepEqual(await storedImage(), [...imageBytes]);
+  await page.waitForFunction(() => {
+    const image = document.querySelector('img[alt="历史参考图片"]');
+    return image?.src.startsWith("blob:") && image.complete && image.naturalWidth === 1;
+  });
+  assert.deepEqual(await storedContext(), checkpoints[1]);
+  // 刷新后通过真实 API helper 取回本地窗口并发送；替身不启动模型任务，不影响布局测试的成功版本。
+  await page.evaluate(async () => {
+    const api = await import("/src/features/remotion_templates/api.ts");
+    await api.message("work-1", { instruction: "缓存验证" });
+  });
+  assert.equal(imageFetches, 1);
   assert.equal(
     await page.evaluate(() => localStorage.getItem("imv.remotion.studio-layout")),
     pref,
@@ -251,27 +310,35 @@ try {
       ).width - before.width,
     ) < 2,
   );
-  // 预览/参数分隔线调整预览宽度；极端拖动也必须保留三个面板的最小可用宽度。
-  const second = await page
-    .getByRole("separator", { name: "调整预览与参数宽度" })
-    .boundingBox();
+  // 三栏横排；第二条分隔支持拖动、键盘和刷新恢复，预览保留最小宽度。
+  const secondHandle = page.getByRole("separator", { name: "调整预览与参数宽度" });
+  const second = await secondHandle.boundingBox();
   const previewBefore = await page.locator("#preview").boundingBox();
-  await page.mouse.move(second.x + second.width / 2, second.y + 100);
+  const parametersBefore = await page.locator("#parameters").boundingBox();
+  assert(Math.abs(previewBefore.y - parametersBefore.y) < 2);
+  assert(parametersBefore.x >= previewBefore.x + previewBefore.width);
+  await page.mouse.move(second.x + second.width / 2, second.y + second.height / 2);
   await page.mouse.down();
-  await page.mouse.move(second.x + 60, second.y + 100, { steps: 8 });
+  await page.mouse.move(second.x - 60, second.y + second.height / 2, { steps: 8 });
   await page.mouse.up();
-  assert(
-    (await page.locator("#preview").boundingBox()).width >
-      previewBefore.width + 30,
-  );
-  await page.mouse.move(second.x + 60, second.y + 100);
+  const previewAfter = await page.locator("#preview").boundingBox();
+  assert(previewAfter.width < previewBefore.width - 30);
+  await secondHandle.focus();
+  await page.keyboard.press("ArrowRight");
+  const resizedPreview = (await page.locator("#preview").boundingBox()).width;
+  assert(resizedPreview > previewAfter.width + 1);
+  await page.reload();
+  await page.getByRole("button", { name: "AI 字效", exact: true }).click();
+  await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
+  assert(Math.abs((await page.locator("#preview").boundingBox()).width - resizedPreview) < 2);
+  const restoredHandle = await secondHandle.boundingBox();
+  await page.mouse.move(restoredHandle.x + restoredHandle.width / 2, restoredHandle.y + restoredHandle.height / 2);
   await page.mouse.down();
-  await page.mouse.move(300, second.y + 100, { steps: 8 });
+  await page.mouse.move(0, restoredHandle.y + restoredHandle.height / 2, { steps: 8 });
   await page.mouse.up();
-  assert(
-    (await page.locator("#preview").boundingBox()).width >= 219,
-  );
+  assert((await page.locator("#preview").boundingBox()).width >= 219);
   await page.getByRole("button", { name: "恢复布局" }).click();
+  assert(Math.abs((await page.locator("#preview").boundingBox()).width - previewBefore.width) < 2);
   // 点击成功卡片只替换预览；返回最新后恢复参数编辑。
   await page.getByRole("button", { name: "预览 V1", exact: true }).click();
   await page
@@ -290,6 +357,23 @@ try {
     .and(page.locator(":enabled"))
     .waitFor({ timeout: 10_000 });
   await page.getByLabel("字号", { exact: true }).fill("104");
+  // 收起参数将宽度平分给对话与预览，展开后恢复三栏并保留输入与同一个播放器实例。
+  const parameterWidth = (await page.locator("#parameters").boundingBox()).width;
+  const chatWidth = (await page.locator("#chat").boundingBox()).width;
+  const previewWidth = (await page.locator("#preview").boundingBox()).width;
+  const playerNode = await frame.elementHandle();
+  await page.getByRole("button", { name: "收起参数", exact: true }).click();
+  await page.getByRole("button", { name: "展开参数", exact: true }).waitFor();
+  assert((await page.locator("#parameters").boundingBox()).width < 1);
+  assert(Math.abs((await page.locator("#chat").boundingBox()).width - chatWidth - parameterWidth / 2) < 2);
+  assert(Math.abs((await page.locator("#preview").boundingBox()).width - previewWidth - parameterWidth / 2) < 2);
+  await page.getByRole("button", { name: "展开参数", exact: true }).click();
+  await page.getByRole("button", { name: "收起参数", exact: true }).waitFor();
+  assert.equal(await page.getByLabel("字号", { exact: true }).inputValue(), "104");
+  assert(await frame.evaluate((element, original) => element === original, playerNode));
+  assert(Math.abs((await page.locator("#parameters").boundingBox()).width - parameterWidth) < 2);
+  assert(Math.abs((await page.locator("#chat").boundingBox()).width - chatWidth) < 2);
+  assert(Math.abs((await page.locator("#preview").boundingBox()).width - previewWidth) < 2);
   await page.getByRole("button", { name: "预览 V1", exact: true }).click();
   await page.getByRole("dialog").waitFor();
   await page.getByRole("button", { name: "取消", exact: true }).click();
@@ -403,7 +487,7 @@ try {
   );
   assert.equal(errors.length, 0, errors.join("\n"));
   console.log(
-    "PASS: 预览尺寸、拖拽/键盘调宽、栏宽恢复、刷新后从本地库恢复会话、历史预览、未保存保护、新增聊天、桌面删除确认与窄屏删除清理、新会话时长工具栏不溢出及 390px 窄屏布局。截图：" +
+    "PASS: 模型窗口和 PNG 字节落盘后确认、刷新后从本地原样重放且不重读云端图片，预览尺寸、三栏拖拽与键盘调整、参数收起与展开、栏宽恢复、刷新后从本地库恢复会话、历史预览、未保存保护、新增聊天、桌面删除确认与窄屏删除清理、新会话时长工具栏不溢出及 390px 窄屏布局。截图：" +
       screenshots,
   );
 } finally {

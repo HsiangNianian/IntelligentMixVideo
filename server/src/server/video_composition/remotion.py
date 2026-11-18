@@ -25,8 +25,8 @@ from ..template.schema import EffectTrack, RemotionTrackEditor, active_tracks
 from ..template.timing import resolve_track
 from ..template.transitions import select_transitions
 from .remotion_content import ContentError, dynamic_duration, resolve_config, roles
-from .remotion_timing import retime_source
-from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, fit_texts, measured, overlay_ranges, record_performance, render_overlay, to_frames
+from ..remotion_templates.retiming import RetimingError, retime_source
+from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, fit_texts, measured, overlay_ranges, record_performance, render_ims_overlay, to_frames
 from ..remotion_templates.sprite_router import sprite_runtime
 from ..remotion_templates.render_resources import RenderCapacityTimeout
 from . import execution_log
@@ -55,8 +55,11 @@ def preserve_failure(work: Path, error: Exception) -> None:
     detail = execution_log.sanitize(detail)
     path = execution_log.write_diagnostic(destination, detail, "remotion-error-")
     error.detail_log_path = f"errors/{path.name}"
-    if (work / "worker.log").is_file():
-        content = execution_log.sanitize((work / "worker.log").read_text(encoding="utf-8", errors="replace"))
+    worker_log = work / "media" / "worker.log"
+    if not worker_log.is_file():
+        worker_log = work / "worker.log"
+    if worker_log.is_file():
+        content = execution_log.sanitize(worker_log.read_text(encoding="utf-8", errors="replace"))
         if not isinstance(content, str):
             content = json.dumps(content, ensure_ascii=False)
         execution_log.write_diagnostic(destination, content, "remotion-worker-")
@@ -333,18 +336,19 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             count = last - first
             # 多行字效的换行只用来分行：每一行自己的文字不能再含换行，否则会挤进下一行的样式里。
             text = "\n".join(item.replace("\n", " ") for item in texts) if rows > 1 else texts[0]
-            # 各行出现的帧，从实例起点算起；固定时钟资产读到的是预览时钟，按宿主同样的线性映射换算，
-            # 两帧以内会被定格，所有行同时显示。
+            # 逐行起点始终使用实际切片帧；固定时钟宿主在每帧统一映射，避免提前显示下一行。
             offsets = [min(count - 1, max(0, to_frames(item, fps) - first)) for item in starts]
             preview = sprite.canvas.preview_frames
-            clock = [round(item * (preview - 1) / (count - 1)) if count > 2 else 0 for item in offsets] if fixed_clock else offsets
             values = resolve_config(sprite, text, keywords, preview if fixed_clock else count,
                                     placement.get("text_prop", ""), placement.get("keywords_prop", ""), config=config,
-                                    line_starts=clock, english=english if bilingual_text else None) if dynamic else config
+                                    line_starts=offsets, english=english if bilingual_text else None) if dynamic else config
             code = sprite.tsx_code
             if fixed_clock:
                 if sprite.sprite_id not in timed_sources:
-                    timed_sources[sprite.sprite_id] = retime_source(sprite)
+                    try:
+                        timed_sources[sprite.sprite_id] = retime_source(sprite)
+                    except RetimingError as exc:
+                        raise ContentError(str(exc)) from exc
                 code = timed_sources[sprite.sprite_id]
             # 装饰保留完整动画区间，由成片总长裁尾；动态正文使用实际可见区间。
             length = count if dynamic else max(1, to_frames(min(length_seconds, max_seconds), fps))
@@ -384,7 +388,7 @@ def render_inputs(overlay: Overlay) -> dict:
 
 
 async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | None = None, log=None) -> dict | None:
-    """使用共享渲染名额输出整段视频并上传；返回后由合成任务保存，失败不降级。"""
+    """在共享名额内渲染 IMS 叠加层；全部所需文件上传并验证后才返回可恢复结果。"""
     if not data.get("remotion", {}).get("placements"):
         if log:
             await log("step_skipped", step="remotion_plan", output={"reason": "模板没有 Remotion 摆放"})
@@ -412,7 +416,8 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
                 raise OverlayError("render_environment_unavailable", "Remotion 渲染环境不可用")
             publications = {key: ParseDict(value, pb.PublishedSprite()) for key, value in data["remotion"]["assets"].items()}
             waiting = perf_counter()
-            requested = len(overlay_ranges(overlay, service.settings))
+            # 双 NVENC 分块同时输出颜色和遮罩，单文件回退沿用已领取的 IMS 名额。
+            requested = min(2, service.settings.overlay_chunk_concurrency, len(overlay_ranges(overlay, service.settings)))
             async with service.overlays.slot, service.overlays.capacity.claim(requested, service.settings.overlay_frame_concurrency) as grant:
                 await asyncio.to_thread(record_performance, work, slot_wait_ms=max(0, (perf_counter() - waiting) * 1000 - grant.wait_ms),
                                         resource_wait_ms=grant.wait_ms, granted_chunks=grant.chunks, reserved_memory_mb=grant.reserved_memory_mb)
@@ -426,24 +431,38 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
                 step = "remotion_video"
                 if log:
                     await log("step_started", step=step, input={**render_inputs(overlay), "chunks": grant.chunks, "pages": grant.pages})
-                output = await render_overlay(service.harness.renderer, overlay, work, chunk_concurrency=grant.chunks, frame_concurrency=grant.pages)
+                output, mask = await render_ims_overlay(service.harness.renderer, overlay, work, chunk_concurrency=grant.chunks,
+                                                        frame_concurrency=grant.pages, log=log)
                 if log:
-                    await log("step_finished", step=step, output={"filename": output.name, "bytes": output.stat().st_size, "frames": overlay.frames})
+                    rendered = {"filename": output.name, "bytes": output.stat().st_size, "frames": overlay.frames}
+                    if mask is not None:
+                        rendered.update(mask_filename=mask.name, mask_bytes=mask.stat().st_size)
+                    await log("step_finished", step=step, output=rendered)
             # 文件必须存活到上传线程收尾；取消任务不保存迟到结果。
             uploading = perf_counter()
             step = "remotion_upload"
+            prefix = f"{object_prefix(data)}/{task_id}"
+            if mask is None:
+                files = [(output, f"{prefix}/overlay.webm", "video/webm")]
+            else:
+                files = [(output, f"{prefix}/color.mp4", "video/mp4"), (mask, f"{prefix}/mask.mp4", "video/mp4")]
             if log:
-                await log("step_started", step=step, input={"filename": output.name, "object_key": f"{object_prefix(data)}/{task_id}/overlay.webm"})
-            upload = asyncio.create_task(asyncio.to_thread(upload_public,
-                [(output, f"{object_prefix(data)}/{task_id}/overlay.webm", "video/webm")], ZosSettings(), timeout))
+                targets = {"filename": output.name, "object_key": files[0][1]}
+                if mask is not None:
+                    targets.update(mask_filename=mask.name, mask_object_key=files[1][1])
+                await log("step_started", step=step, input=targets)
+            upload = asyncio.create_task(asyncio.to_thread(upload_public, files, ZosSettings(), timeout))
             try:
                 urls = await asyncio.shield(upload)
+                media = {"video_url": urls[0]}
+                if mask is not None:
+                    media["mask_video_url"] = urls[1]
                 if log:
-                    await log("step_finished", step=step, output={"video_url": urls[0], "content_type": "video/webm"})
+                    await log("step_finished", step=step, output={**media, "content_type": files[0][2]})
             finally:
                 await asyncio.gather(upload, return_exceptions=True)
                 await asyncio.to_thread(record_performance, work, upload_ms=(perf_counter() - uploading) * 1000)
-            return {"video_url": urls[0], "duration": data["duration_ms"] / 1000,
+            return {**media, "duration": data["duration_ms"] / 1000,
                     "width": overlay.width, "height": overlay.height, "fps": overlay.fps, "frames": overlay.frames}
         except Exception as exc:
             try:
@@ -469,10 +488,11 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
 
 
 def append_track(timeline: dict, result: dict | None, output: dict) -> None:
-    """直接加入最后视频轨；IMS 文字位于其上层，透明视频从 0 秒与音频对齐。"""
+    """在最后视频轨从零秒叠加已验证的颜色与遮罩或历史透明 WebM；IMS 文字位于其上层。"""
     if result:
         timeline["VideoTracks"].append({"VideoTrackClips": [{
             "Type": "Video", "MediaURL": result["video_url"], "In": 0, "Out": result["duration"],
+            **({"MaskVideoUrl": result["mask_video_url"]} if "mask_video_url" in result else {}),
             "TimelineIn": 0, "TimelineOut": result["duration"], "Width": output["width"],
             "Height": output["height"], "AdaptMode": "Cover",
         }]})

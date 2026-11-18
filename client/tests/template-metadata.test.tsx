@@ -43,10 +43,12 @@ test("模板信息失焦保存并保持原 ID", async () => {
   await screen.findByText("已保存");
   fireEvent.click(screen.getByRole("button", { name: "编辑模板描述" }));
   const description = screen.getByRole("textbox", { name: "模板描述" });
+  expect(description.tagName).toBe("INPUT");
   fireEvent.change(description, { target: { value: "" } });
   fireEvent.blur(description);
   await screen.findByText("已保存");
   expect(store.writes.map((item) => item.templateId)).toEqual([store.selection.templateId, store.selection.templateId]);
+  expect(store.writes.map(item => item.coverSource)).toEqual([undefined, undefined]);
   expect(store.read().description).toBe("");
   view.unmount();
   render(<TemplateWorkspace selection={store.selection} onHome={() => {}} />);
@@ -72,7 +74,7 @@ test("模板信息拒绝空白名称，未修改与取消不保存", async () =>
   fireEvent.keyDown(name, { key: "Escape" });
   expect(screen.getByLabelText("模板名称").textContent).toBe(store.read().name);
   fireEvent.click(screen.getByRole("button", { name: "编辑模板描述" }));
-  const description = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "模板描述" });
+  const description = screen.getByRole<HTMLInputElement>("textbox", { name: "模板描述" });
   expect(description.maxLength).toBe(1000);
   fireEvent.change(description, { target: { value: "取消的描述" } });
   fireEvent.keyDown(description, { key: "Escape" });
@@ -100,5 +102,6 @@ test("模板信息保存失败保留草稿，修正后可重试", async () => {
   fireEvent.blur(retry);
   await screen.findByText("已保存");
   expect(store.read().name).toBe("可用名称");
+  expect(store.writes[1].coverSource).toBeDefined();
   expect(store.writes[1].tracks?.tracks[0].editor?.title).toBe("保留的标题");
 });
