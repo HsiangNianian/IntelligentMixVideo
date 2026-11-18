@@ -34,12 +34,17 @@ export default function HomePage({ logoHidden = false }: { logoHidden?: boolean 
       <Rail page={page} onNavigate={navigate} onSettings={() => setSettingsOpen(true)} editing={editing?.name ?? null} dirty={editing?.dirty ?? false} version={APP_VERSION} logoHidden={logoHidden} />
       <main className="min-w-0 flex-1 overflow-auto">
         <div hidden={page !== "home"} className="h-full">{opened.home && <TemplateHome active={page === "home" && !settingsOpen} revision={templateRevision} onDelete={setDeletedTemplate} editing={editing} onOpenSettings={() => setSettingsOpen(true)} onSelect={(next) => { setSelection(next); navigate("editor"); }} onOpenRemotion={() => navigate("effects")} />}</div>
-        <div hidden={page !== "editor"} className="h-full">{opened.editor && <TemplateWorkspace selection={selection} deletedTemplate={deletedTemplate} onHome={() => navigate("home")} onOpenRemotion={() => navigate("effects")} onEditingState={setEditing} onSaved={() => setTemplateRevision((value) => value + 1)} active={page === "editor" && !settingsOpen} />}</div>
-        <div hidden={page !== "effects"} className="h-full">{opened.effects && <RemotionWorkspace />}</div>
+        <div data-update-workspace="editor" hidden={page !== "editor"} className="h-full">{opened.editor && <TemplateWorkspace selection={selection} deletedTemplate={deletedTemplate} onHome={() => navigate("home")} onOpenRemotion={() => navigate("effects")} onEditingState={setEditing} onSaved={() => setTemplateRevision((value) => value + 1)} active={page === "editor" && !settingsOpen} />}</div>
+        <div data-update-workspace="effects" hidden={page !== "effects"} className="h-full">{opened.effects && <RemotionWorkspace />}</div>
         <div hidden={page !== "playground"} className="h-full">{playgroundOpened && <PlaygroundWorkspace active={page === "playground"} />}</div>
         {page === "fonts" && <FontLibrary />}
       </main>
-      <UpdateLifecycle />
+      <UpdateLifecycle onReview={field => {
+        if (field.closest('[role="dialog"]')) return;
+        setSettingsOpen(false);
+        const workspace = field.closest<HTMLElement>('[data-update-workspace]')?.dataset.updateWorkspace;
+        if (workspace === "editor" || workspace === "effects") navigate(workspace);
+      }} />
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   </Tooltip.Provider>;

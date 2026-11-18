@@ -55,6 +55,18 @@ test('处理草稿后自动下载、应用一次并恢复位置', async () => {
   await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args.operation === 'apply')).toHaveLength(1), { timeout: 3000 });
   expect(calls.mock.calls.find(([, args]) => args.operation === 'apply')?.[1].payload).toMatchObject({ workspace: 'library', template: { templateId: 'saved' } });
 });
+// 从清单选择稍后更新会撤销本次请求，原有草稿仍可编辑，随后清空也不会启动更新。
+test('稍后更新保留草稿并取消自动续接', async () => {
+  const calls = desktop({ mode: 'native' });
+  await initializeUpdates();
+  render(<><input aria-label="编辑中的名称" data-update-draft="草稿名称" defaultValue="保留输入" /><UpdateLifecycle /></>);
+  fireEvent.click(await screen.findByRole('button', { name: '一键更新' }));
+  fireEvent.click(await screen.findByRole('button', { name: '稍后更新' }));
+  expect(screen.getByLabelText<HTMLInputElement>('编辑中的名称').value).toBe('保留输入');
+  screen.getByLabelText('编辑中的名称').removeAttribute('data-update-draft');
+  await act(async () => { await tryApplyUpdate(); });
+  expect(calls.mock.calls.some(([, args]) => ['download', 'apply'].includes(String(args?.operation)))).toBe(false);
+});
 // 场景：当前页没有任务，但另一服务地址下的本机记录仍在运行；等待说明指出是哪个会话，取消等待不会安装或取消业务任务。
 test('后台任务阻止应用并说明所属会话，取消等待不取消任务', async () => {
   const calls = desktop({ pending: OTHER_SERVER });
