@@ -3,6 +3,44 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.22] - 2026-11-18
+### BREAKING CHANGES
+- due to [`651a0e3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/651a0e37efe9f8e7cc488c25638decbcac5e0668) - localize private state and share accepted sources *(PR [#326](https://github.com/HsiangNianian/IntelligentMixVideo/pull/326) by [@YUZHEthefool](https://github.com/YUZHEthefool))*:
+
+  Deploy client and server together. Requests now carry local  
+  context and image bytes; SQLite and IndexedDB migrate to schema version 2.  
+  Legacy tables must be migrated or expired before explicit retirement.  
+  Refs: HsiangNianian/IntelligentMixVideo#301  
+  * fix(remotion): restore cancelled chats and offload image staging  
+  Recover empty history only for legacy initial generations cancelled before execution. Prepare message and retry references off the event loop, wait for cancelled writers before cleanup, and commit before scheduling without yielding.  
+  Add regression coverage for migration guards, responsive HTTP requests, cancellation cleanup and concurrent submissions. Update async callers and module storage documentation.  
+  * fix(remotion): register creation credentials before FIFO claims  
+  * fix(remotion): retain submitted images before event delivery
+
+
+### New Features
+- [`7b5de99`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7b5de99bf8d897238340d1232eb5ae1a401ec08d) - **remotion-agent**: unify effect generation and adapt legacy works *(PR [#301](https://github.com/HsiangNianian/IntelligentMixVideo/pull/301) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`3e26a7a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3e26a7a4ba0d327d0bd402a0093af90236b180f8) - **server**: accelerate Remotion overlays with GPU fallback *(PR [#328](https://github.com/HsiangNianian/IntelligentMixVideo/pull/328) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`cadbebe`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/cadbebe2fa88cdedc7abadf8495272c6ac1b7e9d) - **studio**: redesign the template workspace and sync preview covers *(PR [#327](https://github.com/HsiangNianian/IntelligentMixVideo/pull/327) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Bug Fixes
+- [`ca12390`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ca12390abfcbb42112ea1192f7972bd6a9cbcf0a) - **remotion**: adapt subtitle animations to actual cue lengths *(PR [#325](https://github.com/HsiangNianian/IntelligentMixVideo/pull/325) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Refactors
+- [`651a0e3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/651a0e37efe9f8e7cc488c25638decbcac5e0668) - **remotion**: localize private state and share accepted sources *(PR [#326](https://github.com/HsiangNianian/IntelligentMixVideo/pull/326) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`fff7e75`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/fff7e75ee05e4349824460e9c5cf25bb9959bff0) - update CHANGELOG.md for v0.9.21 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`b09f6b3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b09f6b36f3d12255b9a749a81480a8f55240ac16) - **release**: merge main into the v0.9.22 release branch *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`3753eca`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3753eca908fb7076c73a720db180381a29369b43) - **release**: prepare v0.9.22 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`ab84cc2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ab84cc25892d92ff9707f6af9aa4d54c20cf4a1f) - Merge pull request [#329](https://github.com/HsiangNianian/IntelligentMixVideo/pull/329) from HsiangNianian/codex/release-v0.9.22
+
+chore(release): promote dev to main for v0.9.22 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.21] - 2026-11-09
 ### New Features
 - [`a281636`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a281636de3a157e512e98d296b04c804245e2fa7) - **server**: send probed audio duration to segment matching *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
@@ -1953,3 +1991,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.20]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.19...v0.9.20
 
 [v0.9.21]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.20...v0.9.21
+
+[v0.9.22]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.21...v0.9.22
