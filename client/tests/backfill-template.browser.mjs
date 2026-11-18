@@ -23,6 +23,8 @@ const sdk = `window.AliyunTimelinePlayer = class {
     this.time = t; this.emit("playerSeeked");
     this.canvas.style.background = "rgb(" + Math.round(t * 30) + ",0,0)";
     if (t !== 1 || parent.holdText) return;
+    const {width, height} = parent.document.querySelector(".template-preview-frame").getBoundingClientRect();
+    parent.seekSize = [width, height];
     setTimeout(() => {
       const ctx = this.canvas.getContext("2d"), mark = document.createElement("canvas");
       mark.width = 60; mark.height = 30;
@@ -43,21 +45,28 @@ try {
   page.on("pageerror", error => console.error(error.message));
   const client = await page.context().newCDPSession(page);
   const template = savedTemplate();
-  let cover, captures = 0, reads = 0;
+  let cover, captures = 0, reads = 0, platform;
   // 桌面 IPC 边界返回实际整页 PNG；取帧、画布裁剪及上传使用产品代码。
   await page.exposeFunction("snapshot", async documentSize => {
     captures++;
+    assert.equal(Boolean(documentSize), platform !== "Macintosh");
+    assert.deepEqual(await page.evaluate(() => {
+      const {width, height} = document.querySelector(".template-preview-frame").getBoundingClientRect();
+      return [width, height];
+    }), await page.evaluate(() => window.seekSize));
     if (!documentSize) return (await client.send("Page.captureScreenshot", {})).data;
     const [width, height] = documentSize;
     return (await client.send("Page.captureScreenshot", { clip: { x: 0, y: 0, width, height, scale: 1 }, captureBeyondViewport: true })).data;
   });
   await page.addInitScript(() => {
     window.isTauri = true;
+    const os = new URLSearchParams(location.search).get("os");
+    Object.defineProperty(navigator, "userAgent", { value: os || navigator.userAgent });
     window.testFocus = value => {
       Object.defineProperty(document, "hasFocus", { configurable: true, value: () => value });
       window.dispatchEvent(new Event(value ? "focus" : "blur"));
     };
-    window.testFocus(false);
+    if (os === "Linux") window.testFocus(false);
     window.__TAURI_INTERNALS__ = { invoke: async (cmd, args) => {
       if (cmd === "preview_media_base") return location.origin;
       if (cmd === "preview_snapshot") return Uint8Array.from(atob(await window.snapshot(args.documentSize ?? null)), ch => ch.charCodeAt(0)).buffer;
@@ -92,32 +101,38 @@ try {
     ));
   </script>`;
   await page.route(base + "/backfill.html*", async route => route.fulfill({contentType: "text/html", body: await server.transformIndexHtml("/backfill.html", html)}));
-  const address = base + "/backfill.html";
-  await page.goto(address);
-  // Wayland 最小化可仍报告 visible。测试先恢复窗口，再在 IMS 位图返回前失焦。
-  const host = page.locator(".home-cover-capture");
-  await host.waitFor({ state:"attached" });
-  assert.equal(await host.locator(".template-preview-frame").count(), 0);
-  await page.evaluate(() => { window.holdText = true; window.testFocus(true); });
-  await page.waitForFunction(() => document.querySelector("[data-cover-time='1']"));
-  await page.evaluate(() => window.testFocus(false));
-  await host.locator(".template-preview-frame").waitFor({state:"detached"});
-  assert.equal(captures, 0);
-  await page.evaluate(() => { window.holdText = false; window.testFocus(true); });
-  for (let visit = 0; visit < 2; visit++) {
-    if (visit) await page.goto(address);
-    await page.locator("article img[src^='blob:']").first().waitFor({timeout:20000});
-    assert.equal(captures, 1);
-    assert.equal(reads, 1);
+  for (platform of ["Linux", "Windows", "Macintosh"]) {
+    delete template.cover;
+    captures = reads = 0;
+    const address = base + "/backfill.html?os=" + platform;
+    await page.goto(address);
+    if (platform === "Linux") {
+      // Wayland 最小化可仍报告 visible。测试先恢复窗口，再在 IMS 位图返回前失焦。
+      const host = page.locator(".home-cover-capture");
+      await host.waitFor({ state:"attached" });
+      assert.equal(await host.locator(".template-preview-frame").count(), 0);
+      await page.evaluate(() => { window.holdText = true; window.testFocus(true); });
+      await page.waitForFunction(() => document.querySelector("[data-cover-time='1']"));
+      await page.evaluate(() => window.testFocus(false));
+      await host.locator(".template-preview-frame").waitFor({state:"detached"});
+      assert.equal(captures, 0);
+      await page.evaluate(() => { window.holdText = false; window.testFocus(true); });
+    }
+    for (let visit = 0; visit < 2; visit++) {
+      if (visit) await page.goto(address);
+      await page.locator("article img[src^='blob:']").first().waitFor({timeout:20000});
+      assert.equal(captures, 1);
+      assert.equal(reads, 1);
+    }
+    const colors = await page.evaluate(async bytes => {
+      const frame = await createImageBitmap(new Blob([new Uint8Array(bytes)], {type:"image/png"}));
+      const ctx = new OffscreenCanvas(frame.width, frame.height).getContext("2d");
+      ctx.drawImage(frame, 0, 0);
+      return [1 / 6, 1 / 2, 5 / 6].map(y => [...ctx.getImageData(frame.width / 2, frame.height * y, 1, 1).data]);
+    }, [...cover]);
+    assert.deepEqual(colors, [[0, 255, 0, 255], [30, 0, 0, 255], [0, 0, 255, 255]]);
+    console.log("PASS:", platform, "快照参数与裁剪，PNG 含第 30 帧、标题及字幕；再次打开复用");
   }
-  const colors = await page.evaluate(async bytes => {
-    const frame = await createImageBitmap(new Blob([new Uint8Array(bytes)], {type:"image/png"}));
-    const ctx = new OffscreenCanvas(frame.width, frame.height).getContext("2d");
-    ctx.drawImage(frame, 0, 0);
-    return [1 / 6, 1 / 2, 5 / 6].map(y => [...ctx.getImageData(frame.width / 2, frame.height * y, 1, 1).data]);
-  }, [...cover]);
-  assert.deepEqual(colors, [[0, 255, 0, 255], [30, 0, 0, 255], [0, 0, 255, 255]]);
-  console.log("PASS: 首次进入自动上传的 PNG 含第 30 帧、标题与字幕，再次打开跳过");
 } finally {
   await browser?.close();
   await server.close();
