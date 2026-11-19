@@ -38,7 +38,7 @@ class ProgressStep(Contract):
 # Public summaries use host-authored vocabulary, never exception strings or model names.
 PUBLIC_TOOLS = {
     "tools.plan_execute", "tools.report_step", "tools.inspect", "preset.create", "preset.modify",
-    "preset.search", "sprite.compose", "sprite.create", "validate.code",
+    "preset.search", "sprite.search", "sprite.compose", "sprite.create", "validate.code",
     "validate.render", "image.info", "image.resize", "image.crop",
     "workspace.read", "workspace.write", "workspace.edit", "preview.render",
     "validate.check", "effect.save", "library.search", "library.read", "image.inspect",
@@ -80,10 +80,10 @@ def clip(value, limit: int) -> str | None:
 
 
 class RoundCall(Contract):
-    """One tool call the host actually ran, with the model's arguments for auditing it.
+    """One model-requested or host-run tool call, with bounded public arguments for auditing it.
 
-    ``arguments`` is the raw JSON text the model sent (plan step goals and candidate
-    source included) and ``detail`` the tool's real error text (which can name server
+    ``arguments`` is raw model JSON except for published Sprite search, whose public
+    entry combines the effective query and host-authored result. ``detail`` is the tool's real error text (which can name server
     paths or compiler output); both are published on purpose and clipped, while
     complete payloads and tool results stay in the private audit. The outcome
     vocabulary (tool names, error codes and the fixed ``message``) is still

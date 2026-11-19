@@ -109,7 +109,7 @@ class PlanAction(Contract):
     """Host-owned control shared by Outer (answer/ask/delegate/plan/stop) and Plan ReAct (step changes)."""
 
     action: Literal[
-        "answer", "ask", "delegate", "plan", "update_plan", "continue", "advance", "complete", "stop"
+        "answer", "ask", "delegate", "plan", "reuse", "update_plan", "continue", "advance", "complete", "stop"
     ]
     plan: PlanDraft | None = Field(
         default=None,
@@ -128,11 +128,13 @@ class PlanAction(Contract):
         if self.action != "update_plan" and self.plan is not None:
             # delegate runs the host's standard plan and plan hands the design to the Plan ReAct; a carried plan is ignored.
             raise ValueError("Only update_plan accepts a plan; delegate (standard plan) and plan (Plan ReAct designs it) start it themselves")
-        if self.sprite_id is not None and self.action != "complete":
+        if self.sprite_id is not None and self.action not in {"complete", "reuse"}:
             raise ValueError(
-                f"sprite_id is only valid with action=complete; omit it for {self.action} "
+                f"sprite_id is only valid with action=complete or reuse; omit it for {self.action} "
                 "(Preset IDs are not Sprite IDs)"
             )
+        if self.action == "reuse" and not self.sprite_id:
+            raise ValueError("reuse requires the exact Sprite ID returned by sprite_search")
         if (self.action == "answer") != (self.answer is not None):
             raise ValueError("answer requires the answer text, and only answer accepts it")
         if (self.action == "ask") != bool(self.questions):

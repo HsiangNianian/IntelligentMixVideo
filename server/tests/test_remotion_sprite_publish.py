@@ -29,11 +29,12 @@ from server.remotion_templates.harness import Harness
 from server.remotion_templates.managed_fonts import bundled_font
 from server.remotion_templates.models import GenerateTemplateRequest, JobInput
 from server.remotion_templates.object_store import ObjectStoreError, ZosObjects
+from server.remotion_templates import runtime as remotion_runtime
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.publication import PREVIEW_PROTOCOL, current_bundle
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.sprite_router import sprite_runtime
-from server.remotion_templates.store import Store
+from server.remotion_templates.store import NotFound, Store
 from server.remotion_templates.tables import versions
 from server.remotion_templates.tools.contracts import SpriteDraft
 from server.video_composition import zos
@@ -605,6 +606,47 @@ def test_published_sprite_survives_deleting_its_source_version(client: TestClien
     assert preview.status_code == 200
     assert "// rebuilt" in preview.text
     assert "sandbox allow-scripts" in preview.headers["content-security-policy"]
+
+
+def test_published_sprite_imports_verified_source_without_executor(client: TestClient, published, tmp_path) -> None:
+    """A search hit copies verified source artifacts into a new job without calling Executor."""
+    summary = published_sprite(client, published.version.id)
+    match = remotion_runtime.SpriteMatch(summary.sprite_id, summary.name, "description", 0.01, 0.95)
+    candidate, spec, report, directory = asyncio.run(
+        remotion_runtime.import_published_sprite(match, published.store, tmp_path)
+    )
+    assert (candidate, spec, report) == (
+        published.version.candidate, published.version.spec, published.version.validation
+    )
+    assert {path.name for path in directory.iterdir()} == set(report.artifacts)
+
+
+def test_reused_sprite_version_records_source_and_id(client: TestClient, published, tmp_path) -> None:
+    """A copied publication becomes a new editable version with its source Sprite recorded."""
+    summary = published_sprite(client, published.version.id)
+    match = remotion_runtime.SpriteMatch(summary.sprite_id, summary.name, "description", 0.01, 0.95)
+    candidate, spec, report, directory = asyncio.run(
+        remotion_runtime.import_published_sprite(match, published.store, tmp_path)
+    )
+    job = asyncio.run(published.store.enqueue(
+        published.version.project_id, JobInput(mode="edit", instruction="复用这个效果"), published.version.id,
+    ))
+    published.store.claim()
+    version = published.store.publish(job.id, candidate, spec, report, directory,
+                                      reused_sprite_id=summary.sprite_id)
+    assert version.source == "sprite_reuse"
+    assert version.reused_sprite_id == summary.sprite_id
+    assert version.id != published.version.id
+
+
+def test_published_sprite_without_source_falls_back_to_generation(client: TestClient, published, tmp_path) -> None:
+    """A publication whose source version was deleted cannot bypass current validation."""
+    summary = published_sprite(client, published.version.id)
+    with published.store.transaction() as db:
+        db.execute(versions.delete())
+    match = remotion_runtime.SpriteMatch(summary.sprite_id, summary.name, "description", 0.01, 0.95)
+    with pytest.raises(NotFound):
+        asyncio.run(remotion_runtime.import_published_sprite(match, published.store, tmp_path))
 
 
 @pytest.mark.parametrize(("overwrite", "same_work"), [(False, True), (True, True), (True, False)])
