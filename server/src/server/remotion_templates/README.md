@@ -560,8 +560,9 @@ that accompanies calls is not published. Everything is cut with `…`, so a cut 
 is no longer valid JSON. Tool results, host steer text and the full payloads stay in the
 private audit. The host's automatic lookup before delegation appears as `sprite.search`
 before `tools.plan_execute`, with `source=host` and `result=candidates`, `miss` or `unavailable`;
-an explicit Outer search also records a host summary. Both summaries show candidate IDs, names and scores; descriptions
-stay in the private tool receipt and model snapshot. A terminal job accepts no further rounds. Unknown tool
+an explicit Outer search appears once, with its effective query and host summary in the same call.
+Both forms show candidate IDs, names and scores; descriptions stay in the private tool receipt
+and model snapshot. A terminal job accepts no further rounds. Unknown tool
 names become `unknown` with the name the model asked for in `requested_tool`; model
 protocol failures are explicitly marked. Each `job.round` event carries one
 round, `job.updated` omits that history, and the client keeps the rounds it has stored locally.
@@ -619,10 +620,14 @@ to subtitle effects if neither appears. Legacy unspecified kinds remain in video
 
 Published Sprite reuse search uses a server-side Chroma HTTP collection. Install the `sprite-embedding` extra and
 download BAAI/bge-m3 onto the backend host, then set `IMV_SPRITE_EMBEDDING_MODEL_PATH` to that local directory.
-Once the Agent model and local embedding path are configured, a background task indexes existing assets when the Remotion runtime starts and reconciles
-new, overwritten, renamed and deleted assets after in-process catalog changes. It does not poll MySQL while idle;
-changes made directly in MySQL require a runtime restart to reconcile. A failed index pass retries after 60 seconds
-or the next in-process catalog change; successful idle passes never poll MySQL again.
+Once the Agent model and local embedding path are configured, a background task reconciles
+new, overwritten, renamed and deleted assets after in-process catalog changes. It does not scan
+MySQL on startup or while idle. A failed pass is logged and retried once after 60 seconds or the
+next catalog change; after a second failure it waits for another change or an explicit rebuild.
+Existing assets and changes made directly in MySQL require a manual rebuild. The repository-root
+`status`, `clear` and `rebuild` commands are documented in the [server README](../../../README.md).
+`status` compares IDs, index revisions and embedding model across MySQL and Chroma; matching counts
+alone do not prove sync.
 It asks the configured Agent chat API to describe the published TSX and parameters in Chinese, embeds that description
 together with the asset name and kind using local bge-m3, and stores the 1024-dimensional vector under `sprite_id`.
 The index is rebuilt from MySQL in a new Chroma collection; an unavailable Chroma or local model does not block publication. For a new effect,

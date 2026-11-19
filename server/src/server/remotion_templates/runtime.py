@@ -116,23 +116,25 @@ class Runtime:
             self.sprite_index = asyncio.create_task(self._index_sprites())
 
     async def _index_sprites(self) -> None:
-        """Reconcile on changes; retry failed passes without polling a healthy index."""
+        """Index only after catalog changes, with one delayed retry after a failed pass."""
         search = SpriteSearch()
         with sprite_events.watch() as wake:
             while not self.fenced:
+                await wake.wait()
                 wake.clear()
-                try:
-                    failed = not await asyncio.to_thread(search.reconcile)
-                except Exception:
-                    logger.exception("Published Sprite index reconciliation failed")
-                    failed = True
-                if failed:
+                for attempt in range(2):
                     try:
-                        await asyncio.wait_for(wake.wait(), INDEX_RETRY_SECONDS)
-                    except TimeoutError:
-                        pass
-                else:
-                    await wake.wait()
+                        if await asyncio.to_thread(search.reconcile):
+                            break
+                    except Exception:
+                        logger.exception("Published Sprite index reconciliation failed")
+                    logger.warning("Published Sprite indexing failed (attempt %s/2)", attempt + 1)
+                    if attempt == 0:
+                        try:
+                            await asyncio.wait_for(wake.wait(), INDEX_RETRY_SECONDS)
+                        except TimeoutError:
+                            pass
+                        wake.clear()
 
     async def _renew(self) -> None:
         """Renew the queue lease; a failed renewal is retried, a lost lease fences this instance for good."""

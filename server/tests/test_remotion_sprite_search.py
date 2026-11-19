@@ -100,6 +100,61 @@ def test_partial_index_failure_is_reported_and_retried(monkeypatch, tmp_path):
     assert "sprite-1" in collection.rows
 
 
+def test_clear_and_rebuild_commands_only_touch_the_sprite_collection(monkeypatch, tmp_path, capsys):
+    """手动清空后从既有 MySQL 资产回填，命令不连接真实服务。"""
+    code = "return <b>标题</b>"
+    data = {"sprite-1": {"name": "霓虹标题", "kind": "SPRITE_KIND_TEXT", "tsx_code": code,
+                         "code_sha256": hashlib.sha256(code.encode()).hexdigest()}}
+    collection = FakeCollection()
+    (tmp_path / "modules.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "pytorch_model.bin").touch()
+    settings = sprite_search.SpriteSearchSettings(_env_file=None, embedding_model_path=str(tmp_path),
+        description_api_key=SecretStr("key"), description_model="model", description_base_url="http://model/v1")
+    search = sprite_search.SpriteSearch(settings)
+    monkeypatch.setattr(sprite_search, "SpriteSearch", lambda: search)
+    monkeypatch.setattr(search, "_collection", lambda **_kwargs: collection)
+    monkeypatch.setattr(search, "_chat", lambda *_: "蓝紫色发光标题，文字从下方上移并淡入，关键词持续呼吸发光。")
+    monkeypatch.setattr(search, "_embed", lambda _: [1.0, 0.0])
+    monkeypatch.setattr(sprite_search.sprite_store, "listing", lambda: list(data.items()))
+
+    assert sprite_search.main(["rebuild"]) == 0
+    assert list(collection.rows) == ["sprite-1"]
+    assert sprite_search.main(["status"]) == 0
+    assert sprite_search.main(["clear"]) == 0
+    assert collection.rows == {}
+    assert sprite_search.main(["status"]) == 1
+    assert sprite_search.main(["rebuild"]) == 0
+    assert list(collection.rows) == ["sprite-1"]
+    output = capsys.readouterr().out
+    assert "Cleared 1 Sprite vectors" in output
+    assert "Missing: 1 (sprite-1)" in output
+    assert "In sync" in output
+
+
+def test_status_detects_drift_even_when_mysql_and_chroma_counts_match(monkeypatch, capsys):
+    """数量相等时仍能辨别缺失、过期和多余的向量，且检查不写入。"""
+    code = "return <b>标题</b>"
+    data = {sprite_id: {"name": sprite_id, "kind": "SPRITE_KIND_TEXT", "tsx_code": code,
+                        "code_sha256": hashlib.sha256(code.encode()).hexdigest()}
+            for sprite_id in ("sprite-1", "sprite-2")}
+    collection = FakeCollection()
+    collection.rows = {"sprite-2": ("old", {"revision": "old", "embedding_model": "BAAI/bge-m3"}, [1.0]),
+                       "sprite-extra": ("extra", {"revision": "extra"}, [1.0])}
+    search = sprite_search.SpriteSearch(sprite_search.SpriteSearchSettings(_env_file=None))
+    monkeypatch.setattr(sprite_search, "SpriteSearch", lambda: search)
+    monkeypatch.setattr(search, "_collection", lambda **_kwargs: collection)
+    monkeypatch.setattr(sprite_search.sprite_store, "listing", lambda: list(data.items()))
+
+    assert sprite_search.main(["status"]) == 1
+    output = capsys.readouterr().out
+    assert "MySQL: 2, Chroma: 2" in output
+    assert "Missing: 1 (sprite-1)" in output
+    assert "Outdated: 1 (sprite-2)" in output
+    assert "Extra: 1 (sprite-extra)" in output
+    assert "Out of sync" in output
+    assert len(collection.rows) == 2
+
+
 def test_search_returns_current_candidates_above_threshold_and_near_best(monkeypatch, tmp_path):
     """只保留前十条中分数至少 0.7、距有效第一名不超过 0.1 的当前资产。"""
     data = {f"sprite-{i}": {"name": f"标题 {i}", "kind": "SPRITE_KIND_TEXT", "tsx_code": "code",

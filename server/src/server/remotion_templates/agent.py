@@ -355,15 +355,18 @@ class AgentRun:
         return [{"sprite_id": item.sprite_id, "name": item.name, "description": item.description,
                  "score": item.score} for item in self.sprite_matches]
 
-    def _record_sprite_lookup(self, source: str, status: str = "pass"):
-        """Show safe candidate IDs and scores in public loop history without source descriptions."""
-        lookup = {"source": source, "result": ("unavailable" if status == "fail" else
+    def _sprite_lookup_summary(self, source: str, query: str, status: str = "pass") -> dict:
+        """Describe one lookup for public history without exposing stored descriptions."""
+        return {"query": query, "source": source, "result": ("unavailable" if status == "fail" else
                   "candidates" if self.sprite_matches else "miss"),
                   "candidates": [{"sprite_id": item.sprite_id, "name": item.name, "score": item.score}
                                  for item in self.sprite_matches]}
+
+    def _record_sprite_lookup(self, source: str, query: str, status: str = "pass"):
+        """Record a host-run lookup, which has no model tool call of its own."""
         self.round_calls.append(RoundCall.model_validate({
             "tool": SPRITE_SEARCH_TOOL.name, "status": status,
-            "arguments": json.dumps(lookup, ensure_ascii=False),
+            "arguments": json.dumps(self._sprite_lookup_summary(source, query, status), ensure_ascii=False),
             **({"error_code": "TOOL_FAILED"} if status == "fail" else {}),
         }).model_dump(mode="json", exclude_none=True))
 
@@ -799,6 +802,7 @@ class AgentRun:
         limit_hit = False
         handled = set()
         resolved: dict[str, str] = {}
+        sprite_lookup_queries: dict[str, str] = {}
         fatal = None
         try:
             for call in response.tool_calls:
@@ -845,7 +849,7 @@ class AgentRun:
                                     except Exception:
                                         logging.getLogger(__name__).exception("Sprite lookup failed before import")
                                         status = "fail"
-                                    self._record_sprite_lookup("host", status)
+                                    self._record_sprite_lookup("host", str(requested), status)
                                 if (args.action in {"delegate", "plan"} and not self.sprite_searched
                                         and not self.session.intent.get("accepted_base")
                                         and SPRITE_SEARCH_TOOL in visible):
@@ -861,7 +865,7 @@ class AgentRun:
                                     except Exception:
                                         logging.getLogger(__name__).exception("Sprite lookup failed; continuing generation")
                                         status = "fail"
-                                    self._record_sprite_lookup("host", status)
+                                    self._record_sprite_lookup("host", str(requested), status)
                                 if searched_now:
                                     # The first routing decision was made without seeing retrieval; ask Outer again.
                                     notes = {"sprite_candidates": self._sprite_candidates()}
@@ -878,9 +882,10 @@ class AgentRun:
                             raise ValueError("Sprite search is offered only once per task")
                         self.sprite_searched = True
                         requested = self.session.intent.get("instruction") or self.session.intent.get("original_request", {}).get("description", "")
-                        self.sprite_matches = await asyncio.to_thread(self.sprite_search.search, str(requested or args.query))
+                        query = str(requested or args.query)
+                        self.sprite_matches = await asyncio.to_thread(self.sprite_search.search, query)
+                        sprite_lookup_queries[call.id] = query
                         data = {"candidates": self._sprite_candidates()}
-                        self._record_sprite_lookup("outer")
                     else:
                         saved_before = set(self.session.saved_sprites)
                         data = await self.session.execute(tool.name, args, visible)
@@ -930,7 +935,7 @@ class AgentRun:
                     result = tool_receipt("fail", error="NOT_EXECUTED", data={"detail": "Earlier action interrupted the batch"})
                     exchange.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result)})
                     self.budget.record("tool_result", role=self.layer.value, call_id=call.id, tool=call.function.name, result=result, actual_tooluse=self.state.calls)
-            self._note_round_calls(response, exchange, resolved)
+            self._note_round_calls(response, exchange, resolved, sprite_lookup_queries)
             context.append(exchange)
         if fatal is not None:
             raise fatal
@@ -951,11 +956,12 @@ class AgentRun:
             publish = transition is None
         return await self._switch(transition, publish=publish)
 
-    def _note_round_calls(self, response, exchange, resolved):
+    def _note_round_calls(self, response, exchange, resolved, sprite_lookup_queries):
         """Record what the host actually ran this turn for the public round record.
 
-        Each call is published with the raw ``arguments`` the model sent (so plan
-        goals and candidate source in them are visible) and, on failure, the tool's
+        Each call is published with the raw ``arguments`` the model sent (except
+        successful Sprite search, which combines the effective query and safe result
+        in one entry) and, on failure, the tool's
         real error text as ``detail``; both are clipped when the record is validated.
         Successful result payloads stay in the private audit. Receipts are matched by
         call ID so the record keeps the order the model asked for, a resolved call
@@ -977,6 +983,9 @@ class AgentRun:
                 "status": "pass" if result.get("ok") else "fail",
                 "arguments": call.function.arguments,
             }
+            if summary["tool"] == SPRITE_SEARCH_TOOL.name and result.get("ok"):
+                summary["arguments"] = json.dumps(
+                    self._sprite_lookup_summary("outer", sprite_lookup_queries[call.id]), ensure_ascii=False)
             if call.id not in resolved:
                 summary["requested_tool"] = call.function.name
             if not result.get("ok"):

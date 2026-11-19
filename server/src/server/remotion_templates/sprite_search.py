@@ -1,11 +1,12 @@
 """Index published Sprite descriptions with a local embedding model for Outer.
 
-MySQL remains authoritative. A periodic reconciliation rebuilds the Chroma index after missed writes;
+MySQL remains authoritative. Catalog changes and an explicit rebuild command reconcile Chroma;
 search results are checked against the current publication before they can be imported.
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import logging
@@ -104,13 +105,15 @@ class SpriteSearch:
         """Offer retrieval whenever indexing is configured."""
         return self.index_enabled
 
-    def _collection(self):
-        """Resolve one cosine-distance collection from the configured Chroma server."""
+    def _collection(self, create: bool = True):
+        """Resolve the configured Chroma collection without creating it for read-only checks."""
         url = urlsplit(self.settings.chroma_url)
         if url.scheme not in {"http", "https"} or not url.hostname or url.path not in {"", "/"}:
             raise ValueError("IMV_SPRITE_CHROMA_URL must be a Chroma server origin")
         client = chromadb.HttpClient(host=url.hostname, port=url.port or (443 if url.scheme == "https" else 80),
                                      ssl=url.scheme == "https")
+        if not create:
+            return client.get_collection(self.settings.collection)
         return client.get_or_create_collection(self.settings.collection, configuration={"hnsw": {"space": "cosine"}})
 
     @staticmethod
@@ -229,3 +232,51 @@ class SpriteSearch:
         best = Decimal(str(matches[0].score))
         gap = Decimal(str(self.settings.similarity_score_gap))
         return [item for item in matches if best - Decimal(str(item.score)) <= gap]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Inspect, clear or explicitly reconcile the configured Sprite collection."""
+    parser = argparse.ArgumentParser(description="Manage the configured published Sprite vector collection")
+    parser.add_argument("action", choices=("status", "clear", "rebuild"))
+    args = parser.parse_args(argv)
+    search = SpriteSearch()
+    if args.action == "status":
+        publications = dict(sprite_store.listing())
+        try:
+            known = search._collection(create=False).get(include=["metadatas"])
+        except chromadb.errors.NotFoundError:
+            known = {"ids": [], "metadatas": []}
+        indexed = dict(zip(known["ids"], known["metadatas"]))
+        missing = sorted(set(publications) - set(indexed))
+        extra = sorted(set(indexed) - set(publications))
+        outdated = sorted(sprite_id for sprite_id, data in publications.items() if sprite_id in indexed and (
+            (indexed[sprite_id] or {}).get("revision") != search._revision(data)
+            or (indexed[sprite_id] or {}).get("embedding_model") != search.settings.embedding_model))
+        invalid_source = sorted(sprite_id for sprite_id, data in publications.items() if
+            hashlib.sha256(str(data.get("tsx_code", "")).encode()).hexdigest() != data.get("code_sha256"))
+        print(f"MySQL: {len(publications)}, Chroma: {len(indexed)}")
+        for label, ids in (("Missing", missing), ("Outdated", outdated), ("Extra", extra),
+                           ("Invalid source", invalid_source)):
+            print(f"{label}: {len(ids)}" + (f" ({', '.join(ids)})" if ids else ""))
+        healthy = not (missing or outdated or extra or invalid_source)
+        print("In sync" if healthy else "Out of sync")
+        return 0 if healthy else 1
+    if args.action == "clear":
+        collection = search._collection()
+        ids = collection.get(include=[])["ids"]
+        if ids:
+            collection.delete(ids=ids)
+        print(f"Cleared {len(ids)} Sprite vectors from {search.settings.collection}")
+        return 0
+    if not search.index_enabled:
+        parser.error("Sprite indexing needs a local embedding model and Agent model settings")
+    if not search.reconcile():
+        logger.error("Sprite vector rebuild is incomplete; check the indexing errors above")
+        return 1
+    print(f"Synchronized MySQL publications to {search.settings.collection}")
+    return 0
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.WARNING)
+    raise SystemExit(main())

@@ -82,8 +82,8 @@ def clip(value, limit: int) -> str | None:
 class RoundCall(Contract):
     """One model-requested or host-run tool call, with bounded public arguments for auditing it.
 
-    ``arguments`` is raw JSON from the model, or a host-authored lookup summary for
-    published Sprite search. ``detail`` is the tool's real error text (which can name server
+    ``arguments`` is raw model JSON except for published Sprite search, whose public
+    entry combines the effective query and host-authored result. ``detail`` is the tool's real error text (which can name server
     paths or compiler output); both are published on purpose and clipped, while
     complete payloads and tool results stay in the private audit. The outcome
     vocabulary (tool names, error codes and the fixed ``message``) is still

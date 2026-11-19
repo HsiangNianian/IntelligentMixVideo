@@ -20,9 +20,27 @@ Python 3.12+、FastAPI 和 MySQL。模板库在连接此服务的客户端之间
 安装可选推理依赖并启动。仅使用 CPU 的现有 WSL 虚拟环境可先运行
 `uv pip install --python <虚拟环境>/bin/python --torch-backend=cpu 'sentence-transformers>=5.1,<6' 'sentencepiece>=0.2'`，
 避免下载 CUDA 依赖。`IMV_SPRITE_CHROMA_URL` 指向该机器可访问的 Chroma HTTP 地址；切换模型时使用新的
-`IMV_SPRITE_COLLECTION`，后台从 MySQL 回填索引。代码转效果描述仍复用 `IMV_ACTOR_BASE_URL`、`IMV_ACTOR_MODEL`
+`IMV_SPRITE_COLLECTION`，再手动从 MySQL 回填索引。代码转效果描述仍复用 `IMV_ACTOR_BASE_URL`、`IMV_ACTOR_MODEL`
 和 `IMV_ACTOR_API_KEY`，因此向量化不调用外部 API，但描述生成仍调用 Agent 模型。缺少模型配置或 Chroma 不可用时，
 新特效请求继续原生成流程。部署到服务器时保护 Chroma 的网络入口；详见[字效模块说明](src/server/remotion_templates/README.md#sprite-assets)。
+
+首次部署语义检索时，可通过 [HF-Mirror](https://hf-mirror.net/) 下载 BGE-M3（以下命令在运行后端的用户下执行）：
+
+```sh
+HF_ENDPOINT=https://hf-mirror.net uvx --from huggingface_hub hf download BAAI/bge-m3 --local-dir "$HOME/models/bge-m3" --exclude 'onnx/*'
+```
+
+下载后将 `server/.env` 的 `IMV_SPRITE_EMBEDDING_MODEL_PATH` 设为该目录的实际绝对路径；可用 `echo "$HOME/models/bge-m3"` 查看。模型只需下载一次，后续启动从该本地目录加载；`HF_ENDPOINT` 仅对这条下载命令生效。
+
+已发布 Sprite 的向量索引不在后端启动时自动回填。以下命令均在**仓库根目录**运行，使用同一份 `server/.env`；先确保 MySQL 和 Chroma 可访问：
+
+```sh
+uv run --locked --project server python -m server.remotion_templates.sprite_search status
+uv run --locked --project server python -m server.remotion_templates.sprite_search clear
+uv run --locked --extra sprite-embedding --project server python -m server.remotion_templates.sprite_search rebuild
+```
+
+`status` 只读比较 MySQL 与 Chroma 的 Sprite ID、索引版本和向量模型，显示缺失、过期、多余及源代码哈希无效的记录；全部为零且显示 `In sync` 才表示匹配。`clear` 只清空 `IMV_SPRITE_COLLECTION` 指定的集合，不删除 MySQL 或其他 Chroma 集合。`rebuild` 将 MySQL 中已有的已发布资产补入向量库，并更新过期记录；失败时返回非零状态，可修复原因后重跑，无需先清空。应用内新增、修改和删除资产会触发后台对账；直接修改 MySQL 后需要手动运行 `rebuild`。
 
 公共基类只统一读取规则，各模块保留原配置类、字段、校验和实例化时机。
 优先级为构造参数 > 进程环境变量 > `server/.env` > 字段默认值；保留 `_env_file` 显式覆盖与 `None` 禁用文件。

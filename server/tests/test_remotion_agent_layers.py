@@ -42,6 +42,9 @@ def test_outer_can_choose_one_of_multiple_retrieved_sprites(monkeypatch, tmp_pat
     assert harness.published == []
     assert [item["sprite_id"] for item in run._sprite_candidates()] == ["sprite-1", "sprite-2"]
     assert any('"sprite_id": "sprite-2"' in item["arguments"] for item in rounds[0]["calls"])
+    search_calls = [item for item in rounds[0]["calls"] if item["tool"] == "sprite.search"]
+    assert len(search_calls) == 1
+    assert json.loads(search_calls[0]["arguments"])["result"] == "candidates"
 
 
 def test_confirmed_sprite_is_rechecked_before_first_outer_reuse(monkeypatch, tmp_path):
@@ -58,8 +61,10 @@ def test_confirmed_sprite_is_rechecked_before_first_outer_reuse(monkeypatch, tmp
     monkeypatch.setattr(run.sprite_search, "search", lambda query: queries.append(query) or matches)
     assert asyncio.run(run.plan_execute()).sprite_id == "sprite-1"
     assert queries == ["霓虹标题"] and harness.roles == ["outer"]
-    assert any(item["tool"] == "sprite.search" and '"source": "host"' in item["arguments"]
-               for item in rounds[0]["calls"])
+    search_calls = [item for item in rounds[0]["calls"] if item["tool"] == "sprite.search"]
+    assert len(search_calls) == 1
+    assert json.loads(search_calls[0]["arguments"])["query"] == "霓虹标题"
+    assert json.loads(search_calls[0]["arguments"])["source"] == "host"
 
 
 def test_outer_can_answer_about_published_effects_after_search(monkeypatch, tmp_path):
@@ -73,6 +78,23 @@ def test_outer_can_answer_about_published_effects_after_search(monkeypatch, tmp_
     monkeypatch.setattr(run.sprite_search, "search", lambda _: candidates)
     assert asyncio.run(run.plan_execute()).answer == "有暖色标题。"
     assert harness.roles == ["outer", "outer"] and not harness.published
+
+
+def test_outer_search_miss_has_one_public_call_with_query_and_result(monkeypatch, tmp_path):
+    """未命中时一条公开记录同时说明实际查询和空结果。"""
+    run, _, budget = free_run(monkeypatch, tmp_path, [
+        call("search", "sprite_search", {"query": "模型建议词"}),
+        call("answer", "tools_plan_execute", {"action": "answer", "answer": "没有找到匹配资产。"}),
+    ], intent={"original_request": {"description": "黑色双语字幕"}})
+    rounds = []
+    budget.on_round = rounds.append
+    monkeypatch.setattr(type(run.sprite_search), "enabled", property(lambda self: True))
+    monkeypatch.setattr(run.sprite_search, "search", lambda _: [])
+    assert asyncio.run(run.plan_execute()).answer == "没有找到匹配资产。"
+    search_calls = [item for item in rounds[0]["calls"] if item["tool"] == "sprite.search"]
+    assert len(search_calls) == 1
+    assert json.loads(search_calls[0]["arguments"]) == {
+        "query": "黑色双语字幕", "source": "outer", "result": "miss", "candidates": []}
 
 
 def test_outer_can_delegate_after_retrieving_candidates(monkeypatch, tmp_path):
