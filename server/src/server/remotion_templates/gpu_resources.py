@@ -4,8 +4,7 @@ import asyncio
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
-import ctypes
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache
 import json
 import math
@@ -24,6 +23,7 @@ import xml.etree.ElementTree as ET
 from .settings import Settings
 
 GPU_UUID = re.compile(r"GPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
+DISABLED_GPU_INDEX = 4
 EXCLUDED_GPU_UUIDS: tuple[str, ...] = ()
 
 Route = Literal["h264-pair", "gpu-webm", "cpu-webm"]
@@ -43,7 +43,7 @@ class GPUWorkerError(RuntimeError):
 
 @dataclass
 class GPU:
-    """One physical card and a single SMI observation, including workloads outside this service."""
+    """One physical card's SMI metrics and, after a successful NVML refresh, its current encoder sessions."""
 
     uuid: str
     index: int
@@ -71,51 +71,44 @@ def _pci_name(value: str) -> str:
 
 
 def _encoder_owners(cards: list[GPU]) -> None:
-    """Read exact per-session PIDs, including two sessions owned by the same FFmpeg; failures keep reservations intact."""
-    busy = [card for card in cards if card.sessions]
-    if not busy:
-        return
-    # nvmlEncoderSessionInfo_t contains eight 32-bit fields; the second is the host PID.
-    session = ctypes.c_uint * 8
+    """Replace old counts and owners together. All cards share one deadline, including NVML init and shutdown."""
+    helper = Path(__file__).with_name("nvenc_sessions.py")
+    command = [sys.executable, "-I", str(helper), str(NVENC_SESSION_LIMIT), *(card.uuid for card in cards)]
+    output = _driver_output(command, timeout=2)
     try:
-        nvml = ctypes.CDLL("libnvidia-ml.so.1")
-        get_sessions = nvml.nvmlDeviceGetEncoderSessions
-        if nvml.nvmlInit_v2():
-            return
-    except (OSError, AttributeError):
-        return
-    try:
-        for card in busy:
-            handle = ctypes.c_void_p()
-            if nvml.nvmlDeviceGetHandleByUUID(card.uuid.encode("ascii"), ctypes.byref(handle)):
-                continue
-            size = ctypes.c_uint(card.sessions)
-            rows = (session * size.value)()
-            # A concurrent change in session count may require another buffer. Keep unmatched leases conservative.
-            if get_sessions(handle, ctypes.byref(size), rows) == 0:
-                card.encoder_pids.update(row[1] for row in rows[:size.value])
-    finally:
-        nvml.nvmlShutdown()
+        owners = json.loads(output) if output else {}
+    except json.JSONDecodeError:
+        owners = {}
+    for card in cards:
+        pids = owners.get(card.uuid)
+        card.sessions = len(pids) if pids is not None else None
+        card.encoder_pids = Counter(pids or ())
 
 
-def _smi(*args: str, timeout: float = 2) -> str:
-    """Bound driver queries, including the wait after SIGKILL if a broken device traps the CLI in kernel I/O."""
+def _driver_output(command: list[str], timeout: float, *, allow_partial: bool = False) -> str:
+    """Bound both the query and its cleanup. Only SMI discovery can recover devices from partial stdout."""
     try:
-        process = subprocess.Popen(["nvidia-smi", *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except OSError:
         return ""
     try:
         output, _ = process.communicate(timeout=timeout)
+        completed = process.returncode == 0
     except subprocess.TimeoutExpired as exc:
         process.kill()
-        output = exc.output or b""
+        output, completed = exc.output or b"", False
         process.stdout.close()
         try:
             process.wait(timeout=.1)
         except subprocess.TimeoutExpired:
             # Popen registers unreaped children for cleanup on later launches when the driver releases them.
             pass
-    return output.decode(errors="replace")
+    return output.decode(errors="replace") if completed or allow_partial else ""
+
+
+def _smi(*args: str, timeout: float = 2) -> str:
+    """Retain usable rows when the driver stops midway through device discovery."""
+    return _driver_output(["nvidia-smi", *args], timeout, allow_partial=True)
 
 
 def _read_cards(xml: str, indexes: dict[str, int]) -> list[GPU]:
@@ -150,7 +143,24 @@ def _read_cards(xml: str, indexes: dict[str, int]) -> list[GPU]:
 
 def _is_excluded(index: int, uuid: str) -> bool:
     """Skip physical GPU 4 and any boards pinned by UUID across host reboots."""
-    return index == 4 or any(uuid.casefold() == blocked.casefold() for blocked in EXCLUDED_GPU_UUIDS)
+    return index == DISABLED_GPU_INDEX or any(uuid.casefold() == blocked.casefold() for blocked in EXCLUDED_GPU_UUIDS)
+
+
+def _complete_inventory(cards: list[GPU], indexes: dict[str, int], attached: int) -> bool:
+    """Require one identified, memory-probed board per physical index except 4. NVML supplies the session counts."""
+    if not len(indexes) <= attached <= len(indexes) + 1 or len(cards) > attached:
+        return False
+    slots = set(range(attached))
+    required = slots - {DISABLED_GPU_INDEX}
+    listed = set(indexes.values())
+    if len(listed) != len(indexes) or not required <= listed <= slots:
+        return False
+    # An anonymous XML node can only occupy the spare slot after all required cards match exactly once.
+    # A different valid UUID is a conflicting observation, even if the count matches.
+    if any(card.index < 0 and GPU_UUID.fullmatch(card.uuid) for card in cards):
+        return False
+    enabled = [card for card in cards if card.index in required]
+    return len(enabled) == len(required) and {card.index for card in enabled if card.total > 0} == required
 
 
 def _inventory() -> tuple[list[GPU], bool]:
@@ -173,19 +183,19 @@ def _inventory() -> tuple[list[GPU], bool]:
         merge_listed_indexes()
     if not indexes:
         return [], False
-    xml = _smi("-q", "-x")
+    xml = _smi("-q", "-x", timeout=8)
     cards = _read_cards(xml, indexes)
-    found = {card.uuid for card in cards if card.total > 0}
-    consecutive = set(indexes.values()) == set(range(len(indexes)))
-    attached = re.search(r"<attached_gpus>\s*(\d+)\s*</attached_gpus>", xml)
-    if (attached and int(attached[1]) == len(cards) == len(indexes) and found == indexes.keys() and
-            consecutive and all(card.sessions is not None for card in cards)):
-        _encoder_owners(cards)
-        return cards, True
-    if not tried_list:
+    match = re.search(r"<attached_gpus>\s*(\d+)\s*</attached_gpus>", xml)
+    attached = int(match[1]) if match else 0
+    complete = _complete_inventory(cards, indexes, attached)
+    if not complete and not tried_list:
         merge_listed_indexes()
         for card in cards:
             card.index = indexes.get(card.uuid, -1)
+        complete = _complete_inventory(cards, indexes, attached)
+    if complete:
+        return cards, True
+    found = {card.uuid for card in cards if card.total > 0}
     missing = [uuid for uuid, index in indexes.items() if uuid not in found and not _is_excluded(index, uuid)]
     if missing:
         # All per-card queries share one deadline. Queued boards do not each get another full timeout.
@@ -219,14 +229,40 @@ def _nvenc_unavailable_reason(ffmpeg: str | None) -> str | None:
     return None
 
 
-def _probe_host() -> tuple[list[GPU], bool, str | None]:
-    """Probe hardware and FFmpeg together before locking leases. A failed command can be retried on the next claim."""
+@dataclass
+class _HostProbe:
+    """Coalesced inventory and FFmpeg result. A failed session refresh disables NVENC for this batch of waiters."""
+
+    cards: list[GPU]
+    can_count_sessions: bool
+    ffmpeg_issue: str | None
+
+    async def refresh_sessions(self) -> None:
+        """Publish each completed NVML observation under the admission lock. A cancelled read owns only its copies."""
+        if not self.can_count_sessions or self.ffmpeg_issue is not None:
+            return
+        cards = [replace(card) for card in self.cards]
+        # Cooldown writers in the default executor can be waiting for this lock.
+        # Give its owner a worker that can always finish the bounded NVML query.
+        worker = ThreadPoolExecutor(max_workers=1)
+        try:
+            await asyncio.get_running_loop().run_in_executor(worker, _encoder_owners, cards)
+        finally:
+            worker.shutdown(wait=False, cancel_futures=True)
+        self.cards = cards
+        self.can_count_sessions = all(card.sessions is not None for card in cards)
+
+
+def _probe_host() -> _HostProbe:
+    """Share slow hardware discovery and FFmpeg checks before each claimant enters the host ledger."""
     cards, complete = _inventory()
+    # Deployment policy: physical GPU 4 runs no workloads, including external encoders.
+    cards = [card for card in cards if card.index >= 0 and card.index != DISABLED_GPU_INDEX]
     try:
         reason = _nvenc_unavailable_reason(shutil.which("ffmpeg")) if cards and complete else None
     except (OSError, subprocess.SubprocessError):
         reason = "nvenc_pipeline_unavailable"
-    return cards, complete, reason
+    return _HostProbe(cards, complete, reason)
 
 
 def _process(pid: int) -> tuple[int, int] | None:
@@ -298,19 +334,37 @@ class GPUPool:
         if self.directory is None and sys.platform == "linux":
             self.directory = Path(tempfile.gettempdir()) / f"imv-overlay-gpu-{os.getuid()}"
 
-    @contextmanager
-    def _lock(self):
-        """Serialize lease creation and cleanup across service processes; GPU discovery happens before taking the lock."""
-        import fcntl
-
+    def _lock_file(self) -> IO[str]:
+        """Open the host ledger lock after checking the ownership and permissions of its default directory."""
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.settings.overlay_gpu_lease_dir is None:
             # The default name lives in shared /tmp. Reject a precreated symlink or another account's writable ledger.
             info = self.directory.lstat()
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
                 raise PermissionError("untrusted GPU lease directory")
-        with (self.directory / "pool.lock").open("a") as lock:
+        return (self.directory / "pool.lock").open("a")
+
+    @contextmanager
+    def _lock(self):
+        """Serialize synchronous ledger operations such as writing a driver's cooldown marker."""
+        import fcntl
+
+        with self._lock_file() as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
+    @asynccontextmanager
+    async def _admission_lock(self):
+        """Wait for another process's ledger lock without blocking the event loop or retaining a cancelled waiter."""
+        import fcntl
+
+        with self._lock_file() as lock:
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(.02)
             yield
 
     def _leases(self) -> list[dict]:
@@ -419,12 +473,14 @@ class GPUPool:
         """Reserve from a fresh snapshot. A '*' in skip_nvenc means this job's canvas was rejected by the encoder."""
         if self._probe is None or self._probe.done():
             self._probe = asyncio.create_task(asyncio.to_thread(_probe_host))
-        cards, complete, ffmpeg_issue = await asyncio.shield(self._probe)
+        probe = await asyncio.shield(self._probe)
         grant = GPUGrant("cpu-webm", None, chunks, "nvidia_unavailable")
-        if cards and self.directory is not None:
+        if probe.cards and self.directory is not None:
             try:
-                with self._lock():
-                    grant = self._choose(cards, width, height, pages, chunks, skip_graphics, skip_nvenc, complete, ffmpeg_issue)
+                async with self._admission_lock():
+                    await probe.refresh_sessions()
+                    grant = self._choose(probe.cards, width, height, pages, chunks, skip_graphics, skip_nvenc,
+                                         probe.can_count_sessions, probe.ffmpeg_issue)
             except (OSError, ValueError):
                 grant = GPUGrant("cpu-webm", None, chunks, "gpu_accounting_unavailable")
         try:
