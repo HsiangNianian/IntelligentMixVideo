@@ -644,8 +644,7 @@ Only a later user reply can authorize `reuse` of a returned Sprite ID; the host 
 first selects an ID. A request to generate a new effect instead delegates to Plan or Executor with the candidates as
 references; it does not ask the same choice again. A selected import copies the
 retained source version's verified artifacts into a new editable version
-without entering Executor; a miss, stale index or failed import follows normal generation. Publications also retain an editable composition snapshot in `remotion_sprite_editable`;
-reuse currently needs the source version and its sealed artifacts, so deletion of that source falls back to generation.
+without entering Executor; a miss, stale index or failed import follows normal generation. Reuse needs the source version and its sealed artifacts, so deletion of that source falls back to generation.
 The index and description model treat published code and names as data, not instructions. Set the embedding model and
 collection together when rebuilding an index after model changes.
 Publishing re-verifies the sealed version files (409 when changed) and only accepts versions composed

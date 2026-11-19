@@ -608,23 +608,6 @@ def test_published_sprite_survives_deleting_its_source_version(client: TestClien
     assert "sandbox allow-scripts" in preview.headers["content-security-policy"]
 
 
-def test_published_sprite_keeps_editable_snapshot_on_overwrite_and_delete(client: TestClient, published) -> None:
-    """Publication stores its own editable inputs, refreshes them on overwrite and removes them on deletion."""
-    summary = published_sprite(client, published.version.id)
-    assert sprite_store.get_editable(summary.sprite_id) == {
-        "candidate": published.version.candidate.model_dump(mode="json"),
-        "spec": published.version.spec.model_dump(mode="json"),
-    }
-    newer = another_version(published, defaults={"text": "覆盖后的标题"}, same_work=True)
-    published_sprite(client, newer.id, target_sprite_id=summary.sprite_id)
-    assert sprite_store.get_editable(summary.sprite_id) == {
-        "candidate": newer.candidate.model_dump(mode="json"),
-        "spec": newer.spec.model_dump(mode="json"),
-    }
-    assert sprite_store.remove(summary.sprite_id)
-    assert sprite_store.get_editable(summary.sprite_id) is None
-
-
 def test_published_sprite_imports_verified_source_without_executor(client: TestClient, published, tmp_path) -> None:
     """A search hit copies verified source artifacts into a new job without calling Executor."""
     summary = published_sprite(client, published.version.id)
