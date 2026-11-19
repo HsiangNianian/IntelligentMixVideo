@@ -4,7 +4,7 @@ import asyncio
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache
 import json
 import math
@@ -229,8 +229,32 @@ def _nvenc_unavailable_reason(ffmpeg: str | None) -> str | None:
     return None
 
 
-def _probe_host() -> tuple[list[GPU], bool, str | None]:
-    """Probe hardware and FFmpeg together before locking leases. A failed command can be retried on the next claim."""
+@dataclass
+class _HostProbe:
+    """Coalesced inventory and FFmpeg result. A failed session refresh disables NVENC for this batch of waiters."""
+
+    cards: list[GPU]
+    can_count_sessions: bool
+    ffmpeg_issue: str | None
+
+    async def refresh_sessions(self) -> None:
+        """Publish each completed NVML observation under the admission lock. A cancelled read owns only its copies."""
+        if not self.can_count_sessions or self.ffmpeg_issue is not None:
+            return
+        cards = [replace(card) for card in self.cards]
+        # Cooldown writers in the default executor can be waiting for this lock.
+        # Give its owner a worker that can always finish the bounded NVML query.
+        worker = ThreadPoolExecutor(max_workers=1)
+        try:
+            await asyncio.get_running_loop().run_in_executor(worker, _encoder_owners, cards)
+        finally:
+            worker.shutdown(wait=False, cancel_futures=True)
+        self.cards = cards
+        self.can_count_sessions = all(card.sessions is not None for card in cards)
+
+
+def _probe_host() -> _HostProbe:
+    """Share slow hardware discovery and FFmpeg checks before each claimant enters the host ledger."""
     cards, complete = _inventory()
     # Deployment policy: physical GPU 4 runs no workloads, including external encoders.
     cards = [card for card in cards if card.index >= 0 and card.index != DISABLED_GPU_INDEX]
@@ -238,9 +262,7 @@ def _probe_host() -> tuple[list[GPU], bool, str | None]:
         reason = _nvenc_unavailable_reason(shutil.which("ffmpeg")) if cards and complete else None
     except (OSError, subprocess.SubprocessError):
         reason = "nvenc_pipeline_unavailable"
-    if cards and complete and reason is None:
-        _encoder_owners(cards)
-    return cards, complete, reason
+    return _HostProbe(cards, complete, reason)
 
 
 def _process(pid: int) -> tuple[int, int] | None:
@@ -312,19 +334,37 @@ class GPUPool:
         if self.directory is None and sys.platform == "linux":
             self.directory = Path(tempfile.gettempdir()) / f"imv-overlay-gpu-{os.getuid()}"
 
-    @contextmanager
-    def _lock(self):
-        """Serialize lease creation and cleanup across service processes; GPU discovery happens before taking the lock."""
-        import fcntl
-
+    def _lock_file(self) -> IO[str]:
+        """Open the host ledger lock after checking the ownership and permissions of its default directory."""
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.settings.overlay_gpu_lease_dir is None:
             # The default name lives in shared /tmp. Reject a precreated symlink or another account's writable ledger.
             info = self.directory.lstat()
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
                 raise PermissionError("untrusted GPU lease directory")
-        with (self.directory / "pool.lock").open("a") as lock:
+        return (self.directory / "pool.lock").open("a")
+
+    @contextmanager
+    def _lock(self):
+        """Serialize synchronous ledger operations such as writing a driver's cooldown marker."""
+        import fcntl
+
+        with self._lock_file() as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
+    @asynccontextmanager
+    async def _admission_lock(self):
+        """Wait for another process's ledger lock without blocking the event loop or retaining a cancelled waiter."""
+        import fcntl
+
+        with self._lock_file() as lock:
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(.02)
             yield
 
     def _leases(self) -> list[dict]:
@@ -433,12 +473,14 @@ class GPUPool:
         """Reserve from a fresh snapshot. A '*' in skip_nvenc means this job's canvas was rejected by the encoder."""
         if self._probe is None or self._probe.done():
             self._probe = asyncio.create_task(asyncio.to_thread(_probe_host))
-        cards, complete, ffmpeg_issue = await asyncio.shield(self._probe)
+        probe = await asyncio.shield(self._probe)
         grant = GPUGrant("cpu-webm", None, chunks, "nvidia_unavailable")
-        if cards and self.directory is not None:
+        if probe.cards and self.directory is not None:
             try:
-                with self._lock():
-                    grant = self._choose(cards, width, height, pages, chunks, skip_graphics, skip_nvenc, complete, ffmpeg_issue)
+                async with self._admission_lock():
+                    await probe.refresh_sessions()
+                    grant = self._choose(probe.cards, width, height, pages, chunks, skip_graphics, skip_nvenc,
+                                         probe.can_count_sessions, probe.ffmpeg_issue)
             except (OSError, ValueError):
                 grant = GPUGrant("cpu-webm", None, chunks, "gpu_accounting_unavailable")
         try:

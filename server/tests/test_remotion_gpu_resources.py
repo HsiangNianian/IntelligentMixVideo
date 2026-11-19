@@ -2,7 +2,8 @@
 
 import asyncio
 from collections import Counter
-from contextlib import AsyncExitStack
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import AsyncExitStack, asynccontextmanager
 import json
 import os
 from pathlib import Path
@@ -108,12 +109,142 @@ async def test_refreshes_sessions_after_ffmpeg_probe(nvml_machine, monkeypatch, 
         return None
 
     monkeypatch.setattr(gpu, "_nvenc_unavailable_reason", ffmpeg_probe)
-    async with claim(gpu.GPUPool(settings)) as grant:
+    async with claim(gpu.GPUPool(settings), skip_graphics={cards[1 - changed_index].uuid}) as grant:
         assert (grant.route, grant.reason) == ("gpu-webm", "nvenc_sessions_unavailable")
-    assert sum(card.sessions for card in cards[:2]) == 9
-    assert cards[changed_index].encoder_pids[50001] == 1
-    assert cards[0].encoder_pids[50000] == 8
+        assert grant.uuid == cards[changed_index].uuid
+        assert grant.device.sessions == len(driver.pids[grant.uuid])
+        assert grant.device.encoder_pids == Counter(driver.pids[grant.uuid])
     assert driver.queried == [card.uuid for card in cards[:2]]
+
+
+@pytest.mark.anyio
+async def test_concurrent_claims_recheck_external_sessions(nvml_machine):
+    """Two tasks share discovery. An external encoder started after the first grant must count for the second."""
+    cards, settings, driver = nvml_machine
+    pool = gpu.GPUPool(settings)
+    driver.pids[cards[0].uuid] = [50000] * 8
+
+    async def render():
+        """Release the grant after an external process occupies the ninth slot."""
+        async with claim(pool) as grant:
+            driver.pids[cards[0].uuid] = [50000] * 9
+            return grant.route
+
+    assert sorted(await asyncio.gather(render(), render())) == ["gpu-webm", "h264-pair"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cancel", [True, False], ids=["cancel", "admit"])
+async def test_ledger_contention_rechecks_or_cancels(nvml_machine, monkeypatch, cancel):
+    """An encoder starts before the lock handoff. A waiter can cancel or account for the ninth session."""
+    import fcntl
+
+    cards, settings, driver = nvml_machine
+    pids = driver.pids[cards[0].uuid] = [50000] * 8
+    pool = gpu.GPUPool(settings)
+    held, attempted, release = threading.Event(), threading.Event(), threading.Event()
+    real_flock = fcntl.flock
+
+    def observe_lock(file, operation):
+        """Signal the waiting task's first real lock attempt while the other descriptor still owns the ledger."""
+        if held.is_set() and Path(file.name).name == "pool.lock":
+            attempted.set()
+        return real_flock(file, operation)
+
+    def hold_ledger():
+        """Bound the wait even if a regression freezes the event loop."""
+        with pool._lock():
+            held.set()
+            release.wait(timeout=4)
+            pids.append(50001)
+
+    async def render():
+        """Exercise the public claim path and record if it actually reaches a render."""
+        async with claim(pool) as grant:
+            return grant.route
+
+    monkeypatch.setattr(fcntl, "flock", observe_lock)
+    holder = asyncio.create_task(asyncio.to_thread(hold_ledger))
+    try:
+        assert await asyncio.to_thread(held.wait, 2)
+        task = asyncio.create_task(render())
+        assert await asyncio.to_thread(attempted.wait, 2)
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not list(pool.directory.glob("*.lease"))
+        else:
+            release.set()
+            assert await task == "gpu-webm"
+    finally:
+        release.set()
+        await holder
+    pids.pop()
+    async with claim(pool) as recovered:
+        assert recovered.route == "h264-pair"
+
+
+@pytest.mark.anyio
+async def test_cancelled_nvml_read_cannot_overwrite_next_grant(machine, monkeypatch):
+    """A cancelled read finishes in its worker after the next grant, without creating a lease or changing that grant."""
+    _, settings = machine
+    pool = gpu.GPUPool(settings)
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def refresh(boards):
+        """Keep the first observation in flight while the next request observes eight sessions."""
+        if started.is_set():
+            boards[0].sessions = 8
+            return
+        started.set()
+        release.wait(timeout=5)
+        boards[0].sessions = 9
+        finished.set()
+
+    async def render():
+        """A cancelled claimant must never reach the render step."""
+        async with claim(pool):
+            pytest.fail("cancelled claim reached render")
+
+    monkeypatch.setattr(gpu, "_encoder_owners", refresh)
+    task = asyncio.create_task(render())
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not list(pool.directory.glob("*.lease"))
+        async with claim(pool) as recovered:
+            assert not finished.is_set()
+            release.set()
+            assert await asyncio.to_thread(finished.wait, 2)
+            assert (recovered.route, recovered.device.sessions) == ("h264-pair", 8)
+    finally:
+        release.set()
+
+
+@pytest.mark.anyio
+async def test_cooldown_writer_cannot_starve_locked_refresh(machine, monkeypatch):
+    """A cooldown writer waiting on the ledger in the last shared worker must let the owner finish its NVML read."""
+    cards, settings = machine
+    pool = gpu.GPUPool(settings)
+    loop = asyncio.get_running_loop()
+    submit, ledger = loop.run_in_executor, pool._admission_lock
+
+    @asynccontextmanager
+    async def contended():
+        """Queue the real cooldown write just after the claimant acquires the ledger."""
+        async with ledger():
+            writer = loop.run_in_executor(None, pool.failed, cards[0].uuid, "encoder")
+            yield
+        await writer
+
+    monkeypatch.setattr(pool, "_admission_lock", contended)
+    with ThreadPoolExecutor(max_workers=1) as shared:
+        monkeypatch.setattr(loop, "run_in_executor", lambda executor, fn, *args: submit(executor or shared, fn, *args))
+        async with asyncio.timeout(3), claim(pool) as grant:
+            assert grant.route == "h264-pair"
 
 
 @pytest.mark.anyio
@@ -169,20 +300,24 @@ async def test_stalled_session_probe_releases_waiters_and_recovers(tmp_path, mon
     monkeypatch.setattr(gpu, "__file__", str(tmp_path / "gpu_resources.py"))
     helper = tmp_path / "nvenc_sessions.py"
     report = f"print({json.dumps({card.uuid: [50000] * 8})!r}, flush=True)\n"
-    helper.write_text(report + "import time\ntime.sleep(20)\n")
+    calls = tmp_path / "calls"
+    helper.write_text(f"with open({str(calls)!r}, 'a') as log: log.write('1')\n" + report + "import time\ntime.sleep(20)\n")
 
     async def select_route():
         """Use the pool's shared probe exactly as concurrent overlay jobs do."""
         async with claim(pool) as grant:
-            return grant.route, grant.reason
+            return grant
 
     async with asyncio.timeout(8):
-        routes = await asyncio.gather(select_route(), select_route())
-    assert routes == [("gpu-webm", "nvenc_sessions_unknown")] * 2
-    assert card.sessions is None and not card.encoder_pids
+        grants = await asyncio.gather(select_route(), select_route())
+    assert calls.read_text() == "1"
+    for grant in grants:
+        assert (grant.route, grant.reason) == ("gpu-webm", "nvenc_sessions_unknown")
+        assert grant.device.sessions is None and not grant.device.encoder_pids
     helper.write_text(report)
-    assert await select_route() == ("h264-pair", "nvenc_admitted")
-    assert card.sessions == 8 and card.encoder_pids == {50000: 8}
+    recovered = await select_route()
+    assert (recovered.route, recovered.reason) == ("h264-pair", "nvenc_admitted")
+    assert recovered.device.sessions == 8 and recovered.device.encoder_pids == {50000: 8}
 
 
 @pytest.mark.anyio
@@ -424,6 +559,7 @@ def test_slow_multigpu_snapshot_preserves_session_visibility(monkeypatch, elapse
     assert all(0 < timeout <= 2 for args, timeout in probes if args[0] == "-i")
 
 
+@pytest.mark.anyio
 @pytest.mark.parametrize("csv_indices,listed_indices,sampled,extra_uuid,known", [
     ((0, 1, 2, 3, 4, 5), (), "N/A", None, True),
     ((0, 1, 2), (0, 1, 2, 3, 4, 5), "0", None, True),
@@ -431,7 +567,7 @@ def test_slow_multigpu_snapshot_preserves_session_visibility(monkeypatch, elapse
     ((0, 1, 2, 4, 5), (0, 1, 2, 4, 5), "0", None, False),
     ((0, 1, 2, 3, 5), (0, 1, 2, 3, 5), "0", device(6).uuid, False),
 ])
-def test_nvenc_refresh_requires_all_enabled_gpu_identities(monkeypatch, csv_indices, listed_indices, sampled, extra_uuid, known):
+async def test_nvenc_refresh_requires_all_enabled_gpu_identities(monkeypatch, csv_indices, listed_indices, sampled, extra_uuid, known):
     """Refresh after reconciling every enabled index, even with stale N/A stats or one anonymous disabled card."""
     cards = [device(i) for i in range(6)]
     nodes = "".join(
@@ -462,8 +598,9 @@ def test_nvenc_refresh_requires_all_enabled_gpu_identities(monkeypatch, csv_indi
     monkeypatch.setattr(gpu.shutil, "which", lambda name: "/usr/bin/" + name)
     monkeypatch.setattr(gpu, "_nvenc_unavailable_reason", lambda binary: None)
     monkeypatch.setattr(gpu, "_encoder_owners", refresh)
-    _, complete, _ = gpu._probe_host()
-    assert complete is known
+    probe = gpu._probe_host()
+    assert probe.can_count_sessions is known
+    await probe.refresh_sessions()
     assert refreshed == ([0, 1, 2, 3, 5] if known else [])
 
 
