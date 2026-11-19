@@ -13,7 +13,7 @@ import { DeleteTemplateDialog } from "@/components/studio/home/DeleteTemplateDia
 import { apiBase } from "@/lib/api-base";
 import { deleteTemplate, hasCoverBlob, listTemplates, publishCover, readTemplateCover, syncLoadedCovers } from "./api";
 import { releaseCoverTab, requestCoverTab } from "./coverCapture";
-import type { TemplateSummary } from "./model";
+import { needsInitialCover, type TemplateSummary } from "./model";
 import type { EditingState } from "./TemplateWorkspace";
 
 /** 只创建草稿，编辑器保存时才真正写入存储。 */
@@ -23,11 +23,6 @@ export type TemplateSelection =
 interface Props {
   onSelect: (selection: TemplateSelection) => void;
   onDelete?: (selection: TemplateSelection) => void;
-}
-
-/** 旧库无封面记录，或仍以模板 ID 标记首版内置样片；编辑器保存后的版本由原素材重试。 */
-function needsInitialCover(item: TemplateSummary) {
-  return !item.cover || (item.cover.source === "builtin" && item.cover.revision === item.template_id);
 }
 
 /** 首次读取后在主页逐张补旧封面；切页暂停，回来复用剩余列表，手动刷新同时修复未发布版本。 */
@@ -103,7 +98,7 @@ function useTemplateCollection(revision: number, active: boolean) {
           }, needsInitialCover(item) || (missing.has(item.template_id) && version === item.cover?.publishedRevision), signal);
           if (signal.aborted) return;
           setTemplates(current => current.map(row => row.template_id === item.template_id ? { ...row, cover: {
-            source: item.cover?.source ?? "builtin", revision: published.revision, publishedRevision: published.revision, url: published.url,
+            source: published.source ?? item.cover?.source ?? "builtin", revision: published.revision, publishedRevision: published.revision, url: published.url,
           } } : row));
           pending.delete(item);
           await readTemplateCover(item.template_id, published.revision);

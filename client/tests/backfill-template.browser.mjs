@@ -15,6 +15,12 @@ const sdk = `window.AliyunTimelinePlayer = class {
     this.canvas = document.createElement("canvas"); this.canvas.id = "subtitle-canvas";
     this.canvas.width = 60; this.canvas.height = 90; this.canvas.style = "width:100%;height:100%";
     container.append(this.canvas);
+    // 模拟快照尚未返回时 SDK 的真实逐帧 render 回报。
+    parent.renderFrame = frame => {
+      this.time = frame / 30;
+      this.canvas.style.background = "rgb(" + frame + ",0,0)";
+      this.emit("render");
+    };
   }
   async setTimeline() { setTimeout(() => this.emit("canplay"), 30); }
   pause() {} destroy() {}
@@ -45,7 +51,7 @@ try {
   page.on("pageerror", error => console.error(error.message));
   const client = await page.context().newCDPSession(page);
   const template = savedTemplate();
-  let cover, captures = 0, reads = 0, platform;
+  let cover, captures = 0, reads = 0, platform, moveDuringSnapshot = false;
   // 桌面 IPC 边界返回实际整页 PNG；取帧、画布裁剪及上传使用产品代码。
   await page.exposeFunction("snapshot", async documentSize => {
     captures++;
@@ -54,9 +60,16 @@ try {
       const {width, height} = document.querySelector(".template-preview-frame").getBoundingClientRect();
       return [width, height];
     }), await page.evaluate(() => window.seekSize));
-    if (!documentSize) return (await client.send("Page.captureScreenshot", {})).data;
-    const [width, height] = documentSize;
-    return (await client.send("Page.captureScreenshot", { clip: { x: 0, y: 0, width, height, scale: 1 }, captureBeyondViewport: true })).data;
+    if (moveDuringSnapshot) await page.evaluate(async () => {
+      window.renderFrame(31);
+      await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)));
+    });
+    const options = documentSize
+      ? { clip: { x: 0, y: 0, width: documentSize[0], height: documentSize[1], scale: 1 }, captureBeyondViewport: true }
+      : {};
+    const {data} = await client.send("Page.captureScreenshot", options);
+    if (moveDuringSnapshot) await page.evaluate(() => window.renderFrame(30));
+    return data;
   });
   await page.addInitScript(() => {
     window.isTauri = true;
@@ -133,6 +146,15 @@ try {
     assert.deepEqual(colors, [[0, 255, 0, 255], [30, 0, 0, 255], [0, 0, 255, 255]]);
     console.log("PASS:", platform, "快照参数与裁剪，PNG 含第 30 帧、标题及字幕；再次打开复用");
   }
+  // 31 帧与 30 帧在界面都显示为 1.0 秒。即使回执前恢复到 30 帧，刚截到的 PNG 也不能发布。
+  const previous = cover;
+  template.cover = { ...template.cover, revision: template.template_id, publishedRevision: template.template_id };
+  moveDuringSnapshot = true;
+  await page.goto(base + "/backfill.html?os=" + platform);
+  await page.getByText(/截图期间预览已变化/).waitFor({timeout:20000});
+  assert.equal(cover, previous);
+  assert.equal(template.cover.publishedRevision, template.template_id);
+  console.log("PASS: 截图期间偏移一帧又回到目标时保留原封面");
 } finally {
   await browser?.close();
   await server.close();

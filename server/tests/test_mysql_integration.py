@@ -13,6 +13,7 @@ from time import monotonic, sleep
 from uuid import UUID, uuid4
 
 import pytest
+from pymysql.err import OperationalError
 from fastapi.testclient import TestClient
 from sqlalchemy import URL, create_engine, func, inspect, select
 from sqlalchemy.exc import IntegrityError
@@ -140,6 +141,57 @@ def test_mysql_concurrent_legacy_cover_backfill(mysql_database, template_payload
         assert a.json() == b.json() and a.json()["published_revision"] == a.json()["revision"] != key
         assert cover_storage.put_object.call_count == 1
         assert client.get(base).content == covers.encode_cover(png("red"))
+
+
+def test_mysql_read_and_recover_overlapping_cover_rollbacks(mysql_database, template_payload, cover_storage, monkeypatch):
+    """两个发布先后回滚。覆盖期间的 GET 和两次恢复后的公开键都属于最初的红图修订。"""
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        record = post_template(client, {**template_payload, "cover_source": "builtin"}).json()["template"]
+        base = f"/template/{record['templateId']}/cover"
+        put = f"{base}/{record['cover']['revision']}"
+
+        def publish(color, refresh=True):
+            """通过发布接口写入有明确像素的候选图。"""
+            return client.put(put, files={"file": ("cover.png", png(color), "image/png")}, data={"refresh": str(refresh).lower()})
+
+        assert publish("red", refresh=False).is_success
+        original = client.get(base)
+        key = cover_storage.put_object.call_args.kwargs["Key"]
+        writing, read_done = Event(), Event()
+        rolled_back, resume = [Event(), Event()], [Event(), Event()]
+
+        def fail_commit(connection):
+            """第一笔等待并发读，两个事务都回滚后按第一、第二笔的顺序进入恢复。"""
+            index = int(rolled_back[0].is_set())
+            if index == 0:
+                writing.set()
+                assert read_done.wait(10)
+            connection.rollback()
+            rolled_back[index].set()
+            assert resume[index].wait(10)
+            raise OperationalError(1205, "test publication rolled back")
+
+        monkeypatch.setattr(database.get_engine().dialect, "do_commit", fail_commit)
+        first = pool.submit(publish, "blue")
+        try:
+            assert writing.wait(5)
+            during = client.get(base)
+            assert (during.headers["etag"], during.content) == (original.headers["etag"], original.content)
+            read_done.set()
+            assert rolled_back[0].wait(5)
+            second = pool.submit(publish, "green")
+            assert rolled_back[1].wait(5)
+            resume[0].set()
+            assert first.result(timeout=5).status_code == 503
+        finally:
+            read_done.set()
+            for gate in resume:
+                gate.set()
+        assert second.result(timeout=5).status_code == 503
+        assert cover_storage.get_object(Key=key)["Body"].read() == original.content
+        after = client.get(base)
+        assert (after.headers["etag"], after.content) == (original.headers["etag"], original.content)
+        assert client.get(base, headers={"If-None-Match": during.headers["etag"]}).status_code == 304
 
 
 def test_mysql_stores_remotion_tracks_as_references(mysql_database, template_payload):

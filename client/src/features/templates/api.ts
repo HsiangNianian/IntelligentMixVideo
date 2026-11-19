@@ -14,7 +14,7 @@ import {
   FrameMaskSchema,
   type TemplateRecord,
 } from "@/generated/imv/template/v1/template_pb";
-import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
+import { defaultEditor, draftEffects, type Category, type CoverInfo, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
 import { validateTemplateTracks } from "./tracks";
 import { BOUND_TEXT_PARAMETERS, validateClipSlots } from "./clips";
 import { validateFrameMask, type FrameMask } from "./frameMask";
@@ -379,12 +379,17 @@ export async function syncLoadedCovers(items: TemplateSummary[]) {
 /** 上传失败只暂存该修订的截图；同一模板只保留最新一次，应用重启后由真实预览重新截取。 */
 const coverBlobs = new Map<string, { revision: string; blob: Blob; refresh: boolean }>();
 
-/** 上传或单独重试封面；版本匹配时复用之前的截图，不重发模板保存。 */
-export async function publishCover(id: string, revision: string, capture: () => Promise<Blob>, refresh = false, signal?: AbortSignal) {
+/** 重传同版本截图；取帧前若已从详情取得成功发布的封面，直接交给画廊。 */
+export async function publishCover(id: string, revision: string, capture: () => Promise<Blob | CoverInfo>, refresh = false, signal?: AbortSignal) {
   const key = apiBase() + "/" + id;
-  const cached = coverBlobs.get(key);
-  if (cached && cached.revision !== revision) coverBlobs.delete(key);
-  const item = cached?.revision === revision ? cached : { revision, blob: await capture(), refresh };
+  let item = coverBlobs.get(key);
+  if (item?.revision !== revision) {
+    if (item) coverBlobs.delete(key);
+    const captured = await capture();
+    signal?.throwIfAborted();
+    if ("publishedRevision" in captured) return captured;
+    item = { revision, blob: captured, refresh };
+  }
   if (refresh) item.refresh = true;
   signal?.throwIfAborted();
   coverBlobs.set(key, item);
@@ -392,7 +397,7 @@ export async function publishCover(id: string, revision: string, capture: () => 
   body.set("file", item.blob, "cover.png");
   if (item.refresh) body.set("refresh", "true");
   const response = await cloud((signal) => cloudRequest(`/template/${id}/cover/${revision}`, "PUT", signal, body), signal);
-  const result = await response.json() as { url: string; revision: string };
+  const result = await response.json() as { url: string; revision: string; source?: string };
   if (item.refresh && result.revision === revision) throw new Error("请更新本地服务后再刷新封面");
   if (coverBlobs.get(key) === item) coverBlobs.delete(key);
   return result;

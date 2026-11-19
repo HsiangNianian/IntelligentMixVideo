@@ -7,7 +7,7 @@ import type { SpriteAsset } from "@/features/sprites/model";
 import { getTemplate } from "./api";
 import { defaultAvatarPreview } from "./avatarPreview";
 import { readCoverMedia } from "./media";
-import { toDraft, type Draft, type PreviewMedia, type TemplateSummary } from "./model";
+import { needsInitialCover, toDraft, type CoverInfo, type Draft, type PreviewMedia, type TemplateSummary } from "./model";
 import { TemplatePreview, type CaptureCover } from "./TemplatePreview";
 import { useTemplatePreviewModel } from "./useTemplatePreviewModel";
 
@@ -36,10 +36,14 @@ function CoverPreview({ draft, media, assets, stream, resolve, reject }: FramePr
     avatarSource={avatar.source} previewCenter={avatar} sprites={spriteClips} />;
 }
 
-/** 列表版本与素材必须和保存时一致；取消或切换服务后销毁本次取帧，旧图不被替换。 */
-export async function captureHomeCover(summary: TemplateSummary, signal: AbortSignal, stream?: MediaStream): Promise<Blob> {
+/** 复用其他客户端刚发布的修订；只有目标版本仍匹配时才以原素材取帧。 */
+export async function captureHomeCover(summary: TemplateSummary, signal: AbortSignal, stream?: MediaStream): Promise<Blob | CoverInfo> {
   const template = await getTemplate(summary.template_id, signal);
-  if (template.cover?.revision !== summary.cover?.revision) throw new Error("模板已更新，请再次刷新");
+  const cover = template.cover;
+  if (cover?.url && cover.revision === cover.publishedRevision && !needsInitialCover(template)
+    && cover.publishedRevision !== summary.cover?.publishedRevision) return cover;
+  if ((cover?.revision ?? template.template_id) !== (summary.cover?.revision ?? summary.template_id))
+    throw new Error("模板已更新，请再次刷新");
   const source = template.cover?.source ?? "builtin";
   const media = await readCoverMedia(source, signal);
   const assets = template.clips.length ? await listSprites(signal) : [];

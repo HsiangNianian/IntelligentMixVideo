@@ -195,8 +195,8 @@ async def upload_cover(template_id: UUID, revision: UUID, file: Annotated[Upload
 @router.get("/{template_id}/cover")
 def get_cover(template_id: UUID, request: Request) -> Response:
     """按已发布版本验证客户端缓存，只有版本变化才从 ZOS 读取 PNG。"""
-    etag = f'"{store.published_revision(template_id)}"'
+    etag, content = store.read_published_cover(template_id, request.headers.get("if-none-match"))
     headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
-    if request.headers.get("if-none-match") == etag:
+    if content is None:
         return Response(status_code=304, headers=headers)
-    return Response(covers.read_cover(str(template_id)), media_type="image/png", headers=headers)
+    return Response(content, media_type="image/png", headers=headers)

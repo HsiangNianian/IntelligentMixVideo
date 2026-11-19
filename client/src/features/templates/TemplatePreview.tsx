@@ -21,7 +21,7 @@ import { centeredPlayerTimeline } from "./centeredTransitions";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { SpriteOverlay, type SpriteOverlayHandle } from "./SpriteOverlay";
 import type { ScreenPoint } from "./splitScreen";
-import type { ResolvedTimeline } from "./tracks";
+import { PREVIEW_FPS, type ResolvedTimeline } from "./tracks";
 import { MasterVideoInput } from "./MasterVideoInput";
 import { debugLog, describe, diagnosticsEnabled, MEDIA_ERRORS, watchWindow } from "@/lib/diagnostics";
 import { watchPlayback } from "./playbackStats";
@@ -104,6 +104,8 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
   const basic = useRef<PlaybackHandle>(null);
   // 前端持有的准确播放位置（秒），由当前画面来源回报；换来源时新来源从这里接着走。
   const clockTime = useRef(0);
+  // 每次跨帧递增，异步截图期间离开目标帧又返回也会作废该图。
+  const frameChange = useRef(0);
   // 最近一次显示到界面的时间（0.1 秒为单位）。
   const shownDecisecond = useRef(0);
   const timelineRows = useMemo(() => mergeSpriteRows(rows, sprites).map((row) => ({ ...row,
@@ -170,6 +172,7 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
    */
   const showTime = (value: number) => {
     const next = Math.max(0, Math.min(latestResolved.current?.duration ?? 0, value));
+    if (Math.round(next * PREVIEW_FPS) !== Math.round(clockTime.current * PREVIEW_FPS)) frameChange.current++;
     clockTime.current = next;
     overlay.current?.setTime(next);
     const decisecond = Math.round(next * 10);
@@ -680,10 +683,13 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
         previous.player = player;
         player.seek(seconds);
       }, async () => {
-        if (Math.abs(clockTime.current - 1) >= 0.017) throw new Error("预览已变化");
+        if (Math.round(clockTime.current * PREVIEW_FPS) !== PREVIEW_FPS) throw new Error("预览已变化");
+        const before = frameChange.current;
         element.dataset.snapshot = "";
         await new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done())));
-        return captureFrame(frame, stream);
+        const image = await captureFrame(frame, stream);
+        if (frameChange.current !== before) throw new Error("截图期间预览已变化，请重试");
+        return image;
       });
     } finally {
       delete element.dataset.snapshot;

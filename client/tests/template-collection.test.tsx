@@ -2,8 +2,9 @@
 import { expect, spyOn, test } from "bun:test";
 import { createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Tooltip } from "radix-ui";
+import { toast } from "sonner";
 import { TemplateCollection, TemplateHome, type TemplateSelection } from "@/features/templates/TemplateHome";
-import { jsonListResponse, savedTemplate, templateSummary } from "./fixtures";
+import { jsonListResponse, jsonTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
 import * as homeCapture from "@/features/templates/homeCoverCapture";
 import { fetchMock, mockDesktop } from "./setup";
 
@@ -228,6 +229,33 @@ test("客户端续补初版内置封面，复用列表并跳过编辑版本", as
   await waitFor(() => expect(writes).toEqual(["first-cover", "early-cover"]));
   expect(captures).toEqual(["first-cover", "early-cover", "early-cover"]);
   expect(lists).toBe(1);
+});
+
+// 另一台桌面已补好的模板直接显示两处封面；只改了画面、尚未发布的新版本继续提示刷新。
+test("主页从最新详情复用其他客户端的发布结果", async () => {
+  mockDesktop(async () => { throw new Error("无需取帧"); });
+  const missing = { ...savedTemplate(), template_id: "peer-cover" };
+  const changed = { ...missing, template_id: "peer-edit", name: "待发布修改" };
+  const cover = { revision: "new", publishedRevision: "new", source: "builtin", url: "https://images.test/new.png" };
+  const requests: string[] = [];
+  const error = spyOn(toast, "error");
+  fetchMock.mockImplementation((async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    requests.push((init?.method ?? "GET") + " " + path);
+    if (path === "/template") return jsonListResponse([missing, changed]);
+    if (path === "/template/peer-cover") return jsonTemplateResponse({ ...missing, cover }, "get");
+    if (path === "/template/peer-edit")
+      return jsonTemplateResponse({ ...changed, cover: { ...cover, publishedRevision: "previous" } }, "get");
+    if (path === "/template/peer-cover/cover") return new Response("PNG");
+    throw new Error("意外的请求：" + path);
+  }) as typeof fetch);
+  const home = (active: boolean) => <Tooltip.Provider><TemplateHome active={active} onSelect={() => {}} onOpenRemotion={() => {}} /></Tooltip.Provider>;
+  const view = render(home(true));
+  await waitFor(() => expect(view.container.querySelectorAll("article img")).toHaveLength(2));
+  await waitFor(() => expect(error).toHaveBeenCalledWith("部分封面更新失败", { description: "待发布修改：模板已更新，请再次刷新" }));
+  view.rerender(home(false));
+  view.rerender(home(true));
+  expect(requests).toEqual(["GET /template", "GET /template/peer-cover", "GET /template/peer-cover/cover", "GET /template/peer-edit"]);
 });
 
 // 手动同步保留当前网格与选中的封面；缺图只重传已有截图，健康且版本未变化的封面不再请求。

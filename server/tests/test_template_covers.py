@@ -2,10 +2,10 @@
 
 import sqlite3
 from io import BytesIO
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
-from botocore.exceptions import ClientError, EndpointConnectionError
+from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError
 from PIL import Image
 
 from .template_wire import post_template
@@ -49,8 +49,9 @@ def test_publish_retry_replace_and_revalidate(client, template_payload, cover_st
     cached = client.get(base)
     assert cached.status_code == 200 and cached.content == uploaded["Body"]
     assert cached.headers["content-type"] == "image/png"
+    reads = storage.get_object.call_count
     assert client.get(base, headers={"If-None-Match": cached.headers["etag"]}).status_code == 304
-    assert storage.get_object.call_count == 1
+    assert storage.get_object.call_count == reads
     assert client.put(put, files=red).status_code == 200
     edited = {**template_payload, "template_id": template_id, "name": "新名字", "description": "新说明"}
     assert post_template(client, edited).json()["template"]["cover"] == saved["cover"]
@@ -66,8 +67,13 @@ def test_publish_retry_replace_and_revalidate(client, template_payload, cover_st
     assert refreshed.status_code == 200 and refreshed.headers["etag"] != cached.headers["etag"]
     with Image.open(BytesIO(refreshed.content)) as image:
         assert image.getpixel((10, 10)) == (0, 0, 255)
+    backup_key = f"imv/template-covers/{template_id}.previous.png"
+    backup = storage.put_object.call_args_list[-2].kwargs
+    assert (backup["Key"], backup["ACL"], backup["Metadata"]["revision"], backup["Body"]) == (
+        backup_key, "private", revision, cached.content,
+    )
     assert client.delete(f"/template/{template_id}").status_code == 204
-    storage.delete_object.assert_called_once_with(Bucket="test", Key=key)
+    assert storage.delete_object.call_args_list == [call(Bucket="test", Key=backup_key), call(Bucket="test", Key=key)]
 
 
 def test_missing_published_object_can_be_repaired(client, template_payload, cover_storage):
@@ -88,12 +94,87 @@ def test_missing_published_object_can_be_repaired(client, template_payload, cove
     assert client.get("/template").json()["templates"][0]["cover"]["publishedRevision"] == published["revision"]
     repaired = client.put(put, files=files, data={"refresh": "true"})
     assert repaired.status_code == 200 and repaired.json()["revision"] != published["revision"]
-    assert repaired.json()["url"] == published["url"] and storage.put_object.call_count == 2
+    assert repaired.json()["url"] == published["url"]
+    assert [put.kwargs["ACL"] for put in storage.put_object.call_args_list] == ["public-read", "private", "public-read"]
     uploaded = storage.put_object.call_args.kwargs
     storage.get_object.side_effect = read
     restored = client.get(base)
     assert restored.status_code == 200 and restored.content == uploaded["Body"]
     assert storage.get_object.call_args.kwargs["Key"] == uploaded["Key"]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_lost_object_put_ack_preserves_fixed_key(client, template_payload, cover_storage, legacy):
+    """公开 PUT 已生效才超时；原图含旧标签或没有标签时，直链与 API 均恢复同一份字节。"""
+    record = post_template(client, {**template_payload, "cover_source": "builtin"}).json()["template"]
+    base = f"/template/{record['templateId']}/cover"
+    put = f"{base}/{record['cover']['revision']}"
+    assert client.put(put, files={"file": ("old.png", png("red"), "image/png")}).is_success
+    old = client.get(base)
+    key = cover_storage.put_object.call_args.kwargs["Key"]
+    write = cover_storage.put_object.side_effect
+    if legacy:
+        write(Key=key, Body=old.content)
+
+    def lose_ack(**kwargs):
+        """首次覆盖公开键后丢失响应，私有备份和恢复写入照常完成。"""
+        write(**kwargs)
+        if kwargs["Key"] == key:
+            cover_storage.put_object.side_effect = write
+            raise ReadTimeoutError(endpoint_url="https://storage.test")
+
+    cover_storage.put_object.side_effect = lose_ack
+    response = client.put(put, files={"file": ("new.png", png("blue"), "image/png")}, data={"refresh": "true"})
+    served = client.get(base)
+    assert response.status_code == 503 and served.content == old.content
+    assert cover_storage.get_object(Key=key)["Body"].read() == old.content
+    assert served.headers["etag"] == old.headers["etag"]
+    assert client.get(base, headers={"If-None-Match": old.headers["etag"]}).status_code == 304
+
+
+def test_first_put_ack_lost_removes_unpublished_object(client, template_payload, cover_storage):
+    """首版尚无已发布图时，存储接受 PUT 后超时也会撤销固定键。"""
+    row = post_template(client, template_payload).json()["template"]
+    key = row["templateId"]
+    base = f"/template/{key}/cover"
+    write = cover_storage.put_object.side_effect
+
+    def lose_ack(**kwargs):
+        """写入对象后模拟回执丢失。"""
+        write(**kwargs)
+        raise ReadTimeoutError(endpoint_url="https://storage.test")
+
+    cover_storage.put_object.side_effect = lose_ack
+    assert client.put(f"{base}/{key}", files={"file": ("first.png", png("blue"), "image/png")}).status_code == 503
+    assert client.get(base).status_code == 404
+    with pytest.raises(ClientError) as missing:
+        cover_storage.get_object(Key=f"imv/template-covers/{key}.png")
+    assert missing.value.response["Error"]["Code"] == "NoSuchKey"
+
+
+def test_slow_reader_skips_two_completed_publications(client, template_payload, cover_storage):
+    """读出旧元数据后已连续换图两次，公开键与私有副本都已换版，应返回最新绿色 PNG 和 ETag。"""
+    key = post_template(client, template_payload).json()["template"]["templateId"]
+    base = f"/template/{key}/cover"
+    assert client.put(f"{base}/{key}", files={"file": ("cover.png", png("red"), "image/png")}).is_success
+    read = cover_storage.get_object.side_effect
+    revision = key
+
+    def publish_before_read(**kwargs):
+        """暂停本次对象读取，模拟其他客户完成两次刷新。"""
+        nonlocal revision
+        cover_storage.get_object.side_effect = read
+        for color in ("blue", "green"):
+            saved = client.put(f"{base}/{revision}", files={"file": ("cover.png", png(color), "image/png")}, data={"refresh": "true"})
+            assert saved.is_success
+            revision = saved.json()["published_revision"]
+        return read(**kwargs)
+
+    cover_storage.get_object.side_effect = publish_before_read
+    served = client.get(base)
+    assert served.status_code == 200 and served.headers["etag"] == f'"{revision}"'
+    with Image.open(BytesIO(served.content)) as image:
+        assert image.getpixel((1, 1)) == (0, 128, 0)
 
 
 @pytest.mark.parametrize("failure", ["update", "commit_rolled_back", "commit_ack_lost", "rollback_missing_object", "newer_publish"])

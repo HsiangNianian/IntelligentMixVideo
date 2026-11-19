@@ -120,11 +120,14 @@ export interface ResolvedTimeline {
   notices: string[];
 }
 
+/** 时间线和一秒封面共用的预览帧率。 */
+export const PREVIEW_FPS = 30;
+
 /** 将已读取的三个来源按当前排列转换为居中转场的预览输入。 */
 export function previewContext(media: PreviewMedia, order = [0, 1, 2]): TimelineContext {
   if (order.length !== 3 || new Set(order).size !== 3 || order.some((value) => ![0, 1, 2].includes(value))) throw new Error("视频排列无效");
   const sources = previewVideos(media);
-  return { layout: "centered", fps: 30, clips: order.map((source) => ({ duration: sources[source].duration })) };
+  return { layout: "centered", fps: PREVIEW_FPS, clips: order.map((source) => ({ duration: sources[source].duration })) };
 }
 
 /** 校验规则后统一计算帧区间；缺少交界处或素材过短均产生明确的应用说明。 */

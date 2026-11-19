@@ -230,7 +230,7 @@ def seed_sprite(sprite_id: str = SPRITE_ID, canvas: tuple[int, int, int] = (1080
 
 @pytest.fixture
 def cover_storage(monkeypatch):
-    """按 ZOS 对象键保存 PNG 字节；每次 GET 返回可独立关闭的流，可观测真实上传次数。"""
+    """按 ZOS 对象键原子保存 PNG 和用户元数据，每次 GET 返回可独立关闭的流。"""
     objects = {}
     storage = MagicMock()
 
@@ -238,10 +238,11 @@ def cover_storage(monkeypatch):
         """对象缺失使用与 ZOS 相同的错误码。"""
         if Key not in objects:
             raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
-        return {"Body": BytesIO(objects[Key])}
+        body, metadata = objects[Key]
+        return {"Body": BytesIO(body), "Metadata": metadata}
 
     storage.get_object.side_effect = read
-    storage.put_object.side_effect = lambda Key, Body, **_: objects.update({Key: Body})
+    storage.put_object.side_effect = lambda Key, Body, Metadata=None, **_: objects.update({Key: (Body, Metadata or {})})
     storage.delete_object.side_effect = lambda Key, **_: objects.pop(Key, None)
     monkeypatch.setattr(covers, "storage_client", lambda *_: storage)
     monkeypatch.setattr(covers, "ZosSettings", lambda: SimpleNamespace(

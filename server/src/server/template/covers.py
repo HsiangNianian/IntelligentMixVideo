@@ -1,5 +1,6 @@
 """校验模板预览静态图，以固定对象名覆盖 ZOS 的 PNG，让浏览器再次使用时按 ETag 校验。"""
 from contextlib import closing
+from dataclasses import dataclass
 from io import BytesIO
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -29,9 +30,10 @@ def encode_cover(content: bytes) -> bytes:
         raise HTTPException(422, "封面必须是 9:16 的单帧 PNG") from exc
 
 
-def object_key(template_id: str) -> str:
-    """同一模板的发布、读取和删除共用固定 PNG 对象。"""
-    return f"imv/template-covers/{template_id}.png"
+def object_key(template_id: str, *, backup: bool = False) -> str:
+    """公开地址固定，每个模板最多另存一份私有的已发布图片。"""
+    suffix = ".previous" if backup else ""
+    return f"imv/template-covers/{template_id}{suffix}.png"
 
 
 def cover_url(template_id: str) -> str:
@@ -42,38 +44,60 @@ def cover_url(template_id: str) -> str:
         raise HTTPException(503, "封面更新失败，请重试") from exc
 
 
-def upload_cover(template_id: str, content: bytes) -> None:
-    """单次 PUT 覆盖小对象；只有存储确认写入成功才发布新版本。"""
-    key = object_key(template_id)
+def upload_cover(template_id: str, content: bytes, revision: str, *, backup: bool = False) -> None:
+    """一次 PUT 写入字节及其修订号；私有副本的空内容记录原图缺失。"""
+    key = object_key(template_id, backup=backup)
     try:
         settings = ZosSettings()
         with closing(storage_client(settings, 10)) as storage:
-            storage.put_object(Bucket=settings.zos_bucket, Key=key, Body=content, ACL="public-read",
-                               ContentType="image/png", CacheControl="no-cache")
+            storage.put_object(Bucket=settings.zos_bucket, Key=key, Body=content, ACL="private" if backup else "public-read",
+                               Metadata={"revision": revision}, ContentType="image/png", CacheControl="no-cache")
     except (ValueError, BotoCoreError, ClientError) as exc:
         raise HTTPException(503, "封面更新失败，请重试") from exc
 
 
-def stored_cover(template_id: str) -> bytes | None:
-    """读取固定对象的字节；仅对象缺失返回 None，存储故障仍可重试。"""
+@dataclass(frozen=True)
+class StoredCover:
+    """一次对象读取返回的 PNG 和修订号；升级前的公开图没有修订标签。"""
+
+    content: bytes
+    revision: str | None
+
+
+class CoverRevisionMismatch(HTTPException):
+    """数据库读取后两份对象都已换版，允许调用方在行锁内重新读取。"""
+
+    def __init__(self):
+        """对象版本仍不一致时向客户端报告可重试的错误。"""
+        super().__init__(503, "封面版本已变化，请重试")
+
+
+def stored_cover(template_id: str, *, backup: bool = False) -> StoredCover | None:
+    """同一 GET 返回对象及其版本，仅对象缺失返回 None。"""
     try:
         settings = ZosSettings()
         with closing(storage_client(settings, 10)) as storage:
-            result = storage.get_object(Bucket=settings.zos_bucket, Key=object_key(template_id))
+            result = storage.get_object(Bucket=settings.zos_bucket, Key=object_key(template_id, backup=backup))
             with closing(result["Body"]) as body:
-                return body.read()
+                return StoredCover(body.read(), result.get("Metadata", {}).get("revision"))
     except (ValueError, BotoCoreError, ClientError) as exc:
         if isinstance(exc, ClientError) and exc.response["Error"]["Code"] in {"NoSuchKey", "NotFound", "404"}:
             return None
         raise HTTPException(503, "封面读取失败，请重试") from exc
 
 
-def read_cover(template_id: str) -> bytes:
-    """把已发布对象的缺失告知客户端，以便单独补图。"""
-    content = stored_cover(template_id)
-    if content is None:
-        raise HTTPException(404, detail={"code": "cover_object_missing"})
-    return content
+def published_image(template_id: str, revision: str, *, before_replace: bool = False) -> bytes | None:
+    """读取指定已发布版本。写方持行锁先备份它；遇到尚未提交的公开图时沿用原副本。"""
+    image = stored_cover(template_id)
+    if image is None or image.revision in (None, revision):
+        content = image.content if image else None
+        if before_replace:
+            upload_cover(template_id, content or b"", revision, backup=True)
+        return content
+    previous = stored_cover(template_id, backup=True)
+    if previous is None or previous.revision != revision:
+        raise CoverRevisionMismatch()
+    return previous.content or None
 
 
 def delete_cover(template_id: str, *, undo_upload: bool = False) -> None:
@@ -83,6 +107,8 @@ def delete_cover(template_id: str, *, undo_upload: bool = False) -> None:
         if not undo_upload and not settings.zos_delete_objects:
             return
         with closing(storage_client(settings, 10)) as storage:
+            if not undo_upload:
+                storage.delete_object(Bucket=settings.zos_bucket, Key=object_key(template_id, backup=True))
             storage.delete_object(Bucket=settings.zos_bucket, Key=object_key(template_id))
     except (ValueError, BotoCoreError, ClientError) as exc:
         message = "封面更新失败，请重试" if undo_upload else "删除封面失败，请重试删除模板"
