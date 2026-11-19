@@ -617,12 +617,15 @@ The catalog presents five peer categories: title text effects, subtitle text eff
 video effects. For text assets with no manual category, the client matches `字幕` first, then `标题`, and defaults
 to subtitle effects if neither appears. Legacy unspecified kinds remain in video effects.
 
-Published Sprite reuse search uses a server-side Chroma HTTP collection. Once both the Agent model and the
-`IMV_SPRITE_EMBEDDING_API_KEY` are configured, a background task indexes existing assets at startup and reconciles
-new, overwritten, renamed and deleted assets after catalog changes (and every 60 seconds after missed notifications).
+Published Sprite reuse search uses a server-side Chroma HTTP collection. Install the `sprite-embedding` extra and
+download BAAI/bge-m3 onto the backend host, then set `IMV_SPRITE_EMBEDDING_MODEL_PATH` to that local directory.
+Once the Agent model and local embedding path are configured, a background task indexes existing assets when the Remotion runtime starts and reconciles
+new, overwritten, renamed and deleted assets after in-process catalog changes. It does not poll MySQL while idle;
+changes made directly in MySQL require a runtime restart to reconcile. A failed index pass retries after 60 seconds
+or the next in-process catalog change; successful idle passes never poll MySQL again.
 It asks the configured Agent chat API to describe the published TSX and parameters in Chinese, embeds that description
-together with the asset name and kind through the configured embedding API, and stores the vector under `sprite_id`.
-The index is rebuilt from MySQL; an unavailable Chroma or embedding API does not block publication. For a new effect,
+together with the asset name and kind using local bge-m3, and stores the 1024-dimensional vector under `sprite_id`.
+The index is rebuilt from MySQL in a new Chroma collection; an unavailable Chroma or local model does not block publication. For a new effect,
 the host searches before Outer delegates even if Outer skipped its optional `sprite.search` call; edits with an accepted
 base do not search automatically, but questions about published assets may search explicitly. Requests with reference
 images skip search. Chroma recalls up to ten assets by cosine distance; their indexed revisions and code hashes

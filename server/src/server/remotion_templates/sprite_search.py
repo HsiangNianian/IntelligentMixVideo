@@ -1,4 +1,4 @@
-"""Index published Sprite descriptions and retrieve matching publications for Outer.
+"""Index published Sprite descriptions with a local embedding model for Outer.
 
 MySQL remains authoritative. A periodic reconciliation rebuilds the Chroma index after missed writes;
 search results are checked against the current publication before they can be imported.
@@ -12,6 +12,9 @@ import logging
 import math
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import lru_cache
+from pathlib import Path
+from threading import Lock
 from urllib.parse import urlsplit
 
 import chromadb
@@ -25,6 +28,8 @@ from .settings import Settings
 
 logger = logging.getLogger(__name__)
 INDEX_VERSION = "1"
+EMBEDDING_DIMENSION = 1024
+_model_lock = Lock()
 KIND_LABELS = {
     "SPRITE_KIND_TEXT": "文字特效 字效 花字 标题 字幕",
     "SPRITE_KIND_FILTER_OVERLAY": "滤镜 画面叠加",
@@ -33,15 +38,28 @@ KIND_LABELS = {
 }
 
 
+@lru_cache(maxsize=1)
+def _cached_embedding_model(path: str):
+    """Load one local model without fetching weights from the network."""
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(path, device="cpu", local_files_only=True)
+
+
+def _embedding_model(path: str):
+    """Serialize the first load so concurrent indexing and search share one large model."""
+    with _model_lock:
+        return _cached_embedding_model(path)
+
+
 class SpriteSearchSettings(CommonSettings):
-    """Server-only API and Chroma connection details for published Sprite retrieval."""
+    """Server-only local model and Chroma settings for published Sprite retrieval."""
 
     model_config = SettingsConfigDict(env_prefix="IMV_SPRITE_", extra="ignore")
     chroma_url: str = "http://127.0.0.1:8000"
-    collection: str = "published_sprites_v1"
-    embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    embedding_model: str = "text-embedding-v4"
-    embedding_api_key: SecretStr = SecretStr("")
+    collection: str = "published_sprites_bge_m3_v1"
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_model_path: str = ""
     description_base_url: str = ""
     description_model: str = ""
     description_api_key: SecretStr = SecretStr("")
@@ -60,7 +78,7 @@ class SpriteMatch:
 
 
 class SpriteSearch:
-    """Call configured model APIs and the locally hosted Chroma HTTP service."""
+    """Describe Sprite code with the Agent API and embed text with local bge-m3."""
 
     def __init__(self, settings: SpriteSearchSettings | None = None):
         """Keep configuration injectable so tests never call external services."""
@@ -74,8 +92,11 @@ class SpriteSearch:
 
     @property
     def index_enabled(self) -> bool:
-        """Index when description and embedding models are configured."""
-        return bool(self.settings.embedding_api_key.get_secret_value() and self.description_api_key.get_secret_value()
+        """Index only after the local model is present and description settings are configured."""
+        path = Path(self.settings.embedding_model_path) if self.settings.embedding_model_path else None
+        model_ready = bool(path and (path / "modules.json").is_file()
+                           and any((path / name).is_file() for name in ("pytorch_model.bin", "model.safetensors")))
+        return bool(model_ready and self.description_api_key.get_secret_value()
                     and self.description_model and self.description_base_url)
 
     @property
@@ -109,7 +130,7 @@ class SpriteSearch:
         """Normalize vectors so cosine and distance thresholds have stable meanings."""
         length = math.sqrt(sum(float(value) ** 2 for value in values))
         if not length or not math.isfinite(length):
-            raise ValueError("Embedding API returned an invalid vector")
+            raise ValueError("Local embedding model returned an invalid vector")
         return [float(value) / length for value in values]
 
     def _api(self, base: str, key: SecretStr, path: str, payload: dict) -> dict:
@@ -121,10 +142,11 @@ class SpriteSearch:
             return response.json()
 
     def _embed(self, text: str) -> list[float]:
-        """Use the same configured embedding model for stored documents and user queries."""
-        result = self._api(self.settings.embedding_base_url, self.settings.embedding_api_key, "/embeddings",
-                           {"model": self.settings.embedding_model, "input": text})
-        return self._normalized(result["data"][0]["embedding"])
+        """Encode documents and queries with the same offline bge-m3 weights."""
+        values = _embedding_model(self.settings.embedding_model_path).encode(text)
+        if len(values) != EMBEDDING_DIMENSION:
+            raise ValueError("Local embedding model must return 1024 dimensions")
+        return self._normalized(values)
 
     def _chat(self, system: str, user: str) -> str:
         """Get plain text from the description model; code and retrieved descriptions remain user data."""
@@ -146,15 +168,16 @@ class SpriteSearch:
             raise ValueError("Sprite description has invalid length")
         return description
 
-    def reconcile(self) -> None:
-        """Idempotently index changed publications and remove deleted ones; retry failures next pass."""
+    def reconcile(self) -> bool:
+        """Reconcile publications; report partial failures so the runtime can retry them."""
         if not self.index_enabled:
-            return
+            return True
         collection = self._collection()
         # ponytail: full catalog scan is simple and recoverable; paginate when the published library grows large.
         publications = dict(sprite_store.listing())
         known = collection.get(include=["metadatas"])
         indexed = dict(zip(known["ids"], known["metadatas"]))
+        failed = False
         for sprite_id, data in publications.items():
             revision = self._revision(data)
             if (indexed.get(sprite_id) or {}).get("revision") == revision and (indexed.get(sprite_id) or {}).get("embedding_model") == self.settings.embedding_model:
@@ -170,10 +193,12 @@ class SpriteSearch:
                                               "name": str(data.get("name", "")), "description": description,
                                               "embedding_model": self.settings.embedding_model}])
             except Exception:
+                failed = True
                 logger.exception("Sprite search indexing failed: %s", sprite_id)
         deleted = set(indexed) - set(publications)
         if deleted:
             collection.delete(ids=list(deleted))
+        return not failed
 
     def search(self, query: str, kind: str | None = None) -> list[SpriteMatch]:
         """Keep current top-ten Sprites above the cosine threshold and near the best match."""

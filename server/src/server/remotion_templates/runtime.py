@@ -33,6 +33,7 @@ from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 
 logger = logging.getLogger("uvicorn.error")
+INDEX_RETRY_SECONDS = 60
 
 
 from .references import MAX_REFERENCE_IMAGES, earlier_images, reference_images
@@ -115,19 +116,23 @@ class Runtime:
             self.sprite_index = asyncio.create_task(self._index_sprites())
 
     async def _index_sprites(self) -> None:
-        """Reconcile after each publication change and periodically after missed notifications."""
+        """Reconcile on changes; retry failed passes without polling a healthy index."""
         search = SpriteSearch()
         with sprite_events.watch() as wake:
             while not self.fenced:
                 wake.clear()
                 try:
-                    await asyncio.to_thread(search.reconcile)
+                    failed = not await asyncio.to_thread(search.reconcile)
                 except Exception:
                     logger.exception("Published Sprite index reconciliation failed")
-                try:
-                    await asyncio.wait_for(wake.wait(), 60)
-                except TimeoutError:
-                    pass
+                    failed = True
+                if failed:
+                    try:
+                        await asyncio.wait_for(wake.wait(), INDEX_RETRY_SECONDS)
+                    except TimeoutError:
+                        pass
+                else:
+                    await wake.wait()
 
     async def _renew(self) -> None:
         """Renew the queue lease; a failed renewal is retried, a lost lease fences this instance for good."""

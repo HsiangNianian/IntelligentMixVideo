@@ -1,18 +1,93 @@
-"""AI 资产目录变化推送：SSE 生成器在连接时与每次变化后通知、合并突发变化、空闲时发送 ping，路由按 SSE 响应。
+"""AI 资产目录变化推送与索引唤醒：连接时和变更后通知，空闲时不重复索引。
 
 只测进程内唤醒与事件帧，不连接数据库；发布、改名与删除触发唤醒见 test_remotion_sprite_publish.py。
 在 server/ 目录执行 `uv run --locked pytest tests/test_remotion_sprite_events.py -v`。
 """
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from fastapi.responses import StreamingResponse
 
-from server.remotion_templates import sprite_events, sprite_router
+from server.remotion_templates import runtime, sprite_events, sprite_router
 
 CHANGED = "event: catalog.changed\ndata: {}\n\n"
 PING = "event: ping\ndata: {}\n\n"
+
+
+def test_indexer_runs_once_then_waits_for_catalog_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    """首次回填后空闲不查询；发布事件唤醒一次对账，取消时释放监听者。"""
+    async def scenario() -> None:
+        """用内存通知观察对账次数，不连接 MySQL、Chroma 或模型。"""
+        loop = asyncio.get_running_loop()
+        calls: asyncio.Queue[int] = asyncio.Queue()
+        count = 0
+
+        class FakeSearch:
+            """Record each reconciliation without touching external services."""
+
+            def reconcile(self) -> bool:
+                """Notify the test loop after one full index pass."""
+                nonlocal count
+                count += 1
+                loop.call_soon_threadsafe(calls.put_nowait, count)
+                return True
+
+        monkeypatch.setattr(runtime, "SpriteSearch", FakeSearch)
+        task = asyncio.create_task(runtime.Runtime._index_sprites(SimpleNamespace(fenced=False)))
+        try:
+            async with asyncio.timeout(3):
+                assert await calls.get() == 1
+                await asyncio.sleep(0.05)
+                assert calls.empty()
+                sprite_events.changed()
+                assert await calls.get() == 2
+                await asyncio.sleep(0.05)
+                assert calls.empty()
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert not sprite_events._watchers
+
+    asyncio.run(scenario())
+
+
+def test_indexer_retries_a_failed_pass_then_waits_for_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    """失败时限时重试，成功后回到只等待资产变更的状态。"""
+    async def scenario() -> None:
+        """用内存回执模拟一次失败和一次成功，不访问外部服务。"""
+        loop = asyncio.get_running_loop()
+        calls: asyncio.Queue[int] = asyncio.Queue()
+        count = 0
+
+        class FakeSearch:
+            """Fail once, then report a healthy index."""
+
+            def reconcile(self) -> bool:
+                """Record the pass and request one retry on the first call."""
+                nonlocal count
+                count += 1
+                loop.call_soon_threadsafe(calls.put_nowait, count)
+                return count > 1
+
+        monkeypatch.setattr(runtime, "SpriteSearch", FakeSearch)
+        monkeypatch.setattr(runtime, "INDEX_RETRY_SECONDS", 0.02)
+        task = asyncio.create_task(runtime.Runtime._index_sprites(SimpleNamespace(fenced=False)))
+        try:
+            async with asyncio.timeout(3):
+                assert await calls.get() == 1
+                assert await calls.get() == 2
+                await asyncio.sleep(0.06)
+                assert calls.empty()
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert not sprite_events._watchers
+
+    asyncio.run(scenario())
 
 
 # 场景：连接即通知一次（重连后补读断线期间的变化），之后每次变化通知一次，其他线程提交的变化同样唤醒。
