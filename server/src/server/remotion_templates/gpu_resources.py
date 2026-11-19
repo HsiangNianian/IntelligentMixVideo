@@ -4,7 +4,6 @@ import asyncio
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
-import ctypes
 from dataclasses import dataclass, field
 from functools import cache
 import json
@@ -24,6 +23,7 @@ import xml.etree.ElementTree as ET
 from .settings import Settings
 
 GPU_UUID = re.compile(r"GPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
+DISABLED_GPU_INDEX = 4
 EXCLUDED_GPU_UUIDS: tuple[str, ...] = ()
 
 Route = Literal["h264-pair", "gpu-webm", "cpu-webm"]
@@ -43,7 +43,7 @@ class GPUWorkerError(RuntimeError):
 
 @dataclass
 class GPU:
-    """One physical card and a single SMI observation, including workloads outside this service."""
+    """One physical card's SMI metrics and, after a successful NVML refresh, its current encoder sessions."""
 
     uuid: str
     index: int
@@ -71,54 +71,44 @@ def _pci_name(value: str) -> str:
 
 
 def _encoder_owners(cards: list[GPU]) -> None:
-    """Refresh counts and per-session PIDs together; failed queries cannot authorize NVENC from stale SMI counts."""
+    """Replace old counts and owners together. All cards share one deadline, including NVML init and shutdown."""
+    helper = Path(__file__).with_name("nvenc_sessions.py")
+    command = [sys.executable, "-I", str(helper), str(NVENC_SESSION_LIMIT), *(card.uuid for card in cards)]
+    output = _driver_output(command, timeout=2)
+    try:
+        owners = json.loads(output) if output else {}
+    except json.JSONDecodeError:
+        owners = {}
     for card in cards:
-        card.sessions = None
-        card.encoder_pids.clear()
-    if not cards:
-        return
-    # nvmlEncoderSessionInfo_t contains eight 32-bit fields; the second is the host PID.
-    session = ctypes.c_uint * 8
-    try:
-        nvml = ctypes.CDLL("libnvidia-ml.so.1")
-        get_sessions = nvml.nvmlDeviceGetEncoderSessions
-        if nvml.nvmlInit_v2():
-            return
-    except (OSError, AttributeError):
-        return
-    try:
-        for card in cards:
-            handle = ctypes.c_void_p()
-            if nvml.nvmlDeviceGetHandleByUUID(card.uuid.encode("ascii"), ctypes.byref(handle)):
-                continue
-            size = ctypes.c_uint(NVENC_SESSION_LIMIT)
-            rows = (session * size.value)()
-            # More sessions than this buffer already exhaust the host budget; do not retry a growing list.
-            if get_sessions(handle, ctypes.byref(size), rows) == 0:
-                card.sessions = size.value
-                card.encoder_pids.update(row[1] for row in rows[:size.value])
-    finally:
-        nvml.nvmlShutdown()
+        pids = owners.get(card.uuid)
+        card.sessions = len(pids) if pids is not None else None
+        card.encoder_pids = Counter(pids or ())
 
 
-def _smi(*args: str, timeout: float = 2) -> str:
-    """Bound driver queries, including the wait after SIGKILL if a broken device traps the CLI in kernel I/O."""
+def _driver_output(command: list[str], timeout: float, *, allow_partial: bool = False) -> str:
+    """Bound both the query and its cleanup. Only SMI discovery can recover devices from partial stdout."""
     try:
-        process = subprocess.Popen(["nvidia-smi", *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except OSError:
         return ""
     try:
         output, _ = process.communicate(timeout=timeout)
+        completed = process.returncode == 0
     except subprocess.TimeoutExpired as exc:
         process.kill()
-        output = exc.output or b""
+        output, completed = exc.output or b"", False
         process.stdout.close()
         try:
             process.wait(timeout=.1)
         except subprocess.TimeoutExpired:
             # Popen registers unreaped children for cleanup on later launches when the driver releases them.
             pass
-    return output.decode(errors="replace")
+    return output.decode(errors="replace") if completed or allow_partial else ""
+
+
+def _smi(*args: str, timeout: float = 2) -> str:
+    """Retain usable rows when the driver stops midway through device discovery."""
+    return _driver_output(["nvidia-smi", *args], timeout, allow_partial=True)
 
 
 def _read_cards(xml: str, indexes: dict[str, int]) -> list[GPU]:
@@ -153,7 +143,24 @@ def _read_cards(xml: str, indexes: dict[str, int]) -> list[GPU]:
 
 def _is_excluded(index: int, uuid: str) -> bool:
     """Skip physical GPU 4 and any boards pinned by UUID across host reboots."""
-    return index == 4 or any(uuid.casefold() == blocked.casefold() for blocked in EXCLUDED_GPU_UUIDS)
+    return index == DISABLED_GPU_INDEX or any(uuid.casefold() == blocked.casefold() for blocked in EXCLUDED_GPU_UUIDS)
+
+
+def _complete_inventory(cards: list[GPU], indexes: dict[str, int], attached: int) -> bool:
+    """Require one identified, memory-probed board per physical index except 4. NVML supplies the session counts."""
+    if not len(indexes) <= attached <= len(indexes) + 1 or len(cards) > attached:
+        return False
+    slots = set(range(attached))
+    required = slots - {DISABLED_GPU_INDEX}
+    listed = set(indexes.values())
+    if len(listed) != len(indexes) or not required <= listed <= slots:
+        return False
+    # An anonymous XML node can only occupy the spare slot after all required cards match exactly once.
+    # A different valid UUID is a conflicting observation, even if the count matches.
+    if any(card.index < 0 and GPU_UUID.fullmatch(card.uuid) for card in cards):
+        return False
+    enabled = [card for card in cards if card.index in required]
+    return len(enabled) == len(required) and {card.index for card in enabled if card.total > 0} == required
 
 
 def _inventory() -> tuple[list[GPU], bool]:
@@ -178,18 +185,17 @@ def _inventory() -> tuple[list[GPU], bool]:
         return [], False
     xml = _smi("-q", "-x", timeout=8)
     cards = _read_cards(xml, indexes)
-    found = {card.uuid for card in cards if card.total > 0}
-    required = {uuid for uuid, index in indexes.items() if index != 4}
-    counted = [card for card in cards if card.index != 4]
-    consecutive = set(indexes.values()) == set(range(len(indexes)))
-    attached = re.search(r"<attached_gpus>\s*(\d+)\s*</attached_gpus>", xml)
-    if (attached and int(attached[1]) == len(indexes) and len(counted) == len(required) and required <= found and
-            consecutive and all(card.sessions is not None for card in counted)):
-        return cards, True
-    if not tried_list:
+    match = re.search(r"<attached_gpus>\s*(\d+)\s*</attached_gpus>", xml)
+    attached = int(match[1]) if match else 0
+    complete = _complete_inventory(cards, indexes, attached)
+    if not complete and not tried_list:
         merge_listed_indexes()
         for card in cards:
             card.index = indexes.get(card.uuid, -1)
+        complete = _complete_inventory(cards, indexes, attached)
+    if complete:
+        return cards, True
+    found = {card.uuid for card in cards if card.total > 0}
     missing = [uuid for uuid, index in indexes.items() if uuid not in found and not _is_excluded(index, uuid)]
     if missing:
         # All per-card queries share one deadline. Queued boards do not each get another full timeout.
@@ -227,7 +233,7 @@ def _probe_host() -> tuple[list[GPU], bool, str | None]:
     """Probe hardware and FFmpeg together before locking leases. A failed command can be retried on the next claim."""
     cards, complete = _inventory()
     # Deployment policy: physical GPU 4 runs no workloads, including external encoders.
-    cards = [card for card in cards if card.index != 4]
+    cards = [card for card in cards if card.index >= 0 and card.index != DISABLED_GPU_INDEX]
     try:
         reason = _nvenc_unavailable_reason(shutil.which("ffmpeg")) if cards and complete else None
     except (OSError, subprocess.SubprocessError):

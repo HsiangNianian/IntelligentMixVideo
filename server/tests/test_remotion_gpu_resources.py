@@ -3,6 +3,7 @@
 import asyncio
 from collections import Counter
 from contextlib import AsyncExitStack
+import json
 import os
 from pathlib import Path
 import select
@@ -14,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from server.remotion_templates import gpu_resources as gpu
+from server.remotion_templates import nvenc_sessions
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
 
@@ -81,7 +83,12 @@ def nvml_machine(tmp_path, monkeypatch):
 
     driver.library = SimpleNamespace(nvmlInit_v2=lambda: 0, nvmlShutdown=shutdown,
                                     nvmlDeviceGetHandleByUUID=handle, nvmlDeviceGetEncoderSessions=sessions)
-    monkeypatch.setattr(gpu.ctypes, "CDLL", lambda name: driver.library)
+    def driver_output(command, timeout):
+        """Run the helper against this process's mock driver and pass its wire result to the real admission code."""
+        return json.dumps(nvenc_sessions.session_pids(command[4:], int(command[3])))
+
+    monkeypatch.setattr(nvenc_sessions.ctypes, "CDLL", lambda name: driver.library)
+    monkeypatch.setattr(gpu, "_driver_output", driver_output)
     monkeypatch.setattr(gpu, "_inventory", lambda: (cards, True))
     monkeypatch.setattr(gpu, "_nvenc_unavailable_reason", lambda binary: None)
     return cards, settings, driver
@@ -121,7 +128,7 @@ async def test_gpu4_is_omitted_from_nvenc_accounting(nvml_machine):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("failure", ["library", "init", "handle", "sessions", "buffer"])
+@pytest.mark.parametrize("failure", ["library", "init", "symbol", "handle", "sessions", "buffer"])
 async def test_session_refresh_failure_uses_webm_and_recovers(nvml_machine, monkeypatch, failure):
     """An unconfirmed fresh session count cannot reuse old NVENC capacity; the next healthy probe can recover."""
     cards, settings, driver = nvml_machine
@@ -133,9 +140,11 @@ async def test_session_refresh_failure_uses_webm_and_recovers(nvml_machine, monk
 
     with monkeypatch.context() as failing:
         if failure == "library":
-            failing.setattr(gpu.ctypes, "CDLL", missing_library)
+            failing.setattr(nvenc_sessions.ctypes, "CDLL", missing_library)
         elif failure == "init":
             failing.setattr(driver.library, "nvmlInit_v2", lambda: 9)
+        elif failure == "symbol":
+            failing.delattr(driver.library, "nvmlDeviceGetHandleByUUID")
         elif failure == "handle":
             failing.setattr(driver.library, "nvmlDeviceGetHandleByUUID", lambda *args: 15)
         elif failure == "sessions":
@@ -144,10 +153,36 @@ async def test_session_refresh_failure_uses_webm_and_recovers(nvml_machine, monk
             failing.setitem(driver.pids, cards[0].uuid, [50000] * (gpu.NVENC_SESSION_LIMIT + 1))
         async with claim(pool) as grant:
             assert (grant.route, grant.reason) == ("gpu-webm", "nvenc_sessions_unknown")
-    assert driver.shutdowns == (0 if failure in ("library", "init") else 1)
+    assert driver.shutdowns == (0 if failure in ("library", "init", "symbol") else 1)
     async with claim(pool) as recovered:
         assert recovered.route == "h264-pair"
     assert not list(settings.overlay_gpu_lease_dir.glob("*.encoder"))
+
+
+@pytest.mark.anyio
+async def test_stalled_session_probe_releases_waiters_and_recovers(tmp_path, monkeypatch):
+    """A child that emits plausible data then stalls cannot admit NVENC or prevent the next claim from probing."""
+    card = device(sessions=8)
+    pool = gpu.GPUPool(Settings(_env_file=None, overlay_gpu_lease_dir=tmp_path / "leases"))
+    monkeypatch.setattr(gpu, "_inventory", lambda: ([card], True))
+    monkeypatch.setattr(gpu, "_nvenc_unavailable_reason", lambda binary: None)
+    monkeypatch.setattr(gpu, "__file__", str(tmp_path / "gpu_resources.py"))
+    helper = tmp_path / "nvenc_sessions.py"
+    report = f"print({json.dumps({card.uuid: [50000] * 8})!r}, flush=True)\n"
+    helper.write_text(report + "import time\ntime.sleep(20)\n")
+
+    async def select_route():
+        """Use the pool's shared probe exactly as concurrent overlay jobs do."""
+        async with claim(pool) as grant:
+            return grant.route, grant.reason
+
+    async with asyncio.timeout(8):
+        routes = await asyncio.gather(select_route(), select_route())
+    assert routes == [("gpu-webm", "nvenc_sessions_unknown")] * 2
+    assert card.sessions is None and not card.encoder_pids
+    helper.write_text(report)
+    assert await select_route() == ("h264-pair", "nvenc_admitted")
+    assert card.sessions == 8 and card.encoder_pids == {50000: 8}
 
 
 @pytest.mark.anyio
@@ -387,6 +422,49 @@ def test_slow_multigpu_snapshot_preserves_session_visibility(monkeypatch, elapse
         card.index: card.sessions for card in cards if card.index != 4 or (complete and gpu4_metrics != "absent")}
     assert [timeout for args, timeout in probes if args == ("-q", "-x")] == [8]
     assert all(0 < timeout <= 2 for args, timeout in probes if args[0] == "-i")
+
+
+@pytest.mark.parametrize("csv_indices,listed_indices,sampled,extra_uuid,known", [
+    ((0, 1, 2, 3, 4, 5), (), "N/A", None, True),
+    ((0, 1, 2), (0, 1, 2, 3, 4, 5), "0", None, True),
+    ((0, 1, 2, 3, 5), (0, 1, 2, 3, 5), "0", "N/A", True),
+    ((0, 1, 2, 4, 5), (0, 1, 2, 4, 5), "0", None, False),
+    ((0, 1, 2, 3, 5), (0, 1, 2, 3, 5), "0", device(6).uuid, False),
+])
+def test_nvenc_refresh_requires_all_enabled_gpu_identities(monkeypatch, csv_indices, listed_indices, sampled, extra_uuid, known):
+    """Refresh after reconciling every enabled index, even with stale N/A stats or one anonymous disabled card."""
+    cards = [device(i) for i in range(6)]
+    nodes = "".join(
+        f"<gpu><uuid>{card.uuid}</uuid><fb_memory_usage><total>4000 MiB</total></fb_memory_usage>"
+        f"<encoder_stats><session_count>{sampled}</session_count></encoder_stats></gpu>"
+        for card in cards if card.index != 4
+    )
+    if extra_uuid is not None:
+        nodes += f"<gpu><uuid>{extra_uuid}</uuid></gpu>"
+    xml = f"<nvidia_smi_log><attached_gpus>6</attached_gpus>{nodes}</nvidia_smi_log>"
+    refreshed = []
+
+    def smi(*args, **kwargs):
+        """Only the compact listing can fill a gap in the initial CSV enumeration."""
+        if args[0].startswith("--query"):
+            return "\n".join(f"{i}, {cards[i].uuid}" for i in csv_indices)
+        if args == ("-L",):
+            return "\n".join(f"GPU {i}: GPU (UUID: {cards[i].uuid})" for i in listed_indices)
+        return xml
+
+    def refresh(boards):
+        """Record the physical cards on which an authoritative NVML query is attempted."""
+        refreshed.extend(card.index for card in boards)
+        for card in boards:
+            card.sessions = 0
+
+    monkeypatch.setattr(gpu, "_smi", smi)
+    monkeypatch.setattr(gpu.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(gpu, "_nvenc_unavailable_reason", lambda binary: None)
+    monkeypatch.setattr(gpu, "_encoder_owners", refresh)
+    _, complete, _ = gpu._probe_host()
+    assert complete is known
+    assert refreshed == ([0, 1, 2, 3, 5] if known else [])
 
 
 @pytest.mark.anyio
