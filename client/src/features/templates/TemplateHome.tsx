@@ -11,9 +11,9 @@ import { Button } from "@/components/ui/button";
 import { NewTemplateDialog } from "@/components/studio/home/NewTemplateDialog";
 import { DeleteTemplateDialog } from "@/components/studio/home/DeleteTemplateDialog";
 import { apiBase } from "@/lib/api-base";
-import { deleteTemplate, hasCoverBlob, listTemplates, publishCover, readTemplateCover, syncLoadedCovers } from "./api";
+import { CoverRevisionConflict, deleteTemplate, getTemplate, hasCoverBlob, listTemplates, publishCover, readTemplateCover, syncLoadedCovers } from "./api";
 import { releaseCoverTab, requestCoverTab } from "./coverCapture";
-import { needsInitialCover, type TemplateSummary } from "./model";
+import { needsInitialCover, type Template, type TemplateSummary } from "./model";
 import type { EditingState } from "./TemplateWorkspace";
 
 /** 只创建草稿，编辑器保存时才真正写入存储。 */
@@ -77,66 +77,90 @@ function useTemplateCollection(revision: number, active: boolean) {
     const controller = new AbortController();
     const { signal } = controller;
     setRefreshing(true);
-    const reupload: TemplateSummary[] = [], capture: TemplateSummary[] = [];
+    const cached: TemplateSummary[] = [], unchecked: TemplateSummary[] = [];
+    const awaitingShare: { item: TemplateSummary; template: Template }[] = [];
     const failures: string[] = [];
     for (const item of pending) {
-      if (hasCoverBlob(item.template_id, item.cover?.revision ?? item.template_id)) reupload.push(item);
-      else if (item.cover?.source === "unavailable") {
-        failures.push(item.name + "：请在编辑器选择原视频并保存");
-        pending.delete(item);
-      } else capture.push(item);
+      if (hasCoverBlob(item.template_id, item.cover?.revision ?? item.template_id)) cached.push(item);
+      else unchecked.push(item);
     }
-    /** 每项成功即发布到两个陈列区，单项失败继续下一项。 */
-    async function repair(rows: TemplateSummary[], stream?: MediaStream) {
-      for (const item of rows) {
-        if (signal.aborted) return;
-        const version = item.cover?.revision ?? item.template_id;
-        try {
-          const published = await publishCover(item.template_id, version, async () => {
-            const { captureHomeCover } = await import("./homeCoverCapture");
-            return captureHomeCover(item, signal, stream);
-          }, needsInitialCover(item) || (missing.has(item.template_id) && version === item.cover?.publishedRevision), signal);
-          if (signal.aborted) return;
-          setTemplates(current => current.map(row => row.template_id === item.template_id ? { ...row, cover: {
-            source: published.source ?? item.cover?.source ?? "builtin", revision: published.revision, publishedRevision: published.revision, url: published.url,
-          } } : row));
+
+    /** 接受详情中比摘要更新的完整发布。已知同版缺图仍应以原素材补截。 */
+    function peerCover(item: TemplateSummary, template: Template) {
+      const cover = template.cover;
+      if (cover?.url && cover.revision === cover.publishedRevision && !needsInitialCover(template)
+        && cover.publishedRevision !== item.cover?.publishedRevision) return cover;
+    }
+
+    /** 两个陈列区共用同一次读取，切页后保留未完成的模板。 */
+    async function display(item: TemplateSummary, cover: { revision: string; url: string; source?: string }) {
+      signal.throwIfAborted();
+      setTemplates(current => current.map(row => row.template_id === item.template_id ? { ...row, cover: {
+        source: cover.source ?? item.cover?.source ?? "builtin", revision: cover.revision, publishedRevision: cover.revision, url: cover.url,
+      } } : row));
+      pending.delete(item);
+      await readTemplateCover(item.template_id, cover.revision);
+    }
+
+    /** 重传缓存，或在取帧前核对实际详情；409 只重读冲突的那一个模板。 */
+    async function repair(item: TemplateSummary, prepared?: Template, stream?: MediaStream) {
+      if (signal.aborted) return;
+      const id = item.template_id;
+      const version = item.cover?.revision ?? id;
+      try {
+        let capture: (() => Promise<Blob>) | undefined;
+        if (!hasCoverBlob(id, version)) {
+          const template = prepared ?? await getTemplate(id, signal);
+          signal.throwIfAborted();
+          const peer = peerCover(item, template);
+          if (peer) { await display(item, peer); return; }
+          if ((template.cover?.revision ?? id) !== version) throw new Error("模板已更新，请再次刷新");
+          if (template.cover?.source === "unavailable") throw new Error("请在编辑器选择原视频并保存");
+          if (!isTauri() && !stream) { awaitingShare.push({ item, template }); return; }
+          capture = async () => (await import("./homeCoverCapture")).captureHomeCover(template, signal, stream);
+        }
+        const refresh = needsInitialCover(item) || (missing.has(id) && version === item.cover?.publishedRevision);
+        const cover = await publishCover(id, version, capture, refresh, signal).catch(async error => {
+          if (!(error instanceof CoverRevisionConflict)) throw error;
+          const peer = peerCover(item, await getTemplate(id, signal));
+          if (!peer) throw error;
+          return peer;
+        });
+        await display(item, cover);
+      } catch (reason) {
+        if (!signal.aborted) {
           pending.delete(item);
-          await readTemplateCover(item.template_id, published.revision);
-        } catch (reason) {
-          if (!signal.aborted) {
-            pending.delete(item);
-            failures.push(item.name + "：" + (reason instanceof Error ? reason.message : "封面更新失败"));
-          }
+          failures.push(item.name + "：" + (reason instanceof Error ? reason.message : "封面更新失败"));
         }
       }
     }
-    /** 已缓存的图先重传，只有剩余工作确实需要重新取帧时才向浏览器申请授权。 */
-    async function finish() {
+
+    /** 用户点击后立即申请共享，整批结束或取消后释放媒体轨道。 */
+    async function share() {
       setAuthorize(null);
       setRefreshing(true);
       let stream: MediaStream | undefined;
       try {
-        if (capture.length) {
-          stream = await requestCoverTab();
-          await repair(capture, stream);
-        }
+        stream = await requestCoverTab();
+        for (const { item, template } of awaitingShare) await repair(item, template, stream);
       } catch (reason) {
         failures.push(reason instanceof Error ? reason.message : "封面更新失败");
       } finally {
         releaseCoverTab(stream);
-        if (!signal.aborted) {
-          setRefreshing(false);
-          if (failures.length) toast.error("部分封面更新失败", { description: failures.join("；") });
-        }
+        finish();
       }
     }
-    void repair(reupload).then(() => {
+    /** 仅当前批次结束刷新提示，并一次展示所有单项失败。 */
+    function finish() {
       if (signal.aborted) return;
-      if (!isTauri() && capture.length) {
-        setRefreshing(false);
-        setAuthorize(() => finish);
-      } else void finish();
-    });
+      setRefreshing(false);
+      if (failures.length) toast.error("部分封面更新失败", { description: failures.splice(0).join("；") });
+    }
+    void (async () => {
+      for (const item of [...cached, ...unchecked]) await repair(item);
+      finish();
+      if (!signal.aborted && awaitingShare.length) setAuthorize(() => share);
+    })();
     return () => controller.abort();
   }, [active, batch, address]);
 

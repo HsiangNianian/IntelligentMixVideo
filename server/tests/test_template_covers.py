@@ -2,11 +2,14 @@
 
 import sqlite3
 from io import BytesIO
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError
 from PIL import Image
+from sqlalchemy import select
+
+from server.template import covers, store
 
 from .template_wire import post_template
 
@@ -19,7 +22,7 @@ def png(color: str) -> bytes:
 
 
 def test_publish_retry_replace_and_revalidate(client, template_payload, cover_storage):
-    """上传失败保留模板，重试和换视频复用对象名；改元数据、过期请求和条件 GET 不触碰图片。"""
+    """上传失败保留模板，换视频更新同一分享地址且读取独立的私有 PNG；条件 GET 只查版本。"""
     storage = cover_storage
     created = post_template(client, {**template_payload, "cover_source": "builtin"})
     assert created.status_code == 201
@@ -38,11 +41,12 @@ def test_publish_retry_replace_and_revalidate(client, template_payload, cover_st
     assert client.put(put, files={"file": ("fake.png", b"fake", "image/png")}).status_code == 422
     assert client.put(put, files=red).status_code == 200
     saved = client.get(f"/template/{template_id}").json()["template"]
-    key = f"imv/template-covers/{template_id}.png"
-    assert saved["cover"] == {"url": "https://images.test/" + key, "source": "builtin",
+    key = storage.put_object.call_args.kwargs["Key"]
+    assert key.startswith(f"imv/template-covers/{template_id}/")
+    assert saved["cover"] == {"url": str(client.base_url).rstrip("/") + base, "source": "builtin",
                               "revision": revision, "publishedRevision": revision}
     uploaded = storage.put_object.call_args.kwargs
-    assert uploaded["Key"] == key and uploaded["ContentType"] == "image/png"
+    assert uploaded["ACL"] == "private" and uploaded["ContentType"] == "image/png"
     assert uploaded["CacheControl"] == "no-cache"
     with Image.open(BytesIO(uploaded["Body"])) as image:
         assert image.format == "PNG" and image.getpixel((10, 10)) == (255, 0, 0)
@@ -62,22 +66,79 @@ def test_publish_retry_replace_and_revalidate(client, template_payload, cover_st
     latest = client.put(f"{base}/{changed['revision']}", files={"file": ("cover.png", png("blue"), "image/png")})
     assert latest.status_code == 200 and latest.json()["url"] == saved["cover"]["url"]
     uploaded = storage.put_object.call_args.kwargs
-    assert uploaded["Key"] == key
+    assert uploaded["Key"] != key and uploaded["ACL"] == "private"
     refreshed = client.get(base, headers={"If-None-Match": cached.headers["etag"]})
     assert refreshed.status_code == 200 and refreshed.headers["etag"] != cached.headers["etag"]
     with Image.open(BytesIO(refreshed.content)) as image:
         assert image.getpixel((10, 10)) == (0, 0, 255)
-    backup_key = f"imv/template-covers/{template_id}.previous.png"
-    backup = storage.put_object.call_args_list[-2].kwargs
-    assert (backup["Key"], backup["ACL"], backup["Metadata"]["revision"], backup["Body"]) == (
-        backup_key, "private", revision, cached.content,
-    )
+    assert client.get(saved["cover"]["url"]).content == refreshed.content
+    alternate = client.get("/template", headers={"host": "shared.example:20070"}).json()["templates"][0]
+    assert alternate["cover"]["url"] == "http://shared.example:20070" + base
+    assert "objectId" not in alternate["cover"]
     assert client.delete(f"/template/{template_id}").status_code == 204
-    assert storage.delete_object.call_args_list == [call(Bucket="test", Key=backup_key), call(Bucket="test", Key=key)]
+    for version_key in (key, uploaded["Key"]):
+        with pytest.raises(ClientError, match="NoSuchKey"):
+            storage.get_object(Key=version_key)
+    assert client.get(base).status_code == 404
+
+
+def test_delete_preserves_cover_on_rollback_and_retries_storage_cleanup(client, template_db, template_payload, cover_storage, monkeypatch):
+    """删除事务回滚可继续分享；删除已提交但 ZOS 失败时，重复 DELETE 能清理剩余对象。"""
+    key = post_template(client, template_payload).json()["template"]["templateId"]
+    template = f"/template/{key}"
+    base = f"{template}/cover"
+    assert client.put(f"{base}/{key}", files={"file": ("red.png", png("red"), "image/png")}).is_success
+    image_key = cover_storage.put_object.call_args.kwargs["Key"]
+
+    def roll_back(connection):
+        """数据库拒绝删除，此时存储中的已发布版本应完整保留。"""
+        connection.rollback()
+        raise sqlite3.OperationalError("controlled delete rollback")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(template_db.dialect, "do_commit", roll_back)
+        assert client.delete(template).status_code == 503
+    assert client.get(base).content == covers.encode_cover(png("red"))
+    cover_storage.get_paginator.assert_not_called()
+    with monkeypatch.context() as patch:
+        patch.setattr(cover_storage.delete_objects, "side_effect", ClientError({"Error": {"Code": "AccessDenied"}}, "DeleteObjects"))
+        assert client.delete(template).status_code == 503
+    assert client.get(base).status_code == 404
+    assert cover_storage.get_object(Key=image_key)["Body"].read()
+    assert client.delete(template).status_code == 404
+    with pytest.raises(ClientError, match="NoSuchKey"):
+        cover_storage.get_object(Key=image_key)
+
+
+def test_private_storage_without_delete_permission(client, template_payload, cover_storage, monkeypatch):
+    """关闭对象清理时发布和删除均无需存储删除权限，失败的私有候选无法从分享链接读取。"""
+    settings = covers.ZosSettings()
+    settings.zos_delete_objects = False
+    monkeypatch.setattr(covers, "ZosSettings", lambda: settings)
+    key = post_template(client, template_payload).json()["template"]["templateId"]
+    base = f"/template/{key}/cover"
+    files = {"file": ("cover.png", png("green"), "image/png")}
+    write = cover_storage.put_object.side_effect
+
+    def lose_ack(**kwargs):
+        """确认以私有 ACL 存入对象，再丢失本次 PUT 回执。"""
+        assert kwargs["ACL"] == "private"
+        write(**kwargs)
+        raise ReadTimeoutError(endpoint_url="https://storage.test")
+
+    cover_storage.put_object.side_effect = lose_ack
+    assert client.put(f"{base}/{key}", files=files).status_code == 503
+    assert client.get(base).status_code == 404
+    cover_storage.put_object.side_effect = write
+    assert client.put(f"{base}/{key}", files=files).is_success
+    assert client.delete(f"/template/{key}").status_code == 204
+    assert client.get(base).status_code == 404
+    cover_storage.delete_object.assert_not_called()
+    cover_storage.get_paginator.assert_not_called()
 
 
 def test_missing_published_object_can_be_repaired(client, template_payload, cover_storage):
-    """数据库保留发布记录时，只有对象缺失允许补图；强制写回同一键后可读取新的 PNG。"""
+    """数据库保留发布记录时，只有对象缺失允许补图；修复后同一分享地址可读取新版本。"""
     storage = cover_storage
     read = storage.get_object.side_effect
     row = post_template(client, {**template_payload, "cover_source": "builtin"}).json()["template"]
@@ -95,7 +156,7 @@ def test_missing_published_object_can_be_repaired(client, template_payload, cove
     repaired = client.put(put, files=files, data={"refresh": "true"})
     assert repaired.status_code == 200 and repaired.json()["revision"] != published["revision"]
     assert repaired.json()["url"] == published["url"]
-    assert [put.kwargs["ACL"] for put in storage.put_object.call_args_list] == ["public-read", "private", "public-read"]
+    assert [put.kwargs["ACL"] for put in storage.put_object.call_args_list] == ["private", "private"]
     uploaded = storage.put_object.call_args.kwargs
     storage.get_object.side_effect = read
     restored = client.get(base)
@@ -103,37 +164,84 @@ def test_missing_published_object_can_be_repaired(client, template_payload, cove
     assert storage.get_object.call_args.kwargs["Key"] == uploaded["Key"]
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_lost_object_put_ack_preserves_fixed_key(client, template_payload, cover_storage, legacy):
-    """公开 PUT 已生效才超时；原图含旧标签或没有标签时，直链与 API 均恢复同一份字节。"""
+@pytest.mark.parametrize("legacy", ["untagged", "backup", "private"])
+def test_lost_object_put_ack_preserves_shared_image(client, template_db, template_payload, cover_storage, legacy):
+    """旧版无标签图片、私有回滚副本及新私有图均可读取。新 PUT 回执丢失不影响已发布图。"""
     record = post_template(client, {**template_payload, "cover_source": "builtin"}).json()["template"]
-    base = f"/template/{record['templateId']}/cover"
-    put = f"{base}/{record['cover']['revision']}"
-    assert client.put(put, files={"file": ("old.png", png("red"), "image/png")}).is_success
-    old = client.get(base)
-    key = cover_storage.put_object.call_args.kwargs["Key"]
+    key = record["templateId"]
+    revision = record["cover"]["revision"]
+    base = f"/template/{key}/cover"
+    put = f"{base}/{revision}"
     write = cover_storage.put_object.side_effect
-    if legacy:
-        write(Key=key, Body=old.content)
+    if legacy == "private":
+        assert client.put(put, files={"file": ("old.png", png("red"), "image/png")}).is_success
+    else:
+        old_key = f"imv/template-covers/{key}.png"
+        with template_db.begin() as connection:
+            connection.execute(store.templates.update().values(cover={
+                "revision": revision, "published_revision": revision, "source": "builtin",
+                "url": "https://images.test/" + old_key,
+            }))
+        if legacy == "backup":
+            write(Key=old_key, Body=png("green"), Metadata={"revision": "uncommitted"})
+            write(Key=old_key.replace(".png", ".previous.png"), Body=png("red"), Metadata={"revision": revision})
+        else:
+            write(Key=old_key, Body=png("red"))
+    old = client.get(base)
+    assert old.is_success and Image.open(BytesIO(old.content)).getpixel((1, 1)) == (255, 0, 0)
 
     def lose_ack(**kwargs):
-        """首次覆盖公开键后丢失响应，私有备份和恢复写入照常完成。"""
+        """对象已接收，调用方未收到结果。"""
         write(**kwargs)
-        if kwargs["Key"] == key:
-            cover_storage.put_object.side_effect = write
-            raise ReadTimeoutError(endpoint_url="https://storage.test")
+        raise ReadTimeoutError(endpoint_url="https://storage.test")
 
     cover_storage.put_object.side_effect = lose_ack
     response = client.put(put, files={"file": ("new.png", png("blue"), "image/png")}, data={"refresh": "true"})
     served = client.get(base)
     assert response.status_code == 503 and served.content == old.content
-    assert cover_storage.get_object(Key=key)["Body"].read() == old.content
     assert served.headers["etag"] == old.headers["etag"]
     assert client.get(base, headers={"If-None-Match": old.headers["etag"]}).status_code == 304
+    cover_storage.put_object.side_effect = write
+    published = client.put(put, files={"file": ("new.png", png("green"), "image/png")}, data={"refresh": "true"})
+    assert published.is_success and published.json()["url"] == str(client.base_url).rstrip("/") + base
+    assert client.get(base).content == covers.encode_cover(png("green"))
+
+
+@pytest.mark.parametrize("edit", [False, True])
+def test_late_put_cannot_replace_a_successful_retry(client, template_payload, cover_storage, edit):
+    """超时 PUT 在下一次发布之后才生效。同一刷新和编辑后的新版都只能读到成功的绿图。"""
+    row = post_template(client, {**template_payload, "cover_source": "builtin"}).json()["template"]
+    key, version = row["templateId"], row["cover"]["revision"]
+    base = f"/template/{key}/cover"
+
+    def publish(color, refresh):
+        """以当前目标版本提交一张纯色截图。"""
+        return client.put(f"{base}/{version}", files={"file": ("cover.png", png(color), "image/png")},
+                          data={"refresh": str(refresh).lower()})
+
+    assert publish("red", False).is_success
+    write = cover_storage.put_object.side_effect
+    cover_storage.put_object.side_effect = ReadTimeoutError(endpoint_url="https://storage.test")
+    assert publish("blue", True).status_code == 503
+    delayed = cover_storage.put_object.call_args.kwargs
+    assert delayed["ACL"] == "private"
+    cover_storage.put_object.side_effect = write
+    if edit:
+        saved = post_template(client, {**template_payload, "template_id": key, "cover_source": "builtin"})
+        version = saved.json()["template"]["cover"]["revision"]
+    winner = publish("green", not edit)
+    assert winner.is_success and cover_storage.put_object.call_args.kwargs["Key"] != delayed["Key"]
+    write(**delayed)
+    served = client.get(winner.json()["url"])
+    assert served.content == covers.encode_cover(png("green"))
+    assert served.headers["etag"] == f'"{winner.json()["published_revision"]}"'
+    assert client.get(base, headers={"If-None-Match": served.headers["etag"]}).status_code == 304
+    version = winner.json()["revision"]
+    assert publish("green", True).is_success
 
 
 def test_first_put_ack_lost_removes_unpublished_object(client, template_payload, cover_storage):
-    """首版尚无已发布图时，存储接受 PUT 后超时也会撤销固定键。"""
+    """首版存储回执丢失后清理本次私有对象，分享地址仍返回 404。"""
     row = post_template(client, template_payload).json()["template"]
     key = row["templateId"]
     base = f"/template/{key}/cover"
@@ -148,12 +256,28 @@ def test_first_put_ack_lost_removes_unpublished_object(client, template_payload,
     assert client.put(f"{base}/{key}", files={"file": ("first.png", png("blue"), "image/png")}).status_code == 503
     assert client.get(base).status_code == 404
     with pytest.raises(ClientError) as missing:
-        cover_storage.get_object(Key=f"imv/template-covers/{key}.png")
+        cover_storage.get_object(Key=cover_storage.put_object.call_args.kwargs["Key"])
     assert missing.value.response["Error"]["Code"] == "NoSuchKey"
 
 
-def test_slow_reader_skips_two_completed_publications(client, template_payload, cover_storage):
-    """读出旧元数据后已连续换图两次，公开键与私有副本都已换版，应返回最新绿色 PNG 和 ETag。"""
+def test_delete_sweeps_a_late_unpublished_private_upload(client, template_payload, cover_storage):
+    """首图超时后迟到，模板从未有发布元数据。删除仍按本模板前缀回收它。"""
+    key = post_template(client, template_payload).json()["template"]["templateId"]
+    template = f"/template/{key}"
+    write = cover_storage.put_object.side_effect
+    cover_storage.put_object.side_effect = ReadTimeoutError(endpoint_url="https://storage.test")
+    response = client.put(f"{template}/cover/{key}", files={"file": ("cover.png", png("blue"), "image/png")})
+    assert response.status_code == 503
+    attempt = cover_storage.put_object.call_args.kwargs
+    write(**attempt)
+    assert attempt["ACL"] == "private" and client.get(f"{template}/cover").status_code == 404
+    assert client.delete(template).status_code == 204
+    with pytest.raises(ClientError, match="NoSuchKey"):
+        cover_storage.get_object(Key=attempt["Key"])
+
+
+def test_slow_reader_keeps_its_committed_snapshot(client, template_payload, cover_storage):
+    """读旧元数据的慢请求与后来的两次发布并行，每次响应的 ETag 和像素各自一致。"""
     key = post_template(client, template_payload).json()["template"]["templateId"]
     base = f"/template/{key}/cover"
     assert client.put(f"{base}/{key}", files={"file": ("cover.png", png("red"), "image/png")}).is_success
@@ -172,9 +296,10 @@ def test_slow_reader_skips_two_completed_publications(client, template_payload, 
 
     cover_storage.get_object.side_effect = publish_before_read
     served = client.get(base)
-    assert served.status_code == 200 and served.headers["etag"] == f'"{revision}"'
-    with Image.open(BytesIO(served.content)) as image:
-        assert image.getpixel((1, 1)) == (0, 128, 0)
+    assert served.status_code == 200 and served.headers["etag"] == f'"{key}"'
+    assert served.content == covers.encode_cover(png("red"))
+    latest = client.get(base, headers={"If-None-Match": served.headers["etag"]})
+    assert latest.headers["etag"] == f'"{revision}"' and latest.content == covers.encode_cover(png("green"))
 
 
 @pytest.mark.parametrize("failure", ["update", "commit_rolled_back", "commit_ack_lost", "rollback_missing_object", "newer_publish"])
@@ -251,8 +376,7 @@ def test_backfill_keeps_template_order_and_marks_visual_edits(client, template_p
 def test_single_column_migrates_previous_cover_metadata(client, template_db, template_payload, monkeypatch):
     """模拟旧库升级，单列保留成功地址、待更新版本和排序，下一次启动不会覆盖新数据。"""
     from uuid import uuid4
-    from sqlalchemy import inspect, select
-    from server.template import store
+    from sqlalchemy import inspect
 
     record = post_template(client, template_payload).json()["template"]
     key = record["templateId"]

@@ -278,14 +278,16 @@ def templates_using(sprite_id: str) -> list[str]:
 
 def delete_template(template_id: UUID) -> None:
     """事务删除指定模板；重复删除返回 404，不删除任何其他记录。"""
+    key = str(template_id)
+    target = templates.c.template_id == key
     with initialize_schema().begin() as connection:
-        target = templates.c.template_id == str(template_id)
         row = connection.execute(select(templates.c.cover).where(target).with_for_update()).first()
-        if row is None:
-            raise HTTPException(404, "模板不存在")
-        if row.cover and row.cover.get("published_revision"):
-            covers.delete_cover(str(template_id))
-        connection.execute(delete(templates).where(target))
+        if row is not None:
+            connection.execute(delete(templates).where(target))
+    # 只有删除已提交才能回收当前图片，否则事务回滚会留下仍可见却无法读取的模板。
+    covers.delete_cover(key, had_publication=bool(row is not None and row.cover and row.cover.get("published_revision")))
+    if row is None:
+        raise HTTPException(404, "模板不存在")
 
 
 def read_published_cover(template_id: UUID, if_none_match: str | None) -> tuple[str, bytes | None]:
@@ -293,32 +295,24 @@ def read_published_cover(template_id: UUID, if_none_match: str | None) -> tuple[
     key = str(template_id)
     query = select(templates.c.cover).where(templates.c.template_id == key)
     with initialize_schema().connect() as connection:
-        def read(statement):
-            """从查询结果选取修订，存储确认该版原图缺失时允许客户端补图。"""
-            cover = connection.execute(statement).scalar()
-            if not cover or not cover.get("published_revision"):
-                raise HTTPException(404, "暂无封面")
-            revision = cover["published_revision"]
-            etag = f'"{revision}"'
-            if etag == if_none_match:
-                return etag, None
-            content = covers.published_image(key, revision)
-            if content is None:
-                raise HTTPException(404, detail={"code": "cover_object_missing"})
-            return etag, content
-
-        try:
-            return read(query)
-        except covers.CoverRevisionMismatch:
-            # 慢读期间可能已连续发布两版。锁住最新版本再读一次，避免阻塞普通读取。
-            return read(query.with_for_update(read=True))
+        cover = connection.execute(query).scalar()
+    if not cover or not cover.get("published_revision"):
+        raise HTTPException(404, "暂无封面")
+    revision = cover["published_revision"]
+    etag = f'"{revision}"'
+    if etag == if_none_match:
+        return etag, None
+    content = covers.published_image(key, revision, cover.get("object_id"))
+    if content is None:
+        raise HTTPException(404, detail={"code": "cover_object_missing"})
+    return etag, content
 
 
 def publish_cover(template_id: UUID, revision: UUID, content: bytes, refresh: bool = False) -> TemplateCover:
-    """按取帧前的版本覆盖图片。手动刷新推进封面版本，同一刷新请求重传保持幂等。"""
-
+    """锁住目标版本并上传独立私有对象，数据库提交后固定 API 地址才切换到该对象。"""
     payload = covers.encode_cover(content)
     key = str(template_id)
+    published = str(uuid5(revision, "refresh-cover")) if refresh else str(revision)
     engine = initialize_schema()
     target = templates.c.template_id == key
     locked = select(templates.c.cover).where(target).with_for_update()
@@ -327,35 +321,31 @@ def publish_cover(template_id: UUID, revision: UUID, content: bytes, refresh: bo
         if row is None:
             raise HTTPException(404, "模板不存在")
         current = TemplateCover.model_validate(row.cover) if row.cover else TemplateCover(revision=key)
-        published = str(uuid5(revision, "refresh-cover")) if refresh else str(revision)
         if current.published_revision == current.revision == published:
             return current
         if current.revision != str(revision):
             raise HTTPException(409, "模板画面已更新，请刷新后重试")
+        object_id = str(uuid4())
+        object_key = f"{covers.object_prefix(key)}/{object_id}.png"
         result = TemplateCover(revision=published, published_revision=published,
-                               source=current.source, url=covers.cover_url(key))
-        connection.execute(templates.update().where(target).values(cover=result.model_dump()))
-        previous = covers.published_image(key, current.published_revision, before_replace=True) if current.published_revision else None
+                               source=current.source, url=f"/template/{key}/cover")
+        connection.execute(templates.update().where(target).values(cover={**result.model_dump(), "object_id": object_id}))
         try:
-            covers.upload_cover(key, payload, published)
+            covers.upload_cover(object_key, payload, published)
             connection.commit()
             return result
         except (HTTPException, SQLAlchemyError) as exc:
             publish_error = exc
 
-    # PUT 和 COMMIT 均可能已执行但未收到回执。新连接取得行锁后再决定是否恢复。
+    # COMMIT 的回执可能丢失。等原事务结束再确认选中的对象，只清理自己的未发布尝试。
     with engine.connect() as connection:
-        row = connection.execute(locked).first()
-        if row is None:
-            raise publish_error
-        last_published = (row.cover or {}).get("published_revision", "")
-        if last_published == published:
-            return result
-        if last_published == current.published_revision:
-            actual = covers.stored_cover(key)
-            if actual is not None and actual.revision == published:
-                if previous is None:
-                    covers.delete_cover(key, undo_upload=True)
-                else:
-                    covers.upload_cover(key, previous, last_published)
+        actual = connection.execute(locked).scalar() or {}
+    # 若 COMMIT 回执丢失后另一版本已发布，本图可能曾被读者选中，保留到模板删除。
+    if actual.get("object_id") != object_id and (
+        isinstance(publish_error, HTTPException) or not actual
+        or actual.get("published_revision", "") in (current.published_revision, published)
+    ):
+        covers.discard_upload(object_key)
+    if actual.get("published_revision") == actual.get("revision") == published:
+        return TemplateCover.model_validate(actual)
     raise publish_error

@@ -7,6 +7,7 @@ import { TemplateCollection, TemplateHome, type TemplateSelection } from "@/feat
 import { jsonListResponse, jsonTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
 import * as homeCapture from "@/features/templates/homeCoverCapture";
 import { fetchMock, mockDesktop } from "./setup";
+import { apiBase } from "@/lib/api-base";
 
 // 场景：拖动后的合成点击不干扰当前位置；随后点侧面封面时只居中。
 test("空间画廊拖动换页不会误打开模板", () => {
@@ -77,7 +78,8 @@ test("最近五项与全部模板共用打开和删除状态", () => {
 
 // 场景：全部模板每页十五项；名称搜索忽略大小写和首尾空格，搜索后回第一页，无结果时明确提示。
 test("模板网格按十五项分页并按名称搜索", async () => {
-  const templates = Array.from({ length: 32 }, (_, index) => ({ ...savedTemplate(), template_id: `page-${index}`, name: `Travel ${index}`, updated_at: new Date(Date.UTC(2026, 0, index + 1)).toISOString() }));
+  const cover = { source: "builtin", revision: "editor-pending", publishedRevision: "", url: "" };
+  const templates = Array.from({ length: 32 }, (_, index) => ({ ...savedTemplate(), cover, template_id: `page-${index}`, name: `Travel ${index}`, updated_at: new Date(Date.UTC(2026, 0, index + 1)).toISOString() }));
   fetchMock.mockImplementation((async (_url) => jsonListResponse(templates)) as typeof fetch);
   render(<Tooltip.Provider><TemplateHome onSelect={() => {}} onOpenRemotion={() => {}} /></Tooltip.Provider>);
   const grid = within(await screen.findByRole("region", { name: "全部模板" }));
@@ -184,7 +186,8 @@ test("主页只提供云端模板", async () => {
 // 场景：云端读取失败显示原因与重试入口，重试成功后显示模板。
 test("云端读取失败可重试", async () => {
   fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ detail: "云端暂不可用" }), { status: 503 }));
-  fetchMock.mockResolvedValueOnce(jsonListResponse([savedTemplate()]));
+  const cover = { source: "builtin", revision: "editor-pending", publishedRevision: "", url: "" };
+  fetchMock.mockResolvedValueOnce(jsonListResponse([{ ...savedTemplate(), cover }]));
   render(<Tooltip.Provider><TemplateHome onSelect={() => {}} onOpenRemotion={() => {}} /></Tooltip.Provider>);
   await screen.findByText("云端模板读取失败");
   expect(screen.getByText("云端暂不可用")).toBeTruthy();
@@ -218,6 +221,8 @@ test("客户端续补初版内置封面，复用列表并跳过编辑版本", as
       writes.push(path.split("/")[2]);
       return Response.json({ revision: "published", url: "new.png" });
     }
+    const detail = items.find(item => path === "/template/" + item.template_id);
+    if (detail) return jsonTemplateResponse(detail, "get");
     return new Response("PNG");
   }) as typeof fetch);
   const home = (active: boolean) => <Tooltip.Provider><TemplateHome active={active} onSelect={() => {}} onOpenRemotion={() => {}} /></Tooltip.Provider>;
@@ -232,11 +237,12 @@ test("客户端续补初版内置封面，复用列表并跳过编辑版本", as
 });
 
 // 另一台桌面已补好的模板直接显示两处封面；只改了画面、尚未发布的新版本继续提示刷新。
-test("主页从最新详情复用其他客户端的发布结果", async () => {
-  mockDesktop(async () => { throw new Error("无需取帧"); });
+test.each([false, true])("主页从最新详情复用其他客户端的发布结果（桌面 %s）", async desktop => {
+  if (desktop) mockDesktop(async () => { throw new Error("无需取帧"); });
   const missing = { ...savedTemplate(), template_id: "peer-cover" };
   const changed = { ...missing, template_id: "peer-edit", name: "待发布修改" };
-  const cover = { revision: "new", publishedRevision: "new", source: "builtin", url: "https://images.test/new.png" };
+  const revision = desktop ? "peer-desktop" : "peer-browser";
+  const cover = { revision, publishedRevision: revision, source: "builtin", url: "https://images.test/new.png" };
   const requests: string[] = [];
   const error = spyOn(toast, "error");
   fetchMock.mockImplementation((async (input, init) => {
@@ -253,9 +259,37 @@ test("主页从最新详情复用其他客户端的发布结果", async () => {
   const view = render(home(true));
   await waitFor(() => expect(view.container.querySelectorAll("article img")).toHaveLength(2));
   await waitFor(() => expect(error).toHaveBeenCalledWith("部分封面更新失败", { description: "待发布修改：模板已更新，请再次刷新" }));
+  expect(screen.queryByRole("button", { name: "共享当前标签页以补截封面" })).toBeNull();
   view.rerender(home(false));
   view.rerender(home(true));
   expect(requests).toEqual(["GET /template", "GET /template/peer-cover", "GET /template/peer-cover/cover", "GET /template/peer-edit"]);
+});
+
+// 缓存截图过期的 409 只重读这一条详情，采用其他客户已发布的封面并释放过期 PNG。
+test("主页重传收到版本冲突后直接采用新的发布", async () => {
+  const { hasCoverBlob, publishCover } = await import("@/features/templates/api");
+  const item = { ...savedTemplate(), template_id: "cached-conflict" };
+  const cover = { revision: "new", publishedRevision: "new", source: "builtin", url: "https://images.test/new.png" };
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+  await expect(publishCover(item.template_id, item.template_id, async () => new Blob(["old PNG"]), true)).rejects.toThrow();
+  const requests: string[] = [];
+  const error = spyOn(toast, "error");
+  fetchMock.mockImplementation((async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    requests.push((init?.method ?? "GET") + " " + path);
+    if (path === "/template") return jsonListResponse([item]);
+    if (init?.method === "PUT") return Response.json({ detail: "已更新" }, { status: 409 });
+    if (path === "/template/cached-conflict") return jsonTemplateResponse({ ...item, cover }, "get");
+    if (path.endsWith("/cover")) return new Response("PNG");
+    throw new Error(path);
+  }) as typeof fetch);
+  const view = render(<Tooltip.Provider><TemplateHome onSelect={() => {}} onOpenRemotion={() => {}} /></Tooltip.Provider>);
+  await waitFor(() => expect(view.container.querySelectorAll("article img[src^='blob:']")).toHaveLength(2));
+  expect(hasCoverBlob(item.template_id, item.template_id)).toBe(false);
+  expect(error).not.toHaveBeenCalled();
+  expect(screen.queryByText("共享当前标签页以补截封面")).toBeNull();
+  expect(requests).toEqual(["GET /template", "PUT /template/cached-conflict/cover/cached-conflict",
+    "GET /template/cached-conflict", "GET /template/cached-conflict/cover"]);
 });
 
 // 手动同步保留当前网格与选中的封面；缺图只重传已有截图，健康且版本未变化的封面不再请求。
@@ -296,10 +330,12 @@ test("主页刷新只修复待发布封面，保留陈列位置且不进入编�
   expect(selections).toHaveLength(0);
 });
 
-// 断网时两个陈列区都回退到直链；服务恢复后，手动刷新应共享一次重读并原地换图。
-test("主页刷新重读上次失败的同版封面，恢复后继续命中缓存", async () => {
-  const cover = { url: "https://images.test/offline.png", revision: "v1", publishedRevision: "v1", source: "builtin" };
-  const item = { ...savedTemplate(), template_id: "offline-cover", cover };
+// 离线时旧图使用独立直链，新图等待原 API 恢复；手动刷新时两个陈列区共享一次重读。
+test.each([false, true])("主页刷新重读上次失败的同版封面（旧 ZOS 直链 %s）", async legacy => {
+  const id = legacy ? "offline-legacy" : "offline-api";
+  const cover = { url: legacy ? "https://images.test/offline.png" : `${apiBase()}/template/${id}/cover`,
+    revision: "v1", publishedRevision: "v1", source: "builtin" };
+  const item = { ...savedTemplate(), template_id: id, cover };
   let lists = 0, reads = 0;
   let online = false;
   fetchMock.mockImplementation((async (input, init) => {
@@ -307,7 +343,7 @@ test("主页刷新重读上次失败的同版封面，恢复后继续命中缓�
       lists++;
       return jsonListResponse([item]);
     }
-    if (init?.method === "GET" && String(input).endsWith("/offline-cover/cover")) {
+    if (init?.method === "GET" && String(input).endsWith(`/${id}/cover`)) {
       reads++;
       return online ? new Response("PNG") : new Response(null, { status: 503 });
     }
@@ -315,7 +351,7 @@ test("主页刷新重读上次失败的同版封面，恢复后继续命中缓�
   }) as typeof fetch);
   const view = render(<Tooltip.Provider><TemplateHome onSelect={() => {}} onOpenRemotion={() => {}} /></Tooltip.Provider>);
   const images = () => [...view.container.querySelectorAll<HTMLImageElement>("article img")].map(img => img.src);
-  await waitFor(() => expect(images()).toEqual([cover.url, cover.url]));
+  await waitFor(() => { expect(reads).toBe(1); expect(images()).toEqual(legacy ? [cover.url, cover.url] : []); });
   const refresh = screen.getByRole<HTMLButtonElement>("button", { name: "刷新模板及封面" });
   fireEvent.click(refresh);
   await waitFor(() => expect([lists, reads, refresh.disabled]).toEqual([2, 2, false]));
@@ -405,6 +441,8 @@ test("浏览器只为真正需要补截的模板请求共享权限", async () =>
     calls.push(path);
     if (path === "/template") return jsonListResponse([input, unavailable, cached]);
     if (init?.method === "PUT") return Response.json({ url: "https://images.test/repaired.png", revision: cover.revision });
+    if (path === "/template/browser-media") return jsonTemplateResponse(input, "get");
+    if (path === "/template/browser-unavailable") return jsonTemplateResponse(unavailable, "get");
     if (path.endsWith("/cover")) return new Response("PNG");
     throw new Error(path);
   }) as typeof fetch);
@@ -412,5 +450,6 @@ test("浏览器只为真正需要补截的模板请求共享权限", async () =>
   await screen.findByRole("region", { name: "全部模板" });
   fireEvent.click(screen.getByRole("button", { name: "刷新模板及封面" }));
   await screen.findByRole("button", { name: "共享当前标签页以补截封面" });
-  expect(calls).toEqual(["/template", "/template", "/template/browser-png/cover/pending", "/template/browser-png/cover"]);
+  expect(calls).toEqual(["/template", "/template", "/template/browser-png/cover/pending", "/template/browser-png/cover",
+    "/template/browser-media", "/template/browser-unavailable"]);
 });

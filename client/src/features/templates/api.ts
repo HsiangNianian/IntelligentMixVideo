@@ -14,7 +14,7 @@ import {
   FrameMaskSchema,
   type TemplateRecord,
 } from "@/generated/imv/template/v1/template_pb";
-import { defaultEditor, draftEffects, type Category, type CoverInfo, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
+import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
 import { validateTemplateTracks } from "./tracks";
 import { BOUND_TEXT_PARAMETERS, validateClipSlots } from "./clips";
 import { validateFrameMask, type FrameMask } from "./frameMask";
@@ -143,6 +143,9 @@ async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: Abor
 /** ZOS 确认已发布的 PNG 缺失时，主页可按原素材重新发布。 */
 class MissingCoverObject extends Error {}
 
+/** 封面 PUT 的目标修订已经过期，主页可按模板 ID 核对最新发布。 */
+export class CoverRevisionConflict extends Error {}
+
 /** 在现有模板路由发送请求，并将 HTTP 错误转换为编辑器可显示的消息。 */
 async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE" | "PUT", signal: AbortSignal, body?: Uint8Array | FormData): Promise<Response> {
   const response = await fetch(`${apiBase()}${path}`, {
@@ -161,6 +164,7 @@ async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE" | "P
     const message = typeof detail === "string" ? detail : Array.isArray(detail)
       ? detail.map((error: { loc?: unknown[]; msg?: string }) => `${error.loc?.slice(1).join(".")}：${error.msg}`).join("；")
       : `HTTP ${response.status}`;
+    if (method === "PUT" && response.status === 409) throw new CoverRevisionConflict(message);
     throw new Error(message);
   }
   return response;
@@ -379,15 +383,15 @@ export async function syncLoadedCovers(items: TemplateSummary[]) {
 /** 上传失败只暂存该修订的截图；同一模板只保留最新一次，应用重启后由真实预览重新截取。 */
 const coverBlobs = new Map<string, { revision: string; blob: Blob; refresh: boolean }>();
 
-/** 重传同版本截图；取帧前若已从详情取得成功发布的封面，直接交给画廊。 */
-export async function publishCover(id: string, revision: string, capture: () => Promise<Blob | CoverInfo>, refresh = false, signal?: AbortSignal) {
+/** 优先重传同版本截图。目标修订过期后丢弃其截图，临时故障继续保留供重试。 */
+export async function publishCover(id: string, revision: string, capture: (() => Promise<Blob>) | undefined, refresh = false, signal?: AbortSignal) {
   const key = apiBase() + "/" + id;
   let item = coverBlobs.get(key);
   if (item?.revision !== revision) {
     if (item) coverBlobs.delete(key);
+    if (!capture) throw new Error("待重传的封面已变化，请刷新重试");
     const captured = await capture();
     signal?.throwIfAborted();
-    if ("publishedRevision" in captured) return captured;
     item = { revision, blob: captured, refresh };
   }
   if (refresh) item.refresh = true;
@@ -396,7 +400,10 @@ export async function publishCover(id: string, revision: string, capture: () => 
   const body = new FormData();
   body.set("file", item.blob, "cover.png");
   if (item.refresh) body.set("refresh", "true");
-  const response = await cloud((signal) => cloudRequest(`/template/${id}/cover/${revision}`, "PUT", signal, body), signal);
+  const response = await cloud((signal) => cloudRequest(`/template/${id}/cover/${revision}`, "PUT", signal, body), signal).catch(error => {
+    if (error instanceof CoverRevisionConflict && coverBlobs.get(key) === item) coverBlobs.delete(key);
+    throw error;
+  });
   const result = await response.json() as { url: string; revision: string; source?: string };
   if (item.refresh && result.revision === revision) throw new Error("请更新本地服务后再刷新封面");
   if (coverBlobs.get(key) === item) coverBlobs.delete(key);

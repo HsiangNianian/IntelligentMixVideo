@@ -241,10 +241,23 @@ def cover_storage(monkeypatch):
         body, metadata = objects[Key]
         return {"Body": BytesIO(body), "Metadata": metadata}
 
+    def pages(*, Prefix, **_):
+        """仅枚举本模板的对象，模拟 ListObjectsV2 单页响应。"""
+        return [{"Contents": [{"Key": key} for key in objects if key.startswith(Prefix)]}]
+
+    def delete_batch(*, Delete, **_):
+        """删除枚举得到的每个键，缺失的键也视为成功。"""
+        for item in Delete["Objects"]:
+            objects.pop(item["Key"], None)
+        return {}
+
+    storage.get_paginator.return_value.paginate.side_effect = pages
+    storage.delete_objects.side_effect = delete_batch
     storage.get_object.side_effect = read
     storage.put_object.side_effect = lambda Key, Body, Metadata=None, **_: objects.update({Key: (Body, Metadata or {})})
     storage.delete_object.side_effect = lambda Key, **_: objects.pop(Key, None)
     monkeypatch.setattr(covers, "storage_client", lambda *_: storage)
+    monkeypatch.setattr("server.remotion_templates.object_store.storage_client", lambda *_: storage)
     monkeypatch.setattr(covers, "ZosSettings", lambda: SimpleNamespace(
         zos_bucket="test", zos_delete_objects=True, zos_web_url="https://images.test"))
     return storage

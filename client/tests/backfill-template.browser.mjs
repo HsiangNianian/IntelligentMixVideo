@@ -26,8 +26,8 @@ const sdk = `window.AliyunTimelinePlayer = class {
   pause() {} destroy() {}
   get currentTime() { return this.time || 0; }
   set currentTime(t) {
-    this.time = t; this.emit("playerSeeked");
-    this.canvas.style.background = "rgb(" + Math.round(t * 30) + ",0,0)";
+    this.time = t === 1 && parent.wrongSeek ? 31 / 30 : t; this.emit("playerSeeked");
+    this.canvas.style.background = "rgb(" + Math.round(this.time * 30) + ",0,0)";
     if (t !== 1 || parent.holdText) return;
     const {width, height} = parent.document.querySelector(".template-preview-frame").getBoundingClientRect();
     parent.seekSize = [width, height];
@@ -72,8 +72,15 @@ try {
     return data;
   });
   await page.addInitScript(() => {
+    const query = new URLSearchParams(location.search);
+    if (query.has("browser")) {
+      window.shareRequests = 0;
+      navigator.mediaDevices.getDisplayMedia = async () => { window.shareRequests++; throw new Error("无需申请共享"); };
+      return;
+    }
     window.isTauri = true;
-    const os = new URLSearchParams(location.search).get("os");
+    const os = query.get("os");
+    window.wrongSeek = query.has("wrongSeek");
     Object.defineProperty(navigator, "userAgent", { value: os || navigator.userAgent });
     window.testFocus = value => {
       Object.defineProperty(document, "hasFocus", { configurable: true, value: () => value });
@@ -155,6 +162,25 @@ try {
   assert.equal(cover, previous);
   assert.equal(template.cover.publishedRevision, template.template_id);
   console.log("PASS: 截图期间偏移一帧又回到目标时保留原封面");
+  // 定位回执报告相邻帧，暂停状态没有后续 render。即使输入游标处于 1 秒也不能截取。
+  moveDuringSnapshot = false;
+  const count = captures;
+  await page.goto(base + "/backfill.html?os=" + platform + "&wrongSeek");
+  await page.getByText(/播放器未确认第 30 帧/).waitFor({timeout:20000});
+  assert.equal(captures, count);
+  assert.equal(cover, previous);
+  console.log("PASS: SDK 确认第 31 帧时没有截图或覆盖已发布图");
+
+  // 浏览器拿到旧列表，另一客户端已在详情中发布；两处图片应直接显示，无须交互或共享。
+  reads = 0;
+  template.cover = { ...template.cover, revision: "peer", publishedRevision: "peer" };
+  await page.route(base + "/template", async route => route.fulfill({ json: await jsonListResponse([{ ...template, cover: undefined }]).json() }));
+  await page.goto(base + "/backfill.html?browser");
+  await page.locator("article img[src^='blob:']").nth(1).waitFor();
+  assert.equal(reads, 1);
+  assert.equal(await page.getByRole("button", { name: "共享当前标签页以补截封面" }).count(), 0);
+  assert.equal(await page.evaluate(() => window.shareRequests), 0);
+  console.log("PASS: 浏览器从详情采用其他客户端已发布的封面，两处展示均无须共享标签页");
 } finally {
   await browser?.close();
   await server.close();

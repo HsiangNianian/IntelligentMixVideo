@@ -54,7 +54,7 @@ PORT=8010 uv run --locked server
 | GET | `/template` | 返回 `ListTemplatesResponse`，按更新时间倒序 |
 | POST | `/template` | 接收 `SaveTemplateRequest`；无 `template_id` 创建，携带 ID 完整更新，返回 `SaveTemplateResponse` |
 | GET | `/template/{template_id}` | 返回 `GetTemplateResponse` |
-| PUT | `/template/{template_id}/cover/{revision}` | multipart `file` 上传 9:16 静态 PNG。过期版本返回 409，成功覆盖固定 ZOS 对象 |
+| PUT | `/template/{template_id}/cover/{revision}` | multipart `file` 上传 9:16 静态 PNG。过期版本返回 409，成功返回固定的 API 分享地址 |
 | GET | `/template/{template_id}/cover` | 读取已发布 PNG。按 ETag 校验版本，未变化返回 304，暂无封面返回 404；ZOS 对象丢失时返回 404 及 `detail.code=cover_object_missing`，存储读取故障返回 503 |
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
 | GET | `/template/preview-mask` | 几何圆角蒙版 MP4，供 SDK 实时预览；不访问用户媒体或数据库 |
@@ -64,11 +64,11 @@ PORT=8010 uv run --locked server
 
 客户端首次在主页读取模板列表后，用内置样片在本机补齐有效旧模板的封面。发布版本仍为模板 ID 的初版内置封面也修正一次。编辑器新建模板、修改画面或换视频并保存时，使用当前素材重新取帧。两条流程均在预览第 1 秒的标题、字幕、蒙版与字效绘制完成后上传 PNG。失败可在主页刷新重试。
 
-封面 API 仅接收、校验和读写图片。ZOS 固定覆盖 `imv/template-covers/{模板ID}.png`，公开地址、目标版本、已发布版本、素材来源保存在 `templates.cover`。查询地址可用 `SELECT template_id, cover->>'$.url' AS cover_url FROM templates`。
+新发布的封面统一分享 `GET /template/{模板ID}/cover`。列表、详情和保存响应中的 `cover.url` 以及上传响应中的 `url` 按本次请求的服务地址生成，分享后再次打开即可读取最新的已发布图片。每次上传写入独立的私有 ZOS 对象 `imv/template-covers/{模板ID}/{上传ID}.png`。MySQL 在同一事务中提交对象 ID、版本和素材来源。上传超时或提交回滚时，原来的分享链接继续显示上次成功的图片。
 
-替换已发布封面前，服务端在同一目录写入私有的 `{模板ID}.previous.png`，保留该修订的 PNG，空对象表示原图缺失。每个模板最多保留一份副本。公开图和副本的 ZOS 用户元数据记录各自的修订号。封面 GET 按数据库已发布修订读取对应字节，兼容升级前没有修订标签的公开图。
+GET 先读取已提交的对象 ID 和修订，再释放数据库连接，凭服务端凭据读取 PNG。并发换图时，正在读取旧版本的请求仍得到该版的字节和 ETag。升级前的固定 ZOS 图及其回滚副本仍可读取；首次发布新版后，已有 ZOS 直链保留旧图，新分享地址跟随最新版。
 
-对象写入或数据库提交回执丢失时，发布接口重新锁住模板，核对已发布修订并恢复公开键。服务账号需要读写公开键和私有副本，撤销新增对象时还需删除公开键。开启 `ZOS_DELETE_OBJECTS` 后删除模板会同时清理两者。进程在写图后退出或存储持续不可用时，直接访问 ZOS 的图片可能需要重新发布才能恢复。
+开启 `ZOS_DELETE_OBJECTS` 后，发布失败会清理可确认未发布的私有上传，删除模板会在数据库提交后按模板 ID 清理所有版本及旧版固定键。数据库已删除模板但存储清理失败时返回 503；再次 DELETE 会续清，清理成功后按模板已删除返回 404。服务账号需要该前缀的列表和删除权限。关闭此配置时保留存储对象。若超时的 PUT 在清理之后才实际写入，留下的对象仍为私有，分享链接无法引用它。
 
 模板列表、详情与保存的成功响应默认使用 `application/json`，采用 Protobuf JSON 映射：字段为 camelCase（如 `templateId`、`createdAt`、`effectIds`），时间为 UTC RFC 3339 字符串；列表为 `{"templates":[...]}`，空库为 `{"templates":[]}`，详情和保存为 `{"template":{...}}`，轨道保留 `template.tracks.tracks` 结构。空数组、空映射和非 optional 标量默认值保留，未设置的 optional 字段省略。POST 请求仍使用 `application/x-protobuf`，JSON 请求返回 415，损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422；错误响应使用 JSON，删除成功仍为 204 空响应。为兼容旧客户端，单一 `Accept: application/x-protobuf` 仍返回 Protobuf 二进制；其他请求（含省略 Accept、`*/*` 或 `application/json`）默认返回 JSON，成功响应带 `Vary: Accept`。新客户端按响应 `Content-Type` 解析 JSON 或旧服务端的 Protobuf 二进制，JSON 解析忽略未知字段；仅响应格式迁移不要求两端同时升级。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。

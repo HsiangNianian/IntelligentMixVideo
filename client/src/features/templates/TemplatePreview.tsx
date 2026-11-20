@@ -104,8 +104,8 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
   const basic = useRef<PlaybackHandle>(null);
   // 前端持有的准确播放位置（秒），由当前画面来源回报；换来源时新来源从这里接着走。
   const clockTime = useRef(0);
-  // 每次跨帧递增，异步截图期间离开目标帧又返回也会作废该图。
-  const frameChange = useRef(0);
+  // 仅 SDK 的定位回执或实际绘制可确认帧号。每次变化替换对象，用于发现截图期间离开又返回。
+  const confirmedFrame = useRef<{ frame: number } | null>(null);
   // 最近一次显示到界面的时间（0.1 秒为单位）。
   const shownDecisecond = useRef(0);
   const timelineRows = useMemo(() => mergeSpriteRows(rows, sprites).map((row) => ({ ...row,
@@ -172,7 +172,6 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
    */
   const showTime = (value: number) => {
     const next = Math.max(0, Math.min(latestResolved.current?.duration ?? 0, value));
-    if (Math.round(next * PREVIEW_FPS) !== Math.round(clockTime.current * PREVIEW_FPS)) frameChange.current++;
     clockTime.current = next;
     overlay.current?.setTime(next);
     const decisecond = Math.round(next * 10);
@@ -227,6 +226,11 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
     let mediaFailed = false;
     let notifyMediaCreated: ((media: HTMLMediaElement) => void) | undefined;
     let seekTarget: number | null = null;
+    /** 独立于输入游标记录 SDK 确认的帧，同一帧的重复绘制可继续使用。 */
+    const observeFrame = (seconds: number) => {
+      const frame = Math.round(seconds * PREVIEW_FPS);
+      if (frame !== confirmedFrame.current?.frame) confirmedFrame.current = { frame };
+    };
     let resumeAfterSeek = false;
     let seekFrame: number | undefined;
     let seekTimer: ReturnType<typeof setTimeout> | undefined;
@@ -545,12 +549,14 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
           // 只有 IMS 就绪后才由 SDK 推进播放位置：加载与应用修改时、素材无法播放或已切换基础视频后，SDK 仍可能发出事件，不能改写前端时间。
           if (disposed || active || !instance || basicRequested || mediaFailed) return;
           if (event.type === "playerSeeked") {
+            if (event.data?.currentTime !== undefined) observeFrame(event.data.currentTime);
             if (seekTarget !== null && event.data?.currentTime !== undefined && Math.abs(event.data.currentTime - seekTarget) <= 0.05)
               finishSeek();
             return;
           }
           if (event.type !== "render") return;
           const current = instance.currentTime;
+          observeFrame(current);
           if (seekTarget !== null) {
             if (Math.abs(current - seekTarget) > 0.05) return;
           }
@@ -591,6 +597,7 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
       changePlaying(false);
       const target = Math.min(latestResolved.current?.duration ?? 0, Math.max(0, value));
       seekTarget = target;
+      confirmedFrame.current = null;
       showTime(target);
       track.current?.setTime(target);
       setStatus("正在定位播放位置…");
@@ -599,6 +606,7 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
         seekFrame = undefined;
         if (!instance || disposed) return;
         if (!wasSeeking && Math.abs(instance.currentTime - target) < 0.001) {
+          observeFrame(instance.currentTime);
           finishSeek();
         } else instance.currentTime = target;
       });
@@ -630,6 +638,7 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
       stopLicenseWatch?.();
       notifyMediaCreated = undefined;
       ims.current = null;
+      confirmedFrame.current = null;
       apply.current = null;
       instance?.destroy();
       for (const url of previewImages.values()) URL.revokeObjectURL(url);
@@ -683,12 +692,12 @@ export function TemplatePreview({ captureRef, coverAssetsReady = true, draft: ed
         previous.player = player;
         player.seek(seconds);
       }, async () => {
-        if (Math.round(clockTime.current * PREVIEW_FPS) !== PREVIEW_FPS) throw new Error("预览已变化");
-        const before = frameChange.current;
+        const before = confirmedFrame.current;
+        if (before?.frame !== PREVIEW_FPS) throw new Error("播放器未确认第 30 帧，请重试");
         element.dataset.snapshot = "";
         await new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done())));
         const image = await captureFrame(frame, stream);
-        if (frameChange.current !== before) throw new Error("截图期间预览已变化，请重试");
+        if (confirmedFrame.current !== before) throw new Error("截图期间预览已变化，请重试");
         return image;
       });
     } finally {
