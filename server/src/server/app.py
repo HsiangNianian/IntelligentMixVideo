@@ -19,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .database import close_database, initialize_database
+from .diagnostics import DiagnosticRequests
 from .segmentation.router import router as segmentation_router
 from .segmentation.punctuation import initialize as initialize_punctuation
 from .settings_plugins import router as settings_router
@@ -88,6 +89,7 @@ class InternalErrors:
 app = FastAPI(title="IntelligentMixVideo API", version=version("imv-server"), lifespan=lifespan)
 # 先加入的中间件在内层：InternalErrors 位于 CORS 之内，500 也带跨域响应头。
 app.add_middleware(InternalErrors)
+app.add_middleware(DiagnosticRequests)
 # 允许本地 Vite 与 Tauri 客户端访问 API；Windows 正式客户端使用动态 localhost 端口。
 app.add_middleware(
     CORSMiddleware,
@@ -100,7 +102,8 @@ app.add_middleware(
         r"^http://localhost:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|"
         r"6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$"
     ),
-    allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID", "X-Remotion-Config", "X-IMS-Config", "X-IMV-Device"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID", "X-Remotion-Config", "X-IMS-Config", "X-IMV-Device", "X-IMV-Request-ID"],
+    expose_headers=["X-IMV-Request-ID", "X-IMV-Elapsed-Ms", "X-IMV-Diagnostics"],
 )
 app.include_router(router)
 app.include_router(template_router)

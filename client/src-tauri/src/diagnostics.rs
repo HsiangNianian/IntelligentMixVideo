@@ -131,8 +131,7 @@ fn capture_native() {
 }
 
 /// 原生来源的一条记录（标准错误、WebView2 等）：窗口打开前进入有界缓冲，打开后写文件。
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-fn record_native(level: &str, source: &str, message: &str) {
+pub(crate) fn record_native(level: &str, source: &str, message: &str) {
     let line = format_line(now_ms(), level, source, message);
     if let Ok(mut sink) = SINK.lock() {
         sink.write(line, true);

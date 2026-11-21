@@ -50,8 +50,8 @@ test("记录 SDK 游离媒体元素的加载失败与卡顿", async () => {
   video.dispatchEvent(new Event("error"));
   video.dispatchEvent(new Event("waiting"));
   expect(failures).toHaveBeenCalledWith(video);
-  await logged("video 加载失败；地址 https://cdn.test/a.mp4#t=0.1；媒体错误 4（格式或地址不受支持） DEMUXER_ERROR_NO_SUPPORTED_STREAMS；networkState=0 readyState=0", "错误");
-  await logged("video 等待数据（waiting）；地址 https://cdn.test/a.mp4#t=0.1；媒体错误 4（格式或地址不受支持） DEMUXER_ERROR_NO_SUPPORTED_STREAMS；networkState=0 readyState=0", "警告");
+  await logged("video 加载失败；地址 https://cdn.test/a.mp4；媒体错误 4（格式或地址不受支持） DEMUXER_ERROR_NO_SUPPORTED_STREAMS；networkState=0 readyState=0", "错误");
+  await logged("video 等待数据（waiting）；地址 https://cdn.test/a.mp4；媒体错误 4（格式或地址不受支持） DEMUXER_ERROR_NO_SUPPORTED_STREAMS；networkState=0 readyState=0", "警告");
   // 切换素材时 SDK 会中止上一次加载：只记信息，不弹“无法播放”。
   const aborted = target.createElement("video");
   aborted.setAttribute("src", "https://cdn.test/b.mp4");

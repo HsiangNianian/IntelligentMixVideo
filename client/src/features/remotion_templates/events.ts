@@ -2,6 +2,7 @@
 import { ApiError, apiUrl } from "./api";
 import { deviceId } from "./localSessions";
 import type { WorkEvent } from "./model";
+import { beginDiagnostic, briefly, diagnosticTaskState } from "@/lib/diagnostics";
 
 /** 消费标准 SSE 字段；每次调用只建立一条连接，退出时清理 reader、超时与监听。 */
 export async function* events(
@@ -10,6 +11,7 @@ export async function* events(
   signal: AbortSignal,
   onOpen?: () => void,
 ): AsyncGenerator<WorkEvent> {
+  const trace = beginDiagnostic("前端实时连接", `订阅会话 ${work}，从事件 ${after} 续传`);
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal.addEventListener("abort", abort, { once: true });
@@ -23,17 +25,18 @@ export async function* events(
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     touch();
-    const response = await fetch(
+    const device = await deviceId();
+    const response = await trace.run(() => fetch(
       apiUrl(`/works/${encodeURIComponent(work)}/stream?after=${after}`),
       {
         signal: controller.signal,
         headers: {
           Accept: "text/event-stream",
-          "X-IMV-Device": await deviceId(),
+          "X-IMV-Device": device,
           ...(after ? { "Last-Event-ID": String(after) } : {}),
         },
       },
-    );
+    ));
     if (response.status === 404 || response.status === 410)
       throw new ApiError(response.status, "会话已删除或正在清理。");
     if (
@@ -43,6 +46,7 @@ export async function* events(
     )
       throw new Error("事件连接未建立。");
     onOpen?.();
+    trace.step("SSE 已建立；收到事件后先写本机库，再确认送达");
     reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "",
@@ -77,8 +81,14 @@ export async function* events(
               ["message.created", "job.updated", "job.round", "version.ready"].includes(
                 event.type,
               )
-            )
+            ) {
+              trace.step(`收到事件 ${event.id}：${event.type}`);
+              if (event.type === "job.updated") {
+                const progress = event.data.progress;
+                diagnosticTaskState("字效", event.data.id, event.data.status, progress?.[progress.length - 1]?.phase, event.data.message ?? "");
+              }
               yield event;
+            }
           }
           data = [];
           id = "";
@@ -94,7 +104,11 @@ export async function* events(
         }
       }
     }
+  } catch (error) {
+    trace.finish(signal.aborted ? "订阅已取消" : `连接中断：${briefly(error)}`, signal.aborted ? "信息" : "警告");
+    throw error;
   } finally {
+    trace.finish("订阅已关闭");
     controller.abort();
     window.clearTimeout(timeout!);
     signal.removeEventListener("abort", abort);

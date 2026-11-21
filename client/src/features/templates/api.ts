@@ -1,5 +1,6 @@
 /** 模板存储边界：保存请求使用 Protobuf，读取 JSON 响应并兼容旧服务端的二进制响应。 */
 import { updateFetch as fetch } from "@/lib/update-guard";
+import { diagnosticTask } from "@/lib/diagnostics";
 import { create, fromBinary, fromJson, toBinary, toJson, type DescMessage } from "@bufbuild/protobuf";
 import { timestampDate } from "@bufbuild/protobuf/wkt";
 import { apiBase } from "@/lib/api-base";
@@ -116,28 +117,30 @@ function toTemplate(record: TemplateRecord): Template {
 
 /** 有界云端请求；读取可取消，写入失败由用户确认后重试。 */
 async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal, timeoutMessage = "请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。"): Promise<T> {
-  const controller = new AbortController();
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, 20_000);
-  const abort = () => controller.abort();
-  signal?.addEventListener("abort", abort, { once: true });
-  if (signal?.aborted) controller.abort();
-  try {
-    return await call(controller.signal);
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    if (timedOut)
-      throw new Error(timeoutMessage);
-    if (error instanceof TypeError)
-      throw new Error("无法连接服务端，请确认 API 已启动后重试。");
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-    signal?.removeEventListener("abort", abort);
-  }
+  return diagnosticTask("前端模板", "模板读写", async (trace) => {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 20_000);
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) controller.abort();
+    try {
+      return await trace.run(() => call(controller.signal));
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (timedOut)
+        throw new Error(timeoutMessage);
+      if (error instanceof TypeError)
+        throw new Error("无法连接服务端，请确认 API 已启动后重试。");
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    }
+  });
 }
 
 /** ZOS 确认已发布的 PNG 缺失时，主页可按原素材重新发布。 */
@@ -385,29 +388,34 @@ const coverBlobs = new Map<string, { revision: string; blob: Blob; refresh: bool
 
 /** 优先重传同版本截图。目标修订过期后丢弃其截图，临时故障继续保留供重试。 */
 export async function publishCover(id: string, revision: string, capture: (() => Promise<Blob>) | undefined, refresh = false, signal?: AbortSignal) {
-  const key = apiBase() + "/" + id;
-  let item = coverBlobs.get(key);
-  if (item?.revision !== revision) {
-    if (item) coverBlobs.delete(key);
-    if (!capture) throw new Error("待重传的封面已变化，请刷新重试");
-    const captured = await capture();
+  return diagnosticTask("前端模板", `更新封面 ${id}`, async (trace) => {
+    const key = apiBase() + "/" + id;
+    let item = coverBlobs.get(key);
+    if (item?.revision !== revision) {
+      if (item) coverBlobs.delete(key);
+      if (!capture) throw new Error("待重传的封面已变化，请刷新重试");
+      trace.step("开始截取预览画面");
+      const captured = await trace.run(capture);
+      trace.step("预览截图已取得");
+      signal?.throwIfAborted();
+      item = { revision, blob: captured, refresh };
+    }
+    if (refresh) item.refresh = true;
     signal?.throwIfAborted();
-    item = { revision, blob: captured, refresh };
-  }
-  if (refresh) item.refresh = true;
-  signal?.throwIfAborted();
-  coverBlobs.set(key, item);
-  const body = new FormData();
-  body.set("file", item.blob, "cover.png");
-  if (item.refresh) body.set("refresh", "true");
-  const response = await cloud((signal) => cloudRequest(`/template/${id}/cover/${revision}`, "PUT", signal, body), signal).catch(error => {
-    if (error instanceof CoverRevisionConflict && coverBlobs.get(key) === item) coverBlobs.delete(key);
-    throw error;
+    coverBlobs.set(key, item);
+    const body = new FormData();
+    body.set("file", item.blob, "cover.png");
+    if (item.refresh) body.set("refresh", "true");
+    trace.step("上传封面到当前模板修订");
+    const response = await trace.run(() => cloud((signal) => cloudRequest(`/template/${id}/cover/${revision}`, "PUT", signal, body), signal)).catch(error => {
+      if (error instanceof CoverRevisionConflict && coverBlobs.get(key) === item) coverBlobs.delete(key);
+      throw error;
+    });
+    const result = await response.json() as { url: string; revision: string; source?: string };
+    if (item.refresh && result.revision === revision) throw new Error("请更新本地服务后再刷新封面");
+    if (coverBlobs.get(key) === item) coverBlobs.delete(key);
+    return result;
   });
-  const result = await response.json() as { url: string; revision: string; source?: string };
-  if (item.refresh && result.revision === revision) throw new Error("请更新本地服务后再刷新封面");
-  if (coverBlobs.get(key) === item) coverBlobs.delete(key);
-  return result;
 }
 
 /** 可在主页直接重传的内存图片；其余重试须回到对应模板的预览。 */
