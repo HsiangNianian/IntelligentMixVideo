@@ -2,6 +2,7 @@
  * 会话协调器：从本地数据库恢复会话、把 SSE 事件写入本地后确认送达、提交用户操作；只接受成功版本，切换不取消后台任务。
  * 实时连接的建立与中断原因、本地库失败，以及连接期间看到的任务失败写进调试日志。
  */
+import { updateTask } from "@/lib/update-guard";
 import { recovery, restored } from "@/features/updates/recovery";
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
@@ -510,9 +511,13 @@ export function useTemplateSession(onHistoryChange: () => void) {
     publish({ busy: kind, error: "", retryMode: null });
     let queued = false;
     try {
-      const job = await start();
-      queued = true;
-      await local.track(job);
+      // 整个提交到落盘算作一次操作，即使切换或关闭聊天也必须等它完成。
+      const job = await updateTask(async () => {
+        const accepted = await start();
+        queued = true;
+        await local.track(accepted);
+        return accepted;
+      });
       if (!current(key)) {
         if (alive.current) changed.current();
         return;
@@ -599,11 +604,13 @@ export function useTemplateSession(onHistoryChange: () => void) {
             () => true,
             () => false,
           );
+          // 服务端确认撤销后清除初始回执；清理失败仍保留记录，避免误判已安全落盘。
+          if (undone) await local.forget(created.work.id).catch(() => {});
           throw new Unsent(
             `本地会话保存失败：${error instanceof Error ? error.message : String(error)} ${
               undone
                 ? "已撤销本次创建，消息尚未发送，已恢复草稿。"
-                : "服务端已创建的作品未能撤销，重新发送会另建一个作品。已恢复草稿。"
+                : "服务端作品未能撤销，已保留恢复回执。请修复本地存储后刷新历史会话，勿重复发送。"
             }`,
             { id: messageId, text, images },
             messageId,

@@ -436,9 +436,9 @@ test("新建模板弹窗沿用更新保护", async () => {
   fireEvent.click(screen.getByRole("button", { name: "新建云端模板" }));
   const dialog = await screen.findByRole("dialog", { name: "新建云端模板" });
   fireEvent.change(within(dialog).getByLabelText("模板名称"), { target: { value: "尚未提交的模板" } });
-  expect(updateBlockers()).toContain("请先完成或关闭其他对话框");
+  expect(updateBlockers()).toContain("新建云端模板");
   fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
-  await waitFor(() => expect(updateBlockers()).not.toContain("请先完成或关闭其他对话框"));
+  await waitFor(() => expect(updateBlockers()).not.toContain("新建云端模板"));
 });
 
 // 场景：直接进入模板库显示主页入口，主页与 Remotion 页头都不显示时钟。

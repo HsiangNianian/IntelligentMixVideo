@@ -110,7 +110,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const timedDraft = useMemo(() => draft && preview.timeline ? timeClips(draft, preview.timeline) : draft, [draft, preview.timeline]);
   const timedClips = timedDraft ? activeDraft(timedDraft).clips : undefined;
   const dirty = draft !== null && (current === null || mediaChanged || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
-  useUpdateBlocker("模板尚未保存或正在处理", dirty || busy || loading || !!openRequest);
+  useUpdateBlocker("模板正在处理", busy || loading || maskUploading);
   useEffect(() => { recovery.template = current ? { templateId: current.template_id } : null; }, [current]);
   useEffect(() => { onEditingState?.(draft ? { id: current?.template_id ?? null, name: draft.name, dirty } : null); }, [draft?.name, !!draft, current?.template_id, dirty, onEditingState]);
   useEffect(() => {
@@ -421,7 +421,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 <span className="template-workspace-status flex items-center gap-2 text-[11px] text-muted-foreground"><span className={`size-1.5 rounded-full ${dirty ? "bg-warning" : "bg-success"}`} />{current ? dirty ? "有未保存的修改" : "已保存" : "新模板 · 尚未保存"}</span>
-                <Button type="submit" disabled={maskUploading} className="template-workspace-save h-9 gap-2 rounded-lg px-4 text-xs">{busy ? <Spinner /> : <CircleCheck className="size-4" aria-hidden="true" />}{busy ? "正在保存…" : "保存模板"}</Button>
+                <Button data-update-draft={`模板 · ${draft.name || "未命名模板"}`} data-update-invalid-only={!dirty || undefined} type="submit" disabled={maskUploading} className="template-workspace-save h-9 gap-2 rounded-lg px-4 text-xs">{busy ? <Spinner /> : <CircleCheck className="size-4" aria-hidden="true" />}{busy ? "正在保存…" : "保存模板"}</Button>
               </div>
             </section>
             <WorkspaceColumns

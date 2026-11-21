@@ -13,6 +13,7 @@ fn main() {
     for path in [
         "src",
         "permissions",
+        "installer",
         "capabilities",
         "icons",
         "Cargo.toml",
@@ -48,13 +49,27 @@ fn main() {
     if let Ok(path) = std::env::var("IMV_UPDATE_METADATA_PATH") {
         std::fs::write(path, native_id.trim()).unwrap();
     }
+    // deb 的 .desktop 模板只接收名称、启动命令等字段，版本取同一份 Cargo 发布版本。
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        std::fs::create_dir_all("target").unwrap();
+        std::fs::write(
+            "target/imv.desktop.hbs",
+            include_str!("installer/linux.desktop.in")
+                .replace("@VERSION@", env!("CARGO_PKG_VERSION")),
+        )
+        .unwrap();
+    }
     let mut attributes = tauri_build::Attributes::new();
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         // tauri-build 默认只向主程序链接清单，mock 测试会在加载时缺少 v6 入口。
         // 由 MSVC 为所有链接目标嵌入同一依赖，避免重复的 manifest 资源。
         // https://github.com/tauri-apps/tauri/issues/13419
-        attributes = attributes
-            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        attributes = attributes.windows_attributes(
+            tauri_build::WindowsAttributes::new_without_app_manifest().append_rc_content(format!(
+                "STRINGTABLE\nBEGIN\n26001 \"IntelligentMixVideo v{}\"\nEND",
+                env!("CARGO_PKG_VERSION")
+            )),
+        );
         println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
         println!("cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'");
     }

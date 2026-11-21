@@ -367,9 +367,9 @@ fn without_dir(value: &str, dir: &str) -> Option<String> {
 }
 
 /// AppImage 的启动钩子把 GTK、GIO、GSettings、GStreamer 等变量指向包内的库与模块；宿主终端是另一个 GTK 程序，
-/// 带着这些变量启动可能加载不兼容的模块而崩溃。去掉指向包内目录（APPDIR）的条目，空了就删除该变量。
+/// 宿主终端和新版 AppRun 继承这些路径可能加载旧库。仅在子进程中去掉旧 APPDIR 下的条目。
 #[cfg(all(unix, not(target_os = "macos")))]
-fn host_environment(command: &mut Command) {
+pub(crate) fn host_environment(command: &mut Command) {
     let Some(appdir) = std::env::var("APPDIR").ok().filter(|dir| !dir.is_empty()) else {
         return;
     };

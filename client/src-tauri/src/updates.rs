@@ -695,11 +695,33 @@ pub async fn client_update(
         if serde_json::to_vec(&payload).map_err(error)?.len() > 16 * 1024 {
             return Err("恢复信息过大".into());
         }
-        let pending =
-            crate::remotion_sessions::remotion_sessions(app.clone(), "pending".into(), json!({}))
-                .await?;
-        if !pending.as_array().is_some_and(Vec::is_empty) {
-            return Err("仍有后台任务或状态不明的会话，请稍后应用".into());
+        // 两种更新都保护未落盘任务；独立回执不受旧壳无法读取新会话库的影响。
+        let registrations = crate::remotion_sessions::remotion_sessions(
+            app.clone(),
+            "registrations_list".into(),
+            json!({}),
+        )
+        .await?;
+        if !registrations.as_array().is_some_and(Vec::is_empty) {
+            return Err("仍有任务未登记到本机，请先刷新任务或聊天列表".into());
+        }
+        // 整包升级可修复旧壳打不开新版会话库的情况。仅热更新沿用后台会话检查。
+        let hot = state
+            .staged
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|(_, _, mode)| mode == "hot");
+        if hot {
+            let pending = crate::remotion_sessions::remotion_sessions(
+                app.clone(),
+                "pending".into(),
+                json!({}),
+            )
+            .await?;
+            if !pending.as_array().is_some_and(Vec::is_empty) {
+                return Err("仍有后台任务或状态不明的会话，请稍后应用".into());
+            }
         }
         state.exclusive()?;
         let staged = state.staged.lock().unwrap().take();
@@ -790,6 +812,16 @@ pub async fn client_update(
                 drop(disk);
                 state.shared();
                 return Err(e);
+            }
+            #[cfg(target_os = "linux")]
+            if let Some(path) = &app.env().appimage {
+                crate::appimage::update_shortcut(&app, Path::new(path), &item.version);
+                if let Err(e) = crate::appimage::launch(Path::new(path), &app.env().args_os) {
+                    state.shared();
+                    return Err(format!("新版已安装，启动失败：{e}。请重新打开客户端。"));
+                }
+                app.exit(0);
+                return Ok(Value::Null);
             }
             app.restart();
         }

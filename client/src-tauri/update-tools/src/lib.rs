@@ -34,6 +34,7 @@ pub fn fingerprint(root: &Path, build: Value) -> Result<String> {
         "client/src-tauri/capabilities",
         "client/src-tauri/permissions",
         "client/src-tauri/icons",
+        "client/src-tauri/installer",
         "client/src-tauri/update-tools",
         ".github/scripts",
     ] {
@@ -182,6 +183,7 @@ mod tests {
             "client/src-tauri/capabilities",
             "client/src-tauri/permissions",
             "client/src-tauri/icons",
+            "client/src-tauri/installer",
             "client/src-tauri/update-tools",
             ".github/scripts",
         ] {

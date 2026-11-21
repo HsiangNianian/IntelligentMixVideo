@@ -83,7 +83,7 @@ function GeneralSection({ onClose }: { onClose?: () => void }) {
   const initial = useRef(apiBase());
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
-  useUpdateBlocker("设置尚未保存", saving || url.trim() !== initial.current);
+  useUpdateBlocker("正在保存设置", saving);
   return (
     <section aria-labelledby={titleId} className="flex h-full min-h-0 flex-col">
       <form aria-label="通用设置" className="flex min-h-0 flex-1 flex-col" onSubmit={async (event) => {
@@ -117,7 +117,7 @@ function GeneralSection({ onClose }: { onClose?: () => void }) {
             <div className="flex flex-wrap justify-between gap-3 py-4">
               <dt className="text-muted-foreground"><Label htmlFor={`${titleId}-url`}>后端服务地址</Label></dt>
               <dd className="w-full min-w-0">
-                <Input id={`${titleId}-url`} type="url" required pattern="https?://.+" value={url}
+                <Input data-update-draft={url.trim() !== initial.current ? "通用设置 · 后端服务地址" : undefined} id={`${titleId}-url`} type="url" required pattern="https?://.+" value={url}
                   onChange={event => { setUrl(event.target.value); setMessage(""); }} disabled={saving} />
               </dd>
             </div>
