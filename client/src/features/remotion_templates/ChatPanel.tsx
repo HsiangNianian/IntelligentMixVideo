@@ -82,6 +82,8 @@ interface Props {
   onPreviewVersion?: (id: string) => void;
   /** 用户改选过的资产分类（按版本 ID）；未改选的版本卡片显示 Agent 判断的分类。 */
   versionKinds?: Record<string, SpriteKind>;
+  /** 已保存的分类用于区分尚未发布的选择，更新清单可定位对应版本。 */
+  savedVersionKinds?: Record<string, SpriteKind>;
   onVersionKindChange?: (id: string, kind: SpriteKind) => void;
   versionNotice?: ReactNode;
 }
@@ -111,6 +113,7 @@ export function ChatPanel({
   previewDisabled = false,
   onPreviewVersion,
   versionKinds,
+  savedVersionKinds,
   onVersionKindChange,
   versionNotice,
 }: Props) {
@@ -166,6 +169,7 @@ export function ChatPanel({
         previewDisabled={previewDisabled}
         onPreview={() => onPreviewVersion?.(version.id)}
         kind={versionKinds?.[version.id]}
+        savedKind={savedVersionKinds?.[version.id]}
         onKindChange={(kind) => onVersionKindChange?.(version.id, kind)}
       />
     );
@@ -415,7 +419,7 @@ export function ChatPanel({
           </div>
         )}
         <Textarea
-          data-update-draft={text || images.length ? `聊天 · ${workTitle}（未发送）` : undefined}
+          data-update-draft={text || images.length || (first && (frames !== FIXED_COMPOSITION.duration_in_frames || keywordEffect || twoTier || bilingual)) ? `聊天 · ${workTitle}（未发送）` : undefined}
           data-update-panel="chat"
           aria-label="字效描述"
           placeholder="描述你想要的字效，或继续提出修改要求…"

@@ -56,6 +56,7 @@ export function RemotionWorkspace({ review }: { review?: { panel?: string } } = 
   const publishScope = useRef({ active: true, pending: false });
   // 版本卡片下拉改选的资产分类，按版本 ID 记录：版本列表刷新重建对象或聊天重新挂载都不会改回默认值。
   const [kinds, setKinds] = useState<Record<string, SpriteKind>>({});
+  const [savedKinds, setSavedKinds] = useState<Record<string, SpriteKind>>({});
   // 目录随共享资产的改名、保存和删除更新；名称草稿独立保存，后台更新不覆盖用户输入。
   const [assets, setAssets] = useState<SpriteAsset[] | null>(null);
   const [assetError, setAssetError] = useState("");
@@ -64,12 +65,14 @@ export function RemotionWorkspace({ review }: { review?: { panel?: string } } = 
   const activeWork = useRef(session.workId);
   activeWork.current = session.workId;
   const [saveMode, setSaveMode] = useState<SaveMode>("overwrite");
+  const [savedMode, setSavedMode] = useState<SaveMode>("overwrite");
   // 只保留最近一次目录读取；保存回执之后再刷新会取消旧读取，防止迟到目录把新名称换回去。
   useEffect(() => {
     let controller: AbortController | undefined;
     setAssets(null);
     setAssetError("");
     setSaveMode("overwrite");
+    setSavedMode("overwrite");
     setAssetName("");
     if (!session.workId) return;
     /** 目录更新失败保留已有条目并提示重试，不能因读取失败把覆盖保存变成新建。 */
@@ -153,11 +156,13 @@ export function RemotionWorkspace({ review }: { review?: { panel?: string } } = 
       const kind = target?.kind ?? kinds[viewed.id] ?? defaultKind(viewed.spec.sprite?.kind);
       const asset = await publishSprite(viewed.id, publishChoice(viewed, kind), target?.id, assetName);
       if (activeWork.current === work) {
+        setSavedKinds((current) => ({ ...current, [viewed.id]: kinds[viewed.id] ?? defaultKind(viewed.spec.sprite?.kind) }));
         setAssets((current) => [asset, ...(current ?? []).filter((item) => item.id !== asset.id)]);
         refreshAssets.current?.();
       }
       if (scope.active) {
         setAssetName("");
+        setSavedMode(saveMode);
         toast.success(target
           ? `已覆盖资产「${asset.name}」，引用它的模板将使用新版本。`
           : `已保存到资产「${asset.name}」，可在云端模板的 AI 资产中添加。`);
@@ -250,7 +255,7 @@ export function RemotionWorkspace({ review }: { review?: { panel?: string } } = 
       <WorkspacePanels
         action={
           <div className="flex max-w-[calc(100vw-6rem)] items-center gap-1.5">
-            <Input data-update-draft={assetName ? "AI 字效 · 资产名称" : undefined} aria-label="资产名称" value={assetName} onChange={(event) => setAssetName(event.target.value)}
+            <Input data-update-draft={assetName || saveMode !== savedMode ? "AI 字效 · 资产保存设置" : undefined} aria-label="资产名称" value={assetName} onChange={(event) => setAssetName(event.target.value)}
               placeholder={overwriting ? overwriteTarget.name : "资产名称（选填）"} maxLength={100}
               title={overwriting ? `留空保留「${overwriteTarget.name}」` : `留空使用 AI 名称「${viewed?.spec.name ?? ""}」`}
               disabled={!viewed || locked || publishing} className="h-8 w-40 max-w-[30vw] text-xs" />
@@ -313,6 +318,7 @@ export function RemotionWorkspace({ review }: { review?: { panel?: string } } = 
             previewDisabled={pending}
             onPreviewVersion={session.selectVersion}
             versionKinds={kinds}
+            savedVersionKinds={savedKinds}
             onVersionKindChange={(id, kind) => setKinds((current) => ({ ...current, [id]: kind }))}
             versionNotice={
               catalog.error ? (

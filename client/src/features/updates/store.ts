@@ -6,6 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { APP_VERSION } from '@/lib/version';
 import { lockForUpdate, resetUpdateGuard, updateBlockers } from '@/lib/update-guard';
 import { backgroundSyncActive, syncBackground } from '@/features/remotion_templates/backgroundSync';
+import { registrationBlockers } from '@/features/remotion_templates/localSessions';
 import { recovery, restoreRecovery, type Recovery } from './recovery';
 export type Candidate = { version: string; mode: 'hot' | 'native' | 'manual' };
 /** 阻止应用更新的本地会话：所属服务地址、侧栏标题与是否等待重试删除。 */
@@ -100,14 +101,16 @@ function describePending(works: PendingWork[]) {
   const names = works.slice(0, 3).map(work => `「${work.title || '未命名会话'}」（${work.server}${work.deleting ? '，待重试删除' : ''}）`);
   return `等待后台会话结束：${names.join('、')}${works.length > 3 ? ` 等 ${works.length} 个` : ''}。其他服务地址下的会话需切换回该地址才能同步，也可以取消此次更新`;
 }
-/** 整包只等待页面草稿和在途操作；热更新额外核查本机后台任务。 */
+/** 两种自动更新都等待尚未落盘的任务回执，包括已关闭聊天及其他服务的回执。 */
+function blockers() { return [...updateBlockers(), ...registrationBlockers()]; }
+/** 整包等待页面草稿、在途操作和未登记回执；热更新额外核查本机后台任务。 */
 export async function tryApplyUpdate() {
   if (state.phase === 'preparing') return prepareDownload();
   if (state.phase !== 'waiting' || applying) return;
   applying = true;
   const request = generation;
   try {
-    const blocked = updateBlockers();
+    const blocked = blockers();
     if (blocked.length) {
       lockForUpdate(false);
       publish({ message: `等待处理：${blocked.join('；')}` });
@@ -119,7 +122,7 @@ export async function tryApplyUpdate() {
     if (pending.length) { publish({ message: describePending(pending) }); return; }
     lockForUpdate(true);
     // 锁住新操作后重新核对，防止前一次异步读取期间用户又修改草稿或提交任务。
-    if (updateBlockers().length || (hot && (await pendingTasks()).length)) { lockForUpdate(false); return; }
+    if (blockers().length || (hot && (await pendingTasks()).length)) { lockForUpdate(false); return; }
     if (request !== generation || state.phase !== 'waiting') { lockForUpdate(false); return; }
     publish({ phase: 'applying', message: state.candidate?.mode === 'hot' ? '正在应用界面更新…' : '正在重新启动客户端…' });
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -140,7 +143,7 @@ export async function downloadUpdate() {
 /** 手动 deb 只取下载链接。可自动安装的更新先核查并锁定编辑，下载失败即解锁。 */
 async function prepareDownload() {
   const manual = state.candidate?.mode === 'manual';
-  const blocked = manual ? [] : updateBlockers();
+  const blocked = manual ? [] : blockers();
   if (blocked.length) {
     publish({ message: `等待处理：${blocked.join('；')}` });
     timer ??= setInterval(() => { void tryApplyUpdate(); }, 1000);

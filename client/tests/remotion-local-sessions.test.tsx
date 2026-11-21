@@ -99,6 +99,36 @@ async function recordWork() {
   );
 }
 
+// 会话库和恢复回执同时写入失败时不能释放内存保护；修复存储后只登记同一任务。
+test("双重存储故障保留内存登记回执", async () => {
+  await recordWork();
+  const save = spyOn(local.storage(), "save").mockRejectedValue(new local.LocalStoreError("磁盘满"));
+  const journal = spyOn(localStorage, "setItem").mockImplementation(() => { throw new Error("配额不足"); });
+  await expect(local.track({ ...remotionJob("running"), id: "job-2" })).rejects.toThrow("磁盘满");
+  expect(local.registrationBlockers().join()).toContain("job-2");
+  save.mockRestore(); journal.mockRestore();
+  expect((await local.snapshot("work-1")).job.id).toBe("job-2");
+  expect(local.registrationBlockers()).toEqual([]);
+});
+
+// 未登记回执按服务隔离且全局保护更新；终态事件先落盘时恢复登记不得把它降回运行中。
+test("其他服务的登记回执持续保护更新且不覆盖已保存终态", async () => {
+  const original = apiBase();
+  try {
+    await recordWork();
+    const save = spyOn(local.storage(), "save").mockRejectedValueOnce(new local.LocalStoreError("写盘失败"));
+    await expect(local.track({ ...remotionJob("running"), id: "job-2" })).rejects.toThrow();
+    save.mockRestore();
+    setApiBase("http://other.test");
+    expect(await local.history()).toEqual([]);
+    expect(local.registrationBlockers().join()).toContain("job-2");
+    setApiBase(original);
+    await local.apply("work-1", [event(1, { type: "job.updated", data: { ...running("answered"), id: "job-2" } })]);
+    expect((await local.snapshot("work-1")).job.status).toBe("answered");
+    expect(local.registrationBlockers()).toEqual([]);
+  } finally { setApiBase(original); }
+});
+
 // 状态事件不含轮次时保留已写入的轮次；重复轮次只保存一次，编号不大于游标的重放被忽略。
 test("本地合并保留轮次、去重并忽略已写入事件", async () => {
   await recordWork();
