@@ -13,6 +13,7 @@ import { remotionServer, seed } from "./remotion-server";
 import { fetchMock, mockDesktop } from "./setup";
 import { checkUpdate, downloadUpdate, initializeUpdates, resetUpdates, tryApplyUpdate } from "@/features/updates/store";
 import { updateBlockers, useUpdateBlocker } from "@/lib/update-guard";
+import { registrationJournal } from "./remotion-registration-fixture";
 
 /** 协议替身：新作品的任务停在运行中，之后由测试推进。 */
 function runningServer(overrides: Parameters<typeof remotionServer>[0] = () => undefined) {
@@ -156,8 +157,10 @@ test.each(["保持打开", "关闭"])("聊天%s后任务已登记，自动整包
   } });
   let applied = 0;
   let pendingReads = 0;
+  const journal = registrationJournal();
   mockDesktop(async (command, args) => {
     if (command === "local_settings") return {};
+    if (command === "remotion_sessions" && String(args.operation).startsWith("registrations_")) return journal(args);
     if (command === "remotion_sessions") { pendingReads++; throw new Error("旧版无法打开新版会话库"); }
     if (command !== "client_update") return null;
     if (args.operation === "status") return { enabled: true };
@@ -204,6 +207,17 @@ test.each(["保持打开", "关闭"])("聊天%s后任务已登记，自动整包
 
 // 服务端已接受续写但数据库无法登记：关闭聊天或重启后仍阻止整包更新，只重试本地登记，不重发任务。
 test("登记失败保留持久回执，恢复同一任务后才允许整包更新", async () => {
+  const journal = registrationJournal();
+  const operations: unknown[] = [];
+  mockDesktop(async (command, args) => {
+    if (command === "remotion_sessions" && String(args.operation).startsWith("registrations_")) return journal(args);
+    if (command === "local_settings") return {};
+    if (command !== "client_update") return null;
+    operations.push(args.operation);
+    if (args.operation === "status") return { enabled: true };
+    if (args.operation === "check") return { version: "2.0.0", mode: "native" };
+    return null;
+  });
   remotionServer(path => path.endsWith("/messages")
     ? Response.json({ ...remotionJob("running"), id: "job-2" }) : undefined);
   await seed("写入失败仍要保留");
@@ -214,27 +228,20 @@ test("登记失败保留持久回执，恢复同一任务后才允许整包更�
   local.setStorage({ ...memory, save: async () => { throw new local.LocalStoreError("磁盘写入失败"); } });
   act(() => { session.result.current.send("继续制作"); });
   await waitFor(() => expect(session.result.current.error).toContain("磁盘写入失败"));
-  expect(local.registrationBlockers().join()).toContain("job-2");
+  expect((await local.registrationBlockers()).join()).toContain("job-2");
   expect((await memory.work(local.server(), "work-1"))?.job.id).toBe("job-1");
   session.unmount();
-  // 丢弃进程内回执，数据库仍不可写；只靠持久副本也必须阻止更新。
+  // Windows 重启更换页面端口后无法读取原 localStorage，原生回执仍必须阻止更新。
+  localStorage.clear();
   local.setStorage({ ...memory, save: async () => { throw new local.LocalStoreError("磁盘写入失败"); } });
-  expect(local.registrationBlockers().join()).toContain("job-2");
-  const operations: unknown[] = [];
-  mockDesktop(async (command, args) => {
-    if (command !== "client_update") return null;
-    operations.push(args.operation);
-    if (args.operation === "status") return { enabled: true };
-    if (args.operation === "check") return { version: "2.0.0", mode: "native" };
-    return null;
-  });
+  expect((await local.registrationBlockers()).join()).toContain("job-2");
   await initializeUpdates(); await checkUpdate(); await downloadUpdate();
   await tryApplyUpdate();
   expect(operations).not.toContain("download");
   expect(operations).not.toContain("apply");
   local.setStorage(memory);
   expect((await local.history())[0].job.id).toBe("job-2");
-  expect(local.registrationBlockers()).toEqual([]);
+  expect(await local.registrationBlockers()).toEqual([]);
   await tryApplyUpdate();
   await waitFor(() => expect(operations.filter(op => op === "apply")).toHaveLength(1));
   expect(fetchMock.mock.calls.filter(([url, options]) => String(url).endsWith("/messages") && options?.method === "POST")).toHaveLength(1);

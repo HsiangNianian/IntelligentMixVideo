@@ -24,6 +24,8 @@ const READY_ATTEMPTS = 20;
 const READY_RETRY_MS = 2000;
 let timer: ReturnType<typeof setInterval> | undefined;
 let applying = false;
+/** 同一轮预检只执行一次；取消后新一轮不被旧回执覆盖。 */
+let preparation: number | undefined;
 let stopSync: (() => void) | undefined;
 /** 停止等待阶段的定时核查与后台同步。 */
 function stopWaiting() { if (timer) clearInterval(timer); timer = undefined; stopSync?.(); stopSync = undefined; }
@@ -102,7 +104,11 @@ function describePending(works: PendingWork[]) {
   return `等待后台会话结束：${names.join('、')}${works.length > 3 ? ` 等 ${works.length} 个` : ''}。其他服务地址下的会话需切换回该地址才能同步，也可以取消此次更新`;
 }
 /** 两种自动更新都等待尚未落盘的任务回执，包括已关闭聊天及其他服务的回执。 */
-function blockers() { return [...updateBlockers(), ...registrationBlockers()]; }
+async function blockers() {
+  const registrations = await registrationBlockers();
+  // 读取原生回执期间仍可能出现新输入或请求，所以最后读取页面门禁。
+  return [...updateBlockers(), ...registrations];
+}
 /** 整包等待页面草稿、在途操作和未登记回执；热更新额外核查本机后台任务。 */
 export async function tryApplyUpdate() {
   if (state.phase === 'preparing') return prepareDownload();
@@ -110,7 +116,8 @@ export async function tryApplyUpdate() {
   applying = true;
   const request = generation;
   try {
-    const blocked = blockers();
+    const blocked = await blockers();
+    if (request !== generation || state.phase !== 'waiting') return;
     if (blocked.length) {
       lockForUpdate(false);
       publish({ message: `等待处理：${blocked.join('；')}` });
@@ -122,15 +129,18 @@ export async function tryApplyUpdate() {
     if (pending.length) { publish({ message: describePending(pending) }); return; }
     lockForUpdate(true);
     // 锁住新操作后重新核对，防止前一次异步读取期间用户又修改草稿或提交任务。
-    if (blockers().length || (hot && (await pendingTasks()).length)) { lockForUpdate(false); return; }
-    if (request !== generation || state.phase !== 'waiting') { lockForUpdate(false); return; }
+    const changed = (await blockers()).length || (hot && (await pendingTasks()).length);
+    if (request !== generation || state.phase !== 'waiting') return;
+    if (changed) { lockForUpdate(false); return; }
     publish({ phase: 'applying', message: state.candidate?.mode === 'hot' ? '正在应用界面更新…' : '正在重新启动客户端…' });
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     await call('apply', recovery);
     stopWaiting();
   } catch (e) {
-    lockForUpdate(false);
-    if (request === generation) publish({ phase: (state as State).phase === 'applying' ? 'error' : 'waiting', message: String(e) });
+    if (request === generation) {
+      lockForUpdate(false);
+      publish({ phase: (state as State).phase === 'applying' ? 'error' : 'waiting', message: String(e) });
+    }
   } finally { applying = false; }
 }
 /** 用户只发起一次更新。先让各表单处理草稿，最后一个阻塞解除后自动下载。 */
@@ -142,15 +152,23 @@ export async function downloadUpdate() {
 }
 /** 手动 deb 只取下载链接。可自动安装的更新先核查并锁定编辑，下载失败即解锁。 */
 async function prepareDownload() {
+  const request = generation;
+  if (state.phase !== 'preparing' || preparation === request) return;
+  preparation = request;
+  try { await prepare(request); }
+  finally { if (preparation === request) preparation = undefined; }
+}
+/** 异步核实回执后重查草稿，再锁定下载；迟到回执不恢复已取消的更新。 */
+async function prepare(request: number) {
   const manual = state.candidate?.mode === 'manual';
-  const blocked = manual ? [] : blockers();
+  const blocked = manual ? [] : await blockers();
+  if (request !== generation || state.phase !== 'preparing') return;
   if (blocked.length) {
     publish({ message: `等待处理：${blocked.join('；')}` });
     timer ??= setInterval(() => { void tryApplyUpdate(); }, 1000);
     return;
   }
   stopWaiting();
-  const request = generation;
   if (!manual) lockForUpdate(true);
   publish({ phase: 'downloading', message: '正在下载并校验更新…', progress: 0, reminder: state.candidate });
   try {
@@ -196,5 +214,6 @@ export function cancelUpdate() {
 export function resetUpdates() {
   generation++; stopWaiting(); unlisten?.(); unlisten = undefined;
   initialization = undefined; ready = false; readyRun = undefined; applying = false; resetUpdateGuard(); restoreRecovery(null);
+  preparation = undefined;
   publish({ phase: 'disabled', message: '此构建不支持客户端更新', candidate: undefined, reminder: undefined, progress: undefined, links: undefined });
 }

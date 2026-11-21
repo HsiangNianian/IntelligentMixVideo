@@ -604,11 +604,13 @@ export function useTemplateSession(onHistoryChange: () => void) {
             () => true,
             () => false,
           );
+          // 服务端确认撤销后清除初始回执；清理失败仍保留记录，避免误判已安全落盘。
+          if (undone) await local.forget(created.work.id).catch(() => {});
           throw new Unsent(
             `本地会话保存失败：${error instanceof Error ? error.message : String(error)} ${
               undone
                 ? "已撤销本次创建，消息尚未发送，已恢复草稿。"
-                : "服务端已创建的作品未能撤销，重新发送会另建一个作品。已恢复草稿。"
+                : "服务端作品未能撤销，已保留恢复回执。请修复本地存储后刷新历史会话，勿重复发送。"
             }`,
             { id: messageId, text, images },
             messageId,

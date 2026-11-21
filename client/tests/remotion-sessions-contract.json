@@ -4,6 +4,63 @@
     "payload": {}
   },
   {
+    "operation": "registrations_save",
+    "payload": {
+      "server": "http://api.test:8000",
+      "job": {
+        "id": "job-1",
+        "project_id": "work-1",
+        "status": "queued",
+        "result_version_id": null,
+        "questions": [],
+        "message": null
+      },
+      "initial": {
+        "work": {
+          "work": {
+            "id": "work-1",
+            "current_version_id": null
+          },
+          "title": "本地标题",
+          "job": {
+            "id": "job-1",
+            "project_id": "work-1",
+            "status": "queued",
+            "result_version_id": null,
+            "questions": [],
+            "message": null,
+            "created_at": "2026-09-14T08:00:00Z",
+            "updated_at": "2026-09-14T08:00:00Z",
+            "parameters": null
+          },
+          "updated_at": "2026-09-14T08:00:00Z",
+          "cursor": 0
+        },
+        "messages": [],
+        "jobs": [
+          {
+            "id": "job-1",
+            "project_id": "work-1",
+            "status": "queued",
+            "result_version_id": null,
+            "questions": [],
+            "message": null,
+            "created_at": "2026-09-14T08:00:00Z",
+            "updated_at": "2026-09-14T08:00:00Z",
+            "parameters": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "operation": "work",
+    "payload": {
+      "server": "http://api.test:8000",
+      "id": "work-1"
+    }
+  },
+  {
     "operation": "save",
     "payload": {
       "server": "http://api.test:8000",
@@ -41,6 +98,41 @@
           "parameters": null
         }
       ]
+    }
+  },
+  {
+    "operation": "registrations_remove",
+    "payload": {
+      "server": "http://api.test:8000",
+      "id": "job-1"
+    }
+  },
+  {
+    "operation": "registrations_save",
+    "payload": {
+      "server": "http://api.test:8000",
+      "job": {
+        "id": "job-1",
+        "project_id": "work-1",
+        "status": "queued",
+        "result_version_id": null,
+        "questions": [],
+        "message": null
+      }
+    }
+  },
+  {
+    "operation": "work",
+    "payload": {
+      "server": "http://api.test:8000",
+      "id": "work-1"
+    }
+  },
+  {
+    "operation": "registrations_remove",
+    "payload": {
+      "server": "http://api.test:8000",
+      "id": "job-1"
     }
   },
   {
@@ -124,6 +216,10 @@
     }
   },
   {
+    "operation": "registrations_list",
+    "payload": {}
+  },
+  {
     "operation": "work",
     "payload": {
       "server": "http://api.test:8000",
@@ -148,6 +244,10 @@
         "job-1"
       ]
     }
+  },
+  {
+    "operation": "registrations_list",
+    "payload": {}
   },
   {
     "operation": "works",
@@ -198,6 +298,10 @@
       "server": "http://api.test:8000",
       "work": "work-1"
     }
+  },
+  {
+    "operation": "registrations_list",
+    "payload": {}
   },
   {
     "operation": "put_image",

@@ -10,11 +10,13 @@ import { useUpdateBlocker, updateTask, updateBlockers, lockForUpdate } from '@/l
 import { recovery } from '@/features/updates/recovery';
 import { useBackgroundSync } from '@/features/remotion_templates/backgroundSync';
 import { memoryStorage, setStorage } from '@/features/remotion_templates/localSessions';
+import { registrationJournal } from './remotion-registration-fixture';
 
 type Pending = { server: string; title: string; deleting: boolean }[];
 const OTHER_SERVER: Pending = [{ server: 'http://old.test', title: '旧服务会话', deleting: false }];
 
-function desktop({ pending = [], fail = false, downloadFail = false, downloadGate, saveFailures = 0, mode = 'hot', readyFailures = 0, status = { enabled: true, notice: '' } }: { pending?: Pending | Promise<Pending>; fail?: boolean; downloadFail?: boolean; downloadGate?: Promise<void>; mode?: string; saveFailures?: number; readyFailures?: number; status?: { enabled: boolean; notice: string } } = {}) {
+function desktop({ pending = [], fail = false, downloadFail = false, downloadGate, registrationGate, saveFailures = 0, mode = 'hot', readyFailures = 0, status = { enabled: true, notice: '' } }: { pending?: Pending | Promise<Pending>; fail?: boolean; downloadFail?: boolean; downloadGate?: Promise<void>; registrationGate?: Promise<void>; mode?: string; saveFailures?: number; readyFailures?: number; status?: { enabled: boolean; notice: string } } = {}) {
+  const journal = registrationJournal();
   const calls = mock(async (command: string, args: Record<string, unknown>) => {
     if (command === 'local_settings') {
       if (args?.id && saveFailures-- > 0) throw new Error('设置文件写入失败');
@@ -22,6 +24,10 @@ function desktop({ pending = [], fail = false, downloadFail = false, downloadGat
     }
     if (command === 'plugin:event|listen') return 1;
     if (command === 'remotion_sessions') {
+      if (String(args.operation).startsWith('registrations_')) {
+        if (args.operation === 'registrations_list') await registrationGate;
+        return journal(args);
+      }
       if (mode === 'native') throw new Error('本地会话库来自更新版本的客户端');
       return pending;
     }
@@ -97,7 +103,7 @@ test('去处理保留失败的设置和隐藏聊天，最后一项完成自动�
     fireEvent.change(chat, { target: { value: '' } });
     await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args?.operation === 'apply')).toHaveLength(1), { timeout: 3000 });
     expect(calls.mock.calls.filter(([, args]) => args?.operation === 'download')).toHaveLength(1);
-    expect(calls.mock.calls.some(([command]) => command === 'remotion_sessions')).toBe(false);
+    expect(calls.mock.calls.some(([command, args]) => command === 'remotion_sessions' && !String(args.operation).startsWith('registrations_'))).toBe(false);
   } finally { setApiBase(original); }
 }, 12000);
 // 从清单选择稍后更新会撤销本次请求，原有草稿仍可编辑，随后清空也不会启动更新。
@@ -111,6 +117,21 @@ test('稍后更新保留草稿并取消自动续接', async () => {
   screen.getByLabelText('编辑中的名称').removeAttribute('data-update-draft');
   await act(async () => { await tryApplyUpdate(); });
   expect(calls.mock.calls.some(([, args]) => ['download', 'apply'].includes(String(args?.operation)))).toBe(false);
+});
+// 原生回执读取期间取消或新增输入，迟到的“无回执”结果不能开始下载，也不能锁住编辑。
+test.each(['取消', '新增草稿'])('读取任务回执期间%s仍保护原表单', async (action) => {
+  const gate = Promise.withResolvers<void>();
+  const calls = desktop({ mode: 'native', registrationGate: gate.promise });
+  await initializeUpdates(); await checkUpdate();
+  render(<input aria-label="回执读取中的草稿" />);
+  const downloading = downloadUpdate();
+  await waitFor(() => expect(calls.mock.calls.some(([, args]) => args.operation === 'registrations_list')).toBe(true));
+  if (action === '取消') cancelUpdate();
+  else screen.getByLabelText('回执读取中的草稿').setAttribute('data-update-draft', '新草稿');
+  gate.resolve(); await downloading;
+  expect(calls.mock.calls.some(([, args]) => ['download', 'apply'].includes(String(args.operation)))).toBe(false);
+  expect(await updateTask(async () => '仍可保存')).toBe('仍可保存');
+  cancelUpdate();
 });
 // 场景：当前页没有任务，但另一服务地址下的本机记录仍在运行；等待说明指出是哪个会话，取消等待不会安装或取消业务任务。
 test('后台任务阻止应用并说明所属会话，取消等待不取消任务', async () => {
@@ -139,7 +160,7 @@ test('整包更新显示重启状态对话框', async () => {
   await act(async () => { await tryApplyUpdate(); });
   await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain('正在重新启动客户端'));
   await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args.operation === 'apply')).toHaveLength(1));
-  expect(calls.mock.calls.some(([cmd]) => cmd === 'remotion_sessions')).toBe(false);
+  expect(calls.mock.calls.some(([cmd, args]) => cmd === 'remotion_sessions' && !String(args.operation).startsWith('registrations_'))).toBe(false);
 });
 // 场景：正在上传时阻止刷新；进入应用阶段后新请求不开始，应用失败解锁后照常执行而不是报错（避免 SSE 落库失败停掉订阅）。
 test('进行中请求参与门禁，锁定期间的新请求等到解锁再执行', async () => {
@@ -211,6 +232,40 @@ test('取消后忽略迟到的后台任务回执', async () => {
   await act(async () => { cancelUpdate(); resolve(OTHER_SERVER); });
   expect(screen.getByText('已取消此次应用，当前版本保持不变')).toBeTruthy();
   expect(calls.mock.calls.some(([, args]) => args.operation === 'apply')).toBe(false);
+});
+
+// 取消旧等待后重试下载，旧会话查询迟到报错不能解除新一轮下载的编辑锁。
+test('旧预检失败不能解锁新一轮下载', async () => {
+  const pending = Promise.withResolvers<Pending>();
+  const downloading = Promise.withResolvers<void>();
+  const journal = registrationJournal();
+  let downloads = 0;
+  let reading = false;
+  mockDesktop(async (command, args) => {
+    if (command === 'remotion_sessions') {
+      if (String(args.operation).startsWith('registrations_')) return journal(args);
+      reading = true;
+      return pending.promise;
+    }
+    if (command !== 'client_update') return null;
+    if (args.operation === 'status') return { enabled: true };
+    if (args.operation === 'check') return { version: '2.0.0', mode: 'hot' };
+    if (args.operation === 'download' && ++downloads > 1) await downloading.promise;
+    return null;
+  });
+  await initializeUpdates(); await checkUpdate(); await downloadUpdate();
+  await waitFor(() => expect(reading).toBe(true));
+  cancelUpdate();
+  const retry = downloadUpdate();
+  await waitFor(() => expect(downloads).toBe(2));
+  pending.reject(new Error('旧查询失败'));
+  let started = false;
+  const saving = updateTask(async () => { started = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(started).toBe(false);
+  downloading.reject(new Error('新下载失败'));
+  await retry; await saving;
+  expect(started).toBe(true);
 });
 
 // 场景：启动后的自动检查发现新版本时弹出提醒；稍后关闭后，本次运行中手动检查不再反复弹窗。

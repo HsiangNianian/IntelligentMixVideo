@@ -7,7 +7,7 @@
  * `apply` 写入本地后，再向服务端确认送达，服务端随即删除已送达的事件。
  */
 import { updateFetch as fetch, updateInvoke as invoke } from "@/lib/update-guard";
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke as nativeInvoke, isTauri } from "@tauri-apps/api/core";
 import { apiBase } from "@/lib/api-base";
 import type {
   ChatMessage,
@@ -521,7 +521,7 @@ export function record(
   job: Job,
 ): Promise<void> {
   const initial: SessionJob = { ...job, created_at: project.created_at, updated_at: project.created_at, parameters: null };
-  return serial(project.id, () => storage().save(server(), {
+  return register({ server: server(), job, initial: {
     work: {
       work: { id: project.id, current_version_id: project.current_version_id },
       // 按码位截取：按 UTF-16 截断可能留下半个 emoji，孤立代理项无法经 IPC 序列化。
@@ -535,61 +535,88 @@ export function record(
     messages: [],
     jobs: [initial],
     ...(project.request.images?.length ? { image_ids: project.request.images.map((image) => image.asset_id) } : {}),
-  }));
+  } });
 }
-/** 数据库之外的短期登记回执，不含凭据；写库失败或重启后仍能找到已接受的任务。 */
-type Registration = { server: string; job: Job };
+/** 数据库之外的短期登记回执：桌面存固定应用目录，浏览器存当前来源，不含凭据。 */
+type Registration = { server: string; job: Job; initial?: SessionChange };
 const REGISTRATION_PREFIX = "imv.remotion.registration:";
 const registrations = new Map<string, Registration>();
+/** 原生回执错误沿用会话库错误类型；只有只读核查可越过更新锁，写入继续遵守门禁。 */
+function registrationCall<T>(operation: string, payload: object = {}) {
+  const call = operation === "registrations_list" ? nativeInvoke : invoke;
+  return call<T>("remotion_sessions", { operation, payload }).catch((error: unknown) => {
+    throw new LocalStoreError(typeof error === "string" ? error : error instanceof Error ? error.message : "任务回执读写失败。");
+  });
+}
 /** 合并持久回执与内存后备；损坏的回执必须阻止更新，不能当作没有未登记任务。 */
-function pendingRegistrations() {
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i)!;
-    if (!key.startsWith(REGISTRATION_PREFIX)) continue;
-    const entry = JSON.parse(localStorage.getItem(key)!) as Registration;
+async function pendingRegistrations() {
+  const entries: Registration[] = [];
+  if (isTauri()) {
+    entries.push(...await registrationCall<Registration[]>("registrations_list"));
+  } else {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)!;
+      if (key.startsWith(REGISTRATION_PREFIX)) entries.push(JSON.parse(localStorage.getItem(key)!));
+    }
+  }
+  const pending = new Map(registrations);
+  for (const entry of entries) {
     if (!entry?.server || !entry.job?.id || !entry.job.project_id)
       throw new LocalStoreError("任务登记恢复记录无效，请先修复本地存储。");
-    registrations.set(key, entry);
+    pending.set(REGISTRATION_PREFIX + JSON.stringify([entry.server, entry.job.id]), entry);
   }
-  return [...registrations.entries()];
+  return [...pending.entries()];
 }
 /** 更新器只读独立回执，覆盖所有服务且不需要打开可能版本不兼容的会话数据库。 */
-export function registrationBlockers(): string[] {
+export async function registrationBlockers(): Promise<string[]> {
   try {
-    return pendingRegistrations().map(([, entry]) =>
+    return (await pendingRegistrations()).map(([, entry]) =>
       `任务 ${entry.job.id} 尚未登记到本机（${entry.server}），请在原服务刷新任务或聊天列表`,
     );
   } catch {
     return ["无法核实任务登记恢复记录，请先修复本地存储"];
   }
 }
+/** 会话写入成功或确认删除后才移除回执；桌面写入仍经过更新门禁。 */
+async function removeRegistration(key: string, entry: Registration) {
+  if (isTauri()) await registrationCall("registrations_remove", { server: entry.server, id: entry.job.id });
+  else localStorage.removeItem(key);
+  registrations.delete(key);
+}
 /** 重试本地登记，不重发服务端任务；成功落盘后才删除回执，已到达的终态不得退回排队状态。 */
 function saveRegistration(key: string, entry: Registration): Promise<void> {
   const { server: scope, job } = entry;
   return serial(job.project_id, async () => {
     const stored = await storage().work(scope, job.project_id);
-    if (!stored) throw new MissingLocalWork();
-    if (stored.job.id !== job.id && !(await storage().jobs(scope, job.project_id, [job.id])).length) {
+    if (!stored) {
+      if (!entry.initial) throw new MissingLocalWork();
+      await storage().save(scope, entry.initial);
+    } else if (stored.job.id !== job.id && !(await storage().jobs(scope, job.project_id, [job.id])).length) {
       const stamp = new Date().toISOString();
       const latest: SessionJob = { ...job, created_at: stamp, updated_at: stamp, parameters: null };
       await storage().save(scope, { work: { ...stored, job: latest }, messages: [], jobs: [latest] });
     }
-    localStorage.removeItem(key);
-    registrations.delete(key);
+    await removeRegistration(key, entry);
   }, scope);
 }
 /** 在读取历史或显式刷新任务时恢复当前服务的登记；其他服务的记录继续保护更新。 */
 async function recoverRegistrations(work?: string) {
-  for (const [key, entry] of pendingRegistrations())
+  for (const [key, entry] of await pendingRegistrations())
     if (entry.server === server() && (!work || entry.job.project_id === work)) await saveRegistration(key, entry);
 }
 /** 先保留已接受任务的独立回执，再登记到会话库；两种存储都失败时仍保留内存回执并阻止更新。 */
-export function track(job: Job): Promise<void> {
-  const entry = { server: server(), job };
-  const key = REGISTRATION_PREFIX + JSON.stringify([entry.server, job.id]);
+async function register(entry: Registration): Promise<void> {
+  const key = REGISTRATION_PREFIX + JSON.stringify([entry.server, entry.job.id]);
   registrations.set(key, entry);
-  try { localStorage.setItem(key, JSON.stringify(entry)); } catch { /* 数据库仍可能可写；失败时内存回执不能释放。 */ }
+  try {
+    if (isTauri()) await registrationCall("registrations_save", entry);
+    else localStorage.setItem(key, JSON.stringify(entry));
+  } catch { /* 数据库仍可能可写；失败时内存回执不能释放。 */ }
   return saveRegistration(key, entry);
+}
+/** 已有会话的续写或参数任务也先保存回执；无需重复保存会话初始信息。 */
+export function track(job: Job): Promise<void> {
+  return register({ server: server(), job });
 }
 /**
  * 按事件编号顺序把一批服务端事件合并进本地会话并原子保存，返回保存后的会话。
@@ -689,10 +716,9 @@ export function forget(work: string): Promise<void> {
   const scope = server();
   return serial(work, async () => {
     await storage().remove(scope, work);
-    for (const [key, entry] of pendingRegistrations()) {
+    for (const [key, entry] of await pendingRegistrations()) {
       if (entry.server !== scope || entry.job.project_id !== work) continue;
-      localStorage.removeItem(key);
-      registrations.delete(key);
+      await removeRegistration(key, entry);
     }
   }, scope);
 }

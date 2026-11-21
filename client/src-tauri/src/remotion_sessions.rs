@@ -475,6 +475,14 @@ fn run(
     operation: &str,
     payload: Value,
 ) -> Result<Value, String> {
+    // 回执独立于会话库版本和 WebView 来源；不能先打开可能不兼容的 SQLite。
+    if operation.starts_with("registrations_") {
+        return crate::remotion_registrations::operate(
+            path.parent().ok_or("读取任务回执目录失败")?,
+            operation,
+            payload,
+        );
+    }
     let mut connection = shared.lock().unwrap_or_else(|error| error.into_inner());
     if connection.is_none() {
         *connection = Some(open(path)?);
@@ -531,6 +539,80 @@ mod tests {
 
     /// 测试默认使用的服务地址。
     const SERVER: &str = "http://api.test:8000";
+
+    /// 回执跨进程/窗口来源保存在固定目录；即使会话库来自新版本，也能读回、隔离服务并清除。
+    #[test]
+    fn registration_journal_survives_restart_and_incompatible_database() {
+        let scratch = Scratch::new();
+        scratch
+            .open()
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .unwrap();
+        let shared = Mutex::new(None);
+        let entry = json!({"server": SERVER, "job": {"id": "job", "project_id": "work", "status": "running"}});
+        let mut other = entry.clone();
+        other["server"] = json!("http://other.test");
+        for payload in [&entry, &other, &entry] {
+            run(
+                &shared,
+                &scratch.path(),
+                "registrations_save",
+                payload.clone(),
+            )
+            .unwrap();
+        }
+        assert!(run(&shared, &scratch.path(), "pending", json!({})).is_err());
+        assert!(shared.lock().unwrap().is_none());
+        let restarted = Mutex::new(None);
+        let read = || run(&restarted, &scratch.path(), "registrations_list", json!({})).unwrap();
+        assert_eq!(read().as_array().unwrap().len(), 2);
+        run(
+            &restarted,
+            &scratch.path(),
+            "registrations_remove",
+            json!({"server": SERVER, "id": "job"}),
+        )
+        .unwrap();
+        assert_eq!(read(), json!([other]));
+        // 损坏文件不等于空回执，读与写都报错且保留现场。
+        let path = scratch.0.join("registrations.json");
+        std::fs::write(&path, b"broken").unwrap();
+        for operation in ["registrations_list", "registrations_save"] {
+            assert!(run(&restarted, &scratch.path(), operation, entry.clone()).is_err());
+        }
+        assert_eq!(std::fs::read(path).unwrap(), b"broken");
+    }
+
+    /// 回执锁冲突不能返回空清单，失败写入保留原回执，释放锁后可重试。
+    #[test]
+    fn registration_contention_preserves_previous_receipt() {
+        let scratch = Scratch::new();
+        let shared = Mutex::new(None);
+        let entry = json!({"server": SERVER, "job": {"id": "job", "project_id": "work"}});
+        run(
+            &shared,
+            &scratch.path(),
+            "registrations_save",
+            entry.clone(),
+        )
+        .unwrap();
+        let lock = std::fs::File::open(scratch.0.join(".registrations.lock")).unwrap();
+        crate::file_lock::lock_exclusive(&lock).unwrap();
+        assert!(run(&shared, &scratch.path(), "registrations_list", json!({})).is_err());
+        assert!(run(
+            &shared,
+            &scratch.path(),
+            "registrations_remove",
+            json!({"server": SERVER, "id": "job"})
+        )
+        .is_err());
+        drop(lock);
+        assert_eq!(
+            run(&shared, &scratch.path(), "registrations_list", json!({})).unwrap(),
+            json!([entry])
+        );
+        assert!(!scratch.path().exists());
+    }
 
     /// 版本 1 升级保留原始上下文文本；图片存 BLOB，删除一个会话不影响另一个会话的共享引用。
     #[test]
@@ -921,11 +1003,16 @@ mod tests {
             serde_json::from_str(include_str!("../../tests/remotion-sessions-contract.json"))
                 .unwrap();
         let scratch = Scratch::new();
-        let mut connection = scratch.open();
+        let shared = Mutex::new(None);
         let mut operations = Vec::new();
         for call in calls {
             let operation = call["operation"].as_str().unwrap().to_string();
-            let result = operate(&mut connection, &operation, call["payload"].clone());
+            let result = run(
+                &shared,
+                &scratch.path(),
+                &operation,
+                call["payload"].clone(),
+            );
             assert!(result.is_ok(), "{operation}: {result:?}");
             operations.push(operation);
         }
@@ -939,6 +1026,9 @@ mod tests {
             "remove",
             "image",
             "put_image",
+            "registrations_list",
+            "registrations_save",
+            "registrations_remove",
         ] {
             assert!(
                 operations.iter().any(|item| item == operation),

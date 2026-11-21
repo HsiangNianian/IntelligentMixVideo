@@ -11,6 +11,7 @@ mod file_lock;
 mod media_server;
 mod preview_snapshot;
 mod preview_videos;
+mod remotion_registrations;
 mod remotion_sessions;
 mod settings;
 mod updates;

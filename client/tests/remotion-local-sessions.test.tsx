@@ -19,6 +19,7 @@ import { remotionServer, seed } from "./remotion-server";
 import { fetchMock, mockDesktop } from "./setup";
 import contract from "./remotion-sessions-contract.json";
 import { apiBase, setApiBase } from "@/lib/api-base";
+import { registrationJournal } from "./remotion-registration-fixture";
 
 const ROUND: LoopRound = { layer: "outer", turn: 1, calls: [{ tool: "tools.plan_execute", status: "pass" }] };
 /** 模型窗口原文（保留 JSON 空格与转义），与可见聊天记录分开存储。 */
@@ -40,6 +41,7 @@ function running(status: SessionJob["status"] = "running"): SessionJob {
  */
 function desktopStorage(fail: (operation: string) => boolean = () => false) {
   const memory = local.memoryStorage();
+  const journal = registrationJournal();
   const calls: { operation: string; payload: Record<string, unknown> }[] = [];
   /** 与 Rust 命令相同的操作分派；参数先经 JSON 往返，和真实 IPC 一样丢弃 undefined 字段。 */
   async function serve(args: Record<string, unknown>) {
@@ -47,6 +49,7 @@ function desktopStorage(fail: (operation: string) => boolean = () => false) {
     calls.push(call);
     const { operation, payload } = call;
     if (fail(operation)) throw "读写本地会话库失败";
+    if (operation.startsWith("registrations_")) return journal(args);
     if (operation === "device") return memory.device();
     if (operation === "put_image") return memory.putImage(payload.server, payload.id, local.decodeImage(payload.data));
     if (operation === "image") {
@@ -99,16 +102,43 @@ async function recordWork() {
   );
 }
 
+// 原生回执读取失败与数据库错误采用同一错误类型，更新不得把无法核实当成空列表。
+test("原生回执错误保留原因并阻止更新", async () => {
+  desktopStorage(operation => operation === "registrations_list");
+  await expect(local.history()).rejects.toBeInstanceOf(local.LocalStoreError);
+  await expect(local.snapshot("work-1")).rejects.toThrow("读写本地会话库失败");
+  expect(await local.registrationBlockers()).toEqual(["无法核实任务登记恢复记录，请先修复本地存储"]);
+});
+
 // 会话库和恢复回执同时写入失败时不能释放内存保护；修复存储后只登记同一任务。
 test("双重存储故障保留内存登记回执", async () => {
   await recordWork();
   const save = spyOn(local.storage(), "save").mockRejectedValue(new local.LocalStoreError("磁盘满"));
   const journal = spyOn(localStorage, "setItem").mockImplementation(() => { throw new Error("配额不足"); });
   await expect(local.track({ ...remotionJob("running"), id: "job-2" })).rejects.toThrow("磁盘满");
-  expect(local.registrationBlockers().join()).toContain("job-2");
+  expect((await local.registrationBlockers()).join()).toContain("job-2");
   save.mockRestore(); journal.mockRestore();
   expect((await local.snapshot("work-1")).job.id).toBe("job-2");
-  expect(local.registrationBlockers()).toEqual([]);
+  expect(await local.registrationBlockers()).toEqual([]);
+});
+
+// 新建任务落库失败且服务端撤销也失败：原生回执须保留初始会话，重启后能恢复而不重发。
+test("新建任务无法落库或撤销时重启恢复原作品", async () => {
+  let failing = true;
+  desktopStorage(operation => operation === "save" && failing);
+  remotionServer((path, options) => path === "/works/work-1" && options?.method === "DELETE"
+    ? Response.json({ detail: "暂时无法撤销" }, { status: 500 }) : undefined);
+  const session = renderHook(() => useTemplateSession(() => {}));
+  act(() => { session.result.current.send("恢复原作品"); });
+  await waitFor(() => expect(session.result.current.error).toContain("已保留恢复回执"));
+  expect((await local.registrationBlockers()).join()).toContain("job-1");
+  session.unmount();
+  localStorage.clear();
+  local.setStorage(undefined);
+  failing = false;
+  expect((await local.history())[0]).toMatchObject({ id: "work-1", title: "恢复原作品", job: { id: "job-1" } });
+  expect(await local.registrationBlockers()).toEqual([]);
+  expect(fetchMock.mock.calls.filter(([url, options]) => String(url).endsWith("/works") && options?.method === "POST")).toHaveLength(1);
 });
 
 // 未登记回执按服务隔离且全局保护更新；终态事件先落盘时恢复登记不得把它降回运行中。
@@ -121,11 +151,11 @@ test("其他服务的登记回执持续保护更新且不覆盖已保存终态",
     save.mockRestore();
     setApiBase("http://other.test");
     expect(await local.history()).toEqual([]);
-    expect(local.registrationBlockers().join()).toContain("job-2");
+    expect((await local.registrationBlockers()).join()).toContain("job-2");
     setApiBase(original);
     await local.apply("work-1", [event(1, { type: "job.updated", data: { ...running("answered"), id: "job-2" } })]);
     expect((await local.snapshot("work-1")).job.status).toBe("answered");
-    expect(local.registrationBlockers()).toEqual([]);
+    expect(await local.registrationBlockers()).toEqual([]);
   } finally { setApiBase(original); }
 });
 
@@ -564,6 +594,7 @@ test("桌面会话存储的 IPC 参数符合 Rust 契约夹具", async () => {
   const calls = desktopStorage();
   await local.deviceId();
   await recordWork();
+  await local.track(remotionJob("queued"));
   await local.apply("work-1", [
     event(1, {
       type: "message.created",

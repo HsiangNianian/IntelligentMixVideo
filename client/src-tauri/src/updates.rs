@@ -695,6 +695,16 @@ pub async fn client_update(
         if serde_json::to_vec(&payload).map_err(error)?.len() > 16 * 1024 {
             return Err("恢复信息过大".into());
         }
+        // 两种更新都保护未落盘任务；独立回执不受旧壳无法读取新会话库的影响。
+        let registrations = crate::remotion_sessions::remotion_sessions(
+            app.clone(),
+            "registrations_list".into(),
+            json!({}),
+        )
+        .await?;
+        if !registrations.as_array().is_some_and(Vec::is_empty) {
+            return Err("仍有任务未登记到本机，请先刷新任务或聊天列表".into());
+        }
         // 整包升级可修复旧壳打不开新版会话库的情况。仅热更新沿用后台会话检查。
         let hot = state
             .staged
