@@ -143,6 +143,9 @@ async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: Abor
 /** ZOS 确认已发布的 PNG 缺失时，主页可按原素材重新发布。 */
 class MissingCoverObject extends Error {}
 
+/** 封面 PUT 的目标修订已经过期，主页可按模板 ID 核对最新发布。 */
+export class CoverRevisionConflict extends Error {}
+
 /** 在现有模板路由发送请求，并将 HTTP 错误转换为编辑器可显示的消息。 */
 async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE" | "PUT", signal: AbortSignal, body?: Uint8Array | FormData): Promise<Response> {
   const response = await fetch(`${apiBase()}${path}`, {
@@ -161,6 +164,7 @@ async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE" | "P
     const message = typeof detail === "string" ? detail : Array.isArray(detail)
       ? detail.map((error: { loc?: unknown[]; msg?: string }) => `${error.loc?.slice(1).join(".")}：${error.msg}`).join("；")
       : `HTTP ${response.status}`;
+    if (method === "PUT" && response.status === 409) throw new CoverRevisionConflict(message);
     throw new Error(message);
   }
   return response;
@@ -379,20 +383,28 @@ export async function syncLoadedCovers(items: TemplateSummary[]) {
 /** 上传失败只暂存该修订的截图；同一模板只保留最新一次，应用重启后由真实预览重新截取。 */
 const coverBlobs = new Map<string, { revision: string; blob: Blob; refresh: boolean }>();
 
-/** 上传或单独重试封面；版本匹配时复用之前的截图，不重发模板保存。 */
-export async function publishCover(id: string, revision: string, capture: () => Promise<Blob>, refresh = false, signal?: AbortSignal) {
+/** 优先重传同版本截图。目标修订过期后丢弃其截图，临时故障继续保留供重试。 */
+export async function publishCover(id: string, revision: string, capture: (() => Promise<Blob>) | undefined, refresh = false, signal?: AbortSignal) {
   const key = apiBase() + "/" + id;
-  const cached = coverBlobs.get(key);
-  if (cached && cached.revision !== revision) coverBlobs.delete(key);
-  const item = cached?.revision === revision ? cached : { revision, blob: await capture(), refresh };
+  let item = coverBlobs.get(key);
+  if (item?.revision !== revision) {
+    if (item) coverBlobs.delete(key);
+    if (!capture) throw new Error("待重传的封面已变化，请刷新重试");
+    const captured = await capture();
+    signal?.throwIfAborted();
+    item = { revision, blob: captured, refresh };
+  }
   if (refresh) item.refresh = true;
   signal?.throwIfAborted();
   coverBlobs.set(key, item);
   const body = new FormData();
   body.set("file", item.blob, "cover.png");
   if (item.refresh) body.set("refresh", "true");
-  const response = await cloud((signal) => cloudRequest(`/template/${id}/cover/${revision}`, "PUT", signal, body), signal);
-  const result = await response.json() as { url: string; revision: string };
+  const response = await cloud((signal) => cloudRequest(`/template/${id}/cover/${revision}`, "PUT", signal, body), signal).catch(error => {
+    if (error instanceof CoverRevisionConflict && coverBlobs.get(key) === item) coverBlobs.delete(key);
+    throw error;
+  });
+  const result = await response.json() as { url: string; revision: string; source?: string };
   if (item.refresh && result.revision === revision) throw new Error("请更新本地服务后再刷新封面");
   if (coverBlobs.get(key) === item) coverBlobs.delete(key);
   return result;

@@ -11,12 +11,15 @@ import sqlite3
 from datetime import UTC, datetime
 from collections.abc import Iterator
 from functools import partial
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 from pymysql.err import IntegrityError as MySQLIntegrityError
 from sqlalchemy import Engine, create_engine, event
@@ -26,7 +29,7 @@ from server import database
 from server.app import app
 from server.remotion_templates import sprite_store
 from server.remotion_templates.object_store import LocalObjects
-from server.template import store
+from server.template import covers, store
 
 
 @pytest.fixture(autouse=True)
@@ -38,9 +41,6 @@ def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, request: pyt
             continue
         if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_", "ZOS_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
-    # 普通 API 测试不启动真实补图进程，也不读取部署数据。
-    monkeypatch.setattr("server.template.backfill.RENDER_SCRIPT", tmp_path / "backfill.mjs")
-    monkeypatch.setattr("server.template.backfill.PACKAGE_ARCHIVE", tmp_path / "package-covers.zip")
     # 常规 API 测试不下载/加载模型；启动顺序与失败场景在标点模块测试中显式覆盖。
     monkeypatch.setattr("server.app.initialize_punctuation", lambda: None)
     # 预装字体默认会在后台复制进对象存储（约 100 MB）；测试一律关闭，安装行为的用例自行显式开启并替换字体包。
@@ -226,6 +226,41 @@ def seed_sprite(sprite_id: str = SPRITE_ID, canvas: tuple[int, int, int] = (1080
         published_at=datetime.now(UTC), data=MessageToDict(sprite, preserving_proto_field_name=True),
     )
     return sprite_id
+
+
+@pytest.fixture
+def cover_storage(monkeypatch):
+    """按 ZOS 对象键原子保存 PNG 和用户元数据，每次 GET 返回可独立关闭的流。"""
+    objects = {}
+    storage = MagicMock()
+
+    def read(*, Key, **_):
+        """对象缺失使用与 ZOS 相同的错误码。"""
+        if Key not in objects:
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        body, metadata = objects[Key]
+        return {"Body": BytesIO(body), "Metadata": metadata}
+
+    def pages(*, Prefix, **_):
+        """仅枚举本模板的对象，模拟 ListObjectsV2 单页响应。"""
+        return [{"Contents": [{"Key": key} for key in objects if key.startswith(Prefix)]}]
+
+    def delete_batch(*, Delete, **_):
+        """删除枚举得到的每个键，缺失的键也视为成功。"""
+        for item in Delete["Objects"]:
+            objects.pop(item["Key"], None)
+        return {}
+
+    storage.get_paginator.return_value.paginate.side_effect = pages
+    storage.delete_objects.side_effect = delete_batch
+    storage.get_object.side_effect = read
+    storage.put_object.side_effect = lambda Key, Body, Metadata=None, **_: objects.update({Key: (Body, Metadata or {})})
+    storage.delete_object.side_effect = lambda Key, **_: objects.pop(Key, None)
+    monkeypatch.setattr(covers, "storage_client", lambda *_: storage)
+    monkeypatch.setattr("server.remotion_templates.object_store.storage_client", lambda *_: storage)
+    monkeypatch.setattr(covers, "ZosSettings", lambda: SimpleNamespace(
+        zos_bucket="test", zos_delete_objects=True, zos_web_url="https://images.test"))
+    return storage
 
 
 @pytest.fixture

@@ -1,10 +1,10 @@
 /** 验证固定 PNG 地址、版本重新读取及内存重传。运行 bun run test tests/template-cover.test.tsx。 */
-import { expect, mock, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { act, render, waitFor } from "@testing-library/react";
 import { Tooltip } from "radix-ui";
 import { TemplateCard, TemplateCover } from "@/components/studio/home/TemplateCard";
 import { hasCoverBlob, publishCover, readTemplateCover } from "@/features/templates/api";
-import { prepareCoverFrame } from "@/features/templates/coverCapture";
+import { captureCoverFrame } from "@/features/templates/coverCapture";
 import { fetchMock } from "./setup";
 import { savedTemplate, templateSummary } from "./fixtures";
 
@@ -20,16 +20,31 @@ test("预览已到一秒仍须等同一次绘制中的标题和字幕", async ()
   const clear = mock(() => {}), draw = mock(() => {});
   const ctx = { clearRect: clear, drawImage: draw };
   Object.defineProperty(canvas, "getContext", { value: () => ctx });
-  let finished = false;
-  const seeking = prepareCoverFrame(frame, seconds => { frame.parentElement!.dataset.coverTime = String(seconds); })
-    .then(() => { finished = true; });
+  const snapshot = mock(async () => "PNG");
+  const seeking = captureCoverFrame(frame, seconds => { frame.parentElement!.dataset.coverTime = String(seconds); }, snapshot);
   await waitFor(() => expect(frame.parentElement!.dataset.coverTime).toBe("1"));
   ctx.drawImage(); ctx.clearRect(); ctx.drawImage();
-  await new Promise(done => setTimeout(done, 100));
-  expect(finished).toBe(false);
-  ctx.drawImage(); await seeking;
+  // 冷启动超过 60 秒，只有第二层的实际位图到达后才能返回 PNG。
+  const clock = spyOn(performance, "now").mockReturnValue(performance.now() + 65_000);
+  try {
+    await new Promise(done => setTimeout(done, 100));
+    expect(snapshot).not.toHaveBeenCalled();
+    ctx.drawImage();
+    expect(await seeking).toBe("PNG");
+  } finally { clock.mockRestore(); }
   expect(ctx.drawImage).toBe(draw);
   expect(ctx.clearRect).toBe(clear);
+});
+
+// 操作系统异步读取 WebView；在此期间时间线变动，刚返回的图片不能发布。
+test("原生快照返回时仍须位于完整的目标帧", async () => {
+  const view = render(<div data-cover-ready="true" data-cover-time="0" data-cover-text-layers="0" data-cover-layers="0"><div /></div>);
+  const stage = view.container.firstElementChild as HTMLElement;
+  const frame = stage.firstElementChild as HTMLElement;
+  await expect(captureCoverFrame(frame, t => { stage.dataset.coverTime = String(t); }, async () => {
+    stage.dataset.coverTime = "0";
+    return "过期 PNG";
+  })).rejects.toThrow("截图期间预览已变化");
 });
 
 // 服务端重建旧包失败时可能继续提供旧播放器；它已经画好的参数不能充当封面帧回执。
@@ -38,7 +53,7 @@ test("旧字效宿主无法确认定位时保留旧封面", async () => {
     <div className="template-preview-frame"><iframe sandbox="allow-scripts" data-cover-at="1" data-cover-painted="true" data-cover-seek-supported="false" /></div>
   </div>);
   const frame = view.container.querySelector<HTMLElement>(".template-preview-frame")!;
-  await expect(prepareCoverFrame(frame, seconds => { frame.parentElement!.dataset.coverTime = String(seconds); }))
+  await expect(captureCoverFrame(frame, seconds => { frame.parentElement!.dataset.coverTime = String(seconds); }, async () => {}))
     .rejects.toThrow("字效预览包不支持封面定位");
 });
 

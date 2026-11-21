@@ -1,13 +1,12 @@
 /** 主页按需挂载一个独立预览，复用编辑器的一秒画面和原视频来源，取图后释放播放器。 */
 import { useEffect, useRef } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { Tooltip } from "radix-ui";
 import { listSprites } from "@/features/sprites/api";
 import type { SpriteAsset } from "@/features/sprites/model";
-import { getTemplate } from "./api";
 import { defaultAvatarPreview } from "./avatarPreview";
 import { readCoverMedia } from "./media";
-import { toDraft, type Draft, type PreviewMedia, type TemplateSummary } from "./model";
+import { toDraft, type Draft, type PreviewMedia, type Template } from "./model";
 import { TemplatePreview, type CaptureCover } from "./TemplatePreview";
 import { useTemplatePreviewModel } from "./useTemplatePreviewModel";
 
@@ -36,10 +35,8 @@ function CoverPreview({ draft, media, assets, stream, resolve, reject }: FramePr
     avatarSource={avatar.source} previewCenter={avatar} sprites={spriteClips} />;
 }
 
-/** 列表版本与素材必须和保存时一致；取消或切换服务后销毁本次取帧，旧图不被替换。 */
-export async function captureHomeCover(summary: TemplateSummary, signal: AbortSignal, stream?: MediaStream): Promise<Blob> {
-  const template = await getTemplate(summary.template_id, signal);
-  if (template.cover?.revision !== summary.cover?.revision) throw new Error("模板已更新，请再次刷新");
+/** 以主页已核对的模板详情和原素材取帧；卸载或取消时释放播放器。 */
+export async function captureHomeCover(template: Template, signal: AbortSignal, stream?: MediaStream): Promise<Blob> {
   const source = template.cover?.source ?? "builtin";
   const media = await readCoverMedia(source, signal);
   const assets = template.clips.length ? await listSprites(signal) : [];
@@ -50,17 +47,34 @@ export async function captureHomeCover(summary: TemplateSummary, signal: AbortSi
   if (!stream && /Linux|Windows/.test(navigator.userAgent)) host.dataset.offscreen = "";
   host.setAttribute("aria-hidden", "true");
   document.body.append(host);
-  const root = createRoot(host);
-  let cancel: () => void;
+  let root: Root | undefined;
+  const listeners = new AbortController();
   try {
     return await new Promise<Blob>((resolve, reject) => {
-      cancel = () => reject(signal.reason);
-      signal.addEventListener("abort", cancel, { once: true });
-      root.render(<Tooltip.Provider><CoverPreview draft={toDraft(template)} media={media} assets={assets} stream={stream} resolve={resolve} reject={reject} /></Tooltip.Provider>);
+      const options = { signal: listeners.signal };
+      // 最小化的 WebView 仍可能报告 visible，却不再绘制。恢复窗口时用同一份模板重新挂载播放器。
+      const sync = () => {
+        if (!stream && (document.hidden || !document.hasFocus())) {
+          root?.unmount();
+          root = undefined;
+        } else if (!root) {
+          const current = root = createRoot(host);
+          current.render(<Tooltip.Provider><CoverPreview draft={toDraft(template)} media={media} assets={assets} stream={stream}
+            resolve={image => { if (root === current) resolve(image); }}
+            reject={error => { if (root === current) reject(error); }} /></Tooltip.Provider>);
+        }
+      };
+      if (!stream) {
+        window.addEventListener("focus", sync, options);
+        window.addEventListener("blur", sync, options);
+        document.addEventListener("visibilitychange", sync, options);
+      }
+      signal.addEventListener("abort", () => reject(signal.reason), options);
+      sync();
     });
   } finally {
-    signal.removeEventListener("abort", cancel!);
-    root.unmount();
+    listeners.abort();
+    root?.unmount();
     host.remove();
   }
 }

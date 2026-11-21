@@ -11,9 +11,9 @@ import { Button } from "@/components/ui/button";
 import { NewTemplateDialog } from "@/components/studio/home/NewTemplateDialog";
 import { DeleteTemplateDialog } from "@/components/studio/home/DeleteTemplateDialog";
 import { apiBase } from "@/lib/api-base";
-import { deleteTemplate, hasCoverBlob, listTemplates, publishCover, readTemplateCover, syncLoadedCovers } from "./api";
+import { CoverRevisionConflict, deleteTemplate, getTemplate, hasCoverBlob, listTemplates, publishCover, readTemplateCover, syncLoadedCovers } from "./api";
 import { releaseCoverTab, requestCoverTab } from "./coverCapture";
-import type { TemplateSummary } from "./model";
+import { needsInitialCover, type Template, type TemplateSummary } from "./model";
 import type { EditingState } from "./TemplateWorkspace";
 
 /** 只创建草稿，编辑器保存时才真正写入存储。 */
@@ -25,7 +25,7 @@ interface Props {
   onDelete?: (selection: TemplateSelection) => void;
 }
 
-/** 列表只读取一次。手动刷新再串行修复未发布的封面，每张成功后直接替换两个陈列区的摘要。 */
+/** 首次读取后在主页逐张补旧封面；切页暂停，回来复用剩余列表，手动刷新同时修复未发布版本。 */
 function useTemplateCollection(revision: number, active: boolean) {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -33,7 +33,7 @@ function useTemplateCollection(revision: number, active: boolean) {
   const [error, setError] = useState("");
   const [authorize, setAuthorize] = useState<(() => void) | null>(null);
   const running = useRef<AbortController | null>(null);
-  const repairController = useRef<AbortController | null>(null);
+  const [batch, setBatch] = useState<{ pending: Set<TemplateSummary>; missing: Set<string>; address: string } | null>(null);
   const address = apiBase();
   const previousAddress = useRef(address);
 
@@ -42,84 +42,127 @@ function useTemplateCollection(revision: number, active: boolean) {
     const controller = new AbortController();
     const { signal } = controller;
     running.current = controller;
-    repairController.current = manual ? controller : null;
+    setBatch(null);
     setAuthorize(null);
     setRefreshing(manual);
     setError("");
-    let items: TemplateSummary[];
-    let missing = new Set<string>();
     try {
-      items = await listTemplates(signal);
+      const items = await listTemplates(signal);
       if (signal.aborted) return;
-      const images = manual ? syncLoadedCovers(items) : undefined;
       setTemplates(items);
-      if (images) missing = await images;
+      const missing = manual ? await syncLoadedCovers(items) : new Set<string>();
       if (signal.aborted) return;
+      const pending = items.filter(item => !item.validation_error && (needsInitialCover(item) || (manual
+        && (missing.has(item.template_id) || !item.cover?.url || item.cover.revision !== item.cover.publishedRevision))));
+      setBatch({ pending: new Set(pending), missing, address });
+      if (!pending.length) setRefreshing(false);
     } catch (reason) {
       if (!signal.aborted) {
         setError(reason instanceof Error ? reason.message : "模板列表加载失败");
         setRefreshing(false);
       }
-      return;
     } finally {
       if (!signal.aborted) setLoading(false);
     }
-    if (!manual) return;
-    const pending = items.filter(item => !item.validation_error && (missing.has(item.template_id) || !item.cover?.url || item.cover.revision !== item.cover.publishedRevision));
-    const reupload: TemplateSummary[] = [], capture: TemplateSummary[] = [];
+  }, [address]);
+
+  // 列表只随保存、刷新或服务地址变更而重读；离开主页只取消取图。
+  useEffect(() => {
+    if (!active) {
+      setAuthorize(null); setRefreshing(false);
+      return;
+    }
+    if (!batch || batch.address !== address || !batch.pending.size) return;
+    const { pending, missing } = batch;
+    const controller = new AbortController();
+    const { signal } = controller;
+    setRefreshing(true);
+    const cached: TemplateSummary[] = [], unchecked: TemplateSummary[] = [];
+    const awaitingShare: { item: TemplateSummary; template: Template }[] = [];
     const failures: string[] = [];
     for (const item of pending) {
-      if (hasCoverBlob(item.template_id, item.cover?.revision ?? item.template_id)) reupload.push(item);
-      else if (item.cover?.source === "unavailable") failures.push(item.name + "：请在编辑器选择原视频并保存");
-      else capture.push(item);
+      if (hasCoverBlob(item.template_id, item.cover?.revision ?? item.template_id)) cached.push(item);
+      else unchecked.push(item);
     }
-    /** 每项成功即发布到两个陈列区，单项失败继续下一项。 */
-    async function repair(rows: TemplateSummary[], stream?: MediaStream) {
-      for (const item of rows) {
-        if (signal.aborted) return;
-        const version = item.cover?.revision ?? item.template_id;
-        try {
-          const published = await publishCover(item.template_id, version, async () => {
-            const { captureHomeCover } = await import("./homeCoverCapture");
-            return captureHomeCover(item, signal, stream);
-          }, missing.has(item.template_id) && version === item.cover?.publishedRevision, signal);
-          if (signal.aborted) return;
-          setTemplates(current => current.map(row => row.template_id === item.template_id ? { ...row, cover: {
-            source: item.cover?.source ?? "builtin", revision: published.revision, publishedRevision: published.revision, url: published.url,
-          } } : row));
-          await readTemplateCover(item.template_id, published.revision);
-        } catch (reason) {
-          if (!signal.aborted) failures.push(item.name + "：" + (reason instanceof Error ? reason.message : "封面更新失败"));
+
+    /** 接受详情中比摘要更新的完整发布。已知同版缺图仍应以原素材补截。 */
+    function peerCover(item: TemplateSummary, template: Template) {
+      const cover = template.cover;
+      if (cover?.url && cover.revision === cover.publishedRevision && !needsInitialCover(template)
+        && cover.publishedRevision !== item.cover?.publishedRevision) return cover;
+    }
+
+    /** 两个陈列区共用同一次读取，切页后保留未完成的模板。 */
+    async function display(item: TemplateSummary, cover: { revision: string; url: string; source?: string }) {
+      signal.throwIfAborted();
+      setTemplates(current => current.map(row => row.template_id === item.template_id ? { ...row, cover: {
+        source: cover.source ?? item.cover?.source ?? "builtin", revision: cover.revision, publishedRevision: cover.revision, url: cover.url,
+      } } : row));
+      pending.delete(item);
+      await readTemplateCover(item.template_id, cover.revision);
+    }
+
+    /** 重传缓存，或在取帧前核对实际详情；409 只重读冲突的那一个模板。 */
+    async function repair(item: TemplateSummary, prepared?: Template, stream?: MediaStream) {
+      if (signal.aborted) return;
+      const id = item.template_id;
+      const version = item.cover?.revision ?? id;
+      try {
+        let capture: (() => Promise<Blob>) | undefined;
+        if (!hasCoverBlob(id, version)) {
+          const template = prepared ?? await getTemplate(id, signal);
+          signal.throwIfAborted();
+          const peer = peerCover(item, template);
+          if (peer) { await display(item, peer); return; }
+          if ((template.cover?.revision ?? id) !== version) throw new Error("模板已更新，请再次刷新");
+          if (template.cover?.source === "unavailable") throw new Error("请在编辑器选择原视频并保存");
+          if (!isTauri() && !stream) { awaitingShare.push({ item, template }); return; }
+          capture = async () => (await import("./homeCoverCapture")).captureHomeCover(template, signal, stream);
+        }
+        const refresh = needsInitialCover(item) || (missing.has(id) && version === item.cover?.publishedRevision);
+        const cover = await publishCover(id, version, capture, refresh, signal).catch(async error => {
+          if (!(error instanceof CoverRevisionConflict)) throw error;
+          const peer = peerCover(item, await getTemplate(id, signal));
+          if (!peer) throw error;
+          return peer;
+        });
+        await display(item, cover);
+      } catch (reason) {
+        if (!signal.aborted) {
+          pending.delete(item);
+          failures.push(item.name + "：" + (reason instanceof Error ? reason.message : "封面更新失败"));
         }
       }
     }
-    await repair(reupload);
-    if (signal.aborted) return;
-    /** 已缓存的图先重传，只有剩余工作确实需要重新取帧时才向浏览器申请授权。 */
-    async function finish() {
+
+    /** 用户点击后立即申请共享，整批结束或取消后释放媒体轨道。 */
+    async function share() {
       setAuthorize(null);
       setRefreshing(true);
       let stream: MediaStream | undefined;
       try {
-        if (capture.length) {
-          stream = await requestCoverTab();
-          await repair(capture, stream);
-        }
+        stream = await requestCoverTab();
+        for (const { item, template } of awaitingShare) await repair(item, template, stream);
       } catch (reason) {
         failures.push(reason instanceof Error ? reason.message : "封面更新失败");
       } finally {
         releaseCoverTab(stream);
-        if (!signal.aborted) {
-          setRefreshing(false);
-          if (failures.length) toast.error("部分封面更新失败", { description: failures.join("；") });
-        }
+        finish();
       }
     }
-    if (!isTauri() && capture.length) {
+    /** 仅当前批次结束刷新提示，并一次展示所有单项失败。 */
+    function finish() {
+      if (signal.aborted) return;
       setRefreshing(false);
-      setAuthorize(() => finish);
-    } else await finish();
-  }, [address]);
+      if (failures.length) toast.error("部分封面更新失败", { description: failures.splice(0).join("；") });
+    }
+    void (async () => {
+      for (const item of [...cached, ...unchecked]) await repair(item);
+      finish();
+      if (!signal.aborted && awaitingShare.length) setAuthorize(() => share);
+    })();
+    return () => controller.abort();
+  }, [active, batch, address]);
 
   useEffect(() => {
     if (previousAddress.current !== address) {
@@ -131,12 +174,6 @@ function useTemplateCollection(revision: number, active: boolean) {
     queueMicrotask(() => { if (mounted) void load(); });
     return () => { mounted = false; running.current?.abort(); };
   }, [revision, load]);
-  useEffect(() => {
-    if (!active) {
-      repairController.current?.abort();
-      setAuthorize(null); setRefreshing(false);
-    }
-  }, [active]);
   return { templates, loading, error, refreshing, authorize, refresh: (): void => { void load(); }, sync: () => { void load(true); } };
 }
 

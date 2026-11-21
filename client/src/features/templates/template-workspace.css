@@ -146,4 +146,6 @@
 /* 支持整页快照的平台在视口右侧采样，主页和焦点始终留在原位。 */
 html:has(.home-cover-capture[data-offscreen]) { overflow: hidden; }
 .home-cover-capture[data-offscreen]:has([data-snapshot]) { position: absolute; inset: 0 auto auto 100vw; width: 432px; height: 768px; }
-.home-cover-capture[data-offscreen] [data-snapshot] { position: absolute; inset: 0; width: 432px; height: 768px; }
+/* 定位和采样使用同一尺寸，移动到视口外时保留字效已确认的布局。 */
+.home-cover-capture[data-offscreen] [data-capturing] { width: 432px; height: 768px; }
+.home-cover-capture[data-offscreen] [data-snapshot] { position: absolute; inset: 0; }

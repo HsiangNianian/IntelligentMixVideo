@@ -14,8 +14,11 @@ export function TemplateCover({ template, compact, className }: { template: Temp
   const [image, setImage] = useState("");
   useEffect(() => {
     if (!cover?.url) { setImage(""); return; }
+    // 旧服务的独立 ZOS 直链可兜底；新分享链接指向刚请求过的 API。
+    const apiUrl = `${address}/template/${encodeURIComponent(template.template_id)}/cover`;
+    const fallback = cover.url === apiUrl ? "" : cover.url;
     return watchTemplateCover(template.template_id, cover.publishedRevision, blob =>
-      setImage(blob ? URL.createObjectURL(blob) : cover.url));
+      setImage(blob ? URL.createObjectURL(blob) : fallback));
   }, [address, template.template_id, cover?.url, cover?.publishedRevision]);
   useEffect(() => () => { if (image.startsWith("blob:")) URL.revokeObjectURL(image); }, [image]);
   return <span aria-hidden="true" className={cn("relative flex aspect-[9/16] w-full items-center justify-center overflow-hidden bg-raised text-fg-subtle", className)}>
