@@ -1,7 +1,7 @@
 /** 应用入口优先恢复客户端地址；未指定时等待内置服务就绪，再挂载首页与全局轻提示容器；启动时在内存中收集报错和控件操作，设置页可打开日志窗口。 */
 import { initializeUpdates } from "@/features/updates/store";
 import HomePage from "@/pages/HomePage";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { setApiBase } from "@/lib/api-base";
 import { readSettings } from "@/features/settings/api";
@@ -10,7 +10,7 @@ import { LogoMark } from "@/components/studio/Logo";
 import { MotionConfig } from "motion/react";
 import { Toaster } from "@/components/ui/sonner";
 import { useWindowTitle } from "@/lib/window-title";
-import { startDiagnostics } from "@/lib/diagnostics";
+import { startDiagnostics, diagnosticInvoke as invoke } from "@/lib/diagnostics";
 
 /** 启动失败展示实际诊断，避免业务页面向尚未启动的后端发送请求。 */
 export default function App() {

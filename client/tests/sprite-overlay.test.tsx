@@ -284,7 +284,7 @@ test("播放器迟迟不就绪时写调试日志", async () => {
     });
     act(() => { jest.advanceTimersByTime(15_000); });
     jest.useRealTimers();
-    await waitFor(() => expect(entries.some((entry) => entry.level === "警告" && entry.message === `「霓虹标题」（资产 s1）的播放器 15 秒内没有就绪：页面已加载但没有发出就绪通知，可能是预览脚本出错；地址 ${stuck.src}`)).toBe(true));
+    await waitFor(() => expect(entries.some((entry) => entry.level === "警告" && entry.message === `「霓虹标题」（资产 s1）的播放器 15 秒内没有就绪：页面已加载但没有发出就绪通知，可能是预览脚本出错；地址 ${new URL(stuck.src).origin}${new URL(stuck.src).pathname}`)).toBe(true));
     expect(entries.some((entry) => entry.message === "「第二个资产」（资产 s2）的预览包较旧，不支持逐帧驱动，保持隐藏")).toBe(true);
     expect(entries.some((entry) => entry.message.startsWith("「第二个资产」（资产 s2）的播放器"))).toBe(false);
   } finally {
@@ -319,7 +319,7 @@ test("同一播放器更换资产后重新等待就绪", async () => {
     fireEvent.load(updated);
     act(() => { jest.advanceTimersByTime(15_000); });
     jest.useRealTimers();
-    await waitFor(() => expect(entries.some((entry) => entry.level === "警告" && entry.message === `「霓虹标题」（资产 s2）的播放器 15 秒内没有就绪：页面已加载但没有发出就绪通知，可能是预览脚本出错；地址 ${updated.src}`)).toBe(true));
+    await waitFor(() => expect(entries.some((entry) => entry.level === "警告" && entry.message === `「霓虹标题」（资产 s2）的播放器 15 秒内没有就绪：页面已加载但没有发出就绪通知，可能是预览脚本出错；地址 ${new URL(updated.src).origin}${new URL(updated.src).pathname}`)).toBe(true));
   } finally {
     jest.useRealTimers();
     resetDiagnostics();

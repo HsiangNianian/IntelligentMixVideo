@@ -2,6 +2,7 @@
 import { updateFetch as fetch } from "@/lib/update-guard";
 import { readSettings } from "@/features/settings/api";
 import { apiBase } from "@/lib/api-base";
+import { diagnosticTask, diagnosticTaskState } from "@/lib/diagnostics";
 
 export type CompositionMode = "standard" | "materials_voice" | "materials_silent";
 export type CompositionTask = {
@@ -16,22 +17,29 @@ export type CompositionTask = {
 
 /** 凭据只放请求头，不进入合成输入记录；每次操作读取最新保存值，失败不重试写入。 */
 async function request<T>(path: string, body?: Record<string, unknown>, signal?: AbortSignal, base = apiBase()): Promise<T> {
-  const config = (await readSettings()).ims;
-  const response = await fetch(`${base}/api/v1/video-compositions${path}`, {
-    method: body ? "POST" : "GET",
-    headers: {
-      ...(body ? { "Content-Type": "application/json" } : {}),
-      ...(config ? { "X-IMS-Config": encodeURIComponent(JSON.stringify(config)) } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-    signal,
+  return diagnosticTask("前端合成", `${body ? "POST" : "GET"} /video-compositions${path}`, async (trace) => {
+    const config = (await readSettings()).ims;
+    const response = await trace.run(() => fetch(`${base}/api/v1/video-compositions${path}`, {
+      method: body ? "POST" : "GET",
+      headers: {
+        ...(body ? { "Content-Type": "application/json" } : {}),
+        ...(config ? { "X-IMS-Config": encodeURIComponent(JSON.stringify(config)) } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal,
+    }));
+    if (!response.ok) {
+      const error = await response.json().catch(() => null);
+      const detail = typeof error?.detail === "string" ? error.detail : typeof error?.message === "string" ? error.message : "视频合成请求失败";
+      throw Object.assign(new Error(`${detail}（${response.status}）`), { status: response.status });
+    }
+    const result = await response.json();
+    if (typeof result?.data === "string" && body)
+      trace.run(() => diagnosticTaskState("合成", result.data, "queued"));
+    else if (typeof result?.taskId === "string")
+      trace.run(() => diagnosticTaskState("合成", result.taskId, result.status, result.stage, result.error?.message ?? ""));
+    return result;
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => null);
-    const detail = typeof error?.detail === "string" ? error.detail : typeof error?.message === "string" ? error.message : "视频合成请求失败";
-    throw Object.assign(new Error(`${detail}（${response.status}）`), { status: response.status });
-  }
-  return response.json();
 }
 
 /** 提交现有合成协议，返回创建接口 data 中的任务标识。 */

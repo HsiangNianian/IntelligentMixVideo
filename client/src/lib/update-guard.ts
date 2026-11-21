@@ -1,6 +1,6 @@
 /** 更新应用前的页面门禁：原表单中的草稿与进行中的请求。 */
 import { useLayoutEffect, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { diagnosticContext, diagnosticInvoke as invoke, inDiagnosticContext, debugLog } from './diagnostics';
 const blockers = new Map<symbol, string>();
 let locked = false;
 /** 锁定期间发起的请求在此等待；解锁（应用失败或取消）时放行，应用成功则页面刷新、请求不再发出。 */
@@ -49,10 +49,12 @@ export function lockForUpdate(value: boolean) {
  * 后台写入（如 SSE 事件落库）因此不会失败，应用更新失败解锁后照常继续。
  */
 export async function updateTask<T>(task: () => Promise<T>): Promise<T> {
+  const context = diagnosticContext();
+  if (locked) debugLog('前端执行', `${context ? `[#${context}] ` : ''}等待客户端更新解除请求锁`, '信息');
   while (locked) await unlocked;
   const request = Symbol();
   requests.add(request);
-  try { return await task(); } finally { requests.delete(request); }
+  try { return await inDiagnosticContext(context, task); } finally { requests.delete(request); }
 }
 /** 业务接口复用原 fetch/invoke，更新接口本身不经过门禁。 */
 export const updateFetch = (...args: Parameters<typeof fetch>) => updateTask(() => globalThis.fetch(...args));

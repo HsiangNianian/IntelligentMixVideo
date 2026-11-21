@@ -1,5 +1,6 @@
 /** Remotion HTTP 客户端；请求有超时，写入不自动重试，每个请求携带本机设备 ID，模型凭据只随模型任务与能力查询发送。 */
 import { updateFetch as fetch } from "@/lib/update-guard";
+import { diagnosticTask, diagnosticTaskState, diagnosticContext, inDiagnosticContext } from "@/lib/diagnostics";
 import type {
   Composition,
   ClientContext,
@@ -47,54 +48,61 @@ async function request<T>(
   text = false,
   timeoutMs = 20_000,
 ): Promise<T> {
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  options.signal?.addEventListener("abort", abort, { once: true });
-  if (options.signal?.aborted) controller.abort();
-  const timeout = window.setTimeout(abort, timeoutMs);
-  try {
-    const device = await deviceId();
-    const response = await fetch(apiUrl(path), {
-      ...options,
-      signal: controller.signal,
-      headers: {
-        "X-IMV-Device": device,
-        ...(typeof options.body === "string"
-          ? { "Content-Type": "application/json" }
-          : {}),
-        ...options.headers,
-      },
-    });
-    if (!response.ok) {
-      const detail = response.status === 503 || (response.status === 409 && path.endsWith("/context"))
-        ? await serviceDetail(response) : null;
-      throw new ApiError(
-        response.status,
-        detail ??
-          (response.status === 409
-            ? "当前任务状态已变化，请刷新任务后重试。"
-            : response.status === 413
-              ? "图片超过 10 MiB，请选择较小的图片。"
-              : response.status === 422
-                ? "输入未通过校验，请检查文字、图片或参数。"
-                : response.status === 503
-                  ? "服务尚未就绪，请检查服务端配置。"
-                  : `请求未完成（${response.status}），请重试。`),
-      );
+  return diagnosticTask("前端字效", `${options.method ?? "GET"} ${path}`, async (trace) => {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) controller.abort();
+    const timeout = window.setTimeout(abort, timeoutMs);
+    try {
+      const device = await deviceId();
+      const response = await trace.run(() => fetch(apiUrl(path), {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          "X-IMV-Device": device,
+          ...(typeof options.body === "string"
+            ? { "Content-Type": "application/json" }
+            : {}),
+          ...options.headers,
+        },
+      }));
+      if (!response.ok) {
+        const detail = response.status === 503 || (response.status === 409 && path.endsWith("/context"))
+          ? await serviceDetail(response) : null;
+        throw new ApiError(
+          response.status,
+          detail ??
+            (response.status === 409
+              ? "当前任务状态已变化，请刷新任务后重试。"
+              : response.status === 413
+                ? "图片超过 10 MiB，请选择较小的图片。"
+                : response.status === 422
+                  ? "输入未通过校验，请检查文字、图片或参数。"
+                  : response.status === 503
+                    ? "服务尚未就绪，请检查服务端配置。"
+                    : `请求未完成（${response.status}），请重试。`),
+        );
+      }
+      if (response.status === 204) return undefined as T;
+      const result = (text ? await response.text() : await response.json()) as T;
+      // 仅提取公开任务回执字段，不把模型上下文、图片或完整响应写进诊断。
+      const record = result as { job?: Job; id?: string; project_id?: string; status?: string; message?: string };
+      const job = record?.job ?? (record?.project_id && record?.status ? record as Job : undefined);
+      if (job) trace.run(() => diagnosticTaskState("字效", job.id, job.status, "", job.message ?? ""));
+      return result;
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
+      if (controller.signal.aborted)
+        throw new Error("请求超时，请检查任务状态后重试。");
+      if (error instanceof TypeError)
+        throw new Error("无法连接服务端，请确认服务已启动。");
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", abort);
     }
-    if (response.status === 204) return undefined as T;
-    return (text ? await response.text() : await response.json()) as T;
-  } catch (error) {
-    if (options.signal?.aborted) throw error;
-    if (controller.signal.aborted)
-      throw new Error("请求超时，请检查任务状态后重试。");
-    if (error instanceof TypeError)
-      throw new Error("无法连接服务端，请确认服务已启动。");
-    throw error;
-  } finally {
-    window.clearTimeout(timeout);
-    options.signal?.removeEventListener("abort", abort);
-  }
+  });
 }
 
 /** 每次模型操作读取已保存快照；头部不会进入作品、聊天或任务输入的持久化。 */
@@ -102,12 +110,14 @@ async function modelRequest<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const config = (await readSettings()).remotion_agent;
-  return request(path, {
-    ...options,
-    headers: config
-      ? { "X-Remotion-Config": encodeURIComponent(JSON.stringify(config)) }
-      : undefined,
+  return diagnosticTask("前端字效", "读取模型配置并请求", async (trace) => {
+    const config = (await readSettings()).remotion_agent;
+    return trace.run(() => request(path, {
+      ...options,
+      headers: config
+        ? { "X-Remotion-Config": encodeURIComponent(JSON.stringify(config)) }
+        : undefined,
+    }));
   });
 }
 
@@ -138,7 +148,8 @@ export async function create(
   work: { id: string; current_version_id: string | null; created_at: string; request: { description?: string | null; images?: { asset_id: string }[] } };
   job: Job;
 }> {
-  return modelRequest("/works", {
+  const origin = diagnosticContext();
+  const payload = {
     method: "POST",
     body: JSON.stringify({
       ...(description.trim() ? { description: description.trim() } : {}),
@@ -148,7 +159,8 @@ export async function create(
       ...(switches.twoTier ? { two_tier: true } : {}),
       ...(switches.bilingual ? { bilingual: true } : {}),
     }),
-  });
+  };
+  return inDiagnosticContext(origin, () => modelRequest("/works", payload));
 }
 /** 自然语言修改（文字和／或参考图）、澄清和参数共用同一端点，显式绑定成功版本或问题任务。 */
 export async function message(
@@ -161,14 +173,16 @@ export async function message(
     reply_to_job_id?: string;
   },
 ): Promise<Job> {
+  const origin = diagnosticContext();
   const checkpoint = await modelContext(work);
   const added = (body.images ?? []).map((image) => image.asset_id);
   if (added.length) await linkImages(work, added);
   const ids = [...(checkpoint.image_ids ?? []), ...added];
-  return modelRequest(`/works/${encodeURIComponent(work)}/messages`, {
+  const payload = {
     method: "POST",
     body: JSON.stringify({ ...body, context: checkpoint, ...(body.parameters || !ids.length ? {} : { assets: await imagePayloads(ids) }) }),
-  });
+  };
+  return inDiagnosticContext(origin, () => modelRequest(`/works/${encodeURIComponent(work)}/messages`, payload));
 }
 /** 优先原样复用本地窗口；首次迁移或终态回执未到时补取，落盘成功后才发送。 */
 async function modelContext(work: string): Promise<ClientContext> {
@@ -221,12 +235,14 @@ export function cancel(id: string): Promise<Job> {
 }
 /** 由用户明确重试已结束任务，避免网络故障产生重复生成。 */
 export async function retry(id: string, work?: string): Promise<Job> {
+  const origin = diagnosticContext();
   const project = work ?? (await job(id)).project_id;
   const checkpoint = await modelContext(project);
-  return modelRequest(`/jobs/${encodeURIComponent(id)}/retry`, {
+  const payload = {
     method: "POST",
     body: JSON.stringify({ ...checkpoint, ...(checkpoint.image_ids?.length ? { assets: await imagePayloads(checkpoint.image_ids) } : {}) }),
-  });
+  };
+  return inDiagnosticContext(origin, () => modelRequest(`/jobs/${encodeURIComponent(id)}/retry`, payload));
 }
 
 /** 读取一页编号大于 after 的待送达公开事件（升序，可能少于全部）；后台同步据此补齐未在 SSE 中打开的会话。 */

@@ -5,6 +5,7 @@ import { AvatarCircleControls, AvatarEffectsEditor, AvatarMaskCard, AvatarPrevie
 import { defaultAvatarPreview } from "./avatarPreview";
 import { useTemplatePreviewModel } from "./useTemplatePreviewModel";
 import { useUpdateBlocker } from "@/lib/update-guard";
+import { beginDiagnostic, briefly } from "@/lib/diagnostics";
 import { recovery } from "@/features/updates/recovery";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, CircleCheck, Pencil, SquarePen } from "lucide-react";
@@ -294,16 +295,20 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
 
   /** 成功保存响应建立新基线；失败保留原草稿和待切换目标，不自动重发。 */
   async function persist(nextSelection?: TemplateSelection, savingDraft = draft) {
-    if (!savingDraft || lock.current || loading || maskUploading) return;
-    if (editing?.field === "name" && !editing.value.trim()) { setError("请输入模板名称"); return; }
+    const trace = beginDiagnostic("前端模板", "保存模板");
+    if (!savingDraft || lock.current || loading || maskUploading) {
+      trace.finish("未执行：没有模板草稿，或仍在加载、上传、保存", "警告");
+      return;
+    }
+    if (editing?.field === "name" && !editing.value.trim()) { trace.finish("校验失败：模板名称为空", "警告"); setError("请输入模板名称"); return; }
     // 时间输入保留局部编辑值，写入前检查；模板配置继续由 saveTemplate 校验。
     const timingInputs = form.current?.querySelectorAll<HTMLInputElement>('[aria-label="轨道时间设置"] input');
-    if (timingInputs && [...timingInputs].some((input) => !input.checkValidity())) { setInspectorTab("timing"); return; }
+    if (timingInputs && [...timingInputs].some((input) => !input.checkValidity())) { trace.finish("校验失败：轨道时间无效，未提交", "警告"); setInspectorTab("timing"); return; }
     const transitionInput = form.current?.querySelector<HTMLInputElement>('[aria-label="转场时间设置"] input[type="number"]');
-    if (transitionInput && !transitionInput.checkValidity()) { transitionInput.reportValidity(); return; }
+    if (transitionInput && !transitionInput.checkValidity()) { trace.finish("校验失败：转场时间无效，未提交", "警告"); transitionInput.reportValidity(); return; }
     // 数字人输入有独立字符串草稿；按钮、快捷键和元数据自动保存都不能把未完成输入当成旧有效值保存。
     const avatarInput = [...(form.current?.querySelectorAll<HTMLInputElement>('input[data-avatar-effect]') ?? [])].find((input) => !input.checkValidity());
-    if (avatarInput) { avatarInput.reportValidity(); return; }
+    if (avatarInput) { trace.finish("校验失败：数字人参数无效，未提交", "警告"); avatarInput.reportValidity(); return; }
     const visual = !current || mediaChanged || JSON.stringify({ ...savingDraft, name: "", description: "" })
       !== JSON.stringify({ ...toDraft(current), name: "", description: "" });
     const tab = visual && media ? beginSnapshot() : undefined;
@@ -313,16 +318,20 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     try {
       // Remotion 字效保存文字区间，转场保留自身时长，与 IMS 对象在同一次请求里保存。
       const saveDraft = preview.timeline ? timeClips(savingDraft, preview.timeline, "save") : savingDraft;
-      let saved = await api.saveTemplate(
-        setTransitionDuration(saveDraft, savingDraft.transition_duration_seconds), current?.template_id, !!current?.frame_mask, visual ? await coverSource(media).catch(() => "unavailable") : undefined,
-      );
-      if (!mounted.current) return;
+      const source = visual ? await coverSource(media).catch(() => "unavailable") : undefined;
+      trace.step("前端校验通过，提交模板与轨道配置");
+      let saved = await trace.run(() => api.saveTemplate(
+        setTransitionDuration(saveDraft, savingDraft.transition_duration_seconds), current?.template_id, !!current?.frame_mask, source,
+      ));
+      trace.step(`模板 ${saved.template_id} 已保存`);
+      if (!mounted.current) { trace.finish("保存已完成，页面已卸载，跳过界面更新"); return; }
       if (nextSelection) setAction(null);
       if (visual) {
-        try { saved = await publish(saved, tab); setCoverError(""); }
-        catch (reason) { setCoverError(reason instanceof Error ? reason.message : "请重试"); }
+        trace.step("画面已变化，开始更新封面");
+        try { saved = await trace.run(() => publish(saved, tab)); setCoverError(""); trace.step("封面更新完成"); }
+        catch (reason) { trace.step(`模板已保存，但封面更新失败：${briefly(reason)}`, "警告"); setCoverError(reason instanceof Error ? reason.message : "请重试"); }
       }
-      if (!mounted.current) return;
+      if (!mounted.current) { trace.finish("页面已卸载，保留已写入结果"); return; }
       setMediaChanged(false);
       const next = toDraft(saved);
       setCurrent(saved);
@@ -330,8 +339,10 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
       setBaseline(JSON.stringify(next));
       onSaved?.();
       toast.success(`模板「${saved.name}」已保存`);
+      trace.finish("草稿基线已更新，保存完成");
       if (nextSelection) { setOpenRequest(nextSelection); setAttempt((value) => value + 1); }
     } catch (reason) {
+      trace.finish(`保存失败，保留草稿：${briefly(reason)}`, "错误");
       if (mounted.current) setError(reason instanceof Error ? reason.message : "保存失败，请重试");
     } finally {
       if (tab) void tab.then(({ stream }) => releaseCoverTab(stream));
