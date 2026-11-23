@@ -68,7 +68,7 @@ macOS 通过 `src-tauri/Info.plist` 的 `NSAllowsArbitraryLoadsInWebContent` 允
 正式客户端已采用 [PR #196](https://github.com/HsiangNianian/IntelligentMixVideo/pull/196)（`44d5bff`）的工作室设计。运行 `bun run dev` 后直接打开 <http://localhost:1420/>，桌面端运行 `bun run tauri dev`。独立 Demo 入口、模拟数据和原型调试面板已移除。
 
 - `src/components/studio/`：导航、启动动画、模板卡片和对话框等视图组件。
-- `src/styles/studio.css`：白纸与黑纸两套主题、统一的中文手写界面字体和中性石墨色。手写字体从悠哉 Regular v0.868 转为 WOFF2 随包分发（`public/fonts`，OFL 许可）；不叠排线或描边，通过字体自身的 `size-adjust: 118%` 统一放大标题、导航、按钮与说明文字；字体库样张、视频画面与等宽代码保持各自字体和字号。
+- `src/styles/studio.css`：白纸与黑纸两套主题、统一的界面字体和中性石墨色。Windows 优先使用微软雅黑，其他系统回退到苹方、思源黑体或系统无衬线字体。字体库样张、视频画面与等宽代码保持各自字体和字号。
 - `src/features/`：真实模板读写、SDK 播放器、AI 会话、参数与资产保存，沿用现有接口。
 
 模板编辑桌面三栏默认约为 20% / 58% / 22%，仍可拖动分界线调整；名称与描述使用定高单行输入，描述编辑框约为该行宽度的四分之一（窄窗口保留可输入宽度），不抬高顶栏。主导航宽屏为 208px，窄屏为 76px。

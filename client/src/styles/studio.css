@@ -1,13 +1,4 @@
-/* 纸面工作室：自托管中文手写界面字体与中性主题；真实字体样张、播放器及代码各自指定字体。 */
-@font-face {
-  font-family: "IMV Hand";
-  src: url("/fonts/imv-hand.woff2") format("woff2");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-  /* 手写字形整体放大；独立加载的样张字体、视频和等宽代码不受影响。 */
-  size-adjust: 118%;
-}
+/* 纸面工作室：黑体界面字体与中性主题；真实字体样张、播放器及代码各自指定字体。 */
 @theme {
   --color-white: #fff;
   --color-black: #000;
@@ -49,8 +40,8 @@
   --color-spectrum-2: var(--color-fg);
   --color-spectrum-3: var(--color-fg-subtle);
 
-  /* 中西文界面共用手写字形；等宽代码保持 Geist Mono，媒体与字样显式使用自己的字体。 */
-  --font-sans: "IMV Hand", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  /* 界面优先使用微软雅黑；等宽代码、媒体和字体样张保留各自字体。 */
+  --font-sans: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
   --font-serif: var(--font-sans);
 
@@ -193,7 +184,7 @@
   --shadow-lift: 0 14px 32px -14px oklch(0 0 0 / 0.65);
 }
 
-/* 标题沿用真实手写轮廓，以字距和留白强调；不再叠排线、描边或重复文字。 */
+/* 标题沿用界面黑体，以字距和留白强调。 */
 @layer components {
   .sketch-text {
     font-family: var(--font-sans);
