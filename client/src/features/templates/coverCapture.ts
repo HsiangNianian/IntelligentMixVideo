@@ -1,5 +1,6 @@
 /** 只取模板的已合成画布。桌面读取 WebView 内存快照，普通浏览器仅接受用户选中的当前标签页。 */
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
+import { diagnosticInvoke as invoke } from "@/lib/diagnostics";
 
 /** 等待播放器定位、渲染或上传前的有界条件，页面隐藏或卸载后不再截取其他画面。 */
 export async function waitForCover(test: () => boolean, timeout = 15000, message = "预览未就绪，请重试") {

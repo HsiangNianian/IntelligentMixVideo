@@ -7,8 +7,9 @@
  * `apply` 写入本地后，再向服务端确认送达，服务端随即删除已送达的事件。
  */
 import { updateFetch as fetch, updateInvoke as invoke } from "@/lib/update-guard";
-import { invoke as nativeInvoke, isTauri } from "@tauri-apps/api/core";
-import { apiBase } from "@/lib/api-base";
+import { isTauri } from "@tauri-apps/api/core";
+import { diagnosticInvoke as nativeInvoke, diagnosticContext, inDiagnosticContext } from "@/lib/diagnostics";
+import { apiBase, apiServiceKey } from "@/lib/api-base";
 import type {
   ChatMessage,
   ClientContext,
@@ -86,16 +87,18 @@ function changeImages(change: SessionChange): string[] {
 }
 /** 优先读本机；只为旧云端记录补取一次，写入失败时阻止送达确认和后续提交。 */
 export async function image(id: string): Promise<Uint8Array> {
+  const origin = diagnosticContext();
   const scope = server();
   const saved = await storage().image(scope, id);
   if (saved) return saved;
-  const response = await fetch(`${apiBase()}/api/templates/assets/${encodeURIComponent(id)}`, {
-    headers: { "X-IMV-Device": await deviceId() }, signal: AbortSignal.timeout(20_000),
-  });
+  const device = await inDiagnosticContext(origin, deviceId);
+  const response = await inDiagnosticContext(origin, () => fetch(`${apiBase()}/api/templates/assets/${encodeURIComponent(id)}`, {
+    headers: { "X-IMV-Device": device }, signal: AbortSignal.timeout(20_000),
+  }));
   if (!response.ok) throw new LocalStoreError(`参考图片无法从本机或旧服务恢复（${response.status}），未确认送达。`);
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (!bytes.length || bytes.length > 30 * 1024 * 1024) throw new LocalStoreError("历史参考图片大小无效。");
-  await storage().putImage(scope, id, bytes);
+  await inDiagnosticContext(origin, () => storage().putImage(scope, id, bytes));
   return bytes;
 }
 
@@ -419,21 +422,16 @@ export function deviceId(): Promise<string> {
  * 切换服务后只看到该服务的会话，删除也只影响该服务下的本地记录。
  */
 export function server(): string {
-  const base = apiBase();
-  try {
-    const url = new URL(base);
-    return url.origin + url.pathname.replace(/\/+$/, "");
-  } catch {
-    return base;
-  }
+  return apiServiceKey(apiBase());
 }
 
 /** 每个会话的本地读写队列：SSE、后台同步、恢复读取与删除按调用顺序串行，读到的游标总是上一次写入之后的。 */
 const queues = new Map<string, Promise<unknown>>();
 /** 在当前服务下该会话的队列末尾执行任务；任务失败只拒绝自己，不阻塞后续任务。 */
 function serial<T>(work: string, task: () => Promise<T>, scope = server()): Promise<T> {
+  const origin = diagnosticContext();
   const key = JSON.stringify([scope, work]);
-  const run = (queues.get(key) ?? Promise.resolve()).then(task);
+  const run = (queues.get(key) ?? Promise.resolve()).then(() => inDiagnosticContext(origin, task));
   const tail = run.catch(() => {});
   queues.set(key, tail);
   void tail.then(() => {
@@ -478,23 +476,25 @@ export function context(work: string): Promise<ClientContext | null> {
 }
 /** 将断线补取或旧服务器窗口先写入本地；失败时不得继续提交新任务。 */
 export function saveContext(work: string, context: ClientContext): Promise<void> {
+  const origin = diagnosticContext();
   return serial(work, async () => {
     const scope = server();
     const stored = await storage().work(scope, work);
     if (!stored) throw new MissingLocalWork();
     if (context.work_id !== work || context.job_id !== stored.job.id)
       throw new Error("模型上下文与当前会话任务不一致，请刷新任务后重试。");
-    for (const id of new Set([...(context.image_ids ?? []), ...(context.legacy_image_ids ?? [])])) await image(id);
-    await storage().save(scope, { work: { ...stored, context }, messages: [], jobs: [] });
+    for (const id of new Set([...(context.image_ids ?? []), ...(context.legacy_image_ids ?? [])])) await inDiagnosticContext(origin, () => image(id));
+    await inDiagnosticContext(origin, () => storage().save(scope, { work: { ...stored, context }, messages: [], jobs: [] }));
   });
 }
 /** 发送前保留新增图片与作品的关联；响应丢失或 SSE 延迟时仍保留，随作品删除一起清理。 */
 export function linkImages(work: string, ids: string[]): Promise<void> {
+  const origin = diagnosticContext();
   return serial(work, async () => {
     const scope = server();
     const stored = await storage().work(scope, work);
     if (!stored) throw new MissingLocalWork();
-    await storage().save(scope, { work: stored, messages: [], jobs: [], image_ids: ids });
+    await inDiagnosticContext(origin, () => storage().save(scope, { work: stored, messages: [], jobs: [], image_ids: ids }));
   });
 }
 /** 快照的实际读取。 */
@@ -585,18 +585,19 @@ async function removeRegistration(key: string, entry: Registration) {
 }
 /** 重试本地登记，不重发服务端任务；成功落盘后才删除回执，已到达的终态不得退回排队状态。 */
 function saveRegistration(key: string, entry: Registration): Promise<void> {
+  const origin = diagnosticContext();
   const { server: scope, job } = entry;
   return serial(job.project_id, async () => {
     const stored = await storage().work(scope, job.project_id);
     if (!stored) {
       if (!entry.initial) throw new MissingLocalWork();
-      await storage().save(scope, entry.initial);
-    } else if (stored.job.id !== job.id && !(await storage().jobs(scope, job.project_id, [job.id])).length) {
+      await inDiagnosticContext(origin, () => storage().save(scope, entry.initial!));
+    } else if (stored.job.id !== job.id && !(await inDiagnosticContext(origin, () => storage().jobs(scope, job.project_id, [job.id]))).length) {
       const stamp = new Date().toISOString();
       const latest: SessionJob = { ...job, created_at: stamp, updated_at: stamp, parameters: null };
-      await storage().save(scope, { work: { ...stored, job: latest }, messages: [], jobs: [latest] });
+      await inDiagnosticContext(origin, () => storage().save(scope, { work: { ...stored, job: latest }, messages: [], jobs: [latest] }));
     }
-    await removeRegistration(key, entry);
+    await inDiagnosticContext(origin, () => removeRegistration(key, entry));
   }, scope);
 }
 /** 在读取历史或显式刷新任务时恢复当前服务的登记；其他服务的记录继续保护更新。 */
@@ -606,13 +607,14 @@ async function recoverRegistrations(work?: string) {
 }
 /** 先保留已接受任务的独立回执，再登记到会话库；两种存储都失败时仍保留内存回执并阻止更新。 */
 async function register(entry: Registration): Promise<void> {
+  const origin = diagnosticContext();
   const key = REGISTRATION_PREFIX + JSON.stringify([entry.server, entry.job.id]);
   registrations.set(key, entry);
   try {
     if (isTauri()) await registrationCall("registrations_save", entry);
     else localStorage.setItem(key, JSON.stringify(entry));
   } catch { /* 数据库仍可能可写；失败时内存回执不能释放。 */ }
-  return saveRegistration(key, entry);
+  return inDiagnosticContext(origin, () => saveRegistration(key, entry));
 }
 /** 已有会话的续写或参数任务也先保存回执；无需重复保存会话初始信息。 */
 export function track(job: Job): Promise<void> {
