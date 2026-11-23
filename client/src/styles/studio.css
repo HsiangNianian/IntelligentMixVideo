@@ -30,6 +30,8 @@
   --color-danger: oklch(0.58 0.21 25);
   --color-success: oklch(0.62 0.15 155);
   --color-warning: oklch(0.66 0.15 65);
+  /* 首页入口图标共用中灰底，白色线条和光晕在两种主题下均可辨认。 */
+  --color-entry-icon-bg: #666;
 
   --color-scrim: oklch(0.2 0.01 265 / 0.32);
   --color-shimmer: oklch(1 0 0 / 0.75);
@@ -44,6 +46,22 @@
   --font-sans: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
   --font-serif: var(--font-sans);
+
+  /* 界面文字再收紧一档，小字保留 11px 以便辨认；字样预览和视频内容仍使用各自的字号。 */
+  --text-xs: 0.6875rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.75rem;
+  --text-sm--line-height: 1.0625rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.3125rem;
+  --text-lg: 1rem;
+  --text-lg--line-height: 1.4375rem;
+  --text-xl: 1.125rem;
+  --text-xl--line-height: 1.5625rem;
+  --text-2xl: 1.3125rem;
+  --text-2xl--line-height: 1.6875rem;
+  --text-3xl: 1.6875rem;
+  --text-3xl--line-height: 2.0625rem;
 
   --shadow-pop: 0 1px 2px oklch(0.2 0.01 265 / 0.06), 0 20px 48px -16px oklch(0.2 0.01 265 / 0.22);
   --shadow-lift: 0 14px 32px -14px oklch(0.2 0.01 265 / 0.32);
@@ -60,6 +78,7 @@
   --animate-ping-soft: ping-soft 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
   --animate-lock-pop: lock-pop 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --animate-mix-glow: mix-glow 1s ease-out forwards;
+  --animate-entry-spark: entry-spark 1.4s ease-in-out infinite;
 
   /* 骨架屏的高光从左扫到右。 */
   @keyframes shimmer {
@@ -117,6 +136,11 @@
     30% { text-shadow: 0 0 28px color-mix(in oklch, var(--color-brand) 85%, transparent), 0 0 6px var(--color-brand-from); }
     100% { text-shadow: 0 0 22px color-mix(in oklch, var(--color-brand) 30%, transparent); }
   }
+  /* 首页星芒在白色与白色柔光之间闪烁，减少动态效果时由基础层停用动画。 */
+  @keyframes entry-spark {
+    0%, 100% { opacity: 1; filter: drop-shadow(0 0 4px var(--color-white)); }
+    50% { opacity: 0.45; filter: none; }
+  }
 }
 
 /* 胶片颗粒：叠在模板封面上让渐变像一帧画面，而不是一块平涂色块。 */
@@ -135,8 +159,8 @@
     background: var(--color-canvas);
     color: var(--color-fg);
     font-family: var(--font-sans);
-    font-size: 14px;
-    line-height: 1.5;
+    font-size: 12px;
+    line-height: 1.45;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -156,18 +180,18 @@
   }
 }
 
-/* 黑纸主题：用中性炭灰区分面板，文字为浅石墨色；媒体和字样不叠加纸纹。 */
+/* 深灰主题：用中性灰区分面板，主要文字使用白色；媒体和字样不叠加纸纹。 */
 .dark {
-  --color-rail: oklch(0.19 0.004 85);
-  --color-sunken: oklch(0.175 0.004 85);
-  --color-canvas: oklch(0.195 0.004 85);
-  --color-surface: oklch(0.21 0.004 85);
-  --color-overlay: oklch(0.25 0.004 85);
-  --color-raised: oklch(0.275 0.005 85);
-  --color-hover: oklch(0.32 0.005 85);
+  --color-rail: #2b2b2b;
+  --color-sunken: #202020;
+  --color-canvas: #242424;
+  --color-surface: #303030;
+  --color-overlay: #363636;
+  --color-raised: #3a3a3a;
+  --color-hover: #444;
   --color-line: oklch(1 0 0 / 0.1);
   --color-line-strong: oklch(1 0 0 / 0.18);
-  --color-fg: oklch(0.9 0.015 85);
+  --color-fg: #fff;
   --color-fg-muted: oklch(0.74 0.012 85);
   --color-fg-subtle: oklch(0.64 0.009 85);
   --color-ink: oklch(0.9 0.008 265);

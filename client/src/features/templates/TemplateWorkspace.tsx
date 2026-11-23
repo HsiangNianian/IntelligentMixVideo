@@ -411,7 +411,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                             if (event.key === "Escape") { event.preventDefault(); setEditing(null); setError(""); }
                             if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.blur(); }
                           }} />
-                          : <span aria-label={label} className={field === "name" ? "sketch-text block truncate text-[28px]" : "block truncate text-[11px] text-muted-foreground"}>{draft[field] || "暂无模板描述"}</span>}
+                          : <span aria-label={label} className={field === "name" ? "sketch-text block truncate text-[22px]" : "block truncate text-[11px] text-muted-foreground"}>{draft[field] || "暂无模板描述"}</span>}
                       </dd>
                       {editing?.field !== field && <Hint label={`编辑${label}`}><Button type="button" variant="ghost" size="icon-xs" aria-label={`编辑${label}`}
                         onClick={() => { setEditing({ field, value: draft[field] }); setError(""); }}><Pencil className="size-3" aria-hidden="true" /></Button></Hint>}

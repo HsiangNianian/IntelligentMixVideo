@@ -46,7 +46,7 @@ export function WorkspacePanels({ history, chat, preview, parameters, mobile, st
   useEffect(() => { if (!desktop) group.current?.setLayout(expandedLayout.current); }, [desktop, group]);
   return <div className="flex min-h-0 flex-1 flex-col">
     <header className="paper-surface flex min-h-18 shrink-0 flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-3">
-      <h1 aria-label="AI 字效" className="sketch-text mr-3 text-[28px] max-sm:sr-only">AI 字效</h1>
+      <h1 aria-label="AI 字效" className="sketch-text mr-3 text-[22px] max-sm:sr-only">AI 字效</h1>
       <Button variant="ghost" size="sm" className="hidden lg:inline-flex" aria-expanded={historyOpen} aria-controls="effects-history" onClick={() => setHistoryOpen((value) => !value)}><History className="size-4" />历史会话</Button>
       <span className="min-w-0 flex-1 basis-32 truncate text-xs text-fg-subtle">{status}</span>
       <Button variant="ghost" size="sm" className="hidden lg:inline-flex" aria-expanded={!parametersCollapsed} aria-controls={parameterId} onClick={() => {

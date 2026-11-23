@@ -47,7 +47,7 @@ export function Rail({ page, onNavigate, onSettings, editing, dirty, version, lo
                 <Icon name={icon} className="size-5" />
                 {target === "editor" && editing !== null && dirty && <PulseDot className="absolute -right-1 -top-1 text-warning ring-2 ring-rail" />}
               </span>
-              <span className="font-serif text-[10px] xl:text-[16px]">{label}</span>
+              <span className="font-serif text-[10px] xl:text-[13px]">{label}</span>
             </button>
           );
           return <li key={target}>{target === "editor" ? <Tooltip side="right" label={editing ? `正在编辑「${editing}」${dirty ? " · 有未保存的修改" : ""}` : "还没有打开模板"}>{item}</Tooltip> : item}</li>;

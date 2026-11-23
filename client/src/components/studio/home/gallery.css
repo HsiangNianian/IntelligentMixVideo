@@ -1,12 +1,13 @@
 /* 空间陈列只变换封面外框；中间最大，两侧后退。真实模板的操作与内容不参与装饰变换。 */
 .template-gallery { container-type: inline-size; }
-.template-gallery-stage { --cover-width: min(22cqw, 285px); position: relative; height: calc(var(--cover-width) * 16 / 9 + 80px); overflow: hidden; touch-action: pan-y; user-select: none; cursor: grab; }
+/* 收紧封面上下空间，保持封面宽度和 9:16 比例。 */
+.template-gallery-stage { --cover-width: min(22cqw, 285px); position: relative; height: calc(var(--cover-width) * 16 / 9 + 48px); overflow: hidden; touch-action: pan-y; user-select: none; cursor: grab; }
 .template-gallery-stage button { cursor: inherit; }
 .template-gallery-stage[data-dragging="true"] { cursor: grabbing; }
 .template-gallery-stage[data-dragging="true"] .template-gallery-item { transition: none; }
 .template-gallery-item {
   position: absolute;
-  top: 24px;
+  top: 12px;
   left: 50%;
   width: var(--cover-width);
   transform-origin: center;
