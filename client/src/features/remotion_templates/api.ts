@@ -48,6 +48,7 @@ async function request<T>(
   text = false,
   timeoutMs = 20_000,
 ): Promise<T> {
+  const base = apiBase();
   return diagnosticTask("前端字效", `${options.method ?? "GET"} ${path}`, async (trace) => {
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -56,7 +57,7 @@ async function request<T>(
     const timeout = window.setTimeout(abort, timeoutMs);
     try {
       const device = await deviceId();
-      const response = await trace.run(() => fetch(apiUrl(path), {
+      const response = await trace.run(() => fetch(`${base}/api/templates${path}`, {
         ...options,
         signal: controller.signal,
         headers: {
@@ -86,10 +87,10 @@ async function request<T>(
       }
       if (response.status === 204) return undefined as T;
       const result = (text ? await response.text() : await response.json()) as T;
-      // 仅提取公开任务回执字段，不把模型上下文、图片或完整响应写进诊断。
-      const record = result as { job?: Job; id?: string; project_id?: string; status?: string; message?: string };
+      // 只记录任务机器字段；公开回复也可能包含用户文本，不能进入诊断。
+      const record = result as { job?: Job; id?: string; project_id?: string; status?: string };
       const job = record?.job ?? (record?.project_id && record?.status ? record as Job : undefined);
-      if (job) trace.run(() => diagnosticTaskState("字效", job.id, job.status, "", job.message ?? ""));
+      if (job) trace.run(() => diagnosticTaskState("字效", job.id, job.status, { service: base }));
       return result;
     } catch (error) {
       if (options.signal?.aborted) throw error;
@@ -132,10 +133,12 @@ export async function upload(
   image: File,
   signal?: AbortSignal,
 ): Promise<{ id: string }> {
+  const origin = diagnosticContext();
+  const scope = server();
   const form = new FormData();
   form.append("file", image);
   const result = await request<{ id: string; data: string }>("/assets", { method: "POST", body: form, signal });
-  await storage().putImage(server(), result.id, decodeImage(result.data));
+  await inDiagnosticContext(origin, () => storage().putImage(scope, result.id, decodeImage(result.data)));
   return { id: result.id };
 }
 /** 首次发送才创建作品；尚未收到 ID 的请求不自动重试。「关键词字效」「双栏」「双语字幕」只在打开时携带，关闭时沿用服务端默认值。 */
@@ -176,20 +179,21 @@ export async function message(
   const origin = diagnosticContext();
   const checkpoint = await modelContext(work);
   const added = (body.images ?? []).map((image) => image.asset_id);
-  if (added.length) await linkImages(work, added);
+  if (added.length) await inDiagnosticContext(origin, () => linkImages(work, added));
   const ids = [...(checkpoint.image_ids ?? []), ...added];
   const payload = {
     method: "POST",
-    body: JSON.stringify({ ...body, context: checkpoint, ...(body.parameters || !ids.length ? {} : { assets: await imagePayloads(ids) }) }),
+    body: JSON.stringify({ ...body, context: checkpoint, ...(body.parameters || !ids.length ? {} : { assets: await inDiagnosticContext(origin, () => imagePayloads(ids)) }) }),
   };
   return inDiagnosticContext(origin, () => modelRequest(`/works/${encodeURIComponent(work)}/messages`, payload));
 }
 /** 优先原样复用本地窗口；首次迁移或终态回执未到时补取，落盘成功后才发送。 */
 async function modelContext(work: string): Promise<ClientContext> {
+  const origin = diagnosticContext();
   const saved = await context(work);
   if (saved) return saved;
-  const checkpoint = await request<ClientContext>(`/works/${encodeURIComponent(work)}/context`);
-  await saveContext(work, checkpoint);
+  const checkpoint = await inDiagnosticContext(origin, () => request<ClientContext>(`/works/${encodeURIComponent(work)}/context`));
+  await inDiagnosticContext(origin, () => saveContext(work, checkpoint));
   return checkpoint;
 }
 /** 从本地二进制存储自动组装本次所需图片，稳定 ID 与 PNG 字节不随重试改变。 */
@@ -237,10 +241,10 @@ export function cancel(id: string): Promise<Job> {
 export async function retry(id: string, work?: string): Promise<Job> {
   const origin = diagnosticContext();
   const project = work ?? (await job(id)).project_id;
-  const checkpoint = await modelContext(project);
+  const checkpoint = await inDiagnosticContext(origin, () => modelContext(project));
   const payload = {
     method: "POST",
-    body: JSON.stringify({ ...checkpoint, ...(checkpoint.image_ids?.length ? { assets: await imagePayloads(checkpoint.image_ids) } : {}) }),
+    body: JSON.stringify({ ...checkpoint, ...(checkpoint.image_ids?.length ? { assets: await inDiagnosticContext(origin, () => imagePayloads(checkpoint.image_ids!)) } : {}) }),
   };
   return inDiagnosticContext(origin, () => modelRequest(`/jobs/${encodeURIComponent(id)}/retry`, payload));
 }

@@ -10,3 +10,13 @@ export function setApiBase(url: string) {
 export function apiBase() {
   return base;
 }
+
+/** 服务归属键：保留部署路径，规范化来源与尾斜杠；查询、片段和账号不参与任务/会话关联。 */
+export function apiServiceKey(value: string): string {
+  try {
+    const url = new URL(value);
+    return url.origin + url.pathname.replace(/\/+$/, "");
+  } catch {
+    return value;
+  }
+}

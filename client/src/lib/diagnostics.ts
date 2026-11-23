@@ -6,7 +6,7 @@
  * 浏览器不开启收集；相同记录合并，密码、密钥等敏感输入只记录“已隐藏”。
  */
 import { invoke, isTauri, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/core";
-import { apiBase } from "./api-base";
+import { apiBase, apiServiceKey } from "./api-base";
 
 /** 日志级别与原生窗口的显示格式一致。 */
 export type DiagnosticLevel = "错误" | "警告" | "信息";
@@ -78,7 +78,7 @@ export function beginDiagnostic(source: string, label: string): DiagnosticTrace 
   const begin = performance.now();
   let finished = false;
   const step = (message: string, level: DiagnosticLevel = "信息") => {
-    if (id && generation === session && !finished) debugLog(source, `[#${id}] ${message}`, level);
+    if (id && generation === session && !finished) debugLog(source, `[#${id}] ${oneLine(message, MAX_LENGTH)}`, level);
   };
   step(`开始 ${label}${parent ? `；来自 #${parent}` : "；独立或后台触发"}`);
   return {
@@ -105,30 +105,49 @@ export async function diagnosticTask<T>(source: string, label: string, work: (tr
   }
 }
 
-/** 有界任务关联表只存编号与状态，不存任务输入、图片、配置或模型内容。 */
-const tasks = new Map<string, { trace: DiagnosticTrace; state: string; parent?: string }>();
+/** 活动任务保留关联；仅保留最近 200 个终态，不存任务输入、图片、配置或模型内容。 */
+const tasks = new Map<string, { trace: DiagnosticTrace; state: string; parent?: string; terminal: boolean }>();
+const completedTasks = new Set<string>();
+const TASK_STATUSES = new Set(["queued", "running", "processing", "succeeded", "answered", "needs_input", "failed", "cancelled", "interrupted"]);
+const TERMINAL_TASK_STATUSES = new Set(["succeeded", "answered", "needs_input", "failed", "cancelled", "interrupted"]);
 
-/** 关联提交回执与 SSE/查询状态；只有阶段或公开状态变化才输出，终态明确区分成功、失败和取消。 */
-export function diagnosticTaskState(kind: string, id: string, status: string, stage = "", message = "") {
-  if (!started) return;
+/** 只接受有界机器标识，拒绝自由文本、换行和控制字符，不改变业务返回值。 */
+function taskField(value: unknown, limit: number): string {
+  return typeof value === "string" && value.length <= limit && /^[a-zA-Z0-9_-]+$/.test(value) ? value : "";
+}
+
+/** 服务必须是发起请求/订阅时保存的地址；只接收机器字段，禁止传入回答或错误详情。 */
+export function diagnosticTaskState(kind: "字效" | "合成", id: string, status: string, details: { service: string; stage?: string; code?: string }) {
+  if (!started || !taskField(id, 128)) return;
+  const stage = taskField(details.stage, 64);
+  const code = taskField(details.code, 64);
+  status = TASK_STATUSES.has(status) ? status : "unknown";
   const parent = diagnosticContext();
-  const key = `${kind}:${id}`;
+  const service = apiServiceKey(details.service);
+  const key = JSON.stringify([service, kind, id]);
   let task = tasks.get(key);
   if (!task) {
-    task = { trace: beginDiagnostic("后端任务", `${kind}任务 ${id}`), state: "", parent };
+    task = { trace: beginDiagnostic("后端任务", `${kind}任务 ${id}（${oneLine(diagnosticText(service), 200)}）`), state: "", parent, terminal: false };
     tasks.set(key, task);
-    if (tasks.size > 200) tasks.delete(tasks.keys().next().value!);
   } else if (parent && parent !== task.parent) {
-    debugLog("后端任务", `[#${task.trace.id}] 任务 ${id} 关联操作 #${parent}`, "信息");
-    task.parent = parent;
+    debugLog("后端任务", `[#${task.trace.id}] 任务 ${id} 观察操作 #${parent}`, "信息");
   }
-  const state = `${status} ${stage}`;
+  const state = `${status} ${stage} ${code}`;
   if (state === task.state) return;
   task.state = state;
-  const detail = `状态 ${status}${stage ? `；阶段 ${stage}` : ""}${message ? `；${oneLine(message, 300)}` : ""}`;
-  if (["succeeded", "answered", "failed", "cancelled", "interrupted"].includes(status))
-    task.trace.finish(detail, status === "failed" || status === "interrupted" ? "错误" : "信息");
-  else task.trace.step(detail);
+  const detail = `状态 ${status}${stage ? `；阶段 ${stage}` : ""}${code ? `；错误码 ${code}` : ""}`;
+  const level = status === "failed" || status === "interrupted" ? "错误" : "信息";
+  if (task.terminal) debugLog("后端任务", `[#${task.trace.id}] 终态补充：${detail}`, level);
+  else if (TERMINAL_TASK_STATUSES.has(status)) {
+    task.trace.finish(detail, level);
+    task.terminal = true;
+    completedTasks.add(key);
+    if (completedTasks.size > 200) {
+      const oldest = completedTasks.values().next().value!;
+      completedTasks.delete(oldest);
+      tasks.delete(oldest);
+    }
+  } else task.trace.step(detail);
 }
 
 /** 对诊断文本中的 URL、常见凭据键和 Bearer 令牌脱敏；业务请求和返回值不整体序列化。 */
@@ -766,6 +785,7 @@ export function resetDiagnostics() {
   context = undefined;
   interaction = undefined;
   tasks.clear();
+  completedTasks.clear();
   stopMain?.();
   stopLongFrames?.();
   longFrameListeners.clear();

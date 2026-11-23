@@ -69,7 +69,10 @@ const server = await createServer({ server: { host: "localhost", port: 0, open: 
 let browser;
 try {
   await server.listen();
-  browser = await chromium.launch({ channel: "chrome", headless: true });
+  browser = await chromium.launch({
+    ...(process.env.IMV_CHROME_PATH ? { executablePath: process.env.IMV_CHROME_PATH } : { channel: "chrome" }),
+    headless: true,
+  });
   const page = await browser.newPage();
   await page.addInitScript(desktop);
   await page.goto(`http://localhost:${server.httpServer.address().port}/__actions`);

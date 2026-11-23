@@ -1,4 +1,4 @@
-/** 动作链回归：真实点击/快捷键、异步 IPC、更新阻塞和任务 SSE 的日志，不执行实际下载、安装或外部请求。 */
+/** 动作链回归：点击/快捷键、异步 IPC、更新阻塞和任务 SSE 日志；隔离下载、安装和外部请求，在 client/ 执行 bun run test action-diagnostics.test.tsx。 */
 import { afterEach, expect, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beginDiagnostic, diagnosticInvoke, openDiagnostics, resetDiagnostics, startDiagnostics } from "@/lib/diagnostics";
@@ -8,6 +8,11 @@ import * as api from "@/features/remotion_templates/api";
 import { events } from "@/features/remotion_templates/events";
 import { apiBase, setApiBase } from "@/lib/api-base";
 import { fetchMock, mockDesktop } from "./setup";
+import { readSettings, saveSettings } from "@/features/settings/api";
+import * as local from "@/features/remotion_templates/localSessions";
+import { lockForUpdate } from "@/lib/update-guard";
+import { remotionJob } from "./remotion-fixtures";
+import type { ClientContext } from "@/features/remotion_templates/model";
 
 type Entry = { source: string; message: string; level: string };
 afterEach(() => resetDiagnostics());
@@ -125,10 +130,88 @@ test("字效提交经过异步配置后关联请求和后续 SSE 任务", async 
     const next = connection.next();
     await waitFor(() => expect(entries.some(entry => entry.message.includes("SSE 已建立"))).toBe(true));
     expect(entries.some(entry => entry.message.includes("状态 succeeded"))).toBe(false);
-    stream.enqueue(encoder.encode(`id: 1\nevent: job.updated\ndata: ${JSON.stringify({ id: 1, work_id: "work-trace", type: "job.updated", data: { ...job, status: "succeeded", message: "渲染验收通过" } })}\n\n`));
+    // 切换设置后旧 SSE 仍属于原服务，且公开回复不能进入任务诊断。
+    setApiBase("http://other.test:8000");
+    stream.enqueue(encoder.encode(`id: 1\nevent: job.updated\ndata: ${JSON.stringify({ id: 1, work_id: "work-trace", type: "job.updated", data: { ...job, status: "succeeded", message: "private-answer" } })}\n\n`));
     expect((await next).value?.type).toBe("job.updated");
     await connection.return(undefined);
     expect(entries.some(entry => entry.source === "后端任务" && entry.message.includes(`[#${id(task)}]`) && entry.message.includes("状态 succeeded"))).toBe(true);
-    expect(JSON.stringify(entries)).not.toMatch(/private-instruction|config-secret/);
+    expect(entries.filter(entry => entry.message.includes("开始 字效任务 job-trace"))).toHaveLength(1);
+    expect(JSON.stringify(entries)).not.toMatch(/private-instruction|config-secret|private-answer/);
   } finally { setApiBase(previousBase); }
+});
+
+// 场景：设置已有的 updateInvoke 路径必须记录命令；只读回执核查仍能越过更新锁，不绕开写入门禁。
+test("设置和会话回执 IPC 有诊断且不改变门禁", async () => {
+  const calls: { command: string; args: Record<string, unknown> }[] = [];
+  let failSave = false;
+  const entries = desktop(async (command, args) => {
+    calls.push({ command, args });
+    if (command === "remotion_sessions") return [];
+    if (args?.id && failSave) throw "设置文件只读";
+    return { remotion_agent: { api_key: "private-settings" } };
+  });
+  await openDiagnostics();
+  const trace = beginDiagnostic("测试", "读写设置");
+  expect(await trace.run(readSettings)).toEqual({ remotion_agent: { api_key: "private-settings" } });
+  failSave = true;
+  await expect(trace.run(() => saveSettings("remotion_agent", { api_key: "private-settings" }))).rejects.toBe("设置文件只读");
+  lockForUpdate(true);
+  try {
+    expect(await trace.run(local.registrationBlockers)).toEqual([]);
+  } finally { lockForUpdate(false); }
+  for (const command of ["local_settings/读取设置", "local_settings/保存设置", "remotion_sessions/registrations_list"]) {
+    expect(entries.find(entry => entry.message.includes(`开始 ${command}`))?.message).toContain(`来自 #${trace.id}`);
+  }
+  expect(entries.some(entry => entry.message.includes("执行失败：设置文件只读"))).toBe(true);
+  expect(JSON.stringify(entries)).not.toContain("private-settings");
+  resetDiagnostics();
+  failSave = false;
+  const count = entries.length;
+  await saveSettings("remotion_agent", { api_key: "unchanged" });
+  expect(calls.at(-1)).toEqual({ command: "local_settings", args: { id: "remotion_agent", values: { api_key: "unchanged" } } });
+  expect(entries).toHaveLength(count);
+});
+
+// 场景：续写/重试需要补取上下文、保存上下文与迁移图片；所有异步准备和登记命令都继承原操作。
+test.each(["message", "retry"] as const)("%s 的准备读取和本地落库保持关联", async operation => {
+  const job = remotionJob("failed");
+  const checkpoint: ClientContext = { work_id: "work-1", job_id: "job-1", state: "private-model-context", image_ids: ["old-image"] };
+  const stored: local.StoredWork = {
+    work: { id: "work-1", current_version_id: null }, title: "private-title", cursor: 0, updated_at: "2026-11-23",
+    job: { ...job, parameters: null, created_at: "2026-11-23", updated_at: "2026-11-23" },
+  };
+  const entries = desktop(async (command, args) => {
+    if (command === "local_settings") return {};
+    if (args.operation === "device") return "device";
+    if (args.operation === "work") return stored;
+    if (args.operation === "image") return null;
+    if (args.operation === "jobs") return [];
+    return null;
+  });
+  local.setStorage(undefined);
+  fetchMock.mockImplementation((async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/context")) return Response.json(checkpoint);
+    if (url.includes("/assets/")) return new Response(new Uint8Array([1, 2]));
+    if (init?.method === "POST") return Response.json({ ...job, id: "new-job", status: "queued" });
+    return Response.json(job);
+  }) as typeof fetch);
+  await openDiagnostics();
+  const trace = beginDiagnostic("测试", operation);
+  const result = await trace.run(() => operation === "message"
+    ? api.message("work-1", { instruction: "private-instruction", images: [{ asset_id: "new-image" }] })
+    : api.retry("job-1"));
+  await trace.run(() => local.track(result));
+  // 检查真实业务入口产生的父链，允许 HTTP 和设备读取属于其包裹的请求边界。
+  const parents = new Map(entries.filter(entry => entry.message.includes("开始 ")).map(entry => [id(entry), /来自 #([0-9a-f]{16})/.exec(entry.message)?.[1]]));
+  const starts = entries.filter(entry => entry.message.includes("开始 ") && ["桌面命令", "前端请求", "前端字效"].includes(entry.source));
+  expect(starts.length).toBeGreaterThan(10);
+  for (const entry of starts) {
+    let parent: string | undefined = id(entry);
+    for (let depth = 0; parent && parent !== trace.id && depth < 8; depth++) parent = parents.get(parent);
+    expect(parent).toBe(trace.id);
+  }
+  expect(entries.some(entry => entry.message.includes("remotion_sessions/registrations_remove：执行完成"))).toBe(true);
+  expect(JSON.stringify(entries)).not.toMatch(/private-instruction|private-title|private-model-context/);
 });

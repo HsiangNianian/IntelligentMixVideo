@@ -1,4 +1,4 @@
-"""请求诊断回归：关联编号、CORS、异常、并发和流式响应；不访问真实数据库或外部服务。"""
+"""请求诊断回归：编号、CORS、异常、并发与流；隔离外部服务，根目录执行 uv run --locked --project server pytest server/tests/test_diagnostics.py。"""
 
 import asyncio
 import logging
@@ -88,6 +88,19 @@ def test_production_cors_accepts_diagnostic_header(client):
     response = client.get("/users/abc", headers={"Origin": "http://localhost:1420", "X-IMV-Request-ID": "fedcba9876543210"})
     assert response.status_code == 422
     assert response.headers["x-imv-request-id"] == "fedcba9876543210"
+
+
+def test_unmatched_path_cannot_inject_log_lines(diagnostic_client, caplog):
+    """404 没有路由模板，回退到原路径时也压平换行并限制长度。"""
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    response = diagnostic_client.get("/missing%0Aforged%0Drecord" + "x" * 500, headers={
+        "X-IMV-Request-ID": "0123456789abcdef",
+    })
+    assert response.status_code == 404
+    for record in caplog.records:
+        message = record.getMessage()
+        assert "\n" not in message and "\r" not in message
+        assert "x" * 301 not in message
 
 
 def test_concurrent_streams_keep_ids_and_do_not_buffer(caplog):

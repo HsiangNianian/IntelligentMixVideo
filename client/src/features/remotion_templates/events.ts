@@ -3,6 +3,7 @@ import { ApiError, apiUrl } from "./api";
 import { deviceId } from "./localSessions";
 import type { WorkEvent } from "./model";
 import { beginDiagnostic, briefly, diagnosticTaskState } from "@/lib/diagnostics";
+import { apiBase } from "@/lib/api-base";
 
 /** 消费标准 SSE 字段；每次调用只建立一条连接，退出时清理 reader、超时与监听。 */
 export async function* events(
@@ -11,6 +12,8 @@ export async function* events(
   signal: AbortSignal,
   onOpen?: () => void,
 ): AsyncGenerator<WorkEvent> {
+  const service = apiBase();
+  const url = apiUrl(`/works/${encodeURIComponent(work)}/stream?after=${after}`);
   const trace = beginDiagnostic("前端实时连接", `订阅会话 ${work}，从事件 ${after} 续传`);
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -27,7 +30,7 @@ export async function* events(
     touch();
     const device = await deviceId();
     const response = await trace.run(() => fetch(
-      apiUrl(`/works/${encodeURIComponent(work)}/stream?after=${after}`),
+      url,
       {
         signal: controller.signal,
         headers: {
@@ -85,7 +88,7 @@ export async function* events(
               trace.step(`收到事件 ${event.id}：${event.type}`);
               if (event.type === "job.updated") {
                 const progress = event.data.progress;
-                diagnosticTaskState("字效", event.data.id, event.data.status, progress?.[progress.length - 1]?.phase, event.data.message ?? "");
+                diagnosticTaskState("字效", event.data.id, event.data.status, { service, stage: progress?.[progress.length - 1]?.phase });
               }
               yield event;
             }

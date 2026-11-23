@@ -51,7 +51,7 @@ class DiagnosticRequests:
                     *headers, (REQUEST_HEADER, raw_id), (b"x-imv-elapsed-ms", elapsed.encode("ascii")),
                     (b"x-imv-diagnostics", b"1"),
                 ]}
-                route = getattr(scope.get("route"), "path", scope["path"])
+                route = " ".join(getattr(scope.get("route"), "path", scope["path"]).split())[:300]
                 logger.log(logging.ERROR if status >= 500 else logging.WARNING if status >= 400 else logging.INFO,
                            "[#%s] 后端响应 %s HTTP %s (%s ms)", request_id, route, status, elapsed)
             await send(message)

@@ -35,9 +35,9 @@ async function request<T>(path: string, body?: Record<string, unknown>, signal?:
     }
     const result = await response.json();
     if (typeof result?.data === "string" && body)
-      trace.run(() => diagnosticTaskState("合成", result.data, "queued"));
+      trace.run(() => diagnosticTaskState("合成", result.data, "queued", { service: base }));
     else if (typeof result?.taskId === "string")
-      trace.run(() => diagnosticTaskState("合成", result.taskId, result.status, result.stage, result.error?.message ?? ""));
+      trace.run(() => diagnosticTaskState("合成", result.taskId, result.status, { service: base, stage: result.stage, code: result.error?.code }));
     return result;
   });
 }

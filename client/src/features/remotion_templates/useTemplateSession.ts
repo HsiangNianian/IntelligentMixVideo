@@ -204,8 +204,6 @@ export function useTemplateSession(onHistoryChange: () => void) {
       job.result_version_id !== latest.current.versionFailure?.id;
     const failed = ["failed", "interrupted", "cancelled"].includes(job.status);
     if (failed) parameterSave.current = false;
-    const progress = "progress" in job ? job.progress : undefined;
-    diagnosticTaskState("字效", job.id, job.status, progress?.[progress.length - 1]?.phase, job.message ?? "");
     publish({
       job,
       ...("created_at" in job
@@ -249,6 +247,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
   }
   /** 先从本地恢复会话再推进游标，产物失败独立保留为可重试状态。 */
   async function hydrate(work: string, key: number, signal: AbortSignal) {
+    const service = local.server();
     let snapshot = await local.snapshot(work);
     // 任务停在进行中而终态事件已不会送达时校正本地状态，否则会话会一直被锁定。
     if (await settleJob(snapshot.job, signal)) snapshot = await local.snapshot(work);
@@ -262,7 +261,10 @@ export function useTemplateSession(onHistoryChange: () => void) {
     });
     if (snapshot.work.current_version_id)
       await accept(snapshot.work.current_version_id, key, signal);
-    if (current(key, signal)) applyJob(snapshot.job);
+    if (current(key, signal)) {
+      diagnosticTaskState("字效", snapshot.job.id, snapshot.job.status, { service, stage: snapshot.job.progress?.at(-1)?.phase });
+      applyJob(snapshot.job);
+    }
     return snapshot.cursor;
   }
   /** 永久失效终止订阅并清空本地资源，不继续重连不存在的会话；本地记录标记为待删除，侧栏提供重试删除。 */
@@ -518,7 +520,6 @@ export function useTemplateSession(onHistoryChange: () => void) {
         const accepted = await start(trace);
         queued = true;
         trace.step(`后端已接收任务 ${accepted.id}；开始保存本机回执`);
-        trace.run(() => diagnosticTaskState("字效", accepted.id, accepted.status));
         await trace.run(() => local.track(accepted));
         trace.step("本机回执已保存");
         return accepted;
