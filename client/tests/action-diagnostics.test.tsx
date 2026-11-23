@@ -1,8 +1,8 @@
 /** 动作链回归：点击/快捷键、异步 IPC、更新阻塞和任务 SSE 日志；隔离下载、安装和外部请求，在 client/ 执行 bun run test action-diagnostics.test.tsx。 */
 import { afterEach, expect, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beginDiagnostic, diagnosticInvoke, openDiagnostics, resetDiagnostics, startDiagnostics } from "@/lib/diagnostics";
-import { initializeUpdates, tryApplyUpdate } from "@/features/updates/store";
+import { beginDiagnostic, diagnosticContext, diagnosticInvoke, inDiagnosticContext, openDiagnostics, resetDiagnostics, startDiagnostics } from "@/lib/diagnostics";
+import { checkUpdate, initializeUpdates, tryApplyUpdate } from "@/features/updates/store";
 import { ClientUpdate } from "@/features/updates/ClientUpdate";
 import * as api from "@/features/remotion_templates/api";
 import { events } from "@/features/remotion_templates/events";
@@ -93,11 +93,66 @@ test("更新日志包含失败、草稿阻塞和取消", async () => {
   try {
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "一键更新" })));
     await act(async () => { await tryApplyUpdate(); });
-    expect(entries.filter(entry => entry.message.includes("状态 preparing：等待处理：测试未保存模板"))).toHaveLength(1);
+    expect(entries.filter(entry => entry.message.includes("状态 preparing：等待页面操作或任务登记：1 项"))).toHaveLength(1);
+    expect(JSON.stringify(entries)).not.toContain("测试未保存模板");
     expect(operations).not.toContain("download");
     fireEvent.click(screen.getByRole("button", { name: "取消此次更新" }));
     expect(entries.some(entry => entry.message.includes("用户取消更新等待"))).toBe(true);
   } finally { draft.remove(); }
+});
+
+// 场景：后台会话标题来自用户指令；等待界面保留标题，状态日志和重复检查只记录安全的阻塞数量。
+test("更新等待日志不复制会话标题", async () => {
+  let title = "私密客户尚未公开的项目";
+  const entries = desktop(async (command, args) => {
+    if (command === "remotion_sessions") return args.operation === "pending"
+      ? [{ server: apiBase(), title, deleting: true }] : [];
+    if (command === "client_update" && args.operation === "status") return { enabled: true, notice: "" };
+    if (command === "client_update" && args.operation === "check") return { version: "9.0.0", mode: "hot" };
+    return null;
+  });
+  await openDiagnostics();
+  await initializeUpdates();
+  render(<ClientUpdate />);
+  await screen.findByRole("button", { name: "一键更新" });
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "一键更新" })));
+  await waitFor(() => expect(screen.getByText(/等待后台会话结束：/).textContent).toContain(title));
+  title = "另一个不可公开的会话标题";
+  await act(async () => { await tryApplyUpdate(); });
+  expect(screen.getByText(/等待后台会话结束：/).textContent).toContain(title);
+  await checkUpdate();
+  expect(entries.filter(entry => entry.message.includes("状态 waiting：等待后台会话结束：1 个（待重试删除 1 个）"))).toHaveLength(1);
+  expect(JSON.stringify(entries)).not.toMatch(/私密客户|不可公开的会话标题/);
+});
+
+// 场景：原本独立的工作在另一点击内恢复，必须保持独立；嵌套上下文和异常退出仍恢复外层来源。
+test("显式独立上下文不继承当前点击", async () => {
+  const entries = desktop();
+  await openDiagnostics();
+  const background = diagnosticContext();
+  const restored: (string | undefined)[] = [];
+  render(<button onClick={() => {
+    const click = diagnosticContext();
+    inDiagnosticContext(background, () => {
+      restored.push(diagnosticContext());
+      const independent = beginDiagnostic("测试", "独立后台工作");
+      independent.run(() => {
+        try { inDiagnosticContext(undefined, () => { throw new Error("测试退出"); }); } catch { /* 验证 finally 恢复外层。 */ }
+        restored.push(diagnosticContext());
+        expect(diagnosticContext()).toBe(independent.id);
+      });
+      restored.push(diagnosticContext());
+    });
+    expect(diagnosticContext()).toBe(click);
+    beginDiagnostic("测试", "点击内正常工作");
+  }}>无关点击</button>);
+  fireEvent.click(screen.getByRole("button", { name: "无关点击" }));
+  expect(restored[0]).toBeUndefined();
+  expect(restored[2]).toBeUndefined();
+  expect(diagnosticContext()).toBeUndefined();
+  const click = entries.find(entry => entry.message === "点击 button「无关点击」")!;
+  expect(entries.find(entry => entry.message.includes("开始 独立后台工作"))?.message).toContain("独立或后台触发");
+  expect(entries.find(entry => entry.message.includes("开始 点击内正常工作"))?.message).toContain(`来自 #${id(click)}`);
 });
 
 // 场景：任务提交前需异步读取设置/设备，点击仍能连到 HTTP 请求；SSE 建立不算任务成功，公开状态改变才产生任务终态。

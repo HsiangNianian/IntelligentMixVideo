@@ -15,6 +15,8 @@ type PendingWork = { server: string; title: string; deleting: boolean };
 type Phase = 'disabled' | 'idle' | 'checking' | 'available' | 'preparing' | 'downloading' | 'waiting' | 'applying' | 'error' | 'manual';
 type State = { phase: Phase; candidate?: Candidate; reminder?: Candidate; message: string; progress?: number; links?: string[]; sha256?: string };
 let state: State = { phase: 'disabled', message: '此构建不支持客户端更新' };
+/** UI 阻塞详情可能含会话指令或用户命名；诊断保存独立摘要，后续状态/跳过记录都复用它。 */
+let diagnosticMessage = state.message;
 const listeners = new Set<() => void>();
 let initialization: Promise<void> | undefined;
 let ready = false;
@@ -34,12 +36,14 @@ let generation = 0;
 let unlisten: (() => void) | undefined;
 /** 单一更新流程显式持有编号；经过等待、轮询和其他点击后仍属于原更新操作。 */
 let trace: DiagnosticTrace | undefined;
-/** 合并状态并通知订阅组件。 */
-function publish(next: Partial<State>) {
+/** 合并状态并通知订阅组件；含用户内容的提示必须同时提供安全摘要，摘要不变时不重复记录。 */
+function publish(next: Partial<State>, summary = next.message) {
   const previous = state;
+  const previousSummary = diagnosticMessage;
   state = { ...state, ...next };
-  if (state.phase !== previous.phase || state.message !== previous.message)
-    trace?.step(`状态 ${state.phase}：${state.message}`, state.phase === 'error' ? '错误' : '信息');
+  if (summary !== undefined) diagnosticMessage = summary;
+  if (state.phase !== previous.phase || diagnosticMessage !== previousSummary)
+    trace?.step(`状态 ${state.phase}：${diagnosticMessage}`, state.phase === 'error' ? '错误' : '信息');
   else if (state.progress !== undefined && Math.floor(state.progress / 10) !== Math.floor((previous.progress ?? -10) / 10))
     trace?.step(`下载进度 ${state.progress}%`);
   listeners.forEach(fn => fn());
@@ -103,7 +107,7 @@ export async function updaterReady() {
 export async function checkUpdate(remind = false) {
   if (['disabled', 'checking', 'preparing', 'downloading', 'waiting', 'applying'].includes(state.phase)) {
     const skipped = beginDiagnostic('前端更新', '检查更新');
-    skipped.finish(`未执行：当前状态 ${state.phase}；${state.message}`);
+    skipped.finish(`未执行：当前状态 ${state.phase}；${diagnosticMessage}`);
     return;
   }
   trace = beginDiagnostic('前端更新', remind ? '启动检查更新' : '检查更新');
@@ -148,13 +152,16 @@ export async function tryApplyUpdate() {
     if (request !== generation || state.phase !== 'waiting') return;
     if (blocked.length) {
       lockForUpdate(false);
-      publish({ message: `等待处理：${blocked.join('；')}` });
+      publish({ message: `等待处理：${blocked.join('；')}` }, `等待页面操作或任务登记：${blocked.length} 项`);
       return;
     }
     const hot = state.candidate?.mode === 'hot';
     const pending = hot ? await pendingTasks() : [];
     if (request !== generation || state.phase !== 'waiting') return;
-    if (pending.length) { publish({ message: describePending(pending) }); return; }
+    if (pending.length) {
+      publish({ message: describePending(pending) }, `等待后台会话结束：${pending.length} 个（待重试删除 ${pending.filter(work => work.deleting).length} 个）`);
+      return;
+    }
     lockForUpdate(true);
     // 锁住新操作后重新核对，防止前一次异步读取期间用户又修改草稿或提交任务。
     const changed = (await blockers()).length || (hot && (await pendingTasks()).length);
@@ -202,7 +209,7 @@ async function prepare(request: number) {
   const blocked = manual ? [] : await blockers();
   if (request !== generation || state.phase !== 'preparing') return;
   if (blocked.length) {
-    publish({ message: `等待处理：${blocked.join('；')}` });
+    publish({ message: `等待处理：${blocked.join('；')}` }, `等待页面操作或任务登记：${blocked.length} 项`);
     timer ??= setInterval(() => { void tryApplyUpdate(); }, 1000);
     return;
   }

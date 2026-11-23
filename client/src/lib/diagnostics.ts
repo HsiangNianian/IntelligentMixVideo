@@ -45,21 +45,22 @@ let buffer: Entry[] = [];
 let bufferChars = 0;
 let last = { key: "", level: "错误" as DiagnosticLevel, source: "", repeats: 0 };
 const watched = new WeakSet<Window>();
-/** 只继承当前同步调用的因果关系；异步后续必须显式携带，不能归到“最近一次点击”。 */
-let context: string | undefined;
+/** undefined 表示未覆盖事件来源；null 表示显式独立，异步恢复时不能回退到其他正在派发的点击。 */
+let context: string | null | undefined;
 let interaction: { event: Event; id: string } | undefined;
 let session = 0;
 
 /** 同步进入一条执行链；调用方可在 await 之后再次使用保存的编号，不改写 Promise 或全局异步上下文。 */
 export function inDiagnosticContext<T>(id: string | undefined, run: () => T): T {
   const previous = context;
-  context = id;
+  context = id ?? null;
   try { return run(); } finally { context = previous; }
 }
 
 /** 在入口保存当前操作编号，供异步门禁放行后沿用。 */
 export function diagnosticContext() {
-  return context ?? (interaction && interaction.event.eventPhase !== 0 ? interaction.id : undefined);
+  return context !== undefined ? context ?? undefined
+    : interaction && interaction.event.eventPhase !== 0 ? interaction.id : undefined;
 }
 
 /** 仅包含宿主生成的编号与安全消息；不保存请求、配置或返回对象。 */

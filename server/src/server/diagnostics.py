@@ -11,6 +11,11 @@ logger = logging.getLogger("uvicorn.error")
 REQUEST_HEADER = b"x-imv-request-id"
 
 
+def _log_path(path: str) -> str:
+    """转义路径中的 C0/C1 控制字符并限制输出长度，避免接收与 404 日志操纵终端。"""
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", lambda match: f"\\x{ord(match[0]):02x}", path[:300])[:300]
+
+
 class DiagnosticRequests:
     """只跟踪带有效诊断编号的 HTTP 请求，响应头回传编号与处理耗时，便于客户端和服务日志对照。"""
 
@@ -36,7 +41,7 @@ class DiagnosticRequests:
         started = perf_counter()
         status = None
         # 查询参数与请求正文可能包含密钥；日志只包含方法、路径与结果。
-        label = f'{scope["method"]} {scope["path"][:300]}'.replace("\n", " ").replace("\r", " ")
+        label = f'{scope["method"]} {_log_path(scope["path"])}'
         logger.info("[#%s] 后端接收 %s", request_id, label)
 
         async def tracked(message: Message) -> None:
@@ -51,7 +56,7 @@ class DiagnosticRequests:
                     *headers, (REQUEST_HEADER, raw_id), (b"x-imv-elapsed-ms", elapsed.encode("ascii")),
                     (b"x-imv-diagnostics", b"1"),
                 ]}
-                route = " ".join(getattr(scope.get("route"), "path", scope["path"]).split())[:300]
+                route = _log_path(getattr(scope.get("route"), "path", scope["path"]))
                 logger.log(logging.ERROR if status >= 500 else logging.WARNING if status >= 400 else logging.INFO,
                            "[#%s] 后端响应 %s HTTP %s (%s ms)", request_id, route, status, elapsed)
             await send(message)

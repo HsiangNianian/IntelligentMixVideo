@@ -250,14 +250,26 @@ export async function retry(id: string, work?: string): Promise<Job> {
 }
 
 /** 读取一页编号大于 after 的待送达公开事件（升序，可能少于全部）；后台同步据此补齐未在 SSE 中打开的会话。 */
-export function workEvents(
+export async function workEvents(
   work: string,
   after: number,
   signal?: AbortSignal,
 ): Promise<WorkEvent[]> {
-  return request(`/works/${encodeURIComponent(work)}/events?after=${after}`, {
+  const origin = diagnosticContext();
+  const service = apiBase();
+  const result = await request<WorkEvent[]>(`/works/${encodeURIComponent(work)}/events?after=${after}`, {
     signal,
   });
+  // 后台分页与 SSE 一样推进任务诊断；只观察本会话的新事件，返回原页供本地存储和 ACK 使用。
+  if (Array.isArray(result)) for (const event of result
+    .filter(event => event?.work_id === work && Number.isSafeInteger(event.id) && event.id > after)
+    .sort((left, right) => left.id - right.id)) {
+    if (event.type !== "job.updated" || !event.data) continue;
+    const job = event.data;
+    const stage = Array.isArray(job.progress) ? job.progress.at(-1)?.phase : undefined;
+    inDiagnosticContext(origin, () => diagnosticTaskState("字效", job.id, job.status, { service, stage }));
+  }
+  return result;
 }
 
 /** 本地写入事件后确认送达；服务端删除该编号及之前的事件，不影响任务。 */

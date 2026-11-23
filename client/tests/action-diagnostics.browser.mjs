@@ -10,13 +10,31 @@ import {PluginSettings} from '/src/features/settings/PluginSettings.tsx';
 import {initializeUpdates} from '/src/features/updates/store.ts';
 import {listTemplates} from '/src/features/templates/api.ts';
 import {setApiBase} from '/src/lib/api-base.ts';
-import {openDiagnostics} from '/src/lib/diagnostics.ts';
+import {beginDiagnostic,openDiagnostics} from '/src/lib/diagnostics.ts';
+import {lockForUpdate,updateTask} from '/src/lib/update-guard.ts';
 import '/src/styles/globals.css';
 setApiBase(location.origin);
 await openDiagnostics();
 await initializeUpdates();
+/** 排队的后台操作由可信点击放行，浏览器会在事件派发中执行 Promise 微任务。 */
+window.queueIndependent = () => {
+ let releasingClick;
+ const release = event => {
+  if (!event.target.closest('#release-background')) return;
+  releasingClick = event;
+  lockForUpdate(false);
+  window.removeEventListener('click',release,true);
+ };
+ window.addEventListener('click',release,true);
+ lockForUpdate(true);
+ window.backgroundDone = updateTask(async () => {
+  window.backgroundEventPhase = releasingClick?.eventPhase;
+  beginDiagnostic('前端测试','独立后台请求').finish('完成');
+ });
+};
 createRoot(document.getElementById('root')).render(React.createElement(React.Fragment,null,
  React.createElement('button',{onClick:()=>listTemplates().catch(()=>{})},'刷新模板测试'),
+ React.createElement('button',{id:'release-background'},'放行后台测试'),
  React.createElement(PluginSettings)
 ));
 </script></body></html>`;
@@ -106,7 +124,13 @@ try {
   const refreshClick = logs.find(entry => entry.message === "点击 button「刷新模板测试」");
   const refreshId = /#([0-9a-f]{16})/.exec(refreshClick.source)[1];
   assert(logs.some(entry => entry.source === "前端模板" && entry.message.includes(`来自 #${refreshId}`)));
-  console.log("PASS: 真实点击关联更新与模板请求；表单拦截、IPC 失败原因、后端能力协商均已记录。");
+  await page.evaluate(() => { window.queueIndependent(); });
+  await page.getByRole("button", { name: "放行后台测试" }).click();
+  await page.evaluate(() => window.backgroundDone);
+  assert((await page.evaluate(() => window.backgroundEventPhase)) > 0, "后台任务应在真实点击派发期间恢复");
+  const background = await page.evaluate(() => window.diagnostics.find(entry => entry.message.includes('开始 独立后台请求')));
+  assert(background.message.includes('独立或后台触发'));
+  console.log("PASS: 真实点击关联更新与模板请求；后台独立来源、表单拦截、IPC 失败原因、后端能力协商均已验证。");
 } finally {
   await browser?.close();
   await server.close();

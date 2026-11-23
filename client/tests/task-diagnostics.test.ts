@@ -1,7 +1,12 @@
 /** 任务诊断回归：隐私、服务归属、任务终态与保留策略；隔离 HTTP/IPC，在 client/ 执行 bun run test task-diagnostics.test.ts。 */
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { waitFor } from "@testing-library/react";
 import { beginDiagnostic, diagnosticTaskState, openDiagnostics, resetDiagnostics } from "@/lib/diagnostics";
-import { create } from "@/features/remotion_templates/api";
+import { create, workEvents } from "@/features/remotion_templates/api";
+import { syncBackground } from "@/features/remotion_templates/backgroundSync";
+import { record, server, snapshot } from "@/features/remotion_templates/localSessions";
+import { remotionJob } from "./remotion-fixtures";
+import type { WorkEvent } from "@/features/remotion_templates/model";
 import { getComposition } from "@/features/video_composition/api";
 import { apiBase, setApiBase } from "@/lib/api-base";
 import { fetchMock, mockDesktop } from "./setup";
@@ -16,6 +21,7 @@ beforeEach(async () => {
   mockDesktop(async (command, args) => {
     if (command === "diagnostics_open") return { path: "/test/diagnostics.log", viewerError: null };
     if (command === "diagnostics_log") entries.push(args as Entry);
+    if (command === "remotion_sessions" && args.operation === "registrations_list") return [];
     return {};
   });
   await openDiagnostics();
@@ -68,6 +74,61 @@ test("合成回执使用实际请求服务", async () => {
   await pending;
   expect(messages().filter(message => message.includes("开始"))).toHaveLength(1);
   expect(messages().at(-1)).toContain(`[#${traceId(first)}]`);
+});
+
+// 场景：未打开的会话通过后台分页同步完成，日志也结束原任务；本地写入和 ACK 行为不变。
+test("后台事件同步记录终态并保留原任务关联", async () => {
+  const job = remotionJob("queued");
+  await record({ id: job.project_id, current_version_id: null, created_at: "2026-11-23", request: {} }, job);
+  diagnosticTaskState("字效", job.id, job.status, { service: server() });
+  const first = messages()[0];
+  const page: WorkEvent[] = [{ id: 1, work_id: job.project_id, created_at: "2026-11-23", type: "job.updated", data: {
+    ...job, status: "answered", message: "私人后台回复", created_at: "2026-11-23", updated_at: "2026-11-23", parameters: null,
+    progress: [{ phase: "answering", started_at: "2026-11-23", ended_at: null, status: "done" }],
+  } }];
+  fetchMock.mockResolvedValueOnce(Response.json(page)).mockResolvedValueOnce(new Response(null, { status: 204 })).mockResolvedValueOnce(Response.json([]));
+  expect(await syncBackground(() => false, new AbortController().signal)).toBe(true);
+  expect((await snapshot(job.project_id)).job.status).toBe("answered");
+  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/ack"))).toBe(true);
+  expect(messages().filter(message => message.includes("开始 字效任务"))).toHaveLength(1);
+  expect(messages().some(message => message.includes(`[#${traceId(first)}]`) && message.includes("：状态 answered；阶段 answering"))).toBe(true);
+  expect(JSON.stringify(entries)).not.toContain("私人后台回复");
+});
+
+// 场景：分页中首次发现的任务在异步返回后仍关联读取入口，不丢失原操作编号。
+test("事件分页首次发现任务时保留读取来源", async () => {
+  const origin = beginDiagnostic("测试", "恢复后台任务");
+  const job = { ...remotionJob("succeeded"), created_at: "2026-11-23", updated_at: "2026-11-23", parameters: null };
+  const page: WorkEvent[] = [{ id: 1, work_id: job.project_id, created_at: "2026-11-23", type: "job.updated", data: job }];
+  fetchMock.mockResolvedValueOnce(Response.json(page));
+  await origin.run(() => workEvents(job.project_id, 0));
+  expect(messages().find(message => message.includes("开始 字效任务"))).toContain(`来自 #${origin.id}`);
+});
+
+// 场景：分页请求在旧服务上发出后切换配置，终态仍归旧服务；其他会话、旧编号和普通消息不产生任务记录。
+test("事件分页使用请求服务且只观察本会话的新任务事件", async () => {
+  const response = Promise.withResolvers<Response>();
+  setApiBase("https://old.test");
+  diagnosticTaskState("字效", "job-1", "running", { service: apiBase() });
+  const first = messages()[0];
+  fetchMock.mockReturnValueOnce(response.promise);
+  const pending = workEvents("work-1", 3);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  setApiBase("https://new.test");
+  diagnosticTaskState("字效", "job-1", "queued", { service: apiBase() });
+  const event = { work_id: "work-1", created_at: "2026-11-23" };
+  const job = { ...remotionJob("succeeded"), created_at: event.created_at, updated_at: event.created_at, parameters: null };
+  const page: WorkEvent[] = [
+    { ...event, id: 2, type: "job.updated", data: { ...job, id: "stale" } },
+    { ...event, id: 4, work_id: "other-work", type: "job.updated", data: { ...job, id: "other" } },
+    { ...event, id: 5, type: "message.created", data: { id: "message-5", role: "assistant", text: "私人消息" } },
+    { ...event, id: 6, type: "job.updated", data: job },
+  ];
+  response.resolve(Response.json(page));
+  expect(await pending).toEqual(page);
+  expect(messages().filter(message => message.includes("开始 字效任务"))).toHaveLength(2);
+  expect(messages().some(message => message.includes(`[#${traceId(first)}]`) && message.includes("：状态 succeeded"))).toBe(true);
+  expect(JSON.stringify(entries)).not.toContain("私人消息");
 });
 
 // 场景：恶意 ID、状态、阶段或错误码不能注入日志行；元数据过长或结构不合法也不能影响业务。

@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import re
+from urllib.parse import quote
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -90,16 +92,23 @@ def test_production_cors_accepts_diagnostic_header(client):
     assert response.headers["x-imv-request-id"] == "fedcba9876543210"
 
 
-def test_unmatched_path_cannot_inject_log_lines(diagnostic_client, caplog):
-    """404 没有路由模板，回退到原路径时也压平换行并限制长度。"""
+@pytest.mark.parametrize("path", [
+    "/missing\nforged\rrecord",
+    "/missing\x1b[2J\x1b[H",
+    "/missing" + "".join(chr(value) for value in [*range(32), *range(127, 160)]),
+])
+def test_unmatched_path_cannot_inject_log_lines(diagnostic_client, caplog, path):
+    """接收与 404 回退路径都转义 C0/C1 控制字符，不能控制终端，也不能超出长度上限。"""
     caplog.set_level(logging.INFO, logger="uvicorn.error")
-    response = diagnostic_client.get("/missing%0Aforged%0Drecord" + "x" * 500, headers={
+    response = diagnostic_client.get(quote(path) + "x" * 500, headers={
         "X-IMV-Request-ID": "0123456789abcdef",
     })
     assert response.status_code == 404
-    for record in caplog.records:
+    records = [record for record in caplog.records if "后端接收" in record.getMessage() or "后端响应 /" in record.getMessage()]
+    assert len(records) == 2
+    for record in records:
         message = record.getMessage()
-        assert "\n" not in message and "\r" not in message
+        assert not re.search(r"[\x00-\x1f\x7f-\x9f]", message)
         assert "x" * 301 not in message
 
 
