@@ -54,15 +54,15 @@ function Card({ card }: { card: AssetCard }) {
       <Button
         type="button"
         variant="ghost"
-        className={cn("template-asset-card h-auto min-h-16 w-full min-w-0 justify-start gap-2 whitespace-normal rounded-lg border p-1.5 text-left", actions && "pb-8", selected && "is-selected")}
+        className={cn("template-asset-card h-auto min-h-[104px] w-full min-w-0 justify-start gap-2 whitespace-normal rounded-lg border p-1.5 text-left", actions && "pb-8", selected && "is-selected")}
         aria-label={label}
         aria-pressed={selected}
         disabled={disabled}
         onClick={onSelect}
       >
-        <span className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded bg-muted">{typeof cover === "function" ? cover(active) : cover}</span>
+        <span className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded bg-muted">{typeof cover === "function" ? cover(active) : cover}</span>
         <span className="min-w-0 flex-1">
-          <span className="line-clamp-2 text-[11px] font-medium leading-4">{name}</span>
+          <span className="line-clamp-2 text-[12px] font-medium leading-4">{name}</span>
           {note}
         </span>
         {!actions && (selected ? <Check className="size-3 shrink-0" aria-hidden="true" /> : <Plus className="size-3 shrink-0" aria-hidden="true" />)}

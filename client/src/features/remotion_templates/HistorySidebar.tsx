@@ -1,6 +1,6 @@
 /** 历史会话列表和小屏抽屉复用同一内容，业务数据由工作区从本地会话库提供，不分页。 */
 import { useRef, useState } from "react";
-import { History, MessageSquare, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { History, MessageSquare, PanelLeftClose, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Hint } from "@/components/Hint";
@@ -24,10 +24,11 @@ interface Props {
   onSelect: (id: string) => void;
   onRefresh: () => void;
   onNew: () => void;
+  onCollapse?: () => void;
   dirty: boolean;
   onDelete: (id: string) => Promise<void>;
 }
-/** 桌面常驻列表，小屏用带焦点管理和 Escape 关闭能力的抽屉。 */
+/** 桌面列表收纳在聊天栏内，小屏用带焦点管理和 Escape 关闭能力的抽屉。 */
 export function HistorySidebar(props: Props) {
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState<WorkSummary | null>(null);
@@ -88,6 +89,7 @@ export function HistorySidebar(props: Props) {
             <div className="min-h-0 flex-1">
               <HistoryList
                 {...props}
+                onCollapse={undefined}
                 onDelete={askDelete}
                 onNew={() => {
                   props.onNew();
@@ -161,23 +163,25 @@ function HistoryList({
   onSelect,
   onRefresh,
   onNew,
+  onCollapse,
   onDelete,
 }: Omit<Props, "onDelete"> & { onDelete: (work: WorkSummary) => void }) {
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
-      <div className="flex h-14 shrink-0 items-center justify-between px-4">
-        <h2 className="text-sm font-medium">历史会话</h2>
-        <Hint label="刷新历史">
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="刷新历史"
-            disabled={loading}
-            onClick={onRefresh}
-          >
-            <RefreshCw className={cn("size-4", loading && "animate-spin")} />
-          </Button>
-        </Hint>
+      <div className="flex h-14 shrink-0 items-center justify-between gap-1 px-3">
+        <h2 className="text-xs font-medium">历史会话</h2>
+        <div className="flex items-center gap-1">
+          <Hint label="刷新历史">
+            <Button variant="ghost" size="icon" aria-label="刷新历史" disabled={loading} onClick={onRefresh}>
+              <RefreshCw className={cn("size-4", loading && "animate-spin")} />
+            </Button>
+          </Hint>
+          {onCollapse && <Hint label="收起历史栏">
+            <Button variant="ghost" size="icon" aria-label="收起历史栏" onClick={onCollapse}>
+              <PanelLeftClose className="size-4" />
+            </Button>
+          </Hint>}
+        </div>
       </div>
       <div className="px-3 pb-3">
         <Button

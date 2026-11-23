@@ -273,16 +273,15 @@ export function RemotionWorkspace() {
           </div>
         }
         mobile={mobile}
+        onNew={session.reset}
         status={
-          <span role="status">
-            {session.connection === "reconnecting"
-              ? "连接中断，正在恢复更新；后台任务继续运行。"
-              : session.connection === "connecting"
-                ? "正在恢复会话…"
-                : "描述想法，预览字效，保留每一次灵感。"}
-          </span>
+          session.connection === "reconnecting"
+            ? <span role="status">连接中断，正在恢复更新；后台任务继续运行。</span>
+            : session.connection === "connecting"
+              ? <span role="status">正在恢复会话…</span>
+              : null
         }
-        history={
+        history={(onCollapse) =>
           <HistorySidebar
             items={history.items}
             selected={session.workId}
@@ -291,6 +290,7 @@ export function RemotionWorkspace() {
             onSelect={session.select}
             onRefresh={history.refresh}
             onNew={session.reset}
+            onCollapse={onCollapse}
             dirty={session.dirty}
             onDelete={async (id) => {
               await session.deleteWork(id);

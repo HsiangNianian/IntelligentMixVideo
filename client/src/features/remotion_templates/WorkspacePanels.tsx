@@ -1,7 +1,7 @@
-/** 字效三栏工作室：左侧对话、中间预览、右侧参数；栏宽可调整，隐藏与缩放不卸载播放器。 */
+/** 字效三栏工作室：历史栏收纳在左侧对话内，中间预览、右侧参数；栏宽可调整，隐藏与缩放不卸载播放器。 */
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useGroupRef, type Layout } from "react-resizable-panels";
-import { History, PanelRightClose, PanelRightOpen, RotateCcw } from "lucide-react";
+import { CirclePlus, History, PanelRightClose, PanelRightOpen, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
@@ -25,9 +25,9 @@ function save(value: Layout) {
 }
 
 /** 仅用户拖动时保存尺寸；恢复重置三栏宽度。 */
-export function WorkspacePanels({ history, chat, preview, parameters, mobile, status, action }: {
-  history: ReactNode; chat: ReactNode; preview: ReactNode; parameters: ReactNode;
-  mobile: string; status: ReactNode; action: ReactNode;
+export function WorkspacePanels({ history, chat, preview, parameters, mobile, status, action, onNew }: {
+  history: (onCollapse: () => void) => ReactNode; chat: ReactNode; preview: ReactNode; parameters: ReactNode;
+  mobile: string; status: ReactNode; action: ReactNode; onNew: () => void;
 }) {
   const group = useGroupRef();
   const parameterId = useId();
@@ -35,19 +35,24 @@ export function WorkspacePanels({ history, chat, preview, parameters, mobile, st
   const [layout] = useState(readLayout);
   const expandedLayout = useRef(layout);
   const [desktop, setDesktop] = useState(() => window.matchMedia("(min-width: 1024px)").matches);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [wide, setWide] = useState(() => window.matchMedia("(min-width: 1536px)").matches);
+  const [historyOpen, setHistoryOpen] = useState(() => window.matchMedia("(min-width: 1536px)").matches);
   useEffect(() => {
     const query = window.matchMedia("(min-width: 1024px)");
+    const wideQuery = window.matchMedia("(min-width: 1536px)");
     const changed = () => setDesktop(query.matches);
+    const wideChanged = () => setWide(wideQuery.matches);
     query.addEventListener("change", changed);
-    return () => query.removeEventListener("change", changed);
+    wideQuery.addEventListener("change", wideChanged);
+    return () => { query.removeEventListener("change", changed); wideQuery.removeEventListener("change", wideChanged); };
   }, []);
   // 窄屏参数位于预览下方，不沿用桌面的零宽度；内容始终挂载，保留输入和播放器。
   useEffect(() => { if (!desktop) group.current?.setLayout(expandedLayout.current); }, [desktop, group]);
   return <div className="flex min-h-0 flex-1 flex-col">
     <header className="paper-surface flex min-h-18 shrink-0 flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-3">
       <h1 aria-label="AI 字效" className="sketch-text mr-3 text-[22px] max-sm:sr-only">AI 字效</h1>
-      <Button variant="ghost" size="sm" className="hidden lg:inline-flex" aria-expanded={historyOpen} aria-controls="effects-history" onClick={() => setHistoryOpen((value) => !value)}><History className="size-4" />历史会话</Button>
+      <Button variant="ghost" size="icon-sm" className="hidden rounded-full lg:inline-flex" aria-label={historyOpen ? "收起历史" : "展开历史"} aria-expanded={historyOpen} aria-controls="effects-history" onClick={() => setHistoryOpen((value) => !value)}><History className="size-4" /></Button>
+      <Button variant="ghost" size="icon-sm" className="hidden lg:inline-flex" aria-label="新建会话" onClick={onNew}><CirclePlus className="size-4" /></Button>
       <span className="min-w-0 flex-1 basis-32 truncate text-xs text-fg-subtle">{status}</span>
       <Button variant="ghost" size="sm" className="hidden lg:inline-flex" aria-expanded={!parametersCollapsed} aria-controls={parameterId} onClick={() => {
         const current = group.current?.getLayout();
@@ -66,7 +71,6 @@ export function WorkspacePanels({ history, chat, preview, parameters, mobile, st
       <div className="ml-auto shrink-0">{action}</div>
     </header>
     <div className="relative flex min-h-0 flex-1 max-lg:flex-col">
-      <div id="effects-history" className={cn("shrink-0 border-r border-line bg-surface lg:absolute lg:inset-y-0 lg:left-0 lg:z-30 lg:w-[240px] lg:shadow-pop", !historyOpen && "lg:hidden")}>{history}</div>
       <ResizablePanelGroup groupRef={group} orientation="horizontal" disabled={!desktop} defaultLayout={layout}
         onLayoutChanged={(value, meta) => {
           if (desktop && value.parameters > 0) {
@@ -75,7 +79,12 @@ export function WorkspacePanels({ history, chat, preview, parameters, mobile, st
           }
         }}
         className="min-w-0 flex-1 max-lg:block!" style={{ minHeight: desktop ? 0 : "auto" }}>
-        <ResizablePanel id="chat" minSize={280} className={cn("min-w-0 max-lg:h-[calc(100dvh-150px)] max-lg:min-h-[500px]", mobile !== "chat" && "max-lg:hidden!")}>{chat}</ResizablePanel>
+        <ResizablePanel id="chat" minSize={historyOpen && wide ? 480 : 280} className={cn("min-w-0 max-lg:h-[calc(100dvh-150px)] max-lg:min-h-[500px]", mobile !== "chat" && "max-lg:hidden!")}>
+          <div className="relative flex h-full min-h-0 min-w-0">
+            <div id="effects-history" className={cn("shrink-0 border-r border-line bg-surface lg:absolute lg:inset-y-0 lg:left-0 lg:z-30 lg:w-[240px] lg:shadow-pop 2xl:static 2xl:w-[200px] 2xl:shadow-none", !historyOpen && "lg:hidden")}>{history(() => setHistoryOpen(false))}</div>
+            <div className="min-w-0 flex-1">{chat}</div>
+          </div>
+        </ResizablePanel>
         <ResizableHandle aria-label="调整聊天与预览宽度" className="hidden w-px bg-line hover:bg-brand lg:flex" />
         <ResizablePanel id="preview" minSize={220} className={cn("min-w-0 max-lg:h-[600px]", mobile !== "preview" && "max-lg:hidden!")}>{preview}</ResizablePanel>
         <ResizableHandle aria-label="调整预览与参数宽度" className="hidden w-px bg-line hover:bg-brand lg:flex" />

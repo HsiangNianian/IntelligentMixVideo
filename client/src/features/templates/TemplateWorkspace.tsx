@@ -47,9 +47,9 @@ function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; ca
     return () => window.removeEventListener("resize", update);
   }, []);
   return <ResizablePanelGroup orientation="horizontal" disabled={!desktop} data-layout={desktop ? "desktop" : "narrow"} className="template-workspace-columns" style={{ height: desktop ? "100%" : "auto", minHeight: desktop ? 0 : undefined }}>
-    <ResizablePanel id="assets" data-workspace-panel="assets" defaultSize="20%" minSize={240} maxSize="38%" className="min-w-0">{assets}</ResizablePanel>
+    <ResizablePanel id="assets" data-workspace-panel="assets" defaultSize="30%" minSize={240} maxSize="38%" className="min-w-0">{assets}</ResizablePanel>
     <ResizableHandle withHandle aria-label="调整资产与画布宽度" className="template-workspace-handle" />
-    <ResizablePanel id="canvas" data-workspace-panel="canvas" defaultSize="58%" minSize={340} className="min-w-0">{canvas}</ResizablePanel>
+    <ResizablePanel id="canvas" data-workspace-panel="canvas" defaultSize="48%" minSize={340} className="min-w-0">{canvas}</ResizablePanel>
     <ResizableHandle withHandle aria-label="调整画布与参数宽度" className="template-workspace-handle" />
     <ResizablePanel id="inspector" data-workspace-panel="inspector" defaultSize="22%" minSize={280} maxSize="42%" className="min-w-0">{inspector}</ResizablePanel>
   </ResizablePanelGroup>;
