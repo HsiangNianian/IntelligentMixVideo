@@ -1,0 +1,60 @@
+# Capture the real client with local fixtures, then export release-maintained prose without AI or business services.
+name: Build tutorial
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build tutorial PDF and HTML
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: client/package.json
+      - name: Install locked dependencies
+        working-directory: client
+        run: bun install --frozen-lockfile
+      - name: Install Chromium and Chinese fonts
+        run: |
+          bun client/node_modules/playwright-core/cli.js install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y fonts-noto-cjk poppler-utils
+      - name: Test tutorial packaging
+        env:
+          IMV_TEST_TUTORIAL_BROWSER: '1'
+        run: bun test ./.github/scripts/build-tutorial.test.mjs
+      - name: Capture screenshots and build offline tutorial
+        run: bun --no-env-file .github/scripts/build-tutorial.mjs
+      - name: Check PDF text and page count
+        run: |
+          pdfinfo dist/tutorial/IntelligentMixVideo-Tutorial.pdf
+          pdftotext dist/tutorial/IntelligentMixVideo-Tutorial.pdf /tmp/tutorial.txt
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+          source = Path('docs/tutorial/index.html').read_text()
+          expected = len(re.findall(r'<section class="page(?: cover)?"', source))
+          info = subprocess.check_output(['pdfinfo', 'dist/tutorial/IntelligentMixVideo-Tutorial.pdf'], text=True)
+          actual = int(re.search(r'^Pages:\s+(\d+)', info, re.M).group(1))
+          assert actual == expected, f'Expected {expected} pages, got {actual}'
+          text = Path('/tmp/tutorial.txt').read_text()
+          for phrase in ['中英双语', '双语字效', '上下蒙版', '交付前检查']:
+              assert phrase in text, f'Missing readable Chinese text: {phrase}'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intelligent-mix-video-tutorial-${{ github.sha }}
+          path: |
+            dist/tutorial/IntelligentMixVideo-Tutorial.pdf
+            dist/tutorial/IntelligentMixVideo-Tutorial.html
+            dist/tutorial/screenshots.json
+          if-no-files-found: error
+          retention-days: 14

@@ -3,15 +3,22 @@ import { execFileSync } from "node:child_process";
 
 /** 识别生产代码和构建配置；Markdown 文档不触发客户端编译。 */
 export function classifyChanges(files) {
-  const ci = files.some((path) => path.startsWith(".github/workflows/") || path.startsWith(".github/scripts/"));
+  // Tutorial-only tooling does not affect application builds; its own job validates it.
+  const tutorialTool = (path) => [".github/scripts/build-tutorial.mjs", ".github/scripts/build-tutorial.test.mjs"].includes(path);
+  const ci = files.some((path) => path.startsWith(".github/workflows/") || (path.startsWith(".github/scripts/") && !tutorialTool(path)));
   const client = files.some((path) => path.startsWith("client/") && !path.endsWith(".md"));
   const manifests = files.some((path) => ["client/package.json", "client/bun.lock", "client/bunfig.toml"].includes(path));
+  const tutorialUi = files.some((path) => !path.endsWith(".md") && (
+    ["client/src/", "client/public/", "client/tests/"].some((prefix) => path.startsWith(prefix)) ||
+    ["client/vite.config.ts", "client/tsconfig.json", "client/index.html", "server/src/server/template/sdk_catalog.json"].includes(path)
+  ));
   const native = manifests || files.some((path) => path.startsWith("client/src-tauri/") && !path.endsWith(".md"));
   return {
     client: client || ci,
     native: native || ci,
     server: files.some((path) => path.startsWith("server/")) || ci,
     tooling: ci || native || files.some((path) => ["server/pyproject.toml", "server/uv.lock"].includes(path)),
+    tutorial: ci || manifests || tutorialUi || files.some((path) => path.startsWith("docs/tutorial/") || tutorialTool(path)),
   };
 }
 
@@ -34,11 +41,11 @@ export async function planCi(github, context, readChanges = changedFiles) {
       ...repo, state: "open", head: `${repo.owner}:${ref.replace("refs/heads/", "")}`, per_page: 100,
     });
     if (pulls.some((pr) => pr.head.sha === sha && pr.head.repo?.full_name === `${repo.owner}/${repo.repo}`)) {
-      return { run: false, hygiene: false, client: false, native: false, server: false, tooling: false, integration: false, mode: "check" };
+      return { run: false, hygiene: false, client: false, native: false, server: false, tooling: false, tutorial: false, integration: false, mode: "check" };
     }
   }
   const files = readChanges(eventName, payload);
-  const scope = files === null ? { client: true, native: true, server: true, tooling: true } : classifyChanges(files);
+  const scope = files === null ? { client: true, native: true, server: true, tooling: true, tutorial: true } : classifyChanges(files);
   const manual = eventName === "workflow_dispatch";
   const integration = manual && String(payload.inputs?.["integration-tests"] ?? true) === "true";
   const mode = defaultPush || (manual && String(payload.inputs?.["build-installers"]) === "true") ? "package" : "check";
