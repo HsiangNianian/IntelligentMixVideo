@@ -367,9 +367,9 @@ async fn download(
         .header("Cache-Control", "no-cache")
         .send()
         .await
-        .map_err(error)?
+        .map_err(|reason| error(reason.without_url()))?
         .error_for_status()
-        .map_err(error)?;
+        .map_err(|reason| error(reason.without_url()))?;
     if response
         .content_length()
         .is_some_and(|size| size > limit as u64)
@@ -378,7 +378,11 @@ async fn download(
     }
     let mut bytes = Vec::new();
     let mut reported = std::time::Instant::now();
-    while let Some(chunk) = response.chunk().await.map_err(error)? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|reason| error(reason.without_url()))?
+    {
         if bytes.len() + chunk.len() > limit {
             return Err("下载内容超出声明大小".into());
         }
@@ -559,13 +563,35 @@ impl Updates {
     }
 }
 
+/// 更新步骤的显式关联编号；只接受前端宿主生成的十六进制编号，消息不包含业务参数或恢复快照。
+#[derive(Clone)]
+struct UpdateTrace(Option<String>);
+
+impl UpdateTrace {
+    /// 缺少或非法编号时不启用详细记录，兼容旧版页面调用。
+    fn new(id: Option<String>) -> Self {
+        Self(id.filter(|value| {
+            value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }))
+    }
+
+    /// 使用已有有界缓冲和文件输出，跨线程阶段继续使用同一编号。
+    fn step(&self, level: &str, message: &str) {
+        if let Some(id) = &self.0 {
+            crate::diagnostics::record_native(level, "桌面更新", &format!("[#{id}] {message}"));
+        }
+    }
+}
+
 /// 所有命令共用一把进程内操作锁；前端不能指定下载 URL、公钥或安装文件。
 #[tauri::command]
 pub async fn client_update(
     app: tauri::AppHandle,
     operation: String,
     payload: Option<Value>,
+    diagnostic_id: Option<String>,
 ) -> Result<Value> {
+    let trace = UpdateTrace::new(diagnostic_id);
     let state = app.state::<Arc<Updates>>().inner().clone();
     // 只读快照不占操作锁，页面加载时不会因检查或下载正在进行而读不到状态。
     if operation == "status" {
@@ -603,9 +629,14 @@ pub async fn client_update(
         }
         *disk = next;
         state.shared();
+        trace.step("信息", "页面版本确认通过，已清除待确认标记与恢复位置");
         return Ok(Value::Null);
     }
     if operation == "check" {
+        trace.step(
+            "信息",
+            "并行读取所有更新来源；只比较通过签名校验的版本，单源超时 12 秒",
+        );
         let url = format!(
             "https://github.com/{REPOSITORY}/releases/latest/download/update-{TARGET}.json"
         );
@@ -613,26 +644,60 @@ pub async fn client_update(
         let mut fetches = tokio::task::JoinSet::new();
         for url in sources(&url)? {
             let app = app.clone();
-            fetches.spawn(async move { download(&url, 256 * 1024, true, &app).await });
+            let trace = trace.clone();
+            fetches.spawn(async move {
+                let host = tauri::Url::parse(&url)
+                    .ok()
+                    .and_then(|value| value.host_str().map(str::to_owned))
+                    .unwrap_or_default();
+                trace.step("信息", &format!("读取清单：{host}"));
+                let result = async {
+                    let bytes = download(&url, 256 * 1024, true, &app).await?;
+                    let item = manifest(&bytes, PUBLIC_KEY)?;
+                    Ok::<_, String>((item, bytes))
+                }
+                .await;
+                match &result {
+                    Ok((item, _)) => trace.step(
+                        "信息",
+                        &format!("来源 {host} 清单签名通过，版本 {}", item.version),
+                    ),
+                    Err(reason) => trace.step(
+                        "警告",
+                        &format!("来源 {host} 不可用或清单校验失败：{reason}"),
+                    ),
+                }
+                result
+            });
         }
         let mut best: Option<(Manifest, Vec<u8>)> = None;
         while let Some(result) = fetches.join_next().await {
-            if let Ok(Ok(bytes)) = result {
-                if let Ok(item) = manifest(&bytes, PUBLIC_KEY) {
-                    if best.as_ref().is_none_or(|(old, _)| {
-                        version(&item.version).unwrap() > version(&old.version).unwrap()
-                    }) {
-                        best = Some((item, bytes));
-                    }
+            if let Ok(Ok((item, bytes))) = result {
+                if best.as_ref().is_none_or(|(old, _)| {
+                    version(&item.version).unwrap() > version(&old.version).unwrap()
+                }) {
+                    best = Some((item, bytes));
                 }
             }
         }
         let (item, bytes) = best.ok_or("检查更新失败：所有来源均不可用或清单验证失败")?;
         if version(&item.version)? <= version(&state.current())? {
+            trace.step(
+                "信息",
+                &format!(
+                    "最高有效版本 {} 不高于当前版本 {}，无需更新",
+                    item.version,
+                    state.current()
+                ),
+            );
             *state.candidate.lock().unwrap() = None;
             return Ok(Value::Null);
         }
         let mode = state.mode(&item);
+        trace.step(
+            "信息",
+            &format!("选定版本 {}，更新方式 {mode}", item.version),
+        );
         if mode != "hot" && !item.installers.contains_key(installer_kind()) {
             return Err("新版缺少本机安装包".into());
         }
@@ -663,43 +728,93 @@ pub async fn client_update(
             return Err("界面更新包过大".into());
         }
         for url in sources(&release_url(&item, asset))? {
-            if let Ok(bytes) = download(&url, asset.size, false, &app).await {
-                if check_asset(asset, &bytes).is_err() {
-                    continue;
-                }
-                if mode == "hot" {
-                    if hot_files(asset, &bytes).is_err() {
+            let host = tauri::Url::parse(&url)
+                .ok()
+                .and_then(|value| value.host_str().map(str::to_owned))
+                .unwrap_or_default();
+            trace.step(
+                "信息",
+                &format!("从 {host} 下载 {}，预期 {} 字节", asset.name, asset.size),
+            );
+            match download(&url, asset.size, false, &app).await {
+                Ok(bytes) => {
+                    if let Err(reason) = check_asset(asset, &bytes) {
+                        trace.step(
+                            "警告",
+                            &format!("{host} 大小或 SHA-256 校验失败：{reason}；尝试下一来源"),
+                        );
                         continue;
                     }
-                    atomic(
-                        &state.root()?.join(format!("{}.manifest", item.version)),
-                        &envelope,
-                    )?;
-                    atomic(
-                        &state.root()?.join(format!("{}.resources", item.version)),
-                        &bytes,
-                    )?;
-                    state.prune(&item.version);
-                } else {
-                    if native_update(&app, &item, asset)?.verify(&bytes).is_err() {
-                        continue;
+                    trace.step("信息", "下载完成，大小与 SHA-256 校验通过");
+                    if mode == "hot" {
+                        if let Err(reason) = hot_files(asset, &bytes) {
+                            trace
+                                .step("警告", &format!("界面资源校验失败：{reason}；尝试下一来源"));
+                            continue;
+                        }
+                        atomic(
+                            &state.root()?.join(format!("{}.manifest", item.version)),
+                            &envelope,
+                        )?;
+                        atomic(
+                            &state.root()?.join(format!("{}.resources", item.version)),
+                            &bytes,
+                        )?;
+                        state.prune(&item.version);
+                    } else {
+                        if let Err(reason) = native_update(&app, &item, asset)?.verify(&bytes) {
+                            trace.step(
+                                "警告",
+                                &format!("安装包签名校验失败：{reason}；尝试下一来源"),
+                            );
+                            continue;
+                        }
                     }
+                    trace.step("信息", "更新内容校验通过，已暂存，等待前端与原生应用门禁");
+                    *state.staged.lock().unwrap() = Some((item, bytes, mode));
+                    return Ok(Value::Null);
                 }
-                *state.staged.lock().unwrap() = Some((item, bytes, mode));
-                return Ok(Value::Null);
+                Err(reason) => {
+                    trace.step("警告", &format!("{host} 下载失败：{reason}；尝试下一来源"))
+                }
             }
         }
         return Err("下载失败：所有来源均不可用或文件校验失败，请重试".into());
     }
     if operation == "apply" {
+        trace.step("信息", "核查未登记任务、后台会话及其他客户端实例");
         if serde_json::to_vec(&payload).map_err(error)?.len() > 16 * 1024 {
             return Err("恢复信息过大".into());
         }
-        let pending =
-            crate::remotion_sessions::remotion_sessions(app.clone(), "pending".into(), json!({}))
-                .await?;
-        if !pending.as_array().is_some_and(Vec::is_empty) {
-            return Err("仍有后台任务或状态不明的会话，请稍后应用".into());
+        // 两种更新都保护未落盘任务；独立回执不受旧壳无法读取新会话库的影响。
+        let registrations = crate::remotion_sessions::remotion_sessions(
+            app.clone(),
+            "registrations_list".into(),
+            json!({}),
+        )
+        .await?;
+        if !registrations.as_array().is_some_and(Vec::is_empty) {
+            trace.step("警告", "应用被阻止：仍有任务未登记到本机");
+            return Err("仍有任务未登记到本机，请先刷新任务或聊天列表".into());
+        }
+        // 整包升级可修复旧壳打不开新版会话库的情况。仅热更新沿用后台会话检查。
+        let hot = state
+            .staged
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|(_, _, mode)| mode == "hot");
+        if hot {
+            let pending = crate::remotion_sessions::remotion_sessions(
+                app.clone(),
+                "pending".into(),
+                json!({}),
+            )
+            .await?;
+            if !pending.as_array().is_some_and(Vec::is_empty) {
+                trace.step("警告", "应用被阻止：仍有后台任务或状态不明的会话");
+                return Err("仍有后台任务或状态不明的会话，请稍后应用".into());
+            }
         }
         state.exclusive()?;
         let staged = state.staged.lock().unwrap().take();
@@ -730,6 +845,11 @@ pub async fn client_update(
             return Err(e);
         }
         if mode == "hot" {
+            trace.step(
+                "信息",
+                "界面资源已切换，即将重载；60 秒内等待新版页面确认，未确认则回退",
+            );
+            let watchdog_trace = trace.clone();
             let watchdog_app = app.clone();
             let state = state.clone();
             let pending = state.disk.lock().unwrap().pending.clone();
@@ -743,6 +863,7 @@ pub async fn client_update(
                     return;
                 }
                 rollback(&mut disk);
+                watchdog_trace.step("错误", "新版页面 60 秒内未确认，回退到上一版本");
                 *state.active.write().unwrap() =
                     disk.current.as_ref().and_then(|v| state.load(v).ok());
                 *state.notice.lock().unwrap() =
@@ -777,6 +898,7 @@ pub async fn client_update(
                 },
             };
             if let Err(e) = result {
+                trace.step("错误", &format!("安装失败，保留已下载的安装包供重试：{e}"));
                 if let Some(bytes) = bytes {
                     *state.staged.lock().unwrap() = Some((item, bytes, mode));
                 }
@@ -790,6 +912,17 @@ pub async fn client_update(
                 drop(disk);
                 state.shared();
                 return Err(e);
+            }
+            trace.step("信息", "安装器执行成功，即将退出并启动新版客户端");
+            #[cfg(target_os = "linux")]
+            if let Some(path) = &app.env().appimage {
+                crate::appimage::update_shortcut(&app, Path::new(path), &item.version);
+                if let Err(e) = crate::appimage::launch(Path::new(path), &app.env().args_os) {
+                    state.shared();
+                    return Err(format!("新版已安装，启动失败：{e}。请重新打开客户端。"));
+                }
+                app.exit(0);
+                return Ok(Value::Null);
             }
             app.restart();
         }
@@ -810,6 +943,16 @@ fn native_update<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 前端编号仅用于关联日志；拒绝换行、任意文本及过长标记，旧版调用无需传入。
+    #[test]
+    fn diagnostic_id_rejects_log_injection() {
+        assert!(UpdateTrace::new(Some("0123456789abcdef".into()))
+            .0
+            .is_some());
+        for value in [None, Some("bad\nrecord".into()), Some("a".repeat(100))] {
+            assert!(UpdateTrace::new(value).0.is_none());
+        }
+    }
     fn fixtures() -> Value {
         serde_json::from_str(include_str!("../tests/update-signatures.json")).unwrap()
     }

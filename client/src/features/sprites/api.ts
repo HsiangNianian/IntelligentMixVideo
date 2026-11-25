@@ -3,6 +3,7 @@ import { updateFetch as fetch } from "@/lib/update-guard";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { apiBase } from "@/lib/api-base";
 import { deviceId } from "@/features/remotion_templates/localSessions";
+import { diagnosticTask } from "@/lib/diagnostics";
 import {
   ListSpritesResponseSchema,
   PublishSpriteRequestSchema,
@@ -36,37 +37,39 @@ export class SpriteHttpError extends Error {
 
 /** 有界请求：调用方取消优先，超时给出可重试提示；HTTP 错误展示服务端 detail。 */
 async function request(path: string, method: "GET" | "POST" | "DELETE", signal?: AbortSignal, body?: Uint8Array, timeoutMs = 20_000, device?: string): Promise<Uint8Array> {
-  const controller = new AbortController();
-  let timedOut = false;
-  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
-  const abort = () => controller.abort();
-  signal?.addEventListener("abort", abort, { once: true });
-  if (signal?.aborted) controller.abort();
-  try {
-    const response = await fetch(`${apiBase()}${path}`, {
-      method,
-      headers: {
-        Accept: "application/x-protobuf",
-        ...(body ? { "Content-Type": "application/x-protobuf" } : {}),
-        ...(device ? { "X-IMV-Device": device } : {}),
-      },
-      body: body ? Uint8Array.from(body) : undefined,
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const { detail } = (await response.json().catch(() => ({}))) as { detail?: unknown };
-      throw new SpriteHttpError(response.status, typeof detail === "string" ? detail : `请求未完成（HTTP ${response.status}）`);
+  return diagnosticTask("前端资产", `${method} ${path}`, async () => {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) controller.abort();
+    try {
+      const response = await fetch(`${apiBase()}${path}`, {
+        method,
+        headers: {
+          Accept: "application/x-protobuf",
+          ...(body ? { "Content-Type": "application/x-protobuf" } : {}),
+          ...(device ? { "X-IMV-Device": device } : {}),
+        },
+        body: body ? Uint8Array.from(body) : undefined,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const { detail } = (await response.json().catch(() => ({}))) as { detail?: unknown };
+        throw new SpriteHttpError(response.status, typeof detail === "string" ? detail : `请求未完成（HTTP ${response.status}）`);
+      }
+      return new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (timedOut) throw new Error("请求超时，请稍后重试。");
+      if (error instanceof TypeError) throw new Error("无法连接服务端，请确认 API 已启动后重试。");
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
     }
-    return new Uint8Array(await response.arrayBuffer());
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    if (timedOut) throw new Error("请求超时，请稍后重试。");
-    if (error instanceof TypeError) throw new Error("无法连接服务端，请确认 API 已启动后重试。");
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-    signal?.removeEventListener("abort", abort);
-  }
+  });
 }
 
 /** 协议摘要转换为界面使用的目录条目。 */
@@ -102,16 +105,18 @@ export async function listSprites(signal?: AbortSignal): Promise<SpriteAsset[]> 
  * 提供 `target` 时覆盖该资产（保留 sprite_id），否则保存为新资产；可同时命名，留空使用服务端默认名称。
  */
 export async function publishSprite(versionId: string, choice: PublishChoice, target?: string, name?: string): Promise<SpriteAsset> {
-  const body = toBinary(PublishSpriteRequestSchema, create(PublishSpriteRequestSchema, {
-    sourceVersionId: versionId,
-    ...choice,
-    ...(target ? { targetSpriteId: target } : {}),
-    ...(name?.trim() ? { name: name.trim() } : {}),
-  }));
-  const device = await deviceId();
-  const { sprite } = fromBinary(PublishSpriteResponseSchema, await request("/api/sprites/publish", "POST", undefined, body, PUBLISH_TIMEOUT_MS, device));
-  if (!sprite) throw new Error("发布响应缺少内容");
-  return toAsset(sprite);
+  return diagnosticTask("前端资产", "发布字效资产", async (trace) => {
+    const body = toBinary(PublishSpriteRequestSchema, create(PublishSpriteRequestSchema, {
+      sourceVersionId: versionId,
+      ...choice,
+      ...(target ? { targetSpriteId: target } : {}),
+      ...(name?.trim() ? { name: name.trim() } : {}),
+    }));
+    const device = await deviceId();
+    const { sprite } = fromBinary(PublishSpriteResponseSchema, await trace.run(() => request("/api/sprites/publish", "POST", undefined, body, PUBLISH_TIMEOUT_MS, device)));
+    if (!sprite) throw new Error("发布响应缺少内容");
+    return toAsset(sprite);
+  });
 }
 
 /** 目录推送空闲时每 15 秒有一条 ping；超过这个时长什么都没收到，就当连接已失效（网络切换、代理断开）并重新连接。 */

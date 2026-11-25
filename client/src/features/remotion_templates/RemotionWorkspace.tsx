@@ -1,5 +1,4 @@
 /** Remotion 工作区组合聊天、代码、预览和参数；服务状态与当前会话独立，后台会话定时同步，页面卸载时清理。 */
-import { useUpdateBlocker } from "@/lib/update-guard";
 import { useEffect, useRef, useState } from "react";
 import { Wand2 } from "lucide-react";
 import { toast } from "sonner";
@@ -40,7 +39,7 @@ const KEYWORD_DEFAULTS_ERROR = "关键词参数的默认值必须是关闭状态
 const KEYWORD_REPAIR = "这个版本的关键词参数默认值不是关闭状态，无法保存到资产。请保持现有外观，重新生成一个版本，并把七个关键词参数的默认值恢复为关闭（关键词为空、加粗/斜体/下划线/删除线关闭、关键词颜色为空、关键词字号为 0）。";
 
 /** 宽屏左右分栏，小屏切换聊天和预览但保留会话与播放器实例。 */
-export function RemotionWorkspace() {
+export function RemotionWorkspace({ review }: { review?: { panel?: string } } = {}) {
   const history = useWorkHistory();
   const session = useTemplateSession(history.refresh);
   useBackgroundSync(session.openWork, history.refresh);
@@ -49,6 +48,7 @@ export function RemotionWorkspace() {
   const historical = !!session.previewVersion;
   const [previewBusy, setPreviewBusy] = useState(false);
   const [mobile, setMobile] = useState("chat");
+  useEffect(() => { if (review?.panel) setMobile(review.panel === "chat" ? "chat" : "preview"); }, [review]);
   const [serviceError, setServiceError] = useState("");
   const [check, setCheck] = useState(0);
   const [publishing, setPublishing] = useState(false);
@@ -56,6 +56,7 @@ export function RemotionWorkspace() {
   const publishScope = useRef({ active: true, pending: false });
   // 版本卡片下拉改选的资产分类，按版本 ID 记录：版本列表刷新重建对象或聊天重新挂载都不会改回默认值。
   const [kinds, setKinds] = useState<Record<string, SpriteKind>>({});
+  const [savedKinds, setSavedKinds] = useState<Record<string, SpriteKind>>({});
   // 目录随共享资产的改名、保存和删除更新；名称草稿独立保存，后台更新不覆盖用户输入。
   const [assets, setAssets] = useState<SpriteAsset[] | null>(null);
   const [assetError, setAssetError] = useState("");
@@ -64,12 +65,14 @@ export function RemotionWorkspace() {
   const activeWork = useRef(session.workId);
   activeWork.current = session.workId;
   const [saveMode, setSaveMode] = useState<SaveMode>("overwrite");
+  const [savedMode, setSavedMode] = useState<SaveMode>("overwrite");
   // 只保留最近一次目录读取；保存回执之后再刷新会取消旧读取，防止迟到目录把新名称换回去。
   useEffect(() => {
     let controller: AbortController | undefined;
     setAssets(null);
     setAssetError("");
     setSaveMode("overwrite");
+    setSavedMode("overwrite");
     setAssetName("");
     if (!session.workId) return;
     /** 目录更新失败保留已有条目并提示重试，不能因读取失败把覆盖保存变成新建。 */
@@ -136,7 +139,6 @@ export function RemotionWorkspace() {
     !!session.busy ||
     unresolved ||
     session.retryMode === "read";
-  useUpdateBlocker("字效参数尚未保存或会话正在处理", pending || session.dirty);
   const locked = pending || previewBusy || session.previewLoading;
   /**
    * 顶栏保存当前预览版本：默认覆盖本会话上次保存的资产，切换为另存时再新建。
@@ -154,11 +156,13 @@ export function RemotionWorkspace() {
       const kind = target?.kind ?? kinds[viewed.id] ?? defaultKind(viewed.spec.sprite?.kind);
       const asset = await publishSprite(viewed.id, publishChoice(viewed, kind), target?.id, assetName);
       if (activeWork.current === work) {
+        setSavedKinds((current) => ({ ...current, [viewed.id]: kinds[viewed.id] ?? defaultKind(viewed.spec.sprite?.kind) }));
         setAssets((current) => [asset, ...(current ?? []).filter((item) => item.id !== asset.id)]);
         refreshAssets.current?.();
       }
       if (scope.active) {
         setAssetName("");
+        setSavedMode(saveMode);
         toast.success(target
           ? `已覆盖资产「${asset.name}」，引用它的模板将使用新版本。`
           : `已保存到资产「${asset.name}」，可在云端模板的 AI 资产中添加。`);
@@ -251,7 +255,7 @@ export function RemotionWorkspace() {
       <WorkspacePanels
         action={
           <div className="flex max-w-[calc(100vw-6rem)] items-center gap-1.5">
-            <Input aria-label="资产名称" value={assetName} onChange={(event) => setAssetName(event.target.value)}
+            <Input data-update-draft={assetName || saveMode !== savedMode ? "AI 字效 · 资产保存设置" : undefined} aria-label="资产名称" value={assetName} onChange={(event) => setAssetName(event.target.value)}
               placeholder={overwriting ? overwriteTarget.name : "资产名称（选填）"} maxLength={100}
               title={overwriting ? `留空保留「${overwriteTarget.name}」` : `留空使用 AI 名称「${viewed?.spec.name ?? ""}」`}
               disabled={!viewed || locked || publishing} className="h-8 w-40 max-w-[30vw] text-xs" />
@@ -273,6 +277,7 @@ export function RemotionWorkspace() {
           </div>
         }
         mobile={mobile}
+        reviewParameters={review?.panel === "parameters" ? review : undefined}
         status={
           <span role="status">
             {session.connection === "reconnecting"
@@ -301,6 +306,7 @@ export function RemotionWorkspace() {
         chat={
           <ChatPanel
             key={`chat-${session.key}`}
+            workTitle={history.items.find(item => item.id === session.workId)?.title}
             messages={session.messages}
             job={session.job}
             jobs={session.jobs}
@@ -312,6 +318,7 @@ export function RemotionWorkspace() {
             previewDisabled={pending}
             onPreviewVersion={session.selectVersion}
             versionKinds={kinds}
+            savedVersionKinds={savedKinds}
             onVersionKindChange={(id, kind) => setKinds((current) => ({ ...current, [id]: kind }))}
             versionNotice={
               catalog.error ? (
@@ -407,6 +414,7 @@ export function RemotionWorkspace() {
                 dirty={!historical && session.dirty}
                 readOnly={historical}
                 saving={session.busy === "parameters"}
+                submitted={unresolved && session.busy === "parameters"}
                 onSave={() => {
                   if (!locked) session.saveParameters();
                 }}

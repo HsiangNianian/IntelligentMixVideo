@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from google.protobuf.json_format import ParseError
 from sqlalchemy import JSON, Column, MetaData, String, Table, delete, inspect, select
 from sqlalchemy.dialects.mysql import DATETIME
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
 
@@ -18,9 +18,8 @@ from ..database import get_engine
 from ..remotion_templates import placement, sprite_store, sprites
 from ..remotion_templates.categories import BILINGUAL_PROP, bilingual as is_bilingual
 from ..remotion_templates.store import Conflict
-from .covers import delete_cover, encode_cover, upload_cover
+from . import covers, images
 from .schema import EffectTrack, Template, TemplateCover, TemplateSave, TemplateSummary, completeness_error, effect_catalog
-from . import images
 
 # 模板元数据用于查询和约束，配置 JSON 保留完整编辑字段与可信效果快照。
 metadata = MetaData()
@@ -279,42 +278,74 @@ def templates_using(sprite_id: str) -> list[str]:
 
 def delete_template(template_id: UUID) -> None:
     """事务删除指定模板；重复删除返回 404，不删除任何其他记录。"""
+    key = str(template_id)
+    target = templates.c.template_id == key
     with initialize_schema().begin() as connection:
-        target = templates.c.template_id == str(template_id)
         row = connection.execute(select(templates.c.cover).where(target).with_for_update()).first()
-        if row is None:
-            raise HTTPException(404, "模板不存在")
-        if row.cover and row.cover.get("published_revision"):
-            delete_cover(str(template_id))
-        connection.execute(delete(templates).where(target))
+        if row is not None:
+            connection.execute(delete(templates).where(target))
+    # 只有删除已提交才能回收当前图片，否则事务回滚会留下仍可见却无法读取的模板。
+    covers.delete_cover(key, had_publication=bool(row is not None and row.cover and row.cover.get("published_revision")))
+    if row is None:
+        raise HTTPException(404, "模板不存在")
 
 
-def published_revision(template_id: UUID) -> str:
-    """固定地址的条件 GET 只读模板的封面列。"""
+def read_published_cover(template_id: UUID, if_none_match: str | None) -> tuple[str, bytes | None]:
+    """ETag 和 PNG 对应同一已发布修订。命中条件请求时只查数据库。"""
+    key = str(template_id)
+    query = select(templates.c.cover).where(templates.c.template_id == key)
     with initialize_schema().connect() as connection:
-        cover = connection.execute(select(templates.c.cover).where(templates.c.template_id == str(template_id))).scalar()
+        cover = connection.execute(query).scalar()
     if not cover or not cover.get("published_revision"):
         raise HTTPException(404, "暂无封面")
-    return cover["published_revision"]
+    revision = cover["published_revision"]
+    etag = f'"{revision}"'
+    if etag == if_none_match:
+        return etag, None
+    content = covers.published_image(key, revision, cover.get("object_id"))
+    if content is None:
+        raise HTTPException(404, detail={"code": "cover_object_missing"})
+    return etag, content
 
 
 def publish_cover(template_id: UUID, revision: UUID, content: bytes, refresh: bool = False) -> TemplateCover:
-    """按取帧前的版本覆盖图片。手动刷新推进封面版本，同一刷新请求重传保持幂等。"""
-
-    payload = encode_cover(content)
+    """锁住目标版本并上传独立私有对象，数据库提交后固定 API 地址才切换到该对象。"""
+    payload = covers.encode_cover(content)
     key = str(template_id)
-    with initialize_schema().begin() as connection:
-        target = templates.c.template_id == key
-        row = connection.execute(select(templates.c.cover).where(target).with_for_update()).first()
+    published = str(uuid5(revision, "refresh-cover")) if refresh else str(revision)
+    engine = initialize_schema()
+    target = templates.c.template_id == key
+    locked = select(templates.c.cover).where(target).with_for_update()
+    with engine.connect() as connection:
+        row = connection.execute(locked).first()
         if row is None:
             raise HTTPException(404, "模板不存在")
         current = TemplateCover.model_validate(row.cover) if row.cover else TemplateCover(revision=key)
-        published = str(uuid5(revision, "refresh-cover")) if refresh else str(revision)
         if current.published_revision == current.revision == published:
             return current
         if current.revision != str(revision):
             raise HTTPException(409, "模板画面已更新，请刷新后重试")
-        current.url = upload_cover(key, payload)
-        current.revision = current.published_revision = published
-        connection.execute(templates.update().where(target).values(cover=current.model_dump()))
-        return current
+        object_id = str(uuid4())
+        object_key = f"{covers.object_prefix(key)}/{object_id}.png"
+        result = TemplateCover(revision=published, published_revision=published,
+                               source=current.source, url=f"/template/{key}/cover")
+        connection.execute(templates.update().where(target).values(cover={**result.model_dump(), "object_id": object_id}))
+        try:
+            covers.upload_cover(object_key, payload, published)
+            connection.commit()
+            return result
+        except (HTTPException, SQLAlchemyError) as exc:
+            publish_error = exc
+
+    # COMMIT 的回执可能丢失。等原事务结束再确认选中的对象，只清理自己的未发布尝试。
+    with engine.connect() as connection:
+        actual = connection.execute(locked).scalar() or {}
+    # 若 COMMIT 回执丢失后另一版本已发布，本图可能曾被读者选中，保留到模板删除。
+    if actual.get("object_id") != object_id and (
+        isinstance(publish_error, HTTPException) or not actual
+        or actual.get("published_revision", "") in (current.published_revision, published)
+    ):
+        covers.discard_upload(object_key)
+    if actual.get("published_revision") == actual.get("revision") == published:
+        return TemplateCover.model_validate(actual)
+    raise publish_error

@@ -1,5 +1,6 @@
 /** 只取模板的已合成画布。桌面读取 WebView 内存快照，普通浏览器仅接受用户选中的当前标签页。 */
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
+import { diagnosticInvoke as invoke } from "@/lib/diagnostics";
 
 /** 等待播放器定位、渲染或上传前的有界条件，页面隐藏或卸载后不再截取其他画面。 */
 export async function waitForCover(test: () => boolean, timeout = 15000, message = "预览未就绪，请重试") {
@@ -122,7 +123,7 @@ function coverLayersReady(frame: HTMLElement, captureId: string): boolean {
 }
 
 /** SDK 5.2.2 在独立字幕画布上每帧先清空，再为每个已渲染的 IMS 文字叠一张位图。canplay 早于字体下载和绘制。 */
-export async function prepareCoverFrame(frame: HTMLElement, seek: (seconds: number) => void) {
+export async function captureCoverFrame<T>(frame: HTMLElement, seek: (seconds: number) => void, snapshot: () => Promise<T>) {
   const stage = frame.parentElement!;
   const ready = () => {
     if (!stage.isConnected) throw new Error("取帧已取消");
@@ -147,10 +148,18 @@ export async function prepareCoverFrame(frame: HTMLElement, seek: (seconds: numb
     }
     seek(1);
     const captureId = crypto.randomUUID();
-    const complete = () => ready() && stage.dataset.coverTime === "1" && painted >= expected && coverLayersReady(frame, captureId);
-    await waitForCover(complete, 60000, "1 秒处的标题、字幕或字效未绘制完成，请刷新预览后重试");
-    await new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done())));
-    if (!complete()) throw new Error("预览已变化，请重试");
+    const positioned = () => ready() && stage.dataset.coverTime === "1";
+    const complete = () => positioned() && coverLayersReady(frame, captureId) && painted >= expected;
+    // 先发出 Remotion 定位；IMS 的字体和位图可在它确认目标帧的同时加载。
+    await waitForCover(() => {
+      if (!positioned()) return false;
+      coverLayersReady(frame, captureId);
+      return painted >= expected;
+    }, expected ? 120_000 : 60_000, "1 秒处的视频或 IMS 文字未绘制完成，请刷新预览后重试");
+    await waitForCover(complete, 60000, "1 秒处的字效未确认绘制完成，请检查字效预览后重试");
+    const result = await snapshot();
+    if (!complete()) throw new Error("截图期间预览已变化，请重试");
+    return result;
   } finally {
     if (expected && ctx && clear && draw) { ctx.clearRect = clear; ctx.drawImage = draw; }
   }

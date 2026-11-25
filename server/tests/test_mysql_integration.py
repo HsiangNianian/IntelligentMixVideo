@@ -6,10 +6,15 @@
 
 import asyncio
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from threading import Event
+from time import monotonic, sleep
 from uuid import UUID, uuid4
 
 import pytest
+from botocore.exceptions import ClientError
+from pymysql.err import OperationalError
 from fastapi.testclient import TestClient
 from sqlalchemy import URL, create_engine, func, inspect, select
 from sqlalchemy.exc import IntegrityError
@@ -17,8 +22,9 @@ from sqlalchemy.exc import IntegrityError
 from server import database
 from server.app import app
 from server.remotion_templates import sprite_store
-from server.template import store
+from server.template import covers, store
 from .conftest import SPRITE_ID, remotion_track, seed_sprite
+from .test_template_covers import png
 from .template_wire import detail_template, listed_templates, post_template, saved_template
 
 
@@ -95,6 +101,170 @@ def test_mysql_bootstrap_unicode_and_persistence(mysql_database, template_payloa
         response = client.get(f"/template/{saved['template_id']}")
         assert response.status_code == 200 and detail_template(response) == saved
         assert summary(listed_templates(client.get("/template"))) == [summary_of(saved)]
+
+
+def test_mysql_concurrent_legacy_cover_backfill(mysql_database, template_payload, cover_storage):
+    """第二个 PUT 等待同一模板的行锁；两个客户端得到同一版本，只发布第一张私有 PNG。"""
+    uploading, release = Event(), Event()
+    write = cover_storage.put_object.side_effect
+
+    def pause_upload(**kwargs):
+        """保留第一个请求的事务，直到 MySQL 报告另一个请求已在等待。"""
+        uploading.set()
+        assert release.wait(10)
+        return write(**kwargs)
+
+    cover_storage.put_object.side_effect = pause_upload
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        key = post_template(client, template_payload).json()["template"]["templateId"]
+        base = f"/template/{key}/cover"
+
+        def backfill(color):
+            """模拟持有同一份旧模板列表、截到不同画面的客户端。"""
+            return client.put(f"{base}/{key}", files={"file": ("cover.png", png(color), "image/png")}, data={"refresh": "true"})
+
+        first = pool.submit(backfill, "red")
+        try:
+            assert uploading.wait(5)
+            second = pool.submit(backfill, "blue")
+            deadline = monotonic() + 5
+            with database.get_engine().connect() as observer:
+                while not observer.exec_driver_sql(
+                    "SELECT 1 FROM performance_schema.data_locks WHERE OBJECT_SCHEMA = %s "
+                    "AND OBJECT_NAME = 'templates' AND LOCK_STATUS = 'WAITING' LIMIT 1", (mysql_database,),
+                ).scalar():
+                    assert monotonic() < deadline, "第二个请求未进入模板行锁等待"
+                    sleep(0.02)
+        finally:
+            release.set()
+        a, b = first.result(timeout=5), second.result(timeout=5)
+        assert a.status_code == b.status_code == 200
+        assert a.json() == b.json() and a.json()["published_revision"] == a.json()["revision"] != key
+        assert cover_storage.put_object.call_count == 1
+        assert client.get(base).content == covers.encode_cover(png("red"))
+
+
+def test_mysql_read_and_recover_overlapping_cover_rollbacks(mysql_database, template_payload, cover_storage, monkeypatch):
+    """两个发布先后回滚。在途和失败后的分享链接都只能读取已提交的红图。"""
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        record = post_template(client, {**template_payload, "cover_source": "builtin"}).json()["template"]
+        base = f"/template/{record['templateId']}/cover"
+        put = f"{base}/{record['cover']['revision']}"
+
+        def publish(color, refresh=True):
+            """通过发布接口写入有明确像素的候选图。"""
+            return client.put(put, files={"file": ("cover.png", png(color), "image/png")}, data={"refresh": str(refresh).lower()})
+
+        published = publish("red", refresh=False)
+        assert published.is_success
+        share_url = published.json()["url"]
+        original = client.get(share_url)
+        key = cover_storage.put_object.call_args.kwargs["Key"]
+        writing, read_done = Event(), Event()
+        rolled_back, resume = [Event(), Event()], [Event(), Event()]
+
+        def fail_commit(connection):
+            """第一笔等待并发读，两个事务都回滚后按第一、第二笔的顺序进入恢复。"""
+            index = int(rolled_back[0].is_set())
+            if index == 0:
+                writing.set()
+                assert read_done.wait(10)
+            connection.rollback()
+            rolled_back[index].set()
+            assert resume[index].wait(10)
+            raise OperationalError(1205, "test publication rolled back")
+
+        monkeypatch.setattr(database.get_engine().dialect, "do_commit", fail_commit)
+        first = pool.submit(publish, "blue")
+        try:
+            assert writing.wait(5)
+            assert cover_storage.put_object.call_args.kwargs["Key"] != key
+            assert cover_storage.put_object.call_args.kwargs["ACL"] == "private"
+            during = client.get(share_url)
+            assert (during.headers["etag"], during.content) == (original.headers["etag"], original.content)
+            read_done.set()
+            assert rolled_back[0].wait(5)
+            second = pool.submit(publish, "green")
+            assert rolled_back[1].wait(5)
+            resume[0].set()
+            assert first.result(timeout=5).status_code == 503
+        finally:
+            read_done.set()
+            for gate in resume:
+                gate.set()
+        assert second.result(timeout=5).status_code == 503
+        assert cover_storage.get_object(Key=key)["Body"].read() == original.content
+        after = client.get(share_url)
+        assert (after.headers["etag"], after.content) == (original.headers["etag"], original.content)
+        assert client.get(base, headers={"If-None-Match": during.headers["etag"]}).status_code == 304
+
+
+def test_mysql_delete_after_first_cover_rollback(mysql_database, template_payload, cover_storage, monkeypatch):
+    """首图提交回滚后模板可立即删除。原请求恢复时只清理自己的私有 PNG。"""
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as pool:
+        key = post_template(client, template_payload).json()["template"]["templateId"]
+        template = f"/template/{key}"
+        base = f"{template}/cover"
+        commit = database.get_engine().dialect.do_commit
+        rolled_back, resume = Event(), Event()
+
+        def reject_first(connection):
+            """先释放 InnoDB 行锁，待另一个连接提交删除之后才把错误返回给发布者。"""
+            if rolled_back.is_set():
+                return commit(connection)
+            connection.rollback()
+            rolled_back.set()
+            assert resume.wait(10)
+            raise OperationalError(1205, "first publication rolled back")
+
+        monkeypatch.setattr(database.get_engine().dialect, "do_commit", reject_first)
+        writer = pool.submit(client.put, f"{base}/{key}", files={"file": ("cover.png", png("blue"), "image/png")})
+        try:
+            assert rolled_back.wait(5)
+            candidate = cover_storage.put_object.call_args.kwargs
+            assert candidate["ACL"] == "private" and client.get(base).status_code == 404
+            assert client.delete(template).status_code == 204
+        finally:
+            resume.set()
+        assert writer.result(timeout=5).status_code == 503
+        assert client.get(template).status_code == client.get(base).status_code == 404
+        with pytest.raises(ClientError, match="NoSuchKey"):
+            cover_storage.get_object(Key=candidate["Key"])
+
+
+def test_mysql_slow_cover_read_releases_connection(mysql_database, template_payload, cover_storage, monkeypatch):
+    """仅有一个可用 SQL 连接时，封面读取等待 ZOS 仍允许其他客户端列出模板。"""
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as pool:
+        key = post_template(client, template_payload).json()["template"]["templateId"]
+        base = f"/template/{key}/cover"
+        assert client.put(f"{base}/{key}", files={"file": ("cover.png", png("red"), "image/png")}).is_success
+        original = database.get_engine()
+        constrained = create_engine(original.url, pool_size=1, max_overflow=0, pool_timeout=0.25)
+        reading, release = Event(), Event()
+        read = cover_storage.get_object.side_effect
+
+        def await_object(**kwargs):
+            """保持读图未完成，直到列表请求返回。"""
+            reading.set()
+            assert release.wait(10)
+            return read(**kwargs)
+
+        cover_storage.get_object.side_effect = await_object
+        with monkeypatch.context() as config:
+            config.setattr(database, "_engine", constrained)
+            try:
+                assert client.get("/template").is_success
+                reader = pool.submit(client.get, base)
+                try:
+                    assert reading.wait(5)
+                    assert constrained.pool.checkedout() == 0
+                    listed = client.get("/template")
+                    assert listed.is_success and listed.json()["templates"][0]["templateId"] == key
+                finally:
+                    release.set()
+                assert reader.result(timeout=5).content == covers.encode_cover(png("red"))
+            finally:
+                constrained.dispose()
 
 
 def test_mysql_stores_remotion_tracks_as_references(mysql_database, template_payload):

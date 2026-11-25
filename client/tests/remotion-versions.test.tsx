@@ -23,6 +23,7 @@ import { remotionJob, remotionVersion } from "./remotion-fixtures";
 import { remotionServer, seed } from "./remotion-server";
 import { codeText } from "./remotion-version-helpers";
 import { FakeEventSource, fetchMock } from "./setup";
+import { updateDrafts } from "@/lib/update-guard";
 
 /** 建立两个真实公开成功任务并写入本地会话，刷新恢复时可把版本放回对应的助手消息。 */
 async function history(
@@ -169,6 +170,7 @@ test("顶栏保存当前预览版本为资产并防止重复提交", async () =>
   fireEvent.keyDown(kind, { key: "ArrowDown" });
   fireEvent.keyDown(await screen.findByRole("option", { name: "滤镜" }), { key: "Enter" });
   await waitFor(() => expect(kind.textContent).toContain("滤镜"));
+  expect(updateDrafts()).toContain(kind);
   fireEvent.click(save);
   await waitFor(() => expect(requests).toHaveLength(2));
   expect(requests[1]).toMatchObject({ sourceVersionId: "version-1", kind: SpriteKind.FILTER_OVERLAY, textProp: "", keywordsProp: "" });
@@ -297,11 +299,14 @@ test("保存资产默认覆盖本会话上一次保存的资产，也可以另�
   fireEvent.keyDown(mode, { key: "ArrowDown" });
   fireEvent.keyDown(await screen.findByRole("option", { name: "另存为新资产" }), { key: "Enter" });
   await waitFor(() => expect(mode.textContent).toContain("另存为新资产"));
+  const name = screen.getByRole("textbox", { name: "资产名称" });
+  expect(updateDrafts()).toContain(name);
   expect(save.title).toContain("保存当前预览 V2 为新资产");
   fireEvent.click(save);
   await waitFor(() => expect(requests).toHaveLength(2));
   expect(requests[1].targetSpriteId).toBe("");
   expect(requests[1]).toMatchObject({ sourceVersionId: "version-2", kind: SpriteKind.TEXT });
+  await waitFor(() => expect(updateDrafts()).not.toContain(name));
 });
 
 // 改选其他分类表示要一个新资产：覆盖不能再改变已有片段依赖的类型，选项不可用且按卡片分类保存为新资产。
@@ -331,6 +336,7 @@ test("为版本改选其他分类时覆盖不可用，按新分类另存", async
   fireEvent.click(screen.getByRole("button", { name: "保存资产" }));
   await waitFor(() => expect(requests).toHaveLength(1));
   expect(requests[0]).toMatchObject({ targetSpriteId: "", kind: SpriteKind.FILTER_OVERLAY });
+  await waitFor(() => expect(updateDrafts()).not.toContain(kind));
 });
 
 // 发布被服务端拒绝时保留具体原因、不自动重试，用户再次保存后可恢复。

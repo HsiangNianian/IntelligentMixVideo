@@ -1,5 +1,6 @@
 /** 字体库 HTTP 客户端：读取共享字体库、上传字体（按内容幂等）；上传失败直接展示服务端给出的原因（格式、大小、存储不可用）。 */
 import { updateFetch as fetch } from "@/lib/update-guard";
+import { diagnosticTask } from "@/lib/diagnostics";
 import { ApiError, apiUrl } from "@/features/remotion_templates/api";
 import { deviceId } from "@/features/remotion_templates/localSessions";
 import { apiBase } from "@/lib/api-base";
@@ -66,31 +67,34 @@ async function detailOf(response: Response): Promise<string | null> {
 
 /** 带超时与设备头的请求，返回解析后的 JSON 与状态码；失败时抛出带公共提示的 ApiError，中断原样抛出。 */
 async function request<T>(path: string, init: RequestInit, timeoutMs: number): Promise<{ status: number; body: T }> {
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  init.signal?.addEventListener("abort", abort, { once: true });
-  const timeout = window.setTimeout(abort, timeoutMs);
-  try {
-    const response = await fetch(apiUrl(path), {
-      ...init,
-      signal: controller.signal,
-      headers: { "X-IMV-Device": await deviceId(), ...init.headers },
-    });
-    if (!response.ok)
-      throw new ApiError(
-        response.status,
-        (await detailOf(response)) ?? (response.status === 413 ? "字体文件过大。" : `请求未完成（${response.status}），请重试。`),
-      );
-    return { status: response.status, body: (await response.json()) as T };
-  } catch (error) {
-    if (init.signal?.aborted || error instanceof ApiError) throw error;
-    if (controller.signal.aborted) throw new Error("请求超时，请重试。");
-    if (error instanceof TypeError) throw new Error("无法连接服务端，请确认服务已启动。");
-    throw error;
-  } finally {
-    window.clearTimeout(timeout);
-    init.signal?.removeEventListener("abort", abort);
-  }
+  return diagnosticTask("前端字体", `${init.method ?? "GET"} ${path}`, async (trace) => {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    init.signal?.addEventListener("abort", abort, { once: true });
+    const timeout = window.setTimeout(abort, timeoutMs);
+    try {
+      const device = await deviceId();
+      const response = await trace.run(() => fetch(apiUrl(path), {
+        ...init,
+        signal: controller.signal,
+        headers: { "X-IMV-Device": device, ...init.headers },
+      }));
+      if (!response.ok)
+        throw new ApiError(
+          response.status,
+          (await detailOf(response)) ?? (response.status === 413 ? "字体文件过大。" : `请求未完成（${response.status}），请重试。`),
+        );
+      return { status: response.status, body: (await response.json()) as T };
+    } catch (error) {
+      if (init.signal?.aborted || error instanceof ApiError) throw error;
+      if (controller.signal.aborted) throw new Error("请求超时，请重试。");
+      if (error instanceof TypeError) throw new Error("无法连接服务端，请确认服务已启动。");
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+      init.signal?.removeEventListener("abort", abort);
+    }
+  });
 }
 
 /** 读取共享字体库（预装与用户上传），按登记顺序，默认字体在最前。 */

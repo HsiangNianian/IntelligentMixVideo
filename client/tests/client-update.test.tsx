@@ -1,6 +1,8 @@
 /** 客户端更新流程测试：隔离 IPC 和网络，验证草稿、后台任务、重复点击、启动提醒及等待取消；不代替真实桌面安装测试。 */
 import { expect, mock, test } from 'bun:test';
-import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
+import HomePage from '@/pages/HomePage';
+import { apiBase, setApiBase } from '@/lib/api-base';
 import { mockDesktop } from './setup';
 import { ClientUpdate, UpdateLifecycle } from '@/features/updates/ClientUpdate';
 import { checkUpdate, downloadUpdate, initializeUpdates, cancelUpdate, tryApplyUpdate } from '@/features/updates/store';
@@ -8,14 +10,27 @@ import { useUpdateBlocker, updateTask, updateBlockers, lockForUpdate } from '@/l
 import { recovery } from '@/features/updates/recovery';
 import { useBackgroundSync } from '@/features/remotion_templates/backgroundSync';
 import { memoryStorage, setStorage } from '@/features/remotion_templates/localSessions';
+import { registrationJournal } from './remotion-registration-fixture';
 
 type Pending = { server: string; title: string; deleting: boolean }[];
 const OTHER_SERVER: Pending = [{ server: 'http://old.test', title: '旧服务会话', deleting: false }];
 
-function desktop({ pending = [], fail = false, downloadFail = false, downloadGate, mode = 'hot', readyFailures = 0, status = { enabled: true, notice: '' } }: { pending?: Pending | Promise<Pending>; fail?: boolean; downloadFail?: boolean; downloadGate?: Promise<void>; mode?: string; readyFailures?: number; status?: { enabled: boolean; notice: string } } = {}) {
+function desktop({ pending = [], fail = false, downloadFail = false, downloadGate, registrationGate, saveFailures = 0, mode = 'hot', readyFailures = 0, status = { enabled: true, notice: '' } }: { pending?: Pending | Promise<Pending>; fail?: boolean; downloadFail?: boolean; downloadGate?: Promise<void>; registrationGate?: Promise<void>; mode?: string; saveFailures?: number; readyFailures?: number; status?: { enabled: boolean; notice: string } } = {}) {
+  const journal = registrationJournal();
   const calls = mock(async (command: string, args: Record<string, unknown>) => {
+    if (command === 'local_settings') {
+      if (args?.id && saveFailures-- > 0) throw new Error('设置文件写入失败');
+      return {};
+    }
     if (command === 'plugin:event|listen') return 1;
-    if (command === 'remotion_sessions') return pending;
+    if (command === 'remotion_sessions') {
+      if (String(args.operation).startsWith('registrations_')) {
+        if (args.operation === 'registrations_list') await registrationGate;
+        return journal(args);
+      }
+      if (mode === 'native') throw new Error('本地会话库来自更新版本的客户端');
+      return pending;
+    }
     if (command !== 'client_update') return null;
     if (args.operation === 'status') return { ...status, nativeVersion: '1.2.0', resume: null };
     if (args.operation === 'ready' && readyFailures-- > 0) throw new Error('另一个更新操作正在进行');
@@ -33,23 +48,90 @@ function desktop({ pending = [], fail = false, downloadFail = false, downloadGat
   mockDesktop(calls);
   return calls;
 }
-// 场景：隐藏工作区仍有草稿，下载完成后保持等待，处理完草稿才应用，并传递已保存位置。
-test('下载不丢失草稿，安全后应用一次并恢复位置', async () => {
+// 场景：隐藏工作区的草稿处理完后才下载，自动应用并传递已保存位置。
+test('处理草稿后自动下载、应用一次并恢复位置', async () => {
   const calls = desktop();
   await initializeUpdates();
   const blocker = renderHook(({ dirty }) => useUpdateBlocker('模板尚未保存', dirty), { initialProps: { dirty: true } });
   // 挂载会自动检查；在 act 内等其状态提交，不让 DOM 重试抢占异步检查的完成。
   await act(async () => { render(<ClientUpdate />); });
   expect(screen.getByRole('button', { name: '一键更新' })).toBeTruthy();
+  expect(screen.getByText('版本：v1.2.3')).toBeTruthy();
+  expect(screen.queryByText(/原生 v/)).toBeNull();
   expect(calls.mock.calls.filter(([, args]) => args.operation === 'check')).toHaveLength(1);
   await act(async () => { await downloadUpdate(); });
   await waitFor(() => expect(screen.getByText(/等待处理/)).toBeTruthy());
-  expect(calls.mock.calls.some(([, args]) => args.operation === 'apply')).toBe(false);
+  expect(calls.mock.calls.some(([, args]) => args.operation === 'download')).toBe(false);
   recovery.workspace = 'library'; recovery.template = { templateId: 'saved' };
   blocker.rerender({ dirty: false });
-  await act(async () => { await tryApplyUpdate(); });
-  expect(calls.mock.calls.filter(([, args]) => args.operation === 'apply')).toHaveLength(1);
+  await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args.operation === 'apply')).toHaveLength(1), { timeout: 3000 });
   expect(calls.mock.calls.find(([, args]) => args.operation === 'apply')?.[1].payload).toMatchObject({ workspace: 'library', template: { templateId: 'saved' } });
+});
+// 在真实设置和聊天表单间处理多项草稿，写盘失败保持原输入，最后一项清空后只安装一次。
+test('去处理保留失败的设置和隐藏聊天，最后一项完成自动整包升级', async () => {
+  const calls = desktop({ mode: 'native', saveFailures: 1 });
+  const original = apiBase();
+  try {
+    await initializeUpdates(); render(<HomePage />);
+    fireEvent.click(await screen.findByRole('button', { name: '稍后提醒' }));
+    fireEvent.click(screen.getByRole('button', { name: 'AI 字效' }));
+    fireEvent.change(screen.getByLabelText('字效描述'), { target: { value: '待发送的字幕' } });
+    fireEvent.click(screen.getByRole('button', { name: '主页' }));
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    const url = screen.getByLabelText<HTMLInputElement>('后端服务地址');
+    fireEvent.change(url, { target: { value: 'https://saved.test' } });
+    fireEvent.click(await screen.findByRole('button', { name: '一键更新' }));
+    const list = await screen.findByRole('dialog', { name: '更新前还有未保存的内容' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(list).getByText('聊天 · 新会话（未发送）')).toBeTruthy();
+    const settings = within(list).getByText('通用设置 · 后端服务地址').closest('li')!;
+    fireEvent.click(within(settings).getByRole('button', { name: '去处理' }));
+    await waitFor(() => expect(document.activeElement === url).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByText('保存地址失败，请重试');
+    expect(url.value).toBe('https://saved.test');
+    expect(apiBase()).toBe(original);
+    expect(calls.mock.calls.some(([, args]) => args?.operation === 'download')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    const remaining = await screen.findByRole('dialog', { name: '更新前还有未保存的内容' }, { timeout: 3000 });
+    expect(within(remaining).getAllByRole('listitem')).toHaveLength(1);
+    fireEvent.click(within(remaining).getByRole('button', { name: '去处理' }));
+    const chat = screen.getByLabelText<HTMLTextAreaElement>('字效描述');
+    await waitFor(() => expect(document.activeElement === chat).toBe(true));
+    expect(chat.value).toBe('待发送的字幕');
+    expect(screen.getByRole('button', { name: 'AI 字效' }).getAttribute('aria-current')).toBe('page');
+    fireEvent.change(chat, { target: { value: '' } });
+    await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args?.operation === 'apply')).toHaveLength(1), { timeout: 3000 });
+    expect(calls.mock.calls.filter(([, args]) => args?.operation === 'download')).toHaveLength(1);
+    expect(calls.mock.calls.some(([command, args]) => command === 'remotion_sessions' && !String(args.operation).startsWith('registrations_'))).toBe(false);
+  } finally { setApiBase(original); }
+}, 12000);
+// 从清单选择稍后更新会撤销本次请求，原有草稿仍可编辑，随后清空也不会启动更新。
+test('稍后更新保留草稿并取消自动续接', async () => {
+  const calls = desktop({ mode: 'native' });
+  await initializeUpdates();
+  render(<><input aria-label="编辑中的名称" data-update-draft="草稿名称" defaultValue="保留输入" /><UpdateLifecycle /></>);
+  fireEvent.click(await screen.findByRole('button', { name: '一键更新' }));
+  fireEvent.click(await screen.findByRole('button', { name: '稍后更新' }));
+  expect(screen.getByLabelText<HTMLInputElement>('编辑中的名称').value).toBe('保留输入');
+  screen.getByLabelText('编辑中的名称').removeAttribute('data-update-draft');
+  await act(async () => { await tryApplyUpdate(); });
+  expect(calls.mock.calls.some(([, args]) => ['download', 'apply'].includes(String(args?.operation)))).toBe(false);
+});
+// 原生回执读取期间取消或新增输入，迟到的“无回执”结果不能开始下载，也不能锁住编辑。
+test.each(['取消', '新增草稿'])('读取任务回执期间%s仍保护原表单', async (action) => {
+  const gate = Promise.withResolvers<void>();
+  const calls = desktop({ mode: 'native', registrationGate: gate.promise });
+  await initializeUpdates(); await checkUpdate();
+  render(<input aria-label="回执读取中的草稿" />);
+  const downloading = downloadUpdate();
+  await waitFor(() => expect(calls.mock.calls.some(([, args]) => args.operation === 'registrations_list')).toBe(true));
+  if (action === '取消') cancelUpdate();
+  else screen.getByLabelText('回执读取中的草稿').setAttribute('data-update-draft', '新草稿');
+  gate.resolve(); await downloading;
+  expect(calls.mock.calls.some(([, args]) => ['download', 'apply'].includes(String(args.operation)))).toBe(false);
+  expect(await updateTask(async () => '仍可保存')).toBe('仍可保存');
+  cancelUpdate();
 });
 // 场景：当前页没有任务，但另一服务地址下的本机记录仍在运行；等待说明指出是哪个会话，取消等待不会安装或取消业务任务。
 test('后台任务阻止应用并说明所属会话，取消等待不取消任务', async () => {
@@ -71,12 +153,14 @@ test('验证失败显示失败并允许重试', async () => {
 });
 // 场景：整包更新在安装前显示自动重启说明，无第二轮确认。
 test('整包更新显示重启状态对话框', async () => {
-  desktop({ mode: 'native' }); await initializeUpdates();
+  const calls = desktop({ mode: 'native' }); await initializeUpdates();
   render(<UpdateLifecycle />);
   await act(async () => { await checkUpdate(); });
   await act(async () => { await downloadUpdate(); });
   await act(async () => { await tryApplyUpdate(); });
   await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain('正在重新启动客户端'));
+  await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args.operation === 'apply')).toHaveLength(1));
+  expect(calls.mock.calls.some(([cmd, args]) => cmd === 'remotion_sessions' && !String(args.operation).startsWith('registrations_'))).toBe(false);
 });
 // 场景：正在上传时阻止刷新；进入应用阶段后新请求不开始，应用失败解锁后照常执行而不是报错（避免 SSE 落库失败停掉订阅）。
 test('进行中请求参与门禁，锁定期间的新请求等到解锁再执行', async () => {
@@ -117,9 +201,7 @@ test('工作区挂载时更新等待不重复同步后台会话', async () => {
   const storage = memoryStorage();
   let reads = 0;
   setStorage({ ...storage, works: async (server) => { reads++; return storage.works(server); } });
-  desktop(); await initializeUpdates(); await checkUpdate();
-  // 保留草稿让更新停在等待阶段。
-  renderHook(() => useUpdateBlocker('模板尚未保存', true));
+  desktop({ pending: OTHER_SERVER }); await initializeUpdates(); await checkUpdate();
   const workspace = renderHook(() => useBackgroundSync(() => null, () => {}));
   await waitFor(() => expect(reads).toBe(1));
   await act(async () => { await downloadUpdate(); });
@@ -150,6 +232,40 @@ test('取消后忽略迟到的后台任务回执', async () => {
   await act(async () => { cancelUpdate(); resolve(OTHER_SERVER); });
   expect(screen.getByText('已取消此次应用，当前版本保持不变')).toBeTruthy();
   expect(calls.mock.calls.some(([, args]) => args.operation === 'apply')).toBe(false);
+});
+
+// 取消旧等待后重试下载，旧会话查询迟到报错不能解除新一轮下载的编辑锁。
+test('旧预检失败不能解锁新一轮下载', async () => {
+  const pending = Promise.withResolvers<Pending>();
+  const downloading = Promise.withResolvers<void>();
+  const journal = registrationJournal();
+  let downloads = 0;
+  let reading = false;
+  mockDesktop(async (command, args) => {
+    if (command === 'remotion_sessions') {
+      if (String(args.operation).startsWith('registrations_')) return journal(args);
+      reading = true;
+      return pending.promise;
+    }
+    if (command !== 'client_update') return null;
+    if (args.operation === 'status') return { enabled: true };
+    if (args.operation === 'check') return { version: '2.0.0', mode: 'hot' };
+    if (args.operation === 'download' && ++downloads > 1) await downloading.promise;
+    return null;
+  });
+  await initializeUpdates(); await checkUpdate(); await downloadUpdate();
+  await waitFor(() => expect(reading).toBe(true));
+  cancelUpdate();
+  const retry = downloadUpdate();
+  await waitFor(() => expect(downloads).toBe(2));
+  pending.reject(new Error('旧查询失败'));
+  let started = false;
+  const saving = updateTask(async () => { started = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(started).toBe(false);
+  downloading.reject(new Error('新下载失败'));
+  await retry; await saving;
+  expect(started).toBe(true);
 });
 
 // 场景：启动后的自动检查发现新版本时弹出提醒；稍后关闭后，本次运行中手动检查不再反复弹窗。

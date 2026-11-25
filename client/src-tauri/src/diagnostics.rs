@@ -131,8 +131,7 @@ fn capture_native() {
 }
 
 /// 原生来源的一条记录（标准错误、WebView2 等）：窗口打开前进入有界缓冲，打开后写文件。
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-fn record_native(level: &str, source: &str, message: &str) {
+pub(crate) fn record_native(level: &str, source: &str, message: &str) {
     let line = format_line(now_ms(), level, source, message);
     if let Ok(mut sink) = SINK.lock() {
         sink.write(line, true);
@@ -367,9 +366,9 @@ fn without_dir(value: &str, dir: &str) -> Option<String> {
 }
 
 /// AppImage 的启动钩子把 GTK、GIO、GSettings、GStreamer 等变量指向包内的库与模块；宿主终端是另一个 GTK 程序，
-/// 带着这些变量启动可能加载不兼容的模块而崩溃。去掉指向包内目录（APPDIR）的条目，空了就删除该变量。
+/// 宿主终端和新版 AppRun 继承这些路径可能加载旧库。仅在子进程中去掉旧 APPDIR 下的条目。
 #[cfg(all(unix, not(target_os = "macos")))]
-fn host_environment(command: &mut Command) {
+pub(crate) fn host_environment(command: &mut Command) {
     let Some(appdir) = std::env::var("APPDIR").ok().filter(|dir| !dir.is_empty()) else {
         return;
     };

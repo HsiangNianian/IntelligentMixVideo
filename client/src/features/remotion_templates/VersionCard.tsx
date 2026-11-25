@@ -34,6 +34,7 @@ export function VersionCard({
   previewDisabled,
   onPreview,
   kind = defaultKind(version.spec.sprite?.kind),
+  savedKind = defaultKind(version.spec.sprite?.kind),
   onKindChange,
 }: {
   version: Version;
@@ -44,6 +45,7 @@ export function VersionCard({
   previewDisabled: boolean;
   onPreview: () => void;
   kind?: SpriteKind;
+  savedKind?: SpriteKind;
   onKindChange?: (kind: SpriteKind) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -214,7 +216,7 @@ export function VersionCard({
         </CollapsibleTrigger>
         <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-0.5">
           <Select value={String(kind)} disabled={disabled} onValueChange={(value) => onKindChange?.(Number(value) as SpriteKind)}>
-            <SelectTrigger size="sm" aria-label="资产分类" className="h-8 w-20 border-none bg-transparent text-xs shadow-none">
+            <SelectTrigger data-update-draft={kind !== savedKind ? `AI 字效 · V${version.number} 资产分类` : undefined} data-update-panel="chat" size="sm" aria-label="资产分类" className="h-8 w-20 border-none bg-transparent text-xs shadow-none">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

@@ -1,13 +1,14 @@
 /**
  * 会话协调器：从本地数据库恢复会话、把 SSE 事件写入本地后确认送达、提交用户操作；只接受成功版本，切换不取消后台任务。
- * 实时连接的建立与中断原因、本地库失败，以及连接期间看到的任务失败写进调试日志。
+ * 调试日志关联提交、本机回执与后端任务状态，另记录实时连接的建立、中断和本地库失败。
  */
+import { updateTask } from "@/lib/update-guard";
 import { recovery, restored } from "@/features/updates/recovery";
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { events } from "./events";
 import { settleJob } from "./backgroundSync";
-import { briefly, debugLog, oneLine } from "@/lib/diagnostics";
+import { briefly, debugLog, beginDiagnostic, diagnosticTaskState, type DiagnosticTrace } from "@/lib/diagnostics";
 import * as local from "./localSessions";
 import { defaultComposition } from "./composition";
 import {
@@ -203,9 +204,6 @@ export function useTemplateSession(onHistoryChange: () => void) {
       job.result_version_id !== latest.current.versionFailure?.id;
     const failed = ["failed", "interrupted", "cancelled"].includes(job.status);
     if (failed) parameterSave.current = false;
-    // 只记录这次连接里亲眼看到的状态变化，重新打开会话时读到的历史失败不重复记录。
-    if (failed && previous && previous.status !== job.status)
-      debugLog("字效会话", `任务 ${job.id} ${job.status}：${oneLine(job.message ?? "没有说明", 200)}`, job.status === "cancelled" ? "信息" : "警告");
     publish({
       job,
       ...("created_at" in job
@@ -249,6 +247,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
   }
   /** 先从本地恢复会话再推进游标，产物失败独立保留为可重试状态。 */
   async function hydrate(work: string, key: number, signal: AbortSignal) {
+    const service = local.server();
     let snapshot = await local.snapshot(work);
     // 任务停在进行中而终态事件已不会送达时校正本地状态，否则会话会一直被锁定。
     if (await settleJob(snapshot.job, signal)) snapshot = await local.snapshot(work);
@@ -262,7 +261,10 @@ export function useTemplateSession(onHistoryChange: () => void) {
     });
     if (snapshot.work.current_version_id)
       await accept(snapshot.work.current_version_id, key, signal);
-    if (current(key, signal)) applyJob(snapshot.job);
+    if (current(key, signal)) {
+      diagnosticTaskState("字效", snapshot.job.id, snapshot.job.status, { service, stage: snapshot.job.progress?.at(-1)?.phase });
+      applyJob(snapshot.job);
+    }
     return snapshot.cursor;
   }
   /** 永久失效终止订阅并清空本地资源，不继续重连不存在的会话；本地记录标记为待删除，侧栏提供重试删除。 */
@@ -498,21 +500,31 @@ export function useTemplateSession(onHistoryChange: () => void) {
   /** 用户操作仅提交一次；响应未知时提示检查历史，不以重试读取变相重做任务。 */
   async function execute(
     kind: "chat" | "parameters",
-    start: () => Promise<Job>,
+    start: (trace: DiagnosticTrace) => Promise<Job>,
   ) {
+    const trace = beginDiagnostic("前端字效", kind === "parameters" ? "保存参数" : "提交生成或重试");
     if (
       latest.current.deleting ||
       latest.current.busy ||
       latest.current.loading
-    )
+    ) {
+      trace.finish("未执行：会话正在删除、加载或执行其他操作", "警告");
       return;
+    }
     const key = latest.current.key;
     publish({ busy: kind, error: "", retryMode: null });
     let queued = false;
     try {
-      const job = await start();
-      queued = true;
-      await local.track(job);
+      // 整个提交到落盘算作一次操作，即使切换或关闭聊天也必须等它完成。
+      const job = await trace.run(() => updateTask(async () => {
+        const accepted = await start(trace);
+        queued = true;
+        trace.step(`后端已接收任务 ${accepted.id}；开始保存本机回执`);
+        await trace.run(() => local.track(accepted));
+        trace.step("本机回执已保存");
+        return accepted;
+      }));
+      trace.finish(`任务 ${job.id} 已提交；后续状态按任务 ID 跟踪`);
       if (!current(key)) {
         if (alive.current) changed.current();
         return;
@@ -521,6 +533,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (alive.current) changed.current();
       await attach(job.project_id, key);
     } catch (error) {
+      trace.finish(`${queued ? "任务已接收，后续本机处理失败" : "提交未完成"}：${briefly(error)}`, "错误");
       if (error instanceof Unsent) {
         if (current(key))
           publish({
@@ -574,7 +587,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
         { id: messageId, role: "user", text: text.trim(), images },
       ],
     });
-    void execute("chat", async () => {
+    void execute("chat", async (trace) => {
       let assets: string[];
       try {
         // 规范化后先保存本机二进制，再把所需图片随任务发送；未关联图片由本地存储过期回收。
@@ -590,20 +603,22 @@ export function useTemplateSession(onHistoryChange: () => void) {
       }
       if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
       if (!s.workId) {
-        const created = await api.create(text, assets, defaultComposition(start?.durationInFrames), start);
+        const created = await trace.run(() => api.create(text, assets, defaultComposition(start?.durationInFrames), start));
         try {
-          await local.record(created.work, created.job);
+          await trace.run(() => local.record(created.work, created.job));
         } catch (error) {
           // 本机没有记录的作品在侧栏不可见，重发还会重复生成：先撤销刚创建的作品，再把草稿交还输入框。
-          const undone = await api.deleteWork(created.work.id).then(
+          const undone = await trace.run(() => api.deleteWork(created.work.id)).then(
             () => true,
             () => false,
           );
+          // 服务端确认撤销后清除初始回执；清理失败仍保留记录，避免误判已安全落盘。
+          if (undone) await local.forget(created.work.id).catch(() => {});
           throw new Unsent(
             `本地会话保存失败：${error instanceof Error ? error.message : String(error)} ${
               undone
                 ? "已撤销本次创建，消息尚未发送，已恢复草稿。"
-                : "服务端已创建的作品未能撤销，重新发送会另建一个作品。已恢复草稿。"
+                : "服务端作品未能撤销，已保留恢复回执。请修复本地存储后刷新历史会话，勿重复发送。"
             }`,
             { id: messageId, text, images },
             messageId,
@@ -611,13 +626,13 @@ export function useTemplateSession(onHistoryChange: () => void) {
         }
         return created.job;
       }
-      return api.message(s.workId, {
+      return trace.run(() => api.message(s.workId!, {
         ...(text.trim() ? { instruction: text.trim() } : {}),
         ...(assets.length ? { images: assets.map((asset_id) => ({ asset_id })) } : {}),
         ...(s.job?.status === "needs_input"
           ? { reply_to_job_id: s.job.id }
           : { base_version_id: s.version?.id }),
-      });
+      }));
     });
     return true;
   }

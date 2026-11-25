@@ -1,11 +1,12 @@
 /**
  * 调试日志：桌面客户端持续在主窗口与模板预览 iframe 中记录错误、资源失败和控件操作；
  * 日志先保存在有界内存中，用户在设置里打开日志窗口后转发到原生终端日志文件；每条记录带发生时刻，
- * 补发的旧记录与原生日志按实际时间对照。设备与显卡探测、主线程长帧（卡顿）、请求失败与慢请求、内存趋势、
+ * 补发的旧记录与原生日志按实际时间对照。业务动作、桌面命令与任务状态显式关联；设备与显卡探测、主线程长帧（卡顿）、HTTP 请求全生命周期、内存趋势、
  * 窗口与显示器变化只在日志窗口打开后采集，普通使用不受影响。
  * 浏览器不开启收集；相同记录合并，密码、密钥等敏感输入只记录“已隐藏”。
  */
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/core";
+import { apiBase, apiServiceKey } from "./api-base";
 
 /** 日志级别与原生窗口的显示格式一致。 */
 export type DiagnosticLevel = "错误" | "警告" | "信息";
@@ -44,6 +45,151 @@ let buffer: Entry[] = [];
 let bufferChars = 0;
 let last = { key: "", level: "错误" as DiagnosticLevel, source: "", repeats: 0 };
 const watched = new WeakSet<Window>();
+/** undefined 表示未覆盖事件来源；null 表示显式独立，异步恢复时不能回退到其他正在派发的点击。 */
+let context: string | null | undefined;
+let interaction: { event: Event; id: string } | undefined;
+let session = 0;
+
+/** 同步进入一条执行链；调用方可在 await 之后再次使用保存的编号，不改写 Promise 或全局异步上下文。 */
+export function inDiagnosticContext<T>(id: string | undefined, run: () => T): T {
+  const previous = context;
+  context = id ?? null;
+  try { return run(); } finally { context = previous; }
+}
+
+/** 在入口保存当前操作编号，供异步门禁放行后沿用。 */
+export function diagnosticContext() {
+  return context !== undefined ? context ?? undefined
+    : interaction && interaction.event.eventPhase !== 0 ? interaction.id : undefined;
+}
+
+/** 仅包含宿主生成的编号与安全消息；不保存请求、配置或返回对象。 */
+export type DiagnosticTrace = {
+  id: string | undefined;
+  run: <T>(work: () => T) => T;
+  step: (message: string, level?: DiagnosticLevel) => void;
+  finish: (message: string, level?: DiagnosticLevel) => void;
+};
+
+/** 记录执行开始、阶段和唯一终态；重置后迟到回执不进入新会话。 */
+export function beginDiagnostic(source: string, label: string): DiagnosticTrace {
+  const id = started ? crypto.randomUUID().replace(/-/g, "").slice(0, 16) : undefined;
+  const generation = session;
+  const parent = diagnosticContext();
+  const begin = performance.now();
+  let finished = false;
+  const step = (message: string, level: DiagnosticLevel = "信息") => {
+    if (id && generation === session && !finished) debugLog(source, `[#${id}] ${oneLine(message, MAX_LENGTH)}`, level);
+  };
+  step(`开始 ${label}${parent ? `；来自 #${parent}` : "；独立或后台触发"}`);
+  return {
+    id, step,
+    run: (work) => inDiagnosticContext(id, work),
+    finish(message, level = "信息") {
+      step(`${label}：${message}（${duration(performance.now() - begin)}）`, level);
+      finished = true;
+    },
+  };
+}
+
+/** API/业务边界的统一终态：覆盖响应解码、前置读取和本地落库失败，调用方保留原错误处理。 */
+export async function diagnosticTask<T>(source: string, label: string, work: (trace: DiagnosticTrace) => Promise<T>): Promise<T> {
+  const trace = beginDiagnostic(source, label);
+  try {
+    const result = await trace.run(() => work(trace));
+    trace.finish("处理完成");
+    return result;
+  } catch (error) {
+    const cancelled = error instanceof Error && error.name === "AbortError";
+    trace.finish(`${cancelled ? "已取消" : "处理失败"}：${briefly(error)}`, cancelled ? "信息" : "错误");
+    throw error;
+  }
+}
+
+/** 活动任务保留关联；仅保留最近 200 个终态，不存任务输入、图片、配置或模型内容。 */
+const tasks = new Map<string, { trace: DiagnosticTrace; state: string; parent?: string; terminal: boolean }>();
+const completedTasks = new Set<string>();
+const TASK_STATUSES = new Set(["queued", "running", "processing", "succeeded", "answered", "needs_input", "failed", "cancelled", "interrupted"]);
+const TERMINAL_TASK_STATUSES = new Set(["succeeded", "answered", "needs_input", "failed", "cancelled", "interrupted"]);
+
+/** 只接受有界机器标识，拒绝自由文本、换行和控制字符，不改变业务返回值。 */
+function taskField(value: unknown, limit: number): string {
+  return typeof value === "string" && value.length <= limit && /^[a-zA-Z0-9_-]+$/.test(value) ? value : "";
+}
+
+/** 服务必须是发起请求/订阅时保存的地址；只接收机器字段，禁止传入回答或错误详情。 */
+export function diagnosticTaskState(kind: "字效" | "合成", id: string, status: string, details: { service: string; stage?: string; code?: string }) {
+  if (!started || !taskField(id, 128)) return;
+  const stage = taskField(details.stage, 64);
+  const code = taskField(details.code, 64);
+  status = TASK_STATUSES.has(status) ? status : "unknown";
+  const parent = diagnosticContext();
+  const service = apiServiceKey(details.service);
+  const key = JSON.stringify([service, kind, id]);
+  let task = tasks.get(key);
+  if (!task) {
+    task = { trace: beginDiagnostic("后端任务", `${kind}任务 ${id}（${oneLine(diagnosticText(service), 200)}）`), state: "", parent, terminal: false };
+    tasks.set(key, task);
+  } else if (parent && parent !== task.parent) {
+    debugLog("后端任务", `[#${task.trace.id}] 任务 ${id} 观察操作 #${parent}`, "信息");
+  }
+  const state = `${status} ${stage} ${code}`;
+  if (state === task.state) return;
+  task.state = state;
+  const detail = `状态 ${status}${stage ? `；阶段 ${stage}` : ""}${code ? `；错误码 ${code}` : ""}`;
+  const level = status === "failed" || status === "interrupted" ? "错误" : "信息";
+  if (task.terminal) debugLog("后端任务", `[#${task.trace.id}] 终态补充：${detail}`, level);
+  else if (TERMINAL_TASK_STATUSES.has(status)) {
+    task.trace.finish(detail, level);
+    task.terminal = true;
+    completedTasks.add(key);
+    if (completedTasks.size > 200) {
+      const oldest = completedTasks.values().next().value!;
+      completedTasks.delete(oldest);
+      tasks.delete(oldest);
+    }
+  } else task.trace.step(detail);
+}
+
+/** 对诊断文本中的 URL、常见凭据键和 Bearer 令牌脱敏；业务请求和返回值不整体序列化。 */
+export function diagnosticText(value: string): string {
+  return value
+    .replace(/https?:\/\/[^\s"'<>「」；，（）]+/gi, (raw) => {
+      try {
+        const url = new URL(raw);
+        return raw.split(/[?#]/, 1)[0].replace(/^(https?:\/\/)[^/]*@/i, "$1")
+          .replace(url.pathname, redactMediaPath(url.hostname, url.pathname));
+      }
+      catch { return "[地址已隐藏]"; }
+    })
+    .replace(/\bBearer\s+[^\s"',;]+/gi, "Bearer [已隐藏]")
+    .replace(/((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|credential|authorization|密码|密钥)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, "$1[已隐藏]");
+}
+
+/** 所有业务 IPC 共用的开始/完成/失败记录；只记录命令与操作名，不记录参数值和返回数据。 */
+export async function diagnosticInvoke<T>(command: string, args?: InvokeArgs, options?: InvokeOptions): Promise<T> {
+  if (!started || command.startsWith("diagnostics_")) return invoke<T>(command, args, options);
+  const fields = args && !Array.isArray(args) && !(args instanceof ArrayBuffer) && !(args instanceof Uint8Array) ? args as Record<string, unknown> : {};
+  const operation = typeof fields.operation === "string" && /^[a-z_]{1,60}$/.test(fields.operation) ? `/${fields.operation}`
+    : command === "local_settings" ? (fields.id ? "/保存设置" : "/读取设置") : "";
+  const trace = beginDiagnostic("桌面命令", `${command}${operation}`);
+  try {
+    const result = await invoke<T>(command, command === "client_update" ? { ...fields, diagnosticId: trace.id } : args, options);
+    trace.finish("执行完成");
+    return result;
+  } catch (error) {
+    trace.finish(`执行失败：${diagnosticText(briefly(error))}`, "错误");
+    throw error;
+  }
+}
+
+/** 仅在事件仍处于派发阶段时提供编号；原生事件监听器之间可以运行微任务，不能靠微任务提前清除。 */
+function recordInteraction(event: Event, message: string) {
+  if (!started) return;
+  const id = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  interaction = { event, id };
+  debugLog(`前端操作 #${id}`, message, "信息");
+}
 
 /** 交给原生层输出，带上发生时刻；失败时静默，不能再写 console，否则会被自己的监听再次转发。 */
 function send(level: DiagnosticLevel, source: string, message: string, at = Date.now()) {
@@ -77,7 +223,7 @@ function reportRepeats() {
 /** 记录一条诊断信息；窗口打开前进入内存缓冲，打开后直接转发。连续相同的记录只发送第一次。 */
 export function debugLog(source: string, message: string, level: DiagnosticLevel = "错误") {
   if (!started) return;
-  const clipped = message.slice(0, MAX_LENGTH);
+  const clipped = diagnosticText(message).slice(0, MAX_LENGTH);
   const key = `${level}\n${source}\n${clipped}`;
   if (key === last.key) {
     last.repeats++;
@@ -218,26 +364,39 @@ export function watchWindow(target: Window, source: string): () => void {
   const onRejection = (event: PromiseRejectionEvent) => debugLog(source, `未处理的 Promise 拒绝：${describe(event.reason)}`);
   const onClick = (event: Event) => {
     const control = controlTarget(event.target);
-    if (control) debugLog("操作", `点击 ${describeControl(control)}`, "信息");
+    if (control) recordInteraction(event, `点击 ${describeControl(control)}`);
   };
   const onChange = (event: Event) => {
     const control = controlTarget(event.target);
     if (!control) return;
     const label = controlLabel(control);
     const value = controlValue(control, label);
-    debugLog("操作", `更改 ${describeControl(control)}${value ? `：${value}` : ""}`, "信息");
+    recordInteraction(event, `更改 ${describeControl(control)}${value ? `：${value}` : ""}`);
   };
   const onInput = (event: Event) => {
     const control = controlTarget(event.target);
     if (!control || control.tagName !== "INPUT" || !["range", "color"].includes((control as HTMLInputElement).type)) return;
     const label = controlLabel(control);
-    debugLog("操作", `调整 ${describeControl(control)}：${controlValue(control, label)}`, "信息");
+    recordInteraction(event, `调整 ${describeControl(control)}：${controlValue(control, label)}`);
   };
   const onSubmit = (event: Event) => {
     const form = event.target as Element | null;
     if (!form || form.tagName !== "FORM") return;
     const label = form.getAttribute("aria-label") || form.getAttribute("aria-labelledby") || "未命名表单";
-    debugLog("操作", `提交表单「${oneLine(label)}」`, "信息");
+    recordInteraction(event, `提交表单「${oneLine(label)}」`);
+  };
+  const onInvalid = (event: Event) => {
+    const control = controlTarget(event.target) as HTMLInputElement | null;
+    const parent = diagnosticContext();
+    if (control) debugLog("前端校验", `${parent ? `[#${parent}] ` : ""}${describeControl(control)} 未通过表单校验：${control.validationMessage}；未提交`, "警告");
+  };
+  const onKey = (event: KeyboardEvent) => {
+    if (event.repeat) return;
+    const control = controlTarget(event.target);
+    const shortcut = (event.ctrlKey || event.metaKey) && ["s", "z", "y", "enter"].includes(event.key.toLowerCase());
+    if (shortcut || ["Enter", "Escape"].includes(event.key) || (event.key === " " && control?.matches("button,[role='button']"))) {
+      recordInteraction(event, `按键 ${event.metaKey ? "⌘+" : ""}${event.ctrlKey ? "Ctrl+" : ""}${event.shiftKey ? "Shift+" : ""}${event.key === " " ? "Space" : event.key}${control ? `；${describeControl(control)}` : ""}`);
+    }
   };
   target.addEventListener("error", onError, true);
   target.addEventListener("unhandledrejection", onRejection);
@@ -245,6 +404,8 @@ export function watchWindow(target: Window, source: string): () => void {
   target.addEventListener("change", onChange, true);
   target.addEventListener("input", onInput, true);
   target.addEventListener("submit", onSubmit, true);
+  target.addEventListener("invalid", onInvalid, true);
+  target.addEventListener("keydown", onKey, true);
   const originals = { error: scope.console.error, warn: scope.console.warn };
   for (const [method, level] of [["error", "错误"], ["warn", "警告"]] as const) {
     // 没有内容的输出（SDK 初始化时会打一条空警告）不转发，避免日志里出现空记录。
@@ -261,6 +422,8 @@ export function watchWindow(target: Window, source: string): () => void {
     target.removeEventListener("change", onChange, true);
     target.removeEventListener("input", onInput, true);
     target.removeEventListener("submit", onSubmit, true);
+    target.removeEventListener("invalid", onInvalid, true);
+    target.removeEventListener("keydown", onKey, true);
     Object.assign(scope.console, originals);
     watched.delete(target);
   };
@@ -366,21 +529,24 @@ const RESPONSE_DETAIL_BYTES = 1024;
 
 /** 失败响应的说明摘要：只读取文本或 JSON 正文的开头，二进制（如 Protobuf）不读。读取副本，不影响调用方。 */
 async function responseDetail(response: Response): Promise<string> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     if (!/json|text/.test(response.headers.get("content-type") ?? "")) return "";
-    const reader = response.clone().body?.getReader();
+    reader = response.clone().body?.getReader();
     if (!reader) return "";
+    const deadline = new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) => {
+      timeout = setTimeout(() => resolve({ done: true, value: undefined }), 500);
+    });
     const chunks: Uint8Array[] = [];
     let size = 0;
     while (size < RESPONSE_DETAIL_BYTES) {
-      const { done, value } = await reader.read();
+      const { done, value } = await Promise.race([reader.read(), deadline]);
       if (done) break;
       if (!value?.length) continue;
       chunks.push(value);
       size += value.length;
     }
-    if (size >= RESPONSE_DETAIL_BYTES) void reader.cancel().catch(() => {});
-    else reader.releaseLock();
     const bytes = new Uint8Array(Math.min(size, RESPONSE_DETAIL_BYTES));
     let offset = 0;
     for (const chunk of chunks) {
@@ -389,36 +555,67 @@ async function responseDetail(response: Response): Promise<string> {
       offset += part.length;
       if (offset >= bytes.length) break;
     }
-    const text = oneLine(new TextDecoder().decode(bytes), 200);
+    let detail = new TextDecoder().decode(bytes);
+    if (/json/.test(response.headers.get("content-type") ?? "")) {
+      // FastAPI 的 input/ctx 可能回显密钥；只取公开说明，禁止整体序列化错误对象。
+      const body = JSON.parse(detail) as { detail?: unknown; message?: unknown };
+      const reason = body.detail ?? body.message;
+      detail = typeof reason === "string" ? reason : Array.isArray(reason)
+        ? reason.map(item => typeof item?.msg === "string" ? item.msg : "").filter(Boolean).join("；") : "";
+    }
+    const text = oneLine(diagnosticText(detail), 200);
     return text ? `：${text}` : "";
   } catch {
     return "";
+  } finally {
+    clearTimeout(timeout);
+    if (reader) void reader.cancel().catch(() => {});
   }
 }
 
 /**
- * 记录主窗口的请求失败（网络错误与非 2xx，带状态码、用时与正文摘要）和超过 3 秒的慢请求，例如模板保存失败、
- * 资产预览 404、预览字体下载慢、后端连不上；主动取消的请求不记录。返回恢复原 fetch 的函数。
+ * 每条请求记录开始与响应/失败/取消，只向配置的业务 API 发送关联编号；不改第三方请求或消费业务响应。
+ * SSE 收到响应头只表示连接建立，不能表示任务完成。HTTP 错误与网络未获响应明确区分。
  */
 function watchRequests(): () => void {
   const unpatched = window.fetch;
   const original = unpatched.bind(window);
+  // 旧服务端不允许新增 CORS 请求头；收到明确支持回执之后才发送编号，不做失败后重试。
+  const supported = new Set<string>();
   const patched = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const label = requestLabel(input, init);
     if (!label) return original(input, init);
-    const started = performance.now();
+    const trace = beginDiagnostic("前端请求", label);
+    const generation = session;
+    const requestStart = performance.now();
+    let requestInit = init;
+    const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+    const base = new URL(apiBase(), window.location.href);
+    const mode = init?.mode ?? (input instanceof Request ? input.mode : undefined);
+    const business = url.origin === base.origin && (url.pathname === base.pathname || url.pathname.startsWith(base.pathname.replace(/\/$/, "") + "/"));
+    if (business && supported.has(base.href) && mode !== "no-cors" && trace.id) {
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      headers.set("X-IMV-Request-ID", trace.id);
+      requestInit = { ...init, headers };
+    }
     try {
-      const response = await original(input, init);
-      const elapsed = performance.now() - started;
-      if (!response.ok)
-        void responseDetail(response)
-          .then((detail) => debugLog("请求", `${label} → ${response.status}（${duration(elapsed)}）${detail}`, response.status >= 500 ? "错误" : "警告"))
-          .catch(() => {});
-      else if (elapsed > SLOW_REQUEST_MS) debugLog("请求", `${label} 用时 ${duration(elapsed)}`, "警告");
+      const response = await original(input, requestInit);
+      if (business && response.headers.get("X-IMV-Diagnostics") === "1") supported.add(base.href);
+      const elapsed = performance.now() - requestStart;
+      const serverMs = response.headers.get("X-IMV-Elapsed-Ms");
+      const streaming = response.headers.get("content-type")?.includes("text/event-stream");
+      const level = !response.ok ? response.status >= 500 ? "错误" : "警告" : elapsed > SLOW_REQUEST_MS ? "警告" : "信息";
+      const source = business ? "后端响应" : "网络响应";
+      if (generation === session) debugLog(source, `[#${trace.id}] ${label} → HTTP ${response.status}${serverMs && /^\d+(\.\d+)?$/.test(serverMs) ? `；后端处理 ${serverMs} ms` : ""}`, level);
+      trace.finish(streaming && response.ok ? "事件流连接已建立，等待后续任务事件" : response.ok ? "已收到成功响应" : "已收到失败响应", level);
+      if (!response.ok) void responseDetail(response).then(detail => {
+        if (detail && generation === session) debugLog(source, `[#${trace.id}] 错误说明${detail}`, level);
+      }).catch(() => {});
       return response;
     } catch (error) {
-      if (!(error instanceof DOMException && error.name === "AbortError"))
-        debugLog("请求", `${label} 失败（${duration(performance.now() - started)}）：${briefly(error)}`);
+      const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+      const aborted = signal?.aborted || (error instanceof Error && error.name === "AbortError");
+      trace.finish(aborted ? `请求已取消/超时：${briefly(signal?.reason ?? error)}` : `未获得 HTTP 响应（网络、跨域或连接故障）：${briefly(error)}`, aborted ? "信息" : "错误");
       throw error;
     }
   };
@@ -436,10 +633,13 @@ const MEMORY_INTERVAL_MS = 60_000;
  */
 function watchMemory(): () => void {
   let previous = heapUsed();
+  let previousMessage = "";
   const timer = setInterval(() => {
     const heap = heapUsed();
     const change = heap !== undefined && previous !== undefined ? `（较上次 ${heap >= previous ? "+" : "-"}${megabytes(Math.abs(heap - previous))}）` : "";
-    debugLog("内存", `${heap !== undefined ? `JS 堆 ${megabytes(heap)}${change}，` : ""}页面元素 ${document.getElementsByTagName("*").length} 个，iframe ${document.getElementsByTagName("iframe").length} 个`, "信息");
+    const message = `${heap !== undefined ? `JS 堆 ${megabytes(heap)}${change}，` : ""}页面元素 ${document.getElementsByTagName("*").length} 个，iframe ${document.getElementsByTagName("iframe").length} 个`;
+    if (message !== previousMessage) debugLog("内存", message, "信息");
+    previousMessage = message;
     previous = heap;
   }, MEMORY_INTERVAL_MS);
   return () => clearInterval(timer);
@@ -582,6 +782,11 @@ export function onLongFrame(listener: (frame: LongFrame) => void): () => void {
 
 /** 测试之间恢复初始状态：撤销主窗口监听、停止重复计数并清空缓冲。 */
 export function resetDiagnostics() {
+  session++;
+  context = undefined;
+  interaction = undefined;
+  tasks.clear();
+  completedTasks.clear();
   stopMain?.();
   stopLongFrames?.();
   longFrameListeners.clear();

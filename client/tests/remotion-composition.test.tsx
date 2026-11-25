@@ -7,6 +7,7 @@ import { useTemplateSession } from "@/features/remotion_templates/useTemplateSes
 import { remotionServer } from "./remotion-server";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
 import { fetchMock } from "./setup";
+import { updateDrafts } from "@/lib/update-guard";
 
 /** 仅提取创建任务的写请求，不把历史列表读取算成重复提交。 */
 function creations() {
@@ -64,6 +65,26 @@ async function chooseDuration(option: string) {
   fireEvent.keyDown(screen.getByRole("combobox", { name: "预览时长" }), { key: "ArrowDown" });
   fireEvent.keyDown(await screen.findByRole("option", { name: option }), { key: "Enter" });
 }
+
+// 只调整新会话选项、尚未输入文字时也必须保护；恢复默认值后解除更新阻塞。
+test("未发送的生成选项参与更新草稿检查", async () => {
+  remotionServer();
+  await act(async () => { render(<RemotionWorkspace />); });
+  const input = screen.getByLabelText("字效描述");
+  expect(updateDrafts()).not.toContain(input);
+  for (const name of ["关键词字效", "双栏", "双语字幕"]) {
+    fireEvent.click(screen.getByRole("switch", { name }));
+    expect(updateDrafts()).toContain(input);
+    fireEvent.click(screen.getByRole("switch", { name }));
+    expect(updateDrafts()).not.toContain(input);
+  }
+  await chooseDuration("10 秒");
+  expect(updateDrafts()).toContain(input);
+  await chooseDuration("5 秒");
+  expect(updateDrafts()).not.toContain(input);
+  await chooseDuration("自定义");
+  expect(updateDrafts()).toContain(input);
+});
 
 // 常用时长：选 10 秒后首次请求携带 300 帧，帧率与画布不变。
 test("选择常用时长后按整帧发送", async () => {

@@ -3,13 +3,17 @@
  * 打开的会话留给 SSE，服务端 404 标记为可重试删除。网络使用协议替身，存储使用内存实现，执行 bun run test。
  */
 import { expect, spyOn, test } from "bun:test";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { syncBackground, SYNC_INTERVAL_MS } from "@/features/remotion_templates/backgroundSync";
 import * as local from "@/features/remotion_templates/localSessions";
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
+import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
 import { remotionJob } from "./remotion-fixtures";
 import { remotionServer, seed } from "./remotion-server";
-import { fetchMock } from "./setup";
+import { fetchMock, mockDesktop } from "./setup";
+import { checkUpdate, downloadUpdate, initializeUpdates, resetUpdates, tryApplyUpdate } from "@/features/updates/store";
+import { updateBlockers, useUpdateBlocker } from "@/lib/update-guard";
+import { registrationJournal } from "./remotion-registration-fixture";
 
 /** 协议替身：新作品的任务停在运行中，之后由测试推进。 */
 function runningServer(overrides: Parameters<typeof remotionServer>[0] = () => undefined) {
@@ -138,4 +142,107 @@ test("只有挂载后的第一轮同步读取任务状态", async () => {
   await syncBackground(() => false, signal);
   await syncBackground(() => false, signal);
   expect(fetchMock.mock.calls.some((call) => /\/jobs\/[^/]+$/.test(String(call[0])))).toBe(false);
+});
+
+// 控制首次落盘的时机，分别保留和关闭聊天；同一任务在重启期间完成，回来接收同一结果。
+test.each(["保持打开", "关闭"])("聊天%s后任务已登记，自动整包更新并恢复原任务", async (chat) => {
+  const fake = runningServer();
+  const memory = local.memoryStorage();
+  const saving = Promise.withResolvers<void>();
+  let savingStarted = false;
+  local.setStorage({ ...memory, async save(server, change) {
+    savingStarted = true;
+    await saving.promise;
+    return memory.save(server, change);
+  } });
+  let applied = 0;
+  let pendingReads = 0;
+  const journal = registrationJournal();
+  mockDesktop(async (command, args) => {
+    if (command === "local_settings") return {};
+    if (command === "remotion_sessions" && String(args.operation).startsWith("registrations_")) return journal(args);
+    if (command === "remotion_sessions") { pendingReads++; throw new Error("旧版无法打开新版会话库"); }
+    if (command !== "client_update") return null;
+    if (args.operation === "status") return { enabled: true };
+    if (args.operation === "check") return { version: "2.0.0", mode: "native" };
+    if (args.operation === "apply") applied++;
+    return null;
+  });
+  await initializeUpdates(); await checkUpdate();
+  // 明确阻止更新计时器抢先应用，直到聊天关闭与所有前置断言完成。
+  const gate = renderHook(({ held }) => useUpdateBlocker("等待测试完成聊天操作", held), { initialProps: { held: true } });
+  const view = render(<RemotionWorkspace />);
+  fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "保留这条聊天" } });
+  fireEvent.submit(screen.getByRole("button", { name: "发送" }).closest("form")!);
+  await waitFor(() => expect(savingStarted).toBe(true));
+  await act(async () => { await downloadUpdate(); });
+  expect(updateBlockers()).toContain("正在完成保存、上传或读取请求");
+  expect(applied).toBe(0);
+  await act(async () => { saving.resolve(); });
+  await waitFor(() => expect(fake.streams.size).toBe(1));
+  expect(updateBlockers()).toEqual(["等待测试完成聊天操作"]);
+  const before = await local.snapshot("work-1");
+  expect(applied).toBe(0);
+  if (chat === "关闭") {
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    await waitFor(() => expect(fake.streams.size).toBe(0));
+  }
+  expect(applied).toBe(0);
+  gate.rerender({ held: false });
+  await waitFor(() => expect(applied).toBe(1), { timeout: 3000 });
+  expect(pendingReads).toBe(0);
+  view.unmount();
+  // 新进程重新挂载，服务端在客户端离线期间完成，消息与任务均从已有记录续接。
+  fake.advance(remotionJob("succeeded", "version-1"));
+  resetUpdates();
+  render(<RemotionWorkspace />);
+  await waitFor(() => expect(screen.getByRole("button", { name: /保留这条聊天/ }).textContent).toContain("已完成"));
+  const after = await local.snapshot("work-1");
+  expect(after.job.id).toBe(before.job.id);
+  expect(after.work.current_version_id).toBe("version-1");
+  expect(after.cursor).toBeGreaterThan(before.cursor);
+  expect(fetchMock.mock.calls.filter(([url, options]) => String(url).endsWith("/works") && options?.method === "POST")).toHaveLength(1);
+  expect(fetchMock.mock.calls.some(([url, options]) => String(url).endsWith("/cancel") || options?.method === "DELETE")).toBe(false);
+});
+
+// 服务端已接受续写但数据库无法登记：关闭聊天或重启后仍阻止整包更新，只重试本地登记，不重发任务。
+test("登记失败保留持久回执，恢复同一任务后才允许整包更新", async () => {
+  const journal = registrationJournal();
+  const operations: unknown[] = [];
+  mockDesktop(async (command, args) => {
+    if (command === "remotion_sessions" && String(args.operation).startsWith("registrations_")) return journal(args);
+    if (command === "local_settings") return {};
+    if (command !== "client_update") return null;
+    operations.push(args.operation);
+    if (args.operation === "status") return { enabled: true };
+    if (args.operation === "check") return { version: "2.0.0", mode: "native" };
+    return null;
+  });
+  remotionServer(path => path.endsWith("/messages")
+    ? Response.json({ ...remotionJob("running"), id: "job-2" }) : undefined);
+  await seed("写入失败仍要保留");
+  const memory = local.storage();
+  const session = renderHook(() => useTemplateSession(() => {}));
+  act(() => session.result.current.select("work-1"));
+  await waitFor(() => expect(session.result.current.connection).toBe("live"));
+  local.setStorage({ ...memory, save: async () => { throw new local.LocalStoreError("磁盘写入失败"); } });
+  act(() => { session.result.current.send("继续制作"); });
+  await waitFor(() => expect(session.result.current.error).toContain("磁盘写入失败"));
+  expect((await local.registrationBlockers()).join()).toContain("job-2");
+  expect((await memory.work(local.server(), "work-1"))?.job.id).toBe("job-1");
+  session.unmount();
+  // Windows 重启更换页面端口后无法读取原 localStorage，原生回执仍必须阻止更新。
+  localStorage.clear();
+  local.setStorage({ ...memory, save: async () => { throw new local.LocalStoreError("磁盘写入失败"); } });
+  expect((await local.registrationBlockers()).join()).toContain("job-2");
+  await initializeUpdates(); await checkUpdate(); await downloadUpdate();
+  await tryApplyUpdate();
+  expect(operations).not.toContain("download");
+  expect(operations).not.toContain("apply");
+  local.setStorage(memory);
+  expect((await local.history())[0].job.id).toBe("job-2");
+  expect(await local.registrationBlockers()).toEqual([]);
+  await tryApplyUpdate();
+  await waitFor(() => expect(operations.filter(op => op === "apply")).toHaveLength(1));
+  expect(fetchMock.mock.calls.filter(([url, options]) => String(url).endsWith("/messages") && options?.method === "POST")).toHaveLength(1);
 });

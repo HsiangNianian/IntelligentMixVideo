@@ -1,6 +1,6 @@
-/** 更新应用前的页面门禁：草稿、进行中的请求以及仍打开的业务对话框。 */
+/** 更新应用前的页面门禁：原表单中的草稿与进行中的请求。 */
 import { useLayoutEffect, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { diagnosticContext, diagnosticInvoke as invoke, inDiagnosticContext, debugLog } from './diagnostics';
 const blockers = new Map<symbol, string>();
 let locked = false;
 /** 锁定期间发起的请求在此等待；解锁（应用失败或取消）时放行，应用成功则页面刷新、请求不再发出。 */
@@ -17,12 +17,19 @@ export function useUpdateBlocker(reason: string, blocked: boolean) {
     return () => { blockers.delete(id); };
   }, [reason, blocked]);
 }
-/** 当前阻止应用更新的原因（去重）：登记的草稿、进行中的请求和未标记为安全的打开对话框。 */
+/** 表单在自己的输入控件上标出未保存项，隐藏的工作区仍挂载，清单可直接定位原控件。 */
+export function updateDrafts() {
+  return Array.from(document.querySelectorAll<HTMLElement>('[data-update-draft]')).filter(field =>
+    // 模板数字输入允许暂存无效文本，此时已解析的模板值可能与保存时完全一致。
+    !field.hasAttribute('data-update-invalid-only') || Array.from(field.closest('form')?.querySelectorAll('input') ?? []).some(input => input.willValidate && !input.validity.valid)
+  );
+}
+/** 登记的在途操作自动等待，只有实际存在的草稿需要用户处理。 */
 export function updateBlockers(): string[] {
   return [...new Set([
     ...blockers.values(),
     ...(requests.size ? ['正在完成保存、上传或读取请求'] : []),
-    ...(document.querySelector('[data-slot="dialog-content"][data-state="open"]:not([data-update-safe])') ? ['请先完成或关闭其他对话框'] : []),
+    ...updateDrafts().map(field => field.dataset.updateDraft!),
   ])];
 }
 /** 捕获阶段吞掉用户输入，锁定期间不能开始新操作。 */
@@ -42,10 +49,12 @@ export function lockForUpdate(value: boolean) {
  * 后台写入（如 SSE 事件落库）因此不会失败，应用更新失败解锁后照常继续。
  */
 export async function updateTask<T>(task: () => Promise<T>): Promise<T> {
+  const context = diagnosticContext();
+  if (locked) debugLog('前端执行', `${context ? `[#${context}] ` : ''}等待客户端更新解除请求锁`, '信息');
   while (locked) await unlocked;
   const request = Symbol();
   requests.add(request);
-  try { return await task(); } finally { requests.delete(request); }
+  try { return await inDiagnosticContext(context, task); } finally { requests.delete(request); }
 }
 /** 业务接口复用原 fetch/invoke，更新接口本身不经过门禁。 */
 export const updateFetch = (...args: Parameters<typeof fetch>) => updateTask(() => globalThis.fetch(...args));

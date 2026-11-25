@@ -40,13 +40,13 @@ try {
     <div id="frame" style="position:relative;width:180px;height:320px"></div></div><script type="module">
     import React from "react"; import {createRoot} from "react-dom/client";
     import {SpriteOverlay} from "/src/features/templates/SpriteOverlay.tsx";
-    import {prepareCoverFrame} from "/src/features/templates/coverCapture.ts";
+    import {captureCoverFrame} from "/src/features/templates/coverCapture.ts";
     import "/src/styles/globals.css";
     const root=createRoot(frame), ref=React.createRef();
     const start=Number(new URLSearchParams(location.search).get("start")), clip={id:"clip",spriteId:"probe",name:"帧号",aspect:9/16,start,end:3,length:3-start};
     stage.dataset.coverTime=String(start);
     root.render(React.createElement(SpriteOverlay,{ref,clips:[clip],stageAspect:9/16,initialTime:start}));
-    window.capture=()=>prepareCoverFrame(frame, t=>{ref.current.setTime(t);stage.dataset.coverTime=String(t)});
+    window.capture=()=>captureCoverFrame(frame, t=>{ref.current.setTime(t);stage.dataset.coverTime=String(t)}, async()=>{});
     </script>`;
   await page.route(base + "/cover-probe.html?start=*", async route => route.fulfill({ contentType: "text/html", body: await server.transformIndexHtml("/cover-probe.html", html) }));
   for (const start of [0, 0.5]) {

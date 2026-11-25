@@ -4,12 +4,11 @@
 跨域客户端看到的是服务端错误，而不是被浏览器拦截后的「无法连接」。
 """
 
-from asyncio import create_task, to_thread
+from asyncio import to_thread
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from importlib.metadata import version
 from math import isfinite
-from threading import Event
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -20,11 +19,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .database import close_database, initialize_database
+from .diagnostics import DiagnosticRequests
 from .segmentation.router import router as segmentation_router
 from .segmentation.punctuation import initialize as initialize_punctuation
 from .settings_plugins import router as settings_router
 from .sub_api.router import router
-from .template.backfill import import_covers
 from .template.router import router as template_router
 from .remotion_templates.api import app as remotion_templates_app
 from .remotion_templates.overlay_router import router as overlay_router
@@ -42,13 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         initialize_database()
         await to_thread(initialize_punctuation)
         await runtime.start()
-        stop = Event()
-        covers = create_task(to_thread(import_covers, stop))
-        try:
-            yield
-        finally:
-            stop.set()
-            await covers
+        yield
     finally:
         try:
             await runtime.close()
@@ -96,6 +89,7 @@ class InternalErrors:
 app = FastAPI(title="IntelligentMixVideo API", version=version("imv-server"), lifespan=lifespan)
 # 先加入的中间件在内层：InternalErrors 位于 CORS 之内，500 也带跨域响应头。
 app.add_middleware(InternalErrors)
+app.add_middleware(DiagnosticRequests)
 # 允许本地 Vite 与 Tauri 客户端访问 API；Windows 正式客户端使用动态 localhost 端口。
 app.add_middleware(
     CORSMiddleware,
@@ -108,7 +102,8 @@ app.add_middleware(
         r"^http://localhost:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|"
         r"6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$"
     ),
-    allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID", "X-Remotion-Config", "X-IMS-Config", "X-IMV-Device"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID", "X-Remotion-Config", "X-IMS-Config", "X-IMV-Device", "X-IMV-Request-ID"],
+    expose_headers=["X-IMV-Request-ID", "X-IMV-Elapsed-Ms", "X-IMV-Diagnostics"],
 )
 app.include_router(router)
 app.include_router(template_router)

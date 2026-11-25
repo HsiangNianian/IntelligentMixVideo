@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from . import covers, images, store
-from .schema import Template, TemplateSave
+from .schema import Template, TemplateCover, TemplateSave
 from .preview_mask import PreviewCircleMask, PreviewMask, circle_mask_video, mask_video
 
 # 静态预览资源必须放在 UUID 详情路径之前，无效果目录接口。
@@ -27,8 +27,15 @@ PROTOBUF_CONTENT = {PROTOBUF_MEDIA_TYPE: {"schema": {"type": "string", "format":
 RESPONSE_CONTENT = {"application/json": {"schema": {"type": "object"}}, **PROTOBUF_CONTENT}
 
 
-def _template_message(template: Template) -> pb.TemplateRecord:
+def _cover_link(request: Request, template_id: UUID, cover: TemplateCover | None) -> None:
+    """按读取者访问的服务地址生成可分享链接，保留升级前已发布的 ZOS 直链。"""
+    if cover and cover.url == f"/template/{template_id}/cover":
+        cover.url = str(request.url_for("get_cover", template_id=template_id))
+
+
+def _template_message(request: Request, template: Template) -> pb.TemplateRecord:
     """将经过业务校验的模板转换为生成的 Protobuf 消息。"""
+    _cover_link(request, template.template_id, template.cover)
     data = template.model_dump(mode="json")
     if template.cover:
         data["cover"] = template.cover.model_dump()
@@ -53,6 +60,8 @@ def _template_response(request: Request, message: Message, status_code: int = 20
 def list_templates(request: Request) -> Response:
     """默认返回共享模板库的 JSON 列表，空库返回空数组。"""
     templates = store.list_templates()
+    for template in templates:
+        _cover_link(request, template.template_id, template.cover)
     return _template_response(request, pb.ListTemplatesResponse(
         templates=[ParseDict(template.model_dump(mode="json", exclude_none=True), pb.TemplateSummary()) for template in templates],
     ))
@@ -94,7 +103,7 @@ async def save_template(request: Request) -> Response:
         raise RequestValidationError(errors) from exc
     result = await run_in_threadpool(store.save_template, validated, source)
     return _template_response(
-        request, pb.SaveTemplateResponse(template=_template_message(result)),
+        request, pb.SaveTemplateResponse(template=_template_message(request, result)),
         status_code=200 if validated.template_id else 201,
     )
 
@@ -170,7 +179,7 @@ def get_frame_mask_image(image_id: Annotated[str, Path(pattern=r"^[a-f0-9]{64}$"
 def get_template(template_id: UUID, request: Request) -> Response:
     """按 URL 中的 UUID 返回模板及服务端效果快照。"""
     template = store.get_template(template_id)
-    return _template_response(request, pb.GetTemplateResponse(template=_template_message(template)))
+    return _template_response(request, pb.GetTemplateResponse(template=_template_message(request, template)))
 
 
 @router.delete("/{template_id}", status_code=204)
@@ -180,14 +189,16 @@ def delete_template(template_id: UUID) -> None:
 
 
 @router.put("/{template_id}/cover/{revision}")
-async def upload_cover(template_id: UUID, revision: UUID, file: Annotated[UploadFile, File()],
+async def upload_cover(template_id: UUID, revision: UUID, request: Request, file: Annotated[UploadFile, File()],
                        refresh: Annotated[bool, Form()] = False):
-    """客户端与存量补图共用；按图片真实内容验证并写入该模板固定的 PNG 对象。"""
+    """客户端与存量补图共用；校验图片后发布，返回始终读取最新版的分享地址。"""
     try:
         content = await file.read(covers.MAX_BYTES + 1)
         if len(content) > covers.MAX_BYTES:
             raise HTTPException(413, "封面图片过大")
-        return await run_in_threadpool(store.publish_cover, template_id, revision, content, refresh)
+        cover = await run_in_threadpool(store.publish_cover, template_id, revision, content, refresh)
+        _cover_link(request, template_id, cover)
+        return cover
     finally:
         await file.close()
 
@@ -195,8 +206,8 @@ async def upload_cover(template_id: UUID, revision: UUID, file: Annotated[Upload
 @router.get("/{template_id}/cover")
 def get_cover(template_id: UUID, request: Request) -> Response:
     """按已发布版本验证客户端缓存，只有版本变化才从 ZOS 读取 PNG。"""
-    etag = f'"{store.published_revision(template_id)}"'
+    etag, content = store.read_published_cover(template_id, request.headers.get("if-none-match"))
     headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
-    if request.headers.get("if-none-match") == etag:
+    if content is None:
         return Response(status_code=304, headers=headers)
-    return Response(covers.read_cover(str(template_id)), media_type="image/png", headers=headers)
+    return Response(content, media_type="image/png", headers=headers)

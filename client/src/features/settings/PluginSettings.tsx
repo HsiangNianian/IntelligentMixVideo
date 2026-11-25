@@ -14,7 +14,7 @@ import { normalizeValues, schemaError } from "./schema";
 import { Spinner } from "@/components/ui/spinner";
 import { Hint } from "@/components/Hint";
 import { APP_COMMIT, APP_VERSION } from "@/lib/version";
-import { openDiagnostics } from "@/lib/diagnostics";
+import { openDiagnostics, beginDiagnostic, inDiagnosticContext, briefly } from "@/lib/diagnostics";
 
 /** 固定面板使用独立值，插件导航统一加前缀，存储 ID 不受影响。 */
 const GENERAL_TAB = "general";
@@ -83,24 +83,29 @@ function GeneralSection({ onClose }: { onClose?: () => void }) {
   const initial = useRef(apiBase());
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
-  useUpdateBlocker("设置尚未保存", saving || url.trim() !== initial.current);
+  useUpdateBlocker("正在保存设置", saving);
   return (
     <section aria-labelledby={titleId} className="flex h-full min-h-0 flex-col">
       <form aria-label="通用设置" className="flex min-h-0 flex-1 flex-col" onSubmit={async (event) => {
         event.preventDefault();
         if (saving) return;
+        const trace = beginDiagnostic("前端设置", "保存通用设置");
         setSaving(true);
         setMessage("");
         try {
           if (url.trim() !== initial.current) {
             // 宿主按字段合并 $client，其他字段保持磁盘上的最新值。
-            await saveSettings("$client", { api_url: url.trim() });
+            trace.step("后端地址已修改，保存本机配置");
+            await inDiagnosticContext(trace.id, () => saveSettings("$client", { api_url: url.trim() }));
             setApiBase(url.trim());
-          }
+            trace.step("后续请求已切换到新地址；已有会话连接需重启切换");
+          } else trace.step("地址未修改，跳过写入");
           initial.current = url.trim();
           setMessage("已保存。后续请求使用新地址；已有会话连接请重启客户端后切换。");
+          trace.finish("保存完成");
           onClose?.();
-        } catch {
+        } catch (error) {
+          trace.finish(`保存失败：${briefly(error)}`, "错误");
           setMessage("保存地址失败，请重试");
         } finally {
           setSaving(false);
@@ -117,7 +122,7 @@ function GeneralSection({ onClose }: { onClose?: () => void }) {
             <div className="flex flex-wrap justify-between gap-3 py-4">
               <dt className="text-muted-foreground"><Label htmlFor={`${titleId}-url`}>后端服务地址</Label></dt>
               <dd className="w-full min-w-0">
-                <Input id={`${titleId}-url`} type="url" required pattern="https?://.+" value={url}
+                <Input data-update-draft={url.trim() !== initial.current ? "通用设置 · 后端服务地址" : undefined} id={`${titleId}-url`} type="url" required pattern="https?://.+" value={url}
                   onChange={event => { setUrl(event.target.value); setMessage(""); }} disabled={saving} />
               </dd>
             </div>
@@ -145,16 +150,19 @@ function PluginForm({ plugin, saved, onClose }: { plugin: Plugin; saved?: Values
     <form noValidate aria-labelledby={id} className="flex h-full min-h-0 flex-col" onSubmit={async (event) => {
       event.preventDefault();
       if (saving) return;
+      const trace = beginDiagnostic("前端设置", `保存模块 ${plugin.id}`);
       setFeedback(undefined);
       // 浏览器可能把未完成的数字（如 1e）暴露为空字符串，不能当成用户清空可选值。
       if (Array.from(event.currentTarget.querySelectorAll<HTMLInputElement>('input[type="number"]')).some(input => input.validity.badInput)) {
         setFeedback({ text: "请输入有效数字", role: "alert" });
+        trace.finish("前端校验失败：请输入有效数字；未执行保存", "警告");
         return;
       }
       let normalized: Values;
       try {
         normalized = normalizeValues(plugin, values);
       } catch (reason) {
+        trace.finish(`前端校验失败：${briefly(reason)}；未执行保存`, "警告");
         setFeedback({ text: (reason as Error).message, role: "alert" });
         return;
       }
@@ -162,10 +170,13 @@ function PluginForm({ plugin, saved, onClose }: { plugin: Plugin; saved?: Values
       try {
         // 保留当前 Schema 未展示的已存字段；已展示的空可选值仍按规范化结果清除。
         const hidden = Object.fromEntries(Object.entries(saved ?? {}).filter(([key]) => !(key in plugin.schema.properties)));
-        await saveSettings(plugin.id, { ...hidden, ...normalized });
+        trace.step("字段校验通过，保存本机配置");
+        await inDiagnosticContext(trace.id, () => saveSettings(plugin.id, { ...hidden, ...normalized }));
         setFeedback({ text: isTauri() ? "已保存到当前客户端" : "已保存到当前页面，刷新后丢失", role: "status" });
+        trace.finish("保存完成");
         onClose?.();
-      } catch {
+      } catch (error) {
+        trace.finish(`保存失败：${briefly(error)}`, "错误");
         setFeedback({ text: "保存设置失败", role: "alert" });
       } finally {
         setSaving(false);

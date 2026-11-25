@@ -25,9 +25,9 @@ function save(value: Layout) {
 }
 
 /** 仅用户拖动时保存尺寸；恢复重置三栏宽度。 */
-export function WorkspacePanels({ history, chat, preview, parameters, mobile, status, action }: {
+export function WorkspacePanels({ history, chat, preview, parameters, mobile, status, action, reviewParameters }: {
   history: ReactNode; chat: ReactNode; preview: ReactNode; parameters: ReactNode;
-  mobile: string; status: ReactNode; action: ReactNode;
+  reviewParameters?: object; mobile: string; status: ReactNode; action: ReactNode;
 }) {
   const group = useGroupRef();
   const parameterId = useId();
@@ -42,6 +42,8 @@ export function WorkspacePanels({ history, chat, preview, parameters, mobile, st
     query.addEventListener("change", changed);
     return () => query.removeEventListener("change", changed);
   }, []);
+  // 从更新清单返回时恢复被用户收起的桌面参数栏。
+  useEffect(() => { if (reviewParameters && group.current?.getLayout().parameters === 0) group.current.setLayout(expandedLayout.current); }, [reviewParameters, group]);
   // 窄屏参数位于预览下方，不沿用桌面的零宽度；内容始终挂载，保留输入和播放器。
   useEffect(() => { if (!desktop) group.current?.setLayout(expandedLayout.current); }, [desktop, group]);
   return <div className="flex min-h-0 flex-1 flex-col">

@@ -233,6 +233,11 @@ export interface TemplateSummary {
   validation_error: string;
 }
 
+/** 无记录和仍以模板 ID 标记的初版内置封面都需要补截一次。 */
+export function needsInitialCover(template: Pick<TemplateSummary, "template_id" | "cover">): boolean {
+  return !template.cover || (template.cover.source === "builtin" && template.cover.revision === template.template_id);
+}
+
 /** 后端返回的完整模板，effects 为保存时的可信快照。 */
 export interface Template extends Draft {
   cover?: CoverInfo;

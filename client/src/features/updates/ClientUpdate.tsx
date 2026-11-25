@@ -1,6 +1,7 @@
 /** 设置中的版本检查、下载状态与启动提醒弹窗；重启提示在根页面挂载，不随设置关闭而消失。 */
 import { toast } from 'sonner';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { updateDrafts } from '@/lib/update-guard';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { APP_VERSION } from '@/lib/version';
@@ -21,31 +22,77 @@ export function ClientUpdate() {
   const state = useClientUpdate();
   useEffect(() => { void checkUpdate(); }, []);
   return <section aria-label="客户端更新" className="space-y-3 border-t pt-5 text-sm">
-    <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium">客户端更新</h3><span>界面 v{APP_VERSION} · 原生 v{state.nativeVersion}</span></div>
+    <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium">客户端更新</h3><span>版本：v{APP_VERSION}</span></div>
     <p role="status" className="text-xs text-muted-foreground">{state.message}{state.progress !== undefined && ` ${state.progress}%`}</p>
     <div className="flex flex-wrap gap-2">
-      <Button type="button" variant="outline" size="sm" disabled={['disabled', 'checking', 'downloading', 'waiting', 'applying'].includes(state.phase)} onClick={() => void checkUpdate()}>检查更新</Button>
+      <Button type="button" variant="outline" size="sm" disabled={['disabled', 'checking', 'preparing', 'downloading', 'waiting', 'applying'].includes(state.phase)} onClick={() => void checkUpdate()}>检查更新</Button>
       {state.candidate && ['available', 'error', 'manual'].includes(state.phase) && <Button type="button" size="sm" onClick={() => void downloadUpdate()}>{state.candidate.mode === 'manual' ? '获取安装包' : '一键更新'}</Button>}
-      {state.phase === 'waiting' && <Button type="button" variant="outline" size="sm" onClick={cancelUpdate}>取消此次更新</Button>}
+      {(state.phase === 'preparing' || state.phase === 'waiting') && <Button type="button" variant="outline" size="sm" onClick={cancelUpdate}>取消此次更新</Button>}
     </div>
     {state.links && <ManualLinks links={state.links} sha256={state.sha256} />}
     {state.candidate && <p className="text-xs text-muted-foreground">{modeHint(state.candidate.mode)}</p>}
   </section>;
 }
+/** 清单始终回到原表单。正在处理的一项在保存失败后仍可继续编辑，完成后再展示剩余项。 */
+function PendingDrafts({ message, onReview }: { message: string; onReview?: (field: HTMLElement) => void }) {
+  const fields = updateDrafts();
+  const [editing, setEditing] = useState<HTMLElement | null>(null);
+  const reviewing = editing !== null && fields.includes(editing);
+  const frontForm = fields.find(field => field.closest('[role="dialog"]'))?.closest('[role="dialog"]');
+  // 已打开的编辑弹窗优先显示，切换工作区前先保住它的未保存输入。
+  if (frontForm) fields.sort((a, b) => Number(frontForm.contains(b)) - Number(frontForm.contains(a)));
+  /** 让源表单接回焦点，保留现有的保存、放弃和校验行为。 */
+  function review(field: HTMLElement) {
+    setEditing(field);
+    // 关闭清单后再切页。关闭干净的遮挡弹窗时走原有关闭操作；带草稿的表单优先处理。
+    requestAnimationFrame(() => {
+      for (const dialog of document.querySelectorAll<HTMLElement>('[data-slot="dialog-content"][data-state="open"]:not([data-update-safe])')) {
+        if (!dialog.contains(field) && !dialog.querySelector('[data-update-draft]') && !dialog.hasAttribute('data-update-draft')) {
+          dialog.querySelector<HTMLButtonElement>('[data-slot="dialog-close"],button[aria-label="关闭"]')?.click();
+        }
+      }
+      onReview?.(field);
+      requestAnimationFrame(() => {
+        field.focus();
+        field.scrollIntoView?.({ block: 'nearest' });
+      });
+    });
+  }
+  return <>
+    <Dialog open={fields.length > 0 && !reviewing} onOpenChange={open => { if (!open) cancelUpdate(); }}>
+      <DialogContent data-update-safe onCloseAutoFocus={event => { if (editing) event.preventDefault(); }}>
+        <DialogHeader><DialogTitle>更新前还有未保存的内容</DialogTitle><DialogDescription>
+          {frontForm && fields.some(field => !frontForm.contains(field)) ? '先处理当前弹窗中的输入。' : ''}全部处理完后会自动继续更新。
+        </DialogDescription></DialogHeader>
+        <ul className="grid max-h-[50vh] gap-2 overflow-auto">{fields.map(field =>
+          <li key={field.dataset.updateDraft} className="flex items-center justify-between gap-3">
+            <span className="min-w-0 break-words text-sm">{field.dataset.updateDraft}</span>
+            <Button type="button" variant="outline" size="sm" disabled={!!frontForm && !frontForm.contains(field)} onClick={() => review(field)}>去处理</Button>
+          </li>)}</ul>
+        <DialogFooter><Button type="button" variant="outline" onClick={cancelUpdate}>稍后更新</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+    {(reviewing || fields.length === 0) && <aside className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border bg-background p-4 shadow-lg" aria-label="等待客户端更新">
+      <p className="mb-2 text-sm" role="status">{message}</p>
+      {reviewing && <Button size="sm" variant="outline" onClick={() => setEditing(null)}>查看待处理项</Button>}
+      <Button size="sm" variant="outline" onClick={cancelUpdate}>取消此次更新</Button>
+    </aside>}
+  </>;
+}
 /** 根页面常驻部分：挂载后确认当前界面可用，显示新版本提醒，并在设置关闭后继续显示等待浮层与应用中的状态对话框。 */
-export function UpdateLifecycle() {
+export function UpdateLifecycle({ onReview }: { onReview?: (field: HTMLElement) => void } = {}) {
   const state = useClientUpdate();
   useEffect(() => { void updaterReady(); }, []);
   const reminder = state.reminder;
   const reminderOpen = Boolean(reminder) && ['checking', 'available', 'error', 'downloading', 'manual'].includes(state.phase);
   const downloading = state.phase === 'downloading';
   return <>
-    {state.phase === 'waiting' && <aside className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border bg-background p-4 shadow-lg" aria-label="等待客户端更新"><p className="mb-2 text-sm" role="status">{state.message}</p><Button size="sm" variant="outline" onClick={cancelUpdate}>取消此次更新</Button></aside>}
+    {(state.phase === 'preparing' || state.phase === 'waiting') && <PendingDrafts message={state.message} onReview={onReview} />}
     <Dialog open={reminderOpen} onOpenChange={(open) => { if (!open && !downloading) dismissUpdateReminder(); }}>
       <DialogContent data-update-safe showCloseButton={!downloading} onEscapeKeyDown={e => { if (downloading) e.preventDefault(); }} onPointerDownOutside={e => { if (downloading) e.preventDefault(); }}>
         <DialogHeader>
           <DialogTitle>发现新版本 v{reminder?.version}</DialogTitle>
-          <DialogDescription>当前界面 v{APP_VERSION}{state.phase === 'manual' ? '，请手动安装下载的安装包。' : '，更新前会先等待未保存内容和后台任务结束。'}</DialogDescription>
+          <DialogDescription>当前版本 v{APP_VERSION}{state.phase === 'manual' ? '，请手动安装下载的安装包。' : reminder?.mode === 'hot' ? '，更新前会等待草稿保存和后台任务结束。' : '，保存草稿后将重新启动，已提交的后台任务会继续。'}</DialogDescription>
         </DialogHeader>
         <p role="status" className="text-sm text-muted-foreground">{state.message}{state.progress !== undefined && ` ${state.progress}%`}</p>
         {state.links && <ManualLinks links={state.links} sha256={state.sha256} />}

@@ -3,12 +3,15 @@
 #[cfg(windows)]
 mod localhost;
 
+#[cfg(target_os = "linux")]
+mod appimage;
 mod backend;
 mod diagnostics;
 mod file_lock;
 mod media_server;
 mod preview_snapshot;
 mod preview_videos;
+mod remotion_registrations;
 mod remotion_sessions;
 mod settings;
 mod updates;
@@ -100,6 +103,13 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             {
                 use tauri::Manager;
+                if let Some(image) = &app.env().appimage {
+                    appimage::update_shortcut(
+                        app.handle(),
+                        std::path::Path::new(image),
+                        env!("CARGO_PKG_VERSION"),
+                    );
+                }
                 // 网页缓存按运行时版本隔离；其他本地数据仍保存在原 app_data_dir。
                 let data_directory = app
                     .path()
