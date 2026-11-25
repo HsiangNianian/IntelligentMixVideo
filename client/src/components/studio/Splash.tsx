@@ -5,7 +5,7 @@
  * 1. 入轨（Mix）：时间线标尺展开，Intelligent / Mix / Video 三段素材块从左、上、右飞入并吸附成一条轨道。
  * 2. 渲染（Video、Intelligent）：强调色播放头从左向右扫过，扫过的素材擦除成文字；刚被扫到的字母先滚动随机字符
  *    再锁定（解码），「Mix」锁定时闪一下强调色光。
- * 3. 落版：标尺与播放头退场，标志底板浮现，三条素材从两侧滑入合成播放键，下方是「智能混剪工作台」。
+ * 3. 落版：标尺与播放头退场，圆形标志浮现，下方是「智能混剪工作台」。
  * 转场：背景淡出露出主页，标志飞到左上角导航栏里同一个标志的位置，完成交接。
  *
  * 播完时内置服务仍在启动（holding）就停在落版画面并显示启动进度，就绪后再转场；
@@ -68,10 +68,7 @@ function introSequence(sweep: MotionValue<number>): AnimationSequence {
     [".sp-ruler", { opacity: 0, y: -6 }, { duration: 0.25, at: 2.1 }],
     [".sp-glow", { opacity: [0, 1] }, { duration: 1, at: 1.9 }],
     [".sp-mark-wrap", { opacity: [0, 1] }, { duration: 0.3, at: 2.35 }],
-    [".sp-mark .logo-tile", { scale: [0.7, 1] }, { type: "spring", stiffness: 420, damping: 24, at: 2.35 }],
-    [".sp-mark .logo-strip-1", { x: [-9, 0], opacity: [0, 1] }, { duration: 0.5, at: 2.45, ease: expo }],
-    [".sp-mark .logo-strip-2", { x: [9, 0], opacity: [0, 1] }, { duration: 0.5, at: 2.52, ease: expo }],
-    [".sp-mark .logo-strip-3", { x: [-9, 0], opacity: [0, 1] }, { duration: 0.5, at: 2.59, ease: expo }],
+    [".sp-mark", { scale: [0.7, 1] }, { type: "spring", stiffness: 420, damping: 24, at: 2.35 }],
     [".sp-tagline", { opacity: [0, 1], y: [8, 0] }, { duration: 0.5, at: 2.5, ease: expo }],
     [".sp-meta", { opacity: [0, 1] }, { duration: 0.5, at: 2.6 }],
     // 落版停留片刻。
@@ -96,7 +93,7 @@ function exitSequence(root: HTMLElement, handoff: boolean): AnimationSequence {
     [".sp-fade", { opacity: 0, filter: "blur(6px)" }, { duration: 0.3, at: 0 }],
   ];
   const mark = root.querySelector(".sp-mark")?.getBoundingClientRect();
-  const target = document.querySelector("[data-splash-target] svg")?.getBoundingClientRect();
+  const target = document.querySelector("[data-splash-target] img")?.getBoundingClientRect();
   if (!handoff || !mark || !target) return [...fade, [".sp-mark", { opacity: 0 }, { duration: 0.3, at: 0 }]];
   const center = (rect: DOMRect) => [rect.left + rect.width / 2, rect.top + rect.height / 2];
   const [fromX, fromY] = center(mark);
@@ -214,7 +211,7 @@ export function Splash({ holding, handoff, onDone }: SplashProps) {
 
       <div className="relative flex flex-col items-center">
         <div className="sp-mark-wrap mb-14 opacity-0">
-          <LogoMark className="sp-mark size-16 drop-shadow-[0_8px_20px_color-mix(in_oklch,var(--color-brand-to)_35%,transparent)]" />
+          <LogoMark className="sp-mark size-20 drop-shadow-[0_8px_20px_color-mix(in_oklch,var(--color-brand-to)_35%,transparent)]" />
         </div>
 
         {/* 舞台：素材层与文字层逐字同构叠放，播放头的位置同时决定两层的擦除边界。 */}

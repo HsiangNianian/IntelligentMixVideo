@@ -31,9 +31,9 @@ interface RailProps {
 export function Rail({ page, onNavigate, onSettings, editing, dirty, version, logoHidden }: RailProps) {
   return (
     <nav aria-label="主导航" className="paper-surface flex h-dvh w-[76px] shrink-0 flex-col border-r border-line bg-rail px-2 py-5 xl:w-52 xl:px-5">
-      <div className="mb-8 flex h-16 items-start justify-center gap-2 border-b border-line xl:justify-start">
-        <span data-splash-target className={cn("flex size-9 shrink-0 items-center justify-center", logoHidden && "opacity-0")}>
-          <LogoMark className="studio-logo size-9 text-fg" />
+      <div className="mb-8 flex h-16 items-center justify-center gap-2 border-b border-line xl:justify-start">
+        <span data-splash-target aria-label="IMV" className={cn("flex size-14 shrink-0 items-center justify-center", logoHidden && "opacity-0")}>
+          <LogoMark className="size-14" />
         </span>
         <span aria-label="IMV" className="sketch-text hidden text-[28px] leading-9 xl:inline-block">IMV</span>
       </div>

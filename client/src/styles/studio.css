@@ -1,4 +1,7 @@
 /* 纸面工作室：黑体界面字体与中性主题；真实字体样张、播放器及代码各自指定字体。 */
+/* 黑底 Logo 在浅色界面反相并正片叠底，在深色界面滤色，使圆底融入当前背景。 */
+.studio-logo-mark { filter: invert(1); mix-blend-mode: multiply; }
+.dark .studio-logo-mark { filter: none; mix-blend-mode: screen; }
 @theme {
   --color-white: #fff;
   --color-black: #000;
@@ -220,9 +223,6 @@
 .paper-surface {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='linear' slope='.045'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' opacity='.6' filter='url(%23p)'/%3E%3C/svg%3E");
 }
-.studio-logo .logo-tile { display: none; }
-.studio-logo path { fill: currentColor; stroke: currentColor; }
-
 /* 空会话将标题与输入框放在中间；消息出现后输入框自然回到底部。 */
 .studio-chat-empty .studio-chat-log { flex: 0 1 auto; margin-top: auto; }
 .studio-chat-empty .studio-composer { margin-bottom: auto; }

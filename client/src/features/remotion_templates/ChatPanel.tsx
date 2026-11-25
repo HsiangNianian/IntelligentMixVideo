@@ -231,7 +231,7 @@ export function ChatPanel({
         )}
         {!messages.length && (
           <div className="flex flex-col items-center justify-center gap-3 pt-4 text-center text-sm">
-            <LogoMark className="mb-2 size-11" />
+            <LogoMark className="mb-2 size-14" />
             <h2 aria-label="把想法，变成画面" className="sketch-text text-[22px]">把想法，变成画面</h2>
             <p className="max-w-72 leading-6 text-muted-foreground">
               描述文字、颜色、位置和出场方式，也可以上传、拖入或粘贴参考图片。
