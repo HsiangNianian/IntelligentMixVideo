@@ -1,9 +1,8 @@
-/** 主页复用同一份云端列表，展示最近五项、按名称搜索与每页十五项的网格；写入仍走既有存储边界。 */
+/** 主页复用同一份云端列表，展示最近五项与按名称搜索的完整网格；写入仍走既有存储边界。 */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { Tooltip } from "radix-ui";
 import { toast } from "sonner";
-import { ChevronLeft, ChevronRight } from "lucide-react";
 import { HomePage as HomeView } from "@/components/studio/home/HomePage";
 import { TemplateSection, type SectionState } from "@/components/studio/home/TemplateSection";
 import { TemplateCard } from "@/components/studio/home/TemplateCard";
@@ -184,7 +183,7 @@ function sectionState(collection: Collection): SectionState {
   return collection.loading ? "loading" : collection.error ? "error" : "ready";
 }
 
-/** 最近五项与分页网格共用卡片操作；删除成功通知编辑区并重新读取列表。 */
+/** 最近五项与完整网格共用卡片操作；删除成功通知编辑区并重新读取列表。 */
 export function TemplateCollection({ collection, onCreate, onSelect, onDelete, editing, query = "" }: Props & {
   collection: Collection;
   onCreate: () => void;
@@ -192,12 +191,8 @@ export function TemplateCollection({ collection, onCreate, onSelect, onDelete, e
   query?: string;
 }) {
   const [deleting, setDeleting] = useState<TemplateSummary | null>(null);
-  const [page, setPage] = useState(1);
-  useEffect(() => setPage(1), [query]);
   const sorted = [...collection.templates].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   const filtered = sorted.filter((template) => template.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
-  const pages = Math.max(1, Math.ceil(filtered.length / 15));
-  const currentPage = Math.min(page, pages);
   const actions = {
     onOpen: (template: TemplateSummary) => onSelect({ templateId: template.template_id }),
     onDelete: setDeleting,
@@ -211,10 +206,10 @@ export function TemplateCollection({ collection, onCreate, onSelect, onDelete, e
     </section>}
     {query.trim() && collection.loading && <p role="status">正在读取模板…</p>}
     {query.trim() && collection.error && <p role="alert">{collection.error}<Button variant="ghost" onClick={collection.refresh}>重试</Button></p>}
-    {sectionState(collection) === "ready" && (sorted.length > 0 || query.trim()) && <section aria-label="全部模板" className="mt-10 space-y-5 border-t border-line pt-6">
-      <div className="flex items-center justify-between gap-3"><h3 className="sketch-text text-xl">{query.trim() ? "搜索结果" : "全部模板"}</h3><span role="status" className="text-xs text-muted-foreground">共 {filtered.length} 个模板 · 第 {currentPage} / {pages} 页</span></div>
-      {filtered.length === 0 ? <p className="py-12 text-center text-sm text-muted-foreground">没有找到匹配的模板，请换个名称试试。</p> : <div className="grid grid-cols-2 gap-x-5 gap-y-8 sm:grid-cols-3 xl:grid-cols-5">
-        {filtered.slice((currentPage - 1) * 15, currentPage * 15).map((template) => <div key={template.template_id} className="min-w-0">
+    {sectionState(collection) === "ready" && (sorted.length > 0 || query.trim()) && <section aria-label="全部模板" className="mt-6 space-y-4 border-t border-line pt-4">
+      <div className="flex items-center justify-between gap-3"><h3 className="sketch-text text-xl">{query.trim() ? "搜索结果" : "全部模板"}</h3><span role="status" className="text-xs text-muted-foreground">共 {filtered.length} 个模板</span></div>
+      {filtered.length === 0 ? <p className="py-12 text-center text-sm text-muted-foreground">没有找到匹配的模板，请换个名称试试。</p> : <div className="grid grid-cols-2 gap-x-5 gap-y-6 sm:grid-cols-3 xl:grid-cols-6">
+        {filtered.map((template) => <div key={template.template_id} className="min-w-0">
           <TemplateCard template={template} editing={template.template_id === editing?.id} dirty={editing?.dirty ?? false}
             onOpen={() => actions.onOpen(template)} onDelete={() => actions.onDelete(template)} onCopyId={() => actions.onCopyId(template)} />
           <h4 title={template.name} className="mt-3 truncate text-sm">{template.name}</h4>
@@ -222,11 +217,6 @@ export function TemplateCollection({ collection, onCreate, onSelect, onDelete, e
           <p className="mt-1 text-[11px] text-fg-subtle">{template.updated_at.slice(0, 10)} · {template.track_count ?? 0} 个对象</p>
         </div>)}
       </div>}
-      {pages > 1 && <nav aria-label="模板分页" className="flex items-center justify-center gap-4">
-        <Button variant="outline" size="sm" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)}><ChevronLeft aria-hidden="true" />上一页</Button>
-        <span className="text-sm">{currentPage} / {pages}</span>
-        <Button variant="outline" size="sm" disabled={currentPage === pages} onClick={() => setPage(currentPage + 1)}>下一页<ChevronRight aria-hidden="true" /></Button>
-      </nav>}
     </section>}
     <DeleteTemplateDialog target={deleting} onClose={() => setDeleting(null)}
       onDelete={async (template) => { await deleteTemplate(template.template_id); onDelete?.({ templateId: template.template_id }); collection.refresh(); }} />

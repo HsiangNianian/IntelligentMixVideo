@@ -133,7 +133,7 @@ test("保存资产后删除聊天，资产库仍可读取和添加", async () =>
   expect(await screen.findByRole("button", { name: "添加 AI 资产：今日灵感" })).toBeTruthy();
 });
 
-// 顶部保存是唯一的保存入口，使用当前预览（含历史）版本与它卡片上选择的分类；重复点击不会重复写入，左侧仍可新建会话。
+// 顶部保存是唯一的保存入口，使用当前预览（含历史）版本与它卡片上选择的分类；重复点击不会重复写入，历史栏和顶栏均可新建会话。
 test("顶栏保存当前预览版本为资产并防止重复提交", async () => {
   const requests: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>>[] = [];
   let complete: ((response: Response) => void) | undefined;
@@ -212,7 +212,7 @@ test("名称草稿随会话保留，切换预览版本不清空", async () => {
   fireEvent.click(screen.getByRole("button", { name: "预览 V1" }));
   await waitFor(() => expect(screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器").src).toContain("version-1"));
   expect(input.value).toBe("准备保存的名称");
-  fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+  fireEvent.click(within(screen.getByRole("complementary", { name: "字效历史会话" })).getByRole("button", { name: "新建会话" }));
   await waitFor(() => expect(input.value).toBe(""));
 });
 

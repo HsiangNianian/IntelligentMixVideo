@@ -83,16 +83,13 @@ test("模板网格按十五项分页并按名称搜索", async () => {
   fetchMock.mockImplementation((async (_url) => jsonListResponse(templates)) as typeof fetch);
   render(<Tooltip.Provider><TemplateHome onSelect={() => {}} onOpenRemotion={() => {}} /></Tooltip.Provider>);
   const grid = within(await screen.findByRole("region", { name: "全部模板" }));
-  expect(grid.getAllByRole("button", { name: /^选择模板：/ })).toHaveLength(15);
+  expect(grid.getAllByRole("button", { name: /^选择模板：/ })).toHaveLength(32);
   expect(grid.getAllByRole("heading")[1].textContent).toBe("Travel 31");
-  fireEvent.click(screen.getByRole("button", { name: "下一页" }));
-  expect(grid.getAllByRole("button", { name: /^选择模板：/ })).toHaveLength(15);
-  fireEvent.click(screen.getByRole("button", { name: "下一页" }));
-  expect(grid.getAllByRole("button", { name: /^选择模板：/ })).toHaveLength(2);
-  expect(screen.getByRole<HTMLButtonElement>("button", { name: "下一页" }).disabled).toBe(true);
+  expect(grid.getByRole("status").textContent).toBe("共 32 个模板");
+  expect(screen.queryByRole("navigation", { name: "模板分页" })).toBeNull();
   fireEvent.change(screen.getByRole("searchbox", { name: "搜索模板名称" }), { target: { value: "  tRaVeL 3  " } });
   expect(grid.getAllByRole("button", { name: /^选择模板：/ })).toHaveLength(3);
-  expect(grid.getByRole("status").textContent).toContain("第 1 / 1 页");
+  expect(grid.getByRole("status").textContent).toBe("共 3 个模板");
   expect(screen.queryByRole("region", { name: "最近修改的模板" })).toBeNull();
   fireEvent.change(screen.getByRole("searchbox", { name: "搜索模板名称" }), { target: { value: "不存在" } });
   expect(grid.queryAllByRole("button", { name: /^选择模板：/ })).toHaveLength(0);
@@ -100,17 +97,16 @@ test("模板网格按十五项分页并按名称搜索", async () => {
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
-// 场景：末页最后一项被删除后回到上一页，不留下空白页，也不丢失剩余记录。
-test("删除分页末项后回到有效页", () => {
+// 场景：删除末项后其余模板仍连续展示，数量同步更新。
+test("删除末项后网格连续展示剩余模板", () => {
   const templates = Array.from({ length: 16 }, (_, index) => ({ ...templateSummary(savedTemplate()), template_id: `page-${index}`, name: `模板 ${index}` }));
   const collection = { templates, loading: false, error: "", refresh: () => {} };
   const props = { onCreate: () => {}, onSelect: () => {} };
   const view = render(<TemplateCollection {...props} collection={collection} />);
-  fireEvent.click(screen.getByRole("button", { name: "下一页" }));
   view.rerender(<TemplateCollection {...props} collection={{ ...collection, templates: templates.slice(0, -1) }} />);
   const grid = within(screen.getByRole("region", { name: "全部模板" }));
   expect(grid.getAllByRole("button", { name: /^选择模板：/ })).toHaveLength(15);
-  expect(grid.getByRole("status").textContent).toContain("第 1 / 1 页");
+  expect(grid.getByRole("status").textContent).toBe("共 15 个模板");
 });
 
 // 场景：无效模板只可进入删除确认，取消后仍可选择同库有效模板。

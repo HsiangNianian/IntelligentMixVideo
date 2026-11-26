@@ -1,7 +1,7 @@
 /**
  * 主页「开始创作」的两张入口卡片：新建云端模板、AI 生成字效。
- * 两幅插图同一构图：右上一枚小标签，右下是主体画面，画面都用同一族石墨色「视频画面」；悬停时标签上浮、画面有轻微动作。
- * AI 卡片以淡淡的强调色底区分，插图是提示词标签与它生成的字效画面：悬停时提示词逐字重打、光泽扫过字效。
+ * 两幅插图都在卡片右侧居中，画面使用同一族石墨色「视频画面」；悬停时有轻微动作。
+ * AI 卡片以淡淡的强调色底区分，字效画面悬停时掠过一道光泽。
  */
 import type { ReactNode } from "react";
 import { Icon } from "../icons";
@@ -16,10 +16,10 @@ interface CreateCardsProps {
 export function CreateCards({ onCreateCloud, onOpenEffects }: CreateCardsProps) {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <EntryCard icon={<Icon name="cloud-plus" />} title="新建云端模板" description="团队共享，保存后人人可用" onClick={onCreateCloud} art={<CloudArt />} />
+      <EntryCard icon={<Icon name="cloud-plus" />} iconClassName="text-white" title="新建云端模板" description="团队共享，保存后人人可用" onClick={onCreateCloud} art={<CloudArt />} />
       <EntryCard
-        icon={<Icon name="stars" variant="duotone" />}
-        iconClassName="bg-brand/12 text-brand"
+        icon={<Icon name="stars" variant="duotone" className="animate-entry-spark" />}
+        iconClassName="text-white"
         title="AI 生成字效"
         description="描述想法，对话生成字效"
         onClick={onOpenEffects}
@@ -40,7 +40,7 @@ interface EntryCardProps {
   className?: string;
 }
 
-/** 单张入口卡：左侧图标、标题与说明，右侧插图；底部的箭头在悬停时右移提示可点击。 */
+/** 单张入口卡：图标、两行文案与预览横向居中；箭头紧随说明并在悬停时右移。 */
 function EntryCard({ icon, iconClassName, title, description, art, onClick, className }: EntryCardProps) {
   return (
     <button
@@ -48,19 +48,19 @@ function EntryCard({ icon, iconClassName, title, description, art, onClick, clas
       aria-label={title}
       onClick={onClick}
       className={cn(
-        "group relative flex h-[124px] w-full overflow-hidden lg:h-[148px] rounded-[18px] border border-line bg-surface p-5 text-left transition-[background-color,border-color] duration-200 hover:border-line-strong hover:bg-raised",
+        "group relative flex h-[120px] w-full items-center gap-4 overflow-hidden rounded-[18px] border border-line bg-surface p-5 text-left transition-[background-color,border-color] duration-200 hover:border-line-strong hover:bg-raised",
         className,
       )}
     >
-      <span className="relative z-10 flex min-w-0 max-w-[62%] flex-1 flex-col max-sm:max-w-full">
-        <span className={cn("flex size-10 items-center justify-center rounded-xl bg-raised text-fg [&_svg]:size-[21px]", iconClassName)}>{icon}</span>
-        <span className="mt-auto text-[15px] font-semibold tracking-tight">{title}</span>
+      <span className={cn("relative z-10 flex size-10 shrink-0 items-center justify-center rounded-xl bg-entry-icon-bg [&_svg]:size-[21px]", iconClassName)}>{icon}</span>
+      <span className="relative z-10 flex min-w-0 flex-1 flex-col justify-center">
+        <span className="text-[13px] font-semibold tracking-tight">{title}</span>
         <span className="mt-1 flex items-center gap-1.5 text-[12.5px] text-fg-muted">
           <span className="truncate">{description}</span>
           <Icon name="arrow-right" className="size-3.5 shrink-0 text-fg-subtle transition-[transform,color] duration-200 group-hover:translate-x-1 group-hover:text-brand" />
         </span>
       </span>
-      <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-0 w-[46%] max-sm:hidden">{art}</span>
+      <span aria-hidden="true" className="pointer-events-none relative h-full w-[136px] shrink-0 max-sm:hidden xl:w-40">{art}</span>
     </button>
   );
 }
@@ -87,59 +87,24 @@ function Frame({ tone = 0, className }: { tone?: number; className?: string }) {
   );
 }
 
-/**
- * 插图右上角的小标签：白底细边，与 AI 卡片的提示词气泡同一位置，悬停时一起上浮。
- * 窄窗口下卡片变矮变宽，标签改到主体画面左侧并垂直居中，避免被画面挡住。
- */
-const chipPlace = "right-5 top-6 max-lg:right-5 max-lg:top-3 max-sm:hidden";
-
-function Chip({ children }: { children: ReactNode }) {
-  return (
-    <span className={cn(chipPlace, "absolute flex h-7 items-center whitespace-nowrap gap-1.5 rounded-full bg-surface pl-1.5 pr-2.5 text-[11px] text-fg-muted shadow-lift ring-1 ring-line transition-transform duration-300 group-hover:-translate-y-1")}>
-      {children}
-    </span>
-  );
-}
-
-/** 团队头像：三枚石墨色渐变圆点，示意多人共用。 */
-const avatars = [
-  "from-[oklch(0.8_0.008_85)] to-[oklch(0.6_0.008_85)]",
-  "from-[oklch(0.76_0.008_85)] to-[oklch(0.56_0.008_85)]",
-  "from-[oklch(0.84_0.008_85)] to-[oklch(0.62_0.008_85)]",
-];
-
-/** 云端插图：右上是团队头像与「团队共享」，下方三张竖屏画面扇形展开，悬停时展得更开。 */
+/** 云端插图：三张竖屏画面扇形展开，悬停时展得更开。 */
 function CloudArt() {
   return (
     <span className="absolute inset-0">
-      <Chip>
-        <span className="flex -space-x-1.5">
-          {avatars.map((fill) => <span key={fill} className={cn("size-4 rounded-full bg-linear-to-br ring-2 ring-surface", fill)} />)}
-        </span>
-        团队共享
-      </Chip>
-      <Frame tone={1} className={cn("bottom-4 right-[96px] h-[62px] w-[38px] origin-bottom -rotate-[11deg] group-hover:-translate-x-1 group-hover:-rotate-[16deg]", springy)} />
-      <Frame tone={2} className={cn("bottom-4 right-[34px] h-[62px] w-[38px] origin-bottom rotate-[11deg] group-hover:translate-x-1 group-hover:rotate-[16deg]", springy)} />
-      <Frame className={cn("bottom-4 right-[62px] h-[72px] w-[44px] group-hover:-translate-y-1", springy)} />
+      <Frame tone={1} className={cn("bottom-2 right-[96px] h-[54px] w-[38px] origin-bottom -rotate-[11deg] group-hover:-translate-x-1 group-hover:-rotate-[16deg]", springy)} />
+      <Frame tone={2} className={cn("bottom-2 right-[34px] h-[54px] w-[38px] origin-bottom rotate-[11deg] group-hover:translate-x-1 group-hover:rotate-[16deg]", springy)} />
+      <Frame className={cn("bottom-2 right-[62px] h-[62px] w-[44px] group-hover:-translate-y-1", springy)} />
     </span>
   );
 }
 
 /**
- * AI 字效插图：右上是与其他卡片同款的白色标签，里面是提示词与闪烁的输入光标；下方是生成的字效画面。
- * 悬停时提示词按字逐步显现、光标同步右移（两者用同样的步数与时长），随后一道光泽从字效上扫过。
+ * AI 字效插图：右侧生成的字效画面；悬停时一道光泽从字效上扫过。
  */
 function EffectArt() {
   return (
     <span className="absolute inset-0">
-      <Chip>
-        <Icon name="stars" variant="duotone" className="ml-1 size-3.5 text-brand" />
-        <span className="relative mr-1 text-fg">
-          <span className="block group-hover:animate-type-text">电影感标题</span>
-          <span className="absolute left-full top-1/2 ml-px h-3 w-px -translate-y-1/2 animate-caret bg-brand group-hover:[animation:caret_1s_steps(1)_infinite,type-caret_0.8s_steps(5,end)_both]" />
-        </span>
-      </Chip>
-      <span className="absolute bottom-5 right-5 flex h-[62px] w-[136px] max-lg:bottom-[30px] items-center justify-center overflow-hidden rounded-xl shadow-lift ring-1 ring-black/10" style={{ background: footage[0] }}>
+      <span className="absolute bottom-2 right-0 flex h-[62px] w-[136px] items-center justify-center overflow-hidden rounded-xl shadow-lift ring-1 ring-black/10" style={{ background: footage[0] }}>
         <span className="grain absolute inset-0 opacity-20 mix-blend-overlay" />
         <span className="relative font-serif text-[19px] font-bold tracking-[0.3em] text-white [text-shadow:0_0_14px_oklch(0.8_0.12_265/0.7)]">电影感</span>
         <span className="absolute inset-y-0 -left-1/2 w-1/3 -skew-x-12 bg-linear-to-r from-transparent via-white/25 to-transparent transition-transform duration-700 ease-out group-hover:translate-x-[420%] group-hover:delay-500" />

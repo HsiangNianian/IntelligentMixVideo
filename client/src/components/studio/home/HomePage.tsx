@@ -29,7 +29,7 @@ export function HomePage(props: HomePageProps) {
     <div className="paper-surface mx-auto min-h-full w-full max-w-[1600px] px-6 pb-20 pt-9 sm:px-10">
       <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
         <div>
-          <h1 className="sketch-text text-[36px] leading-tight">开始创作</h1>
+          <h1 className="sketch-text text-[30px] leading-tight">开始创作</h1>
           <p className="mt-1.5 text-sm text-fg-muted">从模板开始设计视频的样子，或者让 AI 帮你做一段字效。</p>
         </div>
         <ServiceChip state={cloudState} onClick={onOpenSettings} />
@@ -39,7 +39,7 @@ export function HomePage(props: HomePageProps) {
         <CreateCards onCreateCloud={onCreate} onOpenEffects={onOpenEffects} />
       </div>
 
-      <div className="mt-9 flex flex-wrap items-center gap-2 border-b border-line">
+      <div className="mt-6 flex flex-wrap items-center gap-2 border-b border-line">
         <div className="flex items-center gap-2 py-3">
           <h2 className="sketch-text text-2xl">我的模板</h2>
           <span aria-label="模板数量" className="rounded-full bg-raised px-2 py-px font-mono text-[11px] tabular-nums text-fg-muted">{props.count}</span>
@@ -49,7 +49,7 @@ export function HomePage(props: HomePageProps) {
           <Icon name="restart" className={cn(props.refreshing && "animate-spin")} />
         </IconButton>
       </div>
-      <div className="pt-5">{children}</div>
+      <div className="pt-3">{children}</div>
     </div>
   );
 }

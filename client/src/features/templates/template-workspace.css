@@ -120,7 +120,7 @@
 .studio-source-tab[aria-selected="true"] { border-bottom-color: var(--color-fg); color: var(--color-fg); }
 .template-workspace .template-preview-stage { background: var(--color-canvas); }
 .template-workspace .template-preview-controls { margin-top: 16px; padding: 10px; border-top: 1px solid var(--border); border-radius: 0; background: transparent; }
-.template-workspace .template-category-pill { height: 32px; border-radius: 8px; font-size: 12px; }
+.template-workspace .template-category-pill { height: 28px; border-radius: 6px; font-size: 10px; }
 .template-workspace .template-category-pill[data-state="on"] { color: var(--color-brand); border-color: color-mix(in oklch, var(--color-brand) 25%, transparent); background: color-mix(in oklch, var(--color-brand) 8%, transparent); }
 .template-workspace .template-asset-card { border: 1px solid var(--border); border-radius: 10px; padding: 6px; background: var(--color-surface); }
 .template-workspace .template-asset-card.is-selected { color: var(--color-brand); border-color: var(--color-brand); background: color-mix(in oklch, var(--color-brand) 6%, var(--color-surface)); }

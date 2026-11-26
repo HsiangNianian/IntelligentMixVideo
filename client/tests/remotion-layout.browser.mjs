@@ -224,13 +224,15 @@ try {
   await rounds.getByText(/COMPOSITION_FAILED：组合生成失败。：Sprite bundler unavailable/).waitFor();
   await page.screenshot({ path: join(screenshots, "imv-audit-rounds.png"), fullPage: true });
   await rounds.getByRole("button", { name: /循环记录 · 2 轮/ }).click();
-  // 桌面历史按需浮出；删除先确认，取消不影响当前播放器或历史选择。
-  await page.getByRole("button", { name: "历史会话", exact: true }).click();
+  // 桌面历史在当前会话栏内展开；删除先确认，取消不影响当前播放器或历史选择。
+  assert.equal(await page.locator('#chat #effects-history').count(), 1);
+  assert.equal(await page.getByText("描述想法，预览字效，保留每一次灵感。").count(), 0);
+  await page.getByRole("button", { name: "展开历史" }).click();
   await page.getByRole("button", { name: "删除聊天", exact: true }).click();
   await page.getByRole("dialog").waitFor();
   await page.getByRole("button", { name: "取消", exact: true }).click();
   assert.equal(deleted, false);
-  await page.getByRole("button", { name: "历史会话", exact: true }).click();
+  await page.getByRole("button", { name: "收起历史栏" }).click();
   const frame = page.locator('iframe[title="Remotion 字效播放器"]');
   const rect = await frame.boundingBox();
   // iframe 与外框保持成功版本的真实画布比例；外框完整落在预览区内。

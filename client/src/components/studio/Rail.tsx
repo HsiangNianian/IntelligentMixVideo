@@ -31,9 +31,9 @@ interface RailProps {
 export function Rail({ page, onNavigate, onSettings, editing, dirty, version, logoHidden }: RailProps) {
   return (
     <nav aria-label="主导航" className="paper-surface flex h-dvh w-[76px] shrink-0 flex-col border-r border-line bg-rail px-2 py-5 xl:w-52 xl:px-5">
-      <div className="mb-8 flex h-16 items-start justify-center gap-2 border-b border-line xl:justify-start">
-        <span data-splash-target className={cn("flex size-9 shrink-0 items-center justify-center", logoHidden && "opacity-0")}>
-          <LogoMark className="studio-logo size-9 text-fg" />
+      <div className="mb-8 flex h-16 items-center justify-center gap-2 border-b border-line xl:justify-start">
+        <span data-splash-target aria-label="IMV" className={cn("flex size-14 shrink-0 items-center justify-center", logoHidden && "opacity-0")}>
+          <LogoMark className="size-14" />
         </span>
         <span aria-label="IMV" className="sketch-text hidden text-[28px] leading-9 xl:inline-block">IMV</span>
       </div>
@@ -47,7 +47,7 @@ export function Rail({ page, onNavigate, onSettings, editing, dirty, version, lo
                 <Icon name={icon} className="size-5" />
                 {target === "editor" && editing !== null && dirty && <PulseDot className="absolute -right-1 -top-1 text-warning ring-2 ring-rail" />}
               </span>
-              <span className="font-serif text-[10px] xl:text-[16px]">{label}</span>
+              <span className="font-serif text-[10px] xl:text-[13px]">{label}</span>
             </button>
           );
           return <li key={target}>{target === "editor" ? <Tooltip side="right" label={editing ? `正在编辑「${editing}」${dirty ? " · 有未保存的修改" : ""}` : "还没有打开模板"}>{item}</Tooltip> : item}</li>;

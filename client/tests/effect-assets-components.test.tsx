@@ -38,6 +38,21 @@ test.each(["title", "subtitle"] as const)("%s 资产列表排除停用花字", (
   expect(screen.getByRole("button", { name: /应用花字/ })).toBeTruthy();
 });
 
+// 场景：顶部搜索在纵向分类切换时保留输入，右侧列表只显示当前分类的匹配项。
+test("资产分类切换保留顶部搜索并筛选单列资产", () => {
+  const catalog = readCatalog();
+  const filter = catalog.find((asset) => asset.category === "filter")!;
+  render(<EffectAssets catalog={catalog} textTarget="title" onTextTarget={() => {}} onAsset={() => {}} />);
+  const search = screen.getByRole("searchbox", { name: "搜索特效" });
+  const categories = screen.getByRole("radiogroup", { name: "资产分类" });
+  expect(search.compareDocumentPosition(categories) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.change(search, { target: { value: filter.name } });
+  expect(screen.getByText("没有匹配的特效")).toBeTruthy();
+  fireEvent.click(screen.getByRole("radio", { name: /滤镜/ }));
+  expect(search.getAttribute("value")).toBe(filter.name);
+  expect(screen.getByRole("button", { name: `应用滤镜：${filter.name}` })).toBeTruthy();
+});
+
 // 场景：选择字幕后点击真实目录资产，组件输出对应资产和字幕目标。
 test("资产组件传递所选资产与文字对象", async () => {
   const catalog = readCatalog();

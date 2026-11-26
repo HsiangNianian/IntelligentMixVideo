@@ -50,7 +50,7 @@ export function DialogHeader({ icon, tone = "neutral", title, description }: { i
     <div className="flex gap-4 px-6 pb-2 pt-6 pr-14">
       <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-xl [&_svg]:size-5", tones[tone])}>{icon}</span>
       <div className="min-w-0 pt-0.5">
-        <DialogPrimitive.Title className="text-[17px] font-semibold leading-tight tracking-tight">{title}</DialogPrimitive.Title>
+        <DialogPrimitive.Title className="text-[15px] font-semibold leading-tight tracking-tight">{title}</DialogPrimitive.Title>
         {/* 没有说明时仍渲染隐藏描述，满足 Radix 对 aria-describedby 的检查。 */}
         <DialogPrimitive.Description className={description ? "mt-1.5 text-[13px] leading-relaxed text-fg-muted" : "sr-only"}>
           {description ?? title}
