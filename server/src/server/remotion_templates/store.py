@@ -820,8 +820,9 @@ class Store:
         spec: TemplateSpec,
         report: ValidationReport,
         directory: Path,
+        reused_sprite_id: str | None = None,
     ) -> TemplateVersion:
-        """Publish generated or user-edited results with distinct gates; cancellation wins over either.
+        """Publish generated, reused or user-edited results with distinct gates; cancellation wins over each.
 
         The sealed bytes are uploaded under a fresh version ID before the record transaction, outside the write lock,
         so a slow object store never blocks other writers. If the transaction fails they are removed again, unless the
@@ -841,7 +842,7 @@ class Store:
                 inputs = JobInput.model_validate_json(
                     db.execute(select(jobs.c.input_data).where(jobs.c.id == str(job_id))).scalar_one()
                 )
-                source, agent_base_id = "agent", None
+                source, agent_base_id = ("sprite_reuse" if reused_sprite_id else "agent"), None
                 if inputs.mode == "parameters":
                     if job.base_version_id is None or inputs.parameters is None:
                         raise Conflict("parameter revision requires a saved base and parameters")
@@ -872,6 +873,7 @@ class Store:
                     number=number,
                     base_version_id=job.base_version_id,
                     source=source,
+                    reused_sprite_id=reused_sprite_id,
                     agent_base_version_id=agent_base_id,
                     candidate=candidate,
                     spec=spec,

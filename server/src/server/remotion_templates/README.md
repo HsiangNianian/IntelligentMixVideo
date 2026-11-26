@@ -551,14 +551,18 @@ Every Outer → Plan → Executor turn appends one public round record through t
 carries the layer, the turn and the tools the host handled in that turn — the
 canonical dotted tool ID, whether it passed, and on failure a whitelisted error
 code plus a fixed host-authored message. So the chat can show what the model actually
-sent, each call also carries the raw `arguments` (4000 characters) and, on failure, the
+sent, each model call carries the raw `arguments` (4000 characters) and, on failure, the
 tool's real error `detail` (2000). This is published on purpose: `arguments` can hold plan
 step goals (`tools.plan_execute`) and candidate source (`workspace.write`, `workspace.edit`), and `detail` is the tool's own error text, which can name server paths or
 compiler output. A turn without calls carries the model's reply (`message`) or the reason
 its request failed (`error_detail`, the already sanitized `ModelFailure` text); narration
 that accompanies calls is not published. Everything is cut with `…`, so a cut `arguments`
 is no longer valid JSON. Tool results, host steer text and the full payloads stay in the
-private audit. A terminal job accepts no further rounds. Unknown tool
+private audit. The host's automatic lookup before delegation appears as `sprite.search`
+before `tools.plan_execute`, with `source=host` and `result=candidates`, `miss` or `unavailable`;
+an explicit Outer search appears once, with its effective query and host summary in the same call.
+Both forms show candidate IDs, names and scores; descriptions stay in the private tool receipt
+and model snapshot. A terminal job accepts no further rounds. Unknown tool
 names become `unknown` with the name the model asked for in `requested_tool`; model
 protocol failures are explicitly marked. Each `job.round` event carries one
 round, `job.updated` omits that history, and the client keeps the rounds it has stored locally.
@@ -613,6 +617,36 @@ template bindings. Overwrites preserve the latest manual category, including edi
 The catalog presents five peer categories: title text effects, subtitle text effects, filters, transitions and
 video effects. For text assets with no manual category, the client matches `字幕` first, then `标题`, and defaults
 to subtitle effects if neither appears. Legacy unspecified kinds remain in video effects.
+
+Published Sprite reuse search uses a server-side Chroma HTTP collection. Install the `sprite-embedding` extra and
+download BAAI/bge-m3 onto the backend host, then set `IMV_SPRITE_EMBEDDING_MODEL_PATH` to that local directory.
+Once the Agent model and local embedding path are configured, a background task reconciles
+new, overwritten, renamed and deleted assets after in-process catalog changes. It does not scan
+MySQL on startup or while idle. A failed pass is logged and retried once after 60 seconds or the
+next catalog change; after a second failure it waits for another change or an explicit rebuild.
+Existing assets and changes made directly in MySQL require a manual rebuild. The repository-root
+`status`, `clear` and `rebuild` commands are documented in the [server README](../../../README.md).
+`status` compares IDs, index revisions and embedding model across MySQL and Chroma; matching counts
+alone do not prove sync.
+It asks the configured Agent chat API to describe the published TSX and parameters in Chinese, embeds that description
+together with the asset name and kind using local bge-m3, and stores the 1024-dimensional vector under `sprite_id`.
+The index is rebuilt from MySQL in a new Chroma collection; an unavailable Chroma or local model does not block publication. For a new effect,
+the host searches before Outer delegates even if Outer skipped its optional `sprite.search` call; edits with an accepted
+base do not search automatically, but questions about published assets may search explicitly. Requests with reference
+images skip search. Chroma recalls up to ten assets by cosine distance; their indexed revisions and code hashes
+must match MySQL. Similarity is `1 - cosine_distance`. Only current assets with similarity at least
+`IMV_SPRITE_MIN_SIMILARITY_SCORE` (default 0.7) and no more than `IMV_SPRITE_SIMILARITY_SCORE_GAP`
+(default 0.1) below the best current match reach Outer. Similarity does not itself authorize reuse.
+For questions about published assets, Outer summarizes
+relevant candidates from their descriptions. For a new effect, Outer presents matching candidates with their IDs,
+names and described looks, then asks which one to import or whether to generate a new effect from their descriptions.
+Only a later user reply can authorize `reuse` of a returned Sprite ID; the host rechecks the candidates when that reply
+first selects an ID. A request to generate a new effect instead delegates to Plan or Executor with the candidates as
+references; it does not ask the same choice again. A selected import copies the
+retained source version's verified artifacts into a new editable version
+without entering Executor; a miss, stale index or failed import follows normal generation. Reuse needs the source version and its sealed artifacts, so deletion of that source falls back to generation.
+The index and description model treat published code and names as data, not instructions. Set the embedding model and
+collection together when rebuilding an index after model changes.
 Publishing re-verifies the sealed version files (409 when changed) and only accepts versions composed
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
 422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be

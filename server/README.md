@@ -15,6 +15,33 @@ Python 3.12+、FastAPI 和 MySQL。模板库在连接此服务的客户端之间
 配置无效、MySQL 不可达、鉴权或建库权限不足时，应用报错并停止启动；修正后重新启动。
 真实 `.env` 已被 Git 忽略，不要把密码写进示例文件或客户端配置。
 
+已发布 Sprite 语义检索使用独立运行的 Chroma 服务与后端本地 bge-m3 向量模型。在后端机器下载完整模型目录，
+将 `.env` 的 `IMV_SPRITE_EMBEDDING_MODEL_PATH` 指向它，使用 `uv run --locked --extra sprite-embedding --project server server`
+安装可选推理依赖并启动。仅使用 CPU 的现有 WSL 虚拟环境可先运行
+`uv pip install --python <虚拟环境>/bin/python --torch-backend=cpu 'sentence-transformers>=5.1,<6' 'sentencepiece>=0.2'`，
+避免下载 CUDA 依赖。`IMV_SPRITE_CHROMA_URL` 指向该机器可访问的 Chroma HTTP 地址；切换模型时使用新的
+`IMV_SPRITE_COLLECTION`，再手动从 MySQL 回填索引。代码转效果描述仍复用 `IMV_ACTOR_BASE_URL`、`IMV_ACTOR_MODEL`
+和 `IMV_ACTOR_API_KEY`，因此向量化不调用外部 API，但描述生成仍调用 Agent 模型。缺少模型配置或 Chroma 不可用时，
+新特效请求继续原生成流程。部署到服务器时保护 Chroma 的网络入口；详见[字效模块说明](src/server/remotion_templates/README.md#sprite-assets)。
+
+首次部署语义检索时，可通过 [HF-Mirror](https://hf-mirror.net/) 下载 BGE-M3（以下命令在运行后端的用户下执行）：
+
+```sh
+HF_ENDPOINT=https://hf-mirror.net uvx --from huggingface_hub hf download BAAI/bge-m3 --local-dir "$HOME/models/bge-m3" --exclude 'onnx/*'
+```
+
+下载后将 `server/.env` 的 `IMV_SPRITE_EMBEDDING_MODEL_PATH` 设为该目录的实际绝对路径；可用 `echo "$HOME/models/bge-m3"` 查看。模型只需下载一次，后续启动从该本地目录加载；`HF_ENDPOINT` 仅对这条下载命令生效。
+
+已发布 Sprite 的向量索引不在后端启动时自动回填。以下命令均在**仓库根目录**运行，使用同一份 `server/.env`；先确保 MySQL 和 Chroma 可访问：
+
+```sh
+uv run --locked --project server python -m server.remotion_templates.sprite_search status
+uv run --locked --project server python -m server.remotion_templates.sprite_search clear
+uv run --locked --extra sprite-embedding --project server python -m server.remotion_templates.sprite_search rebuild
+```
+
+`status` 只读比较 MySQL 与 Chroma 的 Sprite ID、索引版本和向量模型，显示缺失、过期、多余及源代码哈希无效的记录；全部为零且显示 `In sync` 才表示匹配。`clear` 只清空 `IMV_SPRITE_COLLECTION` 指定的集合，不删除 MySQL 或其他 Chroma 集合。`rebuild` 将 MySQL 中已有的已发布资产补入向量库，并更新过期记录；失败时返回非零状态，可修复原因后重跑，无需先清空。应用内新增、修改和删除资产会触发后台对账；直接修改 MySQL 后需要手动运行 `rebuild`。
+
 公共基类只统一读取规则，各模块保留原配置类、字段、校验和实例化时机。
 优先级为构造参数 > 进程环境变量 > `server/.env` > 字段默认值；保留 `_env_file` 显式覆盖与 `None` 禁用文件。
 固定路径按当前源码布局计算，不自动适配任意安装位置；非源码部署请显式提供配置文件或使用进程环境变量。
@@ -266,7 +293,7 @@ result = segment({
 })
 ```
 
-**CT-Punc 部署**：使用 FunASR 官方 `AutoModel(model="ct-punc", model_revision="v2.0.4")`，服务器运行命令加 `--extra ct-punc` 安装 FunASR/PyTorch；官方库优先使用可用的 CUDA，否则回退 CPU。extra 只声明 `funasr` 与 `torch`：funasr 导入时尝试加载全部子模块并容忍缺依赖，`pyproject.toml` 的 `override-dependencies` 排除 CT-Punc 推理用不到的 funasr 直接依赖（transformers、hydra-core、umap-learn 等），不要设置 `FUNASR_STRICT_IMPORT=1`；升级 funasr 或调整排除项后，用下方真实模型测试与空 `MODELSCOPE_CACHE` 首次下载重新验证。普通客户端打包不携带此依赖。服务启动时自动下载约 1.1 GB 权重、加载并试推理，成功后才恢复合成任务和接收请求；后续切片复用进程内实例；下载与磁盘缓存由 ModelScope 管理，可用 `MODELSCOPE_CACHE` 指向持久目录。模型不入库、不随包分发；未安装此 extra 的服务跳过预热。加载、推理或返回格式出错时在同一次调用内最多尝试 3 次（`punctuation.py` 的 `MAX_ATTEMPTS`，缺少依赖不重试，重试日志只记次数与异常类型）；仍失败时预热阻止启动，请求返回安全 502，不回退旧策略。只按位置采用模型预测的标点，正文始终取原文，模型改写英文大小写不影响切片。
+**CT-Punc 部署**：使用 FunASR 官方 `AutoModel(model="ct-punc", model_revision="v2.0.4")`，服务器运行命令加 `--extra ct-punc` 安装 FunASR/PyTorch；官方库优先使用可用的 CUDA，否则回退 CPU。extra 只声明 `funasr` 与 `torch`：funasr 导入时尝试加载全部子模块并容忍缺依赖，`pyproject.toml` 的 `override-dependencies` 排除 CT-Punc 推理用不到的 funasr 直接依赖（hydra-core、umap-learn 等；本地 bge-m3 所需的 transformers 不再排除），不要设置 `FUNASR_STRICT_IMPORT=1`；升级 funasr 或调整排除项后，用下方真实模型测试与空 `MODELSCOPE_CACHE` 首次下载重新验证。普通客户端打包不携带此依赖。服务启动时自动下载约 1.1 GB 权重、加载并试推理，成功后才恢复合成任务和接收请求；后续切片复用进程内实例；下载与磁盘缓存由 ModelScope 管理，可用 `MODELSCOPE_CACHE` 指向持久目录。模型不入库、不随包分发；未安装此 extra 的服务跳过预热。加载、推理或返回格式出错时在同一次调用内最多尝试 3 次（`punctuation.py` 的 `MAX_ATTEMPTS`，缺少依赖不重试，重试日志只记次数与异常类型）；仍失败时预热阻止启动，请求返回安全 502，不回退旧策略。只按位置采用模型预测的标点，正文始终取原文，模型改写英文大小写不影响切片。
 
 首次部署先解析并安装可选依赖，再等待启动预热完成；重启复用磁盘缓存，下载不占切片请求预算：
 

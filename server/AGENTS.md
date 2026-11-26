@@ -18,10 +18,12 @@
 - 优雅退出最多等 `startup/settings.py` 的 `GRACEFUL_SHUTDOWN_SECONDS`（10 秒），超时就断开仍未结束的连接（如作品 SSE），保证旧进程退出，不与重启后的进程同时运行字效任务队列与清理。
 - 所有配置类继承 `config_base.py` 的 `CommonSettings`，读取固定的 `server/.env`，优先级为构造参数 > 进程环境变量 > 文件 > 默认值，保留 `_env_file` 覆盖与 `None` 禁用。不做安装位置发现，不建立配置树或统一快照；运行期间不改配置，改了要重启。
 - 真实 `.env` 不入库；新增配置项时同步无密码的 `server/.env.example`。
+- 已发布 Sprite 的语义检索使用独立 Chroma HTTP 服务；描述模型默认复用服务端 Agent 配置，bge-m3 向量模型按需安装在后端机器并从本地目录加载。模型或检索服务不可用时保持原生成路径，运行说明见 `src/server/remotion_templates/README.md`「Sprite assets」。
 - 数据库：lifespan 启动时连接目标库，只在 MySQL 返回 1049（库不存在）时用临时无库连接建库（`utf8mb4` / `utf8mb4_bin`，正确引用库名）；配置、连接或建库失败都停止启动。首次模板请求自动建模板表、补加封面列；运行中的数据库失败返回可重试的 503。启动失败和退出时释放连接池，临时建库连接始终关闭。
 - `pyproject.toml` 把官方 PyPI 设为 uv 默认索引。依赖版本拉不到时先检查索引覆盖和镜像同步，不要为绕过镜像降级依赖或删除 `uv.lock`；CI 用 `--locked` 校验依赖。
 
 ## 测试
+
 
 - 测试放在 `server/tests/`，用 pytest 的 `test_*.py`、fixture 与参数化，共享夹具放 `conftest.py`；不新增 unittest 风格的测试。按功能组织文件，规模增大后再分目录。
 - 共享夹具会隔离临时 SQLite、清除外部 `IMV_*`、`DASHSCOPE_API_KEY` 与旧 `ASR_BASE_URL` 环境变量，并把各配置类的文件路径指向临时 `server/.env`。新用例显式注入配置，不访问真实 MySQL、ASR 或模型服务。

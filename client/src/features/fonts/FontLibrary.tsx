@@ -41,7 +41,7 @@ export function FontLibrary({ previewer, loader }: { previewer?: Previewer; load
   return (
     <section aria-label="字体库" className="paper-surface relative mx-auto flex h-full max-w-[1600px] flex-col overflow-hidden px-5 py-6 sm:px-10">
       <header className="mb-5 flex shrink-0 items-center justify-between gap-4 border-b border-line pb-6">
-        <div className="flex items-baseline gap-4"><h1 className="sketch-text text-[40px]">字体库</h1><span className="hidden text-xs tracking-[.18em] text-fg-subtle sm:inline">FONT LIBRARY</span></div>
+        <div className="flex items-baseline gap-4"><h1 className="sketch-text text-[30px] leading-tight">字体库</h1><span className="hidden text-xs tracking-[.18em] text-fg-subtle sm:inline">FONT LIBRARY</span></div>
         <div className="flex items-center gap-3">
           <span className="hidden text-xs text-fg-muted sm:inline">.ttf / .otf</span>
           <input ref={input} type="file" accept=".ttf,.otf,font/ttf,font/otf" aria-label="选择字体文件" className="sr-only" tabIndex={-1}

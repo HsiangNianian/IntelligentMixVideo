@@ -607,14 +607,15 @@ class TemplateProject(Contract):
 
 
 class TemplateVersion(Contract):
-    """Immutable result with explicit provenance; user revisions retain their last agent baseline."""
+    """Immutable result with provenance; user revisions retain their last agent baseline."""
 
     id: UUID
     project_id: UUID
     job_id: UUID
     number: int
     base_version_id: UUID | None
-    source: Literal["agent", "user_parameters"] = "agent"
+    source: Literal["agent", "user_parameters", "sprite_reuse"] = "agent"
+    reused_sprite_id: str | None = None
     agent_base_version_id: UUID | None = None
     candidate: TemplateCandidate
     spec: TemplateSpec
@@ -719,7 +720,8 @@ class PublicVersion(Contract):
     id: UUID
     project_id: UUID
     number: int
-    source: Literal["agent", "user_parameters"] = "agent"
+    source: Literal["agent", "user_parameters", "sprite_reuse"] = "agent"
+    reused_sprite_id: str | None = None
     candidate: TemplateCandidate
     spec: TemplateSpec
     created_at: datetime

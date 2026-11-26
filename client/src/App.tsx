@@ -38,7 +38,7 @@ export default function App() {
   }, []);
   return <MotionConfig reducedMotion="user">
     {ready ? <HomePage logoHidden={splash} /> : <main className="flex min-h-dvh flex-col items-center justify-center gap-5 bg-canvas p-8 text-center">
-      <LogoMark className="size-14" />
+      <LogoMark className="size-16" />
       <h1 className="text-lg font-semibold">{error ? "内置服务没有启动成功" : "正在启动内置服务"}</h1>
       <p role={error ? "alert" : "status"} className={error ? "max-w-xl whitespace-pre-wrap text-sm text-danger" : "max-w-xl text-sm text-fg-muted"}>{error || "首次运行需要初始化数据库，请稍候…"}</p>
       {!error && <span className="h-1 w-48 overflow-hidden rounded-full bg-raised"><span className="block h-full w-1/3 animate-sweep bg-brand" /></span>}

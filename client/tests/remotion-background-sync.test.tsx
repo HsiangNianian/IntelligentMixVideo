@@ -184,7 +184,7 @@ test.each(["保持打开", "关闭"])("聊天%s后任务已登记，自动整包
   const before = await local.snapshot("work-1");
   expect(applied).toBe(0);
   if (chat === "关闭") {
-    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "新建会话" })[0]);
     await waitFor(() => expect(fake.streams.size).toBe(0));
   }
   expect(applied).toBe(0);

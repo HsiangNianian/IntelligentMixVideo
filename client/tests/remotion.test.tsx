@@ -217,7 +217,7 @@ test("生成、复制并新增独立会话", async () => {
   fireEvent.change(screen.getByRole("textbox", { name: "背景视频直链" }), {
     target: { value: "https://media.test/video.mp4" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+  fireEvent.click(within(screen.getByRole("complementary", { name: "字效历史会话" })).getByRole("button", { name: "新建会话" }));
   expect(
     within(screen.getByRole("log")).queryByText("制作今日灵感标题") === null,
   ).toBe(true);
@@ -226,6 +226,22 @@ test("生成、复制并新增独立会话", async () => {
     "",
   );
   expect(screen.queryByRole("button", { name: "复制代码" })).toBeNull();
+});
+
+// 场景：顶栏圆形加号可新建对话；历史栏在当前聊天区域内展开，刷新旁的按钮可收起。
+test("顶栏新建快捷入口与历史栏收起", async () => {
+  server();
+  render(<RemotionWorkspace />);
+  expect(screen.queryByText("描述想法，预览字效，保留每一次灵感。")).toBeNull();
+  const history = screen.getByRole("button", { name: "展开历史" });
+  fireEvent.click(history);
+  expect(history.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByRole("complementary", { name: "字效历史会话" }).closest("#chat")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "收起历史栏" }));
+  expect(history.getAttribute("aria-expanded")).toBe("false");
+  await generate();
+  fireEvent.click(screen.getAllByRole("button", { name: "新建会话" })[0]);
+  expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
 });
 
 // 澄清答案通过统一 messages 接口绑定提出问题的 job，普通修改不会伪装成答案。
@@ -354,14 +370,14 @@ test("新增会话提示未保存参数，取消或放弃", async () => {
   render(<RemotionWorkspace />);
   await generate();
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "80" } });
-  fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+  fireEvent.click(within(screen.getByRole("complementary", { name: "字效历史会话" })).getByRole("button", { name: "新建会话" }));
   const dialog = await screen.findByRole("dialog", { name: "参数尚未保存" });
   expect(
     within(dialog).getByRole("button", { name: "保存并切换" }),
   ).toBeDefined();
   fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
   expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("80");
-  fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+  fireEvent.click(within(screen.getByRole("complementary", { name: "字效历史会话" })).getByRole("button", { name: "新建会话" }));
   fireEvent.click(screen.getByRole("button", { name: "放弃修改并切换" }));
   expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
   expect(
@@ -418,7 +434,7 @@ test("新增隔离迟到的创建响应并保留旧任务", async () => {
     screen.getByRole("button", { name: "发送" }).closest("form")!,
   );
   await waitFor(() => expect(resolve).toBeDefined());
-  fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+  fireEvent.click(within(screen.getByRole("complementary", { name: "字效历史会话" })).getByRole("button", { name: "新建会话" }));
   await act(async () =>
     resolve!(
       Response.json({ work: { id: "work-1" }, job: remotionJob("running") }),

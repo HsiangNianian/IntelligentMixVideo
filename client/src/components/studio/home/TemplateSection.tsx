@@ -57,7 +57,7 @@ export function TemplateSection({ state, templates, error, onRefresh, onCreate, 
     return () => element.removeEventListener("wheel", scroll);
   }, [selected, templates, state]);
   return (
-    <section aria-label="模板列表" className="template-gallery space-y-5">
+    <section aria-label="模板列表" className="template-gallery space-y-4">
       {state === "error" && (
         <Notice icon={<Icon name="cloud-cross" variant="duotone" />} title="云端模板读取失败" action={<Button size="sm" onClick={onRefresh}><Icon name="restart" />重试</Button>}>
           <span className="font-mono text-xs text-fg-muted">{error}</span>

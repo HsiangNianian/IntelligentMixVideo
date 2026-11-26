@@ -55,7 +55,8 @@ export interface Version {
   id: string;
   project_id: string;
   number: number;
-  source: "agent" | "user_parameters";
+  source: "agent" | "user_parameters" | "sprite_reuse";
+  reused_sprite_id?: string | null;
   created_at: string;
   candidate: {
     tsx_code: string;

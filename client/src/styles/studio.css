@@ -1,13 +1,7 @@
-/* 纸面工作室：自托管中文手写界面字体与中性主题；真实字体样张、播放器及代码各自指定字体。 */
-@font-face {
-  font-family: "IMV Hand";
-  src: url("/fonts/imv-hand.woff2") format("woff2");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-  /* 手写字形整体放大；独立加载的样张字体、视频和等宽代码不受影响。 */
-  size-adjust: 118%;
-}
+/* 纸面工作室：黑体界面字体与中性主题；真实字体样张、播放器及代码各自指定字体。 */
+/* 黑底 Logo 在浅色界面反相并正片叠底，在深色界面滤色，使圆底融入当前背景。 */
+.studio-logo-mark { filter: invert(1); mix-blend-mode: multiply; }
+.dark .studio-logo-mark { filter: none; mix-blend-mode: screen; }
 @theme {
   --color-white: #fff;
   --color-black: #000;
@@ -39,6 +33,8 @@
   --color-danger: oklch(0.58 0.21 25);
   --color-success: oklch(0.62 0.15 155);
   --color-warning: oklch(0.66 0.15 65);
+  /* 首页入口图标共用中灰底，白色线条和光晕在两种主题下均可辨认。 */
+  --color-entry-icon-bg: #666;
 
   --color-scrim: oklch(0.2 0.01 265 / 0.32);
   --color-shimmer: oklch(1 0 0 / 0.75);
@@ -49,10 +45,26 @@
   --color-spectrum-2: var(--color-fg);
   --color-spectrum-3: var(--color-fg-subtle);
 
-  /* 中西文界面共用手写字形；等宽代码保持 Geist Mono，媒体与字样显式使用自己的字体。 */
-  --font-sans: "IMV Hand", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  /* 界面优先使用微软雅黑；等宽代码、媒体和字体样张保留各自字体。 */
+  --font-sans: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
   --font-serif: var(--font-sans);
+
+  /* 界面文字再收紧一档，小字保留 11px 以便辨认；字样预览和视频内容仍使用各自的字号。 */
+  --text-xs: 0.6875rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.75rem;
+  --text-sm--line-height: 1.0625rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.3125rem;
+  --text-lg: 1rem;
+  --text-lg--line-height: 1.4375rem;
+  --text-xl: 1.125rem;
+  --text-xl--line-height: 1.5625rem;
+  --text-2xl: 1.3125rem;
+  --text-2xl--line-height: 1.6875rem;
+  --text-3xl: 1.6875rem;
+  --text-3xl--line-height: 2.0625rem;
 
   --shadow-pop: 0 1px 2px oklch(0.2 0.01 265 / 0.06), 0 20px 48px -16px oklch(0.2 0.01 265 / 0.22);
   --shadow-lift: 0 14px 32px -14px oklch(0.2 0.01 265 / 0.32);
@@ -69,6 +81,7 @@
   --animate-ping-soft: ping-soft 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
   --animate-lock-pop: lock-pop 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --animate-mix-glow: mix-glow 1s ease-out forwards;
+  --animate-entry-spark: entry-spark 1.4s ease-in-out infinite;
 
   /* 骨架屏的高光从左扫到右。 */
   @keyframes shimmer {
@@ -126,6 +139,11 @@
     30% { text-shadow: 0 0 28px color-mix(in oklch, var(--color-brand) 85%, transparent), 0 0 6px var(--color-brand-from); }
     100% { text-shadow: 0 0 22px color-mix(in oklch, var(--color-brand) 30%, transparent); }
   }
+  /* 首页星芒在白色与白色柔光之间闪烁，减少动态效果时由基础层停用动画。 */
+  @keyframes entry-spark {
+    0%, 100% { opacity: 1; filter: drop-shadow(0 0 4px var(--color-white)); }
+    50% { opacity: 0.45; filter: none; }
+  }
 }
 
 /* 胶片颗粒：叠在模板封面上让渐变像一帧画面，而不是一块平涂色块。 */
@@ -144,8 +162,8 @@
     background: var(--color-canvas);
     color: var(--color-fg);
     font-family: var(--font-sans);
-    font-size: 14px;
-    line-height: 1.5;
+    font-size: 12px;
+    line-height: 1.45;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -165,18 +183,18 @@
   }
 }
 
-/* 黑纸主题：用中性炭灰区分面板，文字为浅石墨色；媒体和字样不叠加纸纹。 */
+/* 深灰主题：用中性灰区分面板，主要文字使用白色；媒体和字样不叠加纸纹。 */
 .dark {
-  --color-rail: oklch(0.19 0.004 85);
-  --color-sunken: oklch(0.175 0.004 85);
-  --color-canvas: oklch(0.195 0.004 85);
-  --color-surface: oklch(0.21 0.004 85);
-  --color-overlay: oklch(0.25 0.004 85);
-  --color-raised: oklch(0.275 0.005 85);
-  --color-hover: oklch(0.32 0.005 85);
+  --color-rail: #2b2b2b;
+  --color-sunken: #202020;
+  --color-canvas: #242424;
+  --color-surface: #303030;
+  --color-overlay: #363636;
+  --color-raised: #3a3a3a;
+  --color-hover: #444;
   --color-line: oklch(1 0 0 / 0.1);
   --color-line-strong: oklch(1 0 0 / 0.18);
-  --color-fg: oklch(0.9 0.015 85);
+  --color-fg: #fff;
   --color-fg-muted: oklch(0.74 0.012 85);
   --color-fg-subtle: oklch(0.64 0.009 85);
   --color-ink: oklch(0.9 0.008 265);
@@ -193,7 +211,7 @@
   --shadow-lift: 0 14px 32px -14px oklch(0 0 0 / 0.65);
 }
 
-/* 标题沿用真实手写轮廓，以字距和留白强调；不再叠排线、描边或重复文字。 */
+/* 标题沿用界面黑体，以字距和留白强调。 */
 @layer components {
   .sketch-text {
     font-family: var(--font-sans);
@@ -205,9 +223,6 @@
 .paper-surface {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='linear' slope='.045'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' opacity='.6' filter='url(%23p)'/%3E%3C/svg%3E");
 }
-.studio-logo .logo-tile { display: none; }
-.studio-logo path { fill: currentColor; stroke: currentColor; }
-
 /* 空会话将标题与输入框放在中间；消息出现后输入框自然回到底部。 */
 .studio-chat-empty .studio-chat-log { flex: 0 1 auto; margin-top: auto; }
 .studio-chat-empty .studio-composer { margin-bottom: auto; }

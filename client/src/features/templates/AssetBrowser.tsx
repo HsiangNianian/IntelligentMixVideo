@@ -1,4 +1,4 @@
-/** 资产浏览的共享骨架：可选的分类切换、搜索、卡片网格与分批显示；IMS 特效目录与 AI 资产目录各自独立使用，只提供各自的条目、封面和选择动作。 */
+/** 资产浏览的共享骨架：可选的分类切换、搜索、单列资产行与分批显示；IMS 特效目录与 AI 资产目录各自独立使用，只提供各自的条目、封面和选择动作。 */
 import { useId, useState, type ReactNode } from "react";
 import { Check, Image, Plus, SearchX } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 
-/** 每批显示的卡片数；切换分类或搜索条件后回到第一批。 */
+/** 每批显示的资产数；切换分类或搜索条件后回到第一批。 */
 const PAGE_SIZE = 24;
 
 /** 封面不可用时的明确占位，保留名称和选择入口。 */
@@ -21,7 +21,7 @@ export function CoverPlaceholder({ text }: { text: string }) {
   );
 }
 
-/** 一张卡片的内容；封面可以是节点，也可以按悬停/聚焦状态渲染（Remotion 封面据此轮播定格帧）。 */
+/** 一行资产的内容；封面可以是节点，也可以按悬停/聚焦状态渲染（Remotion 封面据此轮播定格帧）。 */
 export interface AssetCard {
   /** 稳定的列表键；内容变化需要重新挂载封面时由调用方改变它。 */
   id: string;
@@ -29,22 +29,20 @@ export interface AssetCard {
   /** 卡片按钮的无障碍名称，也是测试与读屏使用的操作说明。 */
   label: string;
   cover: ReactNode | ((active: boolean) => ReactNode);
-  /** 封面区尺寸类，缺省为固定 68px 高；封面自带比例时传入 `h-auto`。 */
-  coverClassName?: string;
   /** 缺省表示条目可重复添加，不显示选中态；布尔值同时决定对勾与 `aria-pressed`。 */
   selected?: boolean;
   disabled?: boolean;
   onSelect: () => void;
-  /** 叠在封面右上角的操作按钮（如重命名、删除）；它们是选择按钮的兄弟节点，避免按钮嵌套。 */
+  /** 行右侧的操作按钮（如重命名、删除）；它们是选择按钮的兄弟节点，避免按钮嵌套。 */
   actions?: ReactNode;
-  /** 卡片下方的附加说明，位于选择按钮之外。 */
+  /** 名称下方的附加说明。 */
   note?: ReactNode;
 }
 
-/** 单张卡片：跟踪指针悬停与键盘聚焦（含操作按钮），把“正在被查看”的状态交给封面。 */
+/** 单行资产：跟踪指针悬停与键盘聚焦（含操作按钮），把“正在被查看”的状态交给封面。 */
 function Card({ card }: { card: AssetCard }) {
   const [active, setActive] = useState(false);
-  const { name, label, cover, coverClassName, selected, disabled, onSelect, actions, note } = card;
+  const { name, label, cover, selected, disabled, onSelect, actions, note } = card;
   return (
     <div
       className="relative min-w-0"
@@ -56,27 +54,27 @@ function Card({ card }: { card: AssetCard }) {
       <Button
         type="button"
         variant="ghost"
-        className={cn("template-asset-card h-auto w-full min-w-0 flex-col items-stretch gap-1 whitespace-normal rounded-lg border p-1 text-left", selected && "is-selected")}
+        className={cn("template-asset-card h-auto min-h-[104px] w-full min-w-0 justify-start gap-2 whitespace-normal rounded-lg border p-1.5 text-left", actions && "pb-8", selected && "is-selected")}
         aria-label={label}
         aria-pressed={selected}
         disabled={disabled}
         onClick={onSelect}
       >
-        <span className={cn("flex items-center justify-center overflow-hidden rounded bg-muted", coverClassName ?? "h-[68px]")}>{typeof cover === "function" ? cover(active) : cover}</span>
-        <span className="flex min-w-0 items-start justify-between gap-0.5">
-          <span className="min-w-0 break-all text-[11px] leading-4">{name}</span>
-          {selected ? <Check className="size-3 shrink-0" aria-hidden="true" /> : <Plus className="size-3 shrink-0" aria-hidden="true" />}
+        <span className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded bg-muted">{typeof cover === "function" ? cover(active) : cover}</span>
+        <span className="min-w-0 flex-1">
+          <span className="line-clamp-2 text-[12px] font-medium leading-4">{name}</span>
+          {note}
         </span>
+        {!actions && (selected ? <Check className="size-3 shrink-0" aria-hidden="true" /> : <Plus className="size-3 shrink-0" aria-hidden="true" />)}
       </Button>
-      {actions && <div className="absolute right-1.5 top-1.5 flex gap-0.5">{actions}</div>}
-      {note}
+      {actions && <div className="absolute bottom-1 right-2 flex gap-0.5">{actions}</div>}
     </div>
   );
 }
 
 /**
- * 提供分类时显示单选切换组（再次点击当前分类不会取消选择），其下是名称搜索、调用方的附加控件和分批显示的卡片网格；
- * 不提供分类的目录直接从搜索开始。分类由调用方持有，`items` 只包含当前分类的条目；搜索词与显示批次留在组件内。
+ * 名称搜索始终在顶部；提供分类时于左侧显示纵向单选组（再次点击当前分类不会取消选择），右侧显示附加控件和分批资产行。
+ * 分类由调用方持有，`items` 只包含当前分类的条目；搜索词与显示批次留在组件内。
  */
 export function AssetBrowser<T>({ categories, category, onCategory, categoriesLabel, searchLabel, searchPlaceholder, noun, items, searchText, card, controls }: {
   /** 分类相关属性要么全部提供，要么全部省略。 */
@@ -101,15 +99,6 @@ export function AssetBrowser<T>({ categories, category, onCategory, categoriesLa
   const options = items.filter((item) => searchText(item).toLocaleLowerCase().includes(query));
   return (
     <>
-      {categories && (
-        <ToggleGroup type="single" spacing={1} value={category} onValueChange={(value) => { if (value) { onCategory?.(value); setLimit(PAGE_SIZE); } }} aria-label={categoriesLabel} className="template-asset-categories w-full flex-wrap">
-          {categories.map((item) => (
-            <ToggleGroupItem key={item.value} value={item.value} className="template-category-pill h-6 gap-1 rounded-full border px-2 text-[11px] font-normal">
-              {item.label} <span aria-hidden="true" className="template-category-count">{item.count}</span>
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-      )}
       <div className="space-y-2">
         <Label htmlFor={`${id}-search`} className="sr-only">{searchLabel}</Label>
         <Input
@@ -122,16 +111,29 @@ export function AssetBrowser<T>({ categories, category, onCategory, categoriesLa
           className="h-8 px-2.5 text-[11px] md:text-[11px]"
         />
       </div>
-      {controls}
-      <div className="max-h-96 overflow-y-auto pr-1 @min-[1000px]:max-h-[65dvh]">
-        <div className="grid grid-cols-2 gap-2">
-          {options.slice(0, limit).map((item) => {
-            const value = card(item);
-            return <Card key={value.id} card={value} />;
-          })}
+      <div className="flex min-w-0 items-start gap-2">
+        {categories && (
+          <ToggleGroup type="single" spacing={1} value={category} onValueChange={(value) => { if (value) { onCategory?.(value); setLimit(PAGE_SIZE); } }} aria-label={categoriesLabel} className="template-asset-categories flex max-h-96 w-[60px] shrink-0 flex-col items-stretch justify-start overflow-y-auto @min-[1000px]:max-h-[65dvh]">
+            {categories.map((item) => (
+              <ToggleGroupItem key={item.value} value={item.value} className="template-category-pill min-h-7 w-full justify-between gap-1 rounded-md border px-1.5 text-left text-[10px] font-normal">
+                <span className="min-w-0 truncate">{item.label}</span>{" "}<span aria-hidden="true" className="template-category-count sr-only">{item.count}</span>
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        )}
+        <div className="min-w-0 flex-1 space-y-2">
+          {controls}
+          <div className="max-h-96 overflow-y-auto pr-1 @min-[1000px]:max-h-[65dvh]">
+            <div className="flex flex-col gap-1.5">
+              {options.slice(0, limit).map((item) => {
+                const value = card(item);
+                return <Card key={value.id} card={value} />;
+              })}
+            </div>
+            {!options.length && <Empty className="p-6 md:p-6"><EmptyHeader><EmptyMedia variant="icon"><SearchX className="size-5" aria-hidden="true" /></EmptyMedia><EmptyDescription role="status" className="text-xs">{query ? `没有匹配的${noun}` : `${categories ? "此分类" : ""}暂无${noun}`}</EmptyDescription></EmptyHeader></Empty>}
+            {options.length > limit && <Button type="button" variant="outline" className="mt-2 h-8 w-full text-[11px]" onClick={() => setLimit((value) => value + PAGE_SIZE)}>显示更多</Button>}
+          </div>
         </div>
-        {!options.length && <Empty className="p-6 md:p-6"><EmptyHeader><EmptyMedia variant="icon"><SearchX className="size-5" aria-hidden="true" /></EmptyMedia><EmptyDescription role="status" className="text-xs">{query ? `没有匹配的${noun}` : `${categories ? "此分类" : ""}暂无${noun}`}</EmptyDescription></EmptyHeader></Empty>}
-        {options.length > limit && <Button type="button" variant="outline" className="mt-2 h-8 w-full text-[11px]" onClick={() => setLimit((value) => value + PAGE_SIZE)}>显示更多</Button>}
       </div>
     </>
   );
